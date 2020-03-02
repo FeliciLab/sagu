@@ -1,0 +1,250 @@
+<?php
+/**
+ * <--- Copyright 2005-2013 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Type pedagogico
+ *
+ * @author Moises Heberle [moises@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.com.br]
+ *
+ * @since
+ * Class created on 29/08/2013
+ */
+
+class AcpOcorrenciaCurso extends SType
+{
+    const SITUACAO_ATIVO = 'A';
+    const SITUACAO_INATIVO = 'I';
+    const SITUACAO_EM_EXTINCAO = 'E';
+    
+    protected $_utilizaNovoPadrao = true;
+    protected $_utilizaMultiUnidade = true;
+    protected $_utilizaMultiCentro = true;
+    
+    protected $_descriptionColumn = '_descricao';
+    
+    protected $_virtualColumns = array(
+        '_descricao' => 'curso.nome || \' - \' || turn.description || \' - \' || unit.description',
+    );
+    
+    protected $_associations = array(
+        'turn' => array(
+            'mode' => 'one',
+            'typeClass' => 'BasTurnFixed',
+            'joinColumnLeft' => 'turnid',
+            'joinColumnRight' => 'turnid',
+        ),
+        'unit' => array(
+            'mode' => 'one',
+            'typeClass' => 'BasUnitFixed',
+            'joinColumnLeft' => 'unitid',
+            'joinColumnRight' => 'unitid',
+        ),
+        'curso' => array(
+            'mode' => 'one',
+            'typeClass' => 'AcpCurso',
+            'joinColumnLeft' => 'cursoid',
+            'joinColumnRight' => 'cursoid',
+        ),
+    );
+    
+    /**
+     *
+     * @var AcpCurso
+     */
+    public $curso;
+    
+    /**
+     *
+     * @var BasTurnFixed 
+     */
+    public $turn;
+    
+    /**
+     *
+     * @var BasUnitFixed 
+     */
+    public $unit;
+    
+    public $ocorrenciacursoid;
+    public $situacao;
+    public $cursoid;
+    public $turnId;
+    public $unitId;
+    
+    public function __construct($id = null)
+    {
+        if ( in_array(MIOLO::_REQUEST('action'), array('main:process:inscricaoturmaexterna', 'main:process:inscricaopagamentoexterna', 'main:process:inscricaoexterna', 'main:process:termodeinscricao')) )
+        {
+            $this->_utilizaMultiUnidade = false;
+            $this->_utilizaMultiCentro = false;
+            $this->_tableViewName = null;
+        }
+        
+        parent::__construct($id);
+    }
+    
+    /**
+     * @return array
+     */
+    public static function listarSituacao()
+    {
+        return array(
+            self::SITUACAO_ATIVO => _M('Ativo'),
+            self::SITUACAO_INATIVO => _M('Inativo'),
+            self::SITUACAO_EM_EXTINCAO => _M('Em extinção'),
+        );
+    }
+    
+    /**
+     * @return array
+     */
+    public static function listarPorCurso($cursoId)
+    {
+        $type = new AcpOcorrenciaCurso();
+
+        return $type->findList( $type->msql()->addEqualCondition('acpocorrenciacurso.cursoid', $cursoId) );
+    }
+    
+    /**
+     * @return array
+     */
+    public static function listarAtivos()
+    {
+        $type = new AcpOcorrenciaCurso();        
+        $sql = $type->msql();
+        $sql->addEqualCondition('acpocorrenciacurso.situacao', self::SITUACAO_ATIVO);
+        $sql->addNotEqualCondition('curso.situacao', AcpCurso::SITUACAO_INATIVO);
+        $sql->setOrderBy('curso.nome');
+        return $type->findList( $sql );
+    }
+    
+    public function delete() 
+    {
+        $coordenadores = new AcpCoordenadores();
+        $sql = $coordenadores->msql();
+        $sql->addEqualCondition('AcpCoordenadores.ocorrenciacursoid', $this->ocorrenciacursoid);
+        $searchCoordenadores = $coordenadores->findMany($sql);        
+        if( count($searchCoordenadores) > 0 )
+        {
+            foreach($searchCoordenadores as $cod=>$coordenador)
+            {
+                $coordenador->delete();
+            }
+        }
+        
+        return parent::delete();
+    }
+    
+    /**
+     * Sobrescrita do método que adiciona/atualiza registro.
+     */
+    public function save()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        // Valida se não existe uma ocorrência com esses valores
+        $sql = "SELECT ocorrenciaCursoId
+                  FROM unit_acpOcorrenciaCurso
+                 WHERE turnId = ?
+                   AND unitId = ?
+                   AND cursoId = ?";
+        
+        $args[] = $this->turnId;
+        $args[] = $this->unitId;
+        $args[] = $this->cursoid;
+        
+        if ( strlen($this->ocorrenciacursoid) > 0 )
+        {
+            $sql .= " AND ocorrenciaCursoId != ? ";
+            $args[] = $this->ocorrenciacursoid;
+        }
+        
+        $valid = SDatabase::query($sql, $args);
+        
+        $ok = false;
+        if ( strlen($valid[0][0]) > 0 )
+        {
+            throw new Exception(_M("Já existe uma ocorrência de curso nesta unidade e turno.", $module));
+        }
+        else
+        {
+            // Atualizando
+            if ( strlen($this->ocorrenciacursoid) > 0 )
+            {
+                $sql = "UPDATE acpOcorrenciaCurso
+                           SET (turnId,
+                                unitId,
+                                situacao) = 
+                               (?, ?, ?)
+                         WHERE ocorrenciaCursoId = ?";
+                
+                unset($args);
+                $args[] = $this->turnId;
+                $args[] = $this->unitId;
+                $args[] = $this->situacao;
+                $args[] = $this->ocorrenciacursoid;
+                
+                $ok = SDatabase::execute($sql, $args);
+            }
+            else // Inserindo
+            {
+                $sql = "INSERT INTO acpOcorrenciaCurso
+                                    (cursoId,
+                                     situacao,
+                                     turnId,
+                                     unitId)
+                             VALUES (?, ?, ?, ?)";
+
+                unset($args);
+                $args[] = $this->cursoid;
+                $args[] = $this->situacao;
+                $args[] = $this->turnId;
+                $args[] = $this->unitId;
+                
+                $ok = SDatabase::execute($sql, $args);
+            }
+        }
+
+        return $ok;
+    }
+    
+    public static function permiteInscricaoPorGrupo($ocorrenciacursoid)
+    {
+        $ocorrencia = new AcpOcorrenciaCurso();
+        $sql = $ocorrencia->msql()
+            ->setColumns('pc.permiteinscricaoporgrupo')
+            ->setTables('AcpOcorrenciaCurso oc')
+            ->addInnerJoin('acpcurso c', 'c.cursoid = oc.cursoid')
+            ->addInnerJoin('acpperfilcurso pc', 'pc.perfilcursoid = c.perfilcursoid')
+            ->addEqualCondition('oc.ocorrenciacursoid', $ocorrenciacursoid)
+        ;
+        
+        $rows = SDatabase::query($sql->select());
+        
+        return $rows[0][0] == DB_TRUE;
+    }
+}
+?>

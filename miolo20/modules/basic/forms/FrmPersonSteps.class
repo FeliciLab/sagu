@@ -1,0 +1,277 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulario pai dos passo a passos relacionados à Pessoa (física, professor, etc..)
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 09/02/2011
+ *
+ **/
+
+class FrmPersonSteps extends SStepByStepForm
+{
+    public $_personId;
+    public $_formName;
+    
+
+    public function  __construct($title = null, $steps = null, $formName = null)
+    {
+        $this->_formName = $formName;
+        $this->setBlockWhenNotFinish(true);
+        
+        if (!$steps->disableConstruct)
+        {
+            parent::__construct($title, $steps, $formName);
+        }
+        
+        $this->setPkey(array('personId'));
+    }
+
+
+    /**
+     * A idéia desta funcao é que ela seja chamada em todas as acoes de finalizar e botão salvar da toolbar,
+     * dos passo a passos relacionados à pessoa (Contrato, Pessoa Física, Pessoa Jurídica, Professor...).
+     *
+     * Por padrao, é chamado a funcao ->saveData() de todos formularios até o do passo atual, por este motivo
+     * é recomendável que cada passo (formulario) tenha este método funcional, que é responsável por inserir
+     * ou atualizar os dados daquele formulario apenas.
+     *
+     *
+     * @param stdClass $args
+     * <b>$args->showInformation</b> (boolean) Exibe a mensagem de atualizado ou inserido.<br>
+     */
+    public function  finalizeButton_click($args)
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+        
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+
+        $busTransaction = new BusinessBasicBusTransaction();
+        $busTransaction->beginTransaction();
+
+        $formData = new stdClass();
+        $formData->disableConstruct = TRUE;
+
+        $data = $this->getTypesData();
+        $data->mioloUserName   = $data->miolo_user_name;
+        $data->mioloUserPasswd = $data->miolo_user_passwd;
+
+        //Save the data of the other forms
+        foreach (SAGU::getPersonSteps() as $stepInfo)
+        {
+            //Obtem o objeto do formulario
+            if ( $stepInfo->formName == $this->_formName)
+            {
+                $formObject = $this;
+            }
+            else
+            {
+                $formObject = $MIOLO->getUI()->getForm($stepInfo->module, $stepInfo->formName, $formData);
+            }
+            
+            try
+            {
+                if ( $stepInfo->formName == 'FrmPerson' )
+                {
+                    $data->mioloUserName = $this->loginGenerate($data);
+                }
+                
+                $ok = $formObject->saveData($data);
+
+                if ( ! $ok )
+                {
+                    throw new Exception( _M('Ocorreu algum erro ao salvar (@1)', $module, $stepInfo->formName) );
+                }
+            }
+            catch (Exception $e)
+            {
+                SDatabase::rollback();
+                $this->AddError($e->getMessage());
+            }
+
+            //If new person, get the personId
+            if (($function == 'insert') && ($stepInfo->formName == 'FrmPhysicalPerson'))
+            {
+                $data->personId = $ok;
+                $this->_personId = $data->personId;
+            }
+            else
+            {
+                $this->_personId = $data->personId;
+            }
+
+            if ( $this->_formName != $stepInfo->formName )
+            {
+                $this->AddError( $formObject->errors );
+            }
+
+            //Quando chegar ate o formulario atual, parar.
+            if ( ($this->_formName == $stepInfo->formName) || $this->HasErrors() )
+            {
+                break;
+            }
+        }
+
+        if (!$this->HasErrors())
+        {
+            $busTransaction->commit();
+        }
+
+        $ok = ! ($this->HasErrors());
+
+        if ( $ok && $args->showInformation )
+        {
+            parent::finalizeButton_click($args);
+            
+            $opts['personIdS'] = $this->_personId;
+            $opts['function'] = 'search';
+
+            $goto = $MIOLO->getActionURL( $module, $action, null, $opts);
+
+            if ( $function == 'update' )
+            {
+                SAGU::information(SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED'), $goto);
+            }
+            else
+            {
+                SAGU::information(SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED_INFO'), $goto);
+            }
+        }
+        else if ( !$ok )
+        {
+            parent::finalizeButton_click($args);
+            
+            $MIOLO->error($this->errors);
+        }
+        
+        parent::finalizeButton_click($args);
+        
+        return $ok;
+    }
+    
+    public function parseData($data)
+    {
+        // Caso seja edicao em abas, pega os dados de outra forma
+        if ( strlen($data->personId) <= 0 )
+        {
+            $data = (object) $_REQUEST;
+        }
+        
+        $data->name = $data->personName; //FrmPerson
+        $data->locationTypeId = $data->locationType; //FrmPerson
+        $data->personTitleId  = $data->txtPersonTitleId; //FrmPerson
+        $data->locationTypeIdWork = $data->locationTypeWork;
+        
+        return $data;
+    }
+
+
+    public function getTypesData()
+    {
+        $data = array_merge((array) $this->getData(), (array) $this->getStepData());
+        return (object) $data;
+    }
+
+
+    public function tbBtnSave_click($sender=NULL)
+    {
+        $ok = $this->finalizeButton_click($args);
+
+        parent::tbBtnSave_click($sender, $ok, array('personIdS'=>$this->_personId));
+    }
+    
+    /**
+     * @return int
+     */
+    public function getPkeyValue()
+    {
+        $personId = MIOLO::_REQUEST('personId');
+        
+        // Corrigindo para obter valor de chave primária corretamente - #39383
+        $contractId = MIOLO::_REQUEST('contractId');
+        if ( strlen($contractId) > 0 )
+        {
+            $busContract = new BusinessAcademicBusContract();
+            $contrato = $busContract->getContract($contractId);
+            $personId = $contrato->personId;
+            
+        }
+        
+        return $personId;
+    }
+    
+    /**
+     * Caso o tipo de login automático esteja definido como cpf ao atualizar 
+     * um registro é obtido o conteúdo do documento para atualizar o usuário
+     * 
+     * @param type $data
+     * @return type $data->mioloUserName
+     */
+    public function loginGenerate($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $busDocument = new BusinessBasicBusDocument();
+        
+        $loginType = SAGU::getParameter('BASIC', 'AUTOMATIC_LOGIN_GENERATION_SOURCE');
+        $mioloUserName = $data->mioloUserName;
+                
+        if( in_array($loginType, array('CPF', 'CPFNOMASK')) )
+        {
+            if( MIOLO::_request('function') == SForm::FUNCTION_UPDATE )
+            {
+                $documents = $busDocument->getDocument($data->personId,SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF'));
+                
+                $id = 'content'.SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF');
+                $documents->content = $data->$id;
+            }
+                        
+            if ( strlen($documents->content) > 0 )
+            {
+                $mioloUserName = $documents->content;
+
+                // Se estiver configurado para gerar login com CPF sem mascara, remover
+                if ( $loginType == 'CPFNOMASK' )
+                {
+                    $mioloUserName = SAGU::convertInCPFWithoutDelimiters($mioloUserName);
+                }
+            }
+            else
+            {   
+                $mioloUserName = $data->mioloUserName;
+            }
+        }
+        
+        return $mioloUserName;
+    }
+}
+?>

@@ -1,0 +1,198 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This class M Perms Sagu Ldap
+ *
+ * @author Leovan Tavares da Silva [leovan] [leovan@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Leovan Tavares da Silva [leovan@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 14/06/2006
+ *
+ **/
+ 
+class MPermsSaguLdap extends MPerms 
+{
+    private $auth;
+    private $module;
+    
+    public function __construct()
+    {
+        parent::__construct();
+        
+        $this->module = 'admin';
+
+        $this->perms = array ( A_ACCESS  => _M('Acesso/Visualização', $this->module),
+                               A_INSERT  => _M("Inserção", $this->module),
+                               A_DELETE  => _M("Exclusão", $this->module),
+                               A_UPDATE  => _M("Atualização", $this->module),
+                               A_EXECUTE => _M("Execução", $this->module),
+                               A_ADMIN   => _M("Administrator", $this->module)
+                             );
+        
+       $MIOLO = MIOLO::getInstance();
+       $this->manager = $MIOLO;
+
+       $MIOLO->import('classes::security::mpermssaguldap');
+       $this->schema = $MIOLO->getConf('login.ldap.schema');
+       $this->base   = $this->manager->getConf('login.ldap.base');
+       
+        $this->auth  = $this->manager->GetAuth();
+    }
+
+    public function setAuth($auth)
+    {
+        $this->auth = $auth;
+    }
+    
+    public function checkAccess($transaction, $perm, $deny = false, $group = false)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        if ( $this->auth->IsLogged() )
+        {
+            $login       = $this->auth->GetLogin();  // MLogin object
+
+            $transaction = strtoupper($transaction);
+            $rights  = $this->getRights($login->id, $transaction); // user rights
+            
+            if ( strlen($rights) > 0 )
+            {
+                if ( in_array(A_ADMIN, $rights) )
+                {
+                    return true;
+                }
+                elseif ( in_array($perm, $rights) )
+                {
+                    return true;
+                }
+            }
+        }
+
+        if ( $deny )
+        {
+            $transaction = $this->getTransactionName($transaction);
+            
+            $msg = _M('Acesso negado', $this->module) . "<br><br>\n" .
+                      '<center><big><i><font color=red>' . _M('Transação: ', $module) . "$transaction (" . $this->perms[$perm] . ")</font></i></big></center><br><br>\n" .
+                   _M('Por favor, informe um usuário/senha válido para ter acesso a este conteúdo', $this->module) . "<br>";
+
+            $go    = $this->manager->history->Back('action');
+            $error = Prompt::Error($msg, $go, $caption, '');
+            $error->addButton( _M('   Login   '), $this->manager->getActionURL($this->manager->getConf('login.module'),'login',null,array('return_to'=>urlencode($this->manager->history->Top()))), '');
+
+            $this->manager->Prompt($error,$deny);
+        }
+
+        return $ok;
+    }
+
+    public function getRights($login, $transaction)
+    {
+        $this->manager->loadMADConf();
+        $db = $this->manager->getDatabase($this->module);
+        $iduser = $this->getIduser($login);
+
+        $sql = "SELECT A.rights
+                  FROM miolo_access A
+            INNER JOIN miolo_groupuser B
+                    ON (B.idgroup = A.idgroup)
+            INNER JOIN miolo_transaction C
+                    ON (C.idtransaction = A.idtransaction)
+                 WHERE B.iduser = '$iduser'
+                   AND lower(C.m_transaction) = '" . strtolower($transaction) . "'";
+
+        $result = $db->query($sql);
+
+        if ( count($result) > 0 )
+        {
+            unset($rights);
+            foreach ( $result AS $index => $value )
+            {
+                $rights[] = $value[0];
+            }
+        }
+
+        return $rights;
+    }
+    
+    public function getTransactionName($transaction)
+    {
+        $this->manager->loadMADConf();
+        $db = $this->manager->getDatabase($this->module);
+        
+        $sql = "SELECT A.nametransaction
+                  FROM miolo_transaction A
+                 WHERE lower(A.m_transaction) = '" . strtolower($transaction) . "'";
+
+        $result = $db->query($sql);
+
+        return $result[0][0];
+    }
+    
+    public function getIdUser($login)
+    {
+        $search = '(objectClass='.($this->schema == 'system' ? 'person' : 'mioloUser' ).')';
+
+        $nameAttr = 'name';
+        
+        if ( $this->schema == 'system' ) 
+        {
+            $nameAttr = $this->manager->getConf('login.ldap.userName');
+        }
+
+        $filter = $login = "(uid=$login)";
+
+        $search = '(&(objectClass='.($this->schema == 'system' ? 'person' : 'mioloUser').")$filter)";
+
+        $sr= ldap_search( $this->auth->conn, $this->base, $search, array('uidnumber'));
+        ldap_sort($this->auth->conn, $sr, $nameAttr);
+        $info = ldap_get_entries($this->auth->conn, $sr);
+
+        for ( $c=0; $c < $info['count']; $c++ )
+        {
+            $id = $info[$c]['uidnumber'][0];
+             
+            $return = $id;
+        }
+            
+        return $return;
+    }
+    
+    public function checkTransactionParents($transaction, $perm)
+    {
+        
+    }
+}
+?>

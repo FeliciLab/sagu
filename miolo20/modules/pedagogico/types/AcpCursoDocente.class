@@ -1,0 +1,218 @@
+<?php
+/**
+ * <--- Copyright 2005-2013 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Type pedagogico
+ *
+ * @author Moises Heberle [moises@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.com.br]
+ *
+ * @since
+ * Class created on 29/08/2013
+ */
+
+class AcpCursoDocente extends SType
+{
+    protected $_utilizaNovoPadrao = true;
+    
+    protected $_utilizaMultiUnidade = true;
+    
+    protected $_utilizaMultiCentro = true;
+    
+    protected $_defaultOrder = 'pessoa.name';
+    
+    protected $_descriptionColumn = 'pessoa.name';
+    
+    protected $_associations = array(
+        'pessoa' => array(
+            'mode' => 'one',
+            'typeClass' => 'BasPessoaFisica',
+            'joinColumn' => 'personid',
+            'joinOnly' => true,
+        )
+    );
+    
+    /**
+     * @var BasPessoaFisica
+     */
+    public $pessoa;
+    
+    public $cursodocenteid;
+    public $cursoid;
+    public $personid;
+    public $docenteid;
+    public $ativo;
+    
+    public function save()
+    {
+        return parent::save();
+    }
+    
+    public function getChoiceComponentSQL($argument = null, $id = null)
+    {
+        $sql = $this->msql();
+        $sql->setColumns('AcpCursoDocente.personid, pessoa.name');
+        
+        if ( strlen($argument) > 0 )
+        {
+            $sql->addIlikeCondition('pessoa.name', $argument . '%');
+        }
+        
+        if ( strlen($id) > 0 )
+        {
+            $sql->addEqualCondition('AcpCursoDocente.personid', $id);
+        }
+        
+        $sql->addEqualCondition('AcpCursoDocente.ativo', DB_TRUE);
+
+        $args = $this->getAjaxArgs();
+        $ofertacursoid = MIOLO::_REQUEST('ofertacursoid');
+        
+        // Filtra os professores do curso
+        if ( strlen($ofertacursoid) > 0 )
+        {
+            $sql->setWhere('EXISTS(
+                    SELECT 1
+                      FROM acpocorrenciacurso OC
+                INNER JOIN acpofertacurso OFERTA
+                        ON OFERTA.ocorrenciacursoid = OC.ocorrenciacursoid
+                     WHERE OFERTA.ofertaCursoId = ?
+                       AND OC.cursoid = AcpCursoDocente.cursoId
+            )', array($ofertacursoid));
+        }
+        
+        return $sql;
+    }
+    
+    /**
+     * Verifica se curso possui professores cadastrados.
+     * 
+     * @param (int) $cursoId - Código do curso.
+     * @return (boolean)
+     */
+    public static function possuiProfessoresNoCurso($cursoId)
+    {
+        $sql = "SELECT *
+                  FROM acpCursoDocente
+                WHERE cursoId = ?";
+        
+        $result = SDatabase::query($sql, array($cursoId));
+        
+        return strlen($result[0][0]) > 0;
+    }
+    
+    /**
+     * Verifica se o professor é ativo em um curso.
+     * 
+     * @param (int) $personId - Cód. pessoa.
+     * @param (stdClass) $filters - Filtros.
+     * 
+     * @return boolean
+     */
+    public static function verificarAtivoNoCurso($personId, $filters = null)
+    {
+        $sql = "SELECT A.professorId
+                  FROM acpOcorrenciaHorarioOferta A
+            INNER JOIN acpOfertaComponenteCurricular B
+                    ON (A.ofertaComponenteCurricularId = B.ofertaComponenteCurricularId)
+            INNER JOIN acpOfertaTurma C
+                    ON (B.ofertaTurmaId = C.ofertaTurmaId)
+            INNER JOIN acpOfertaCurso D
+                    ON (D.ofertaCursoId = C.ofertaCursoId)
+            INNER JOIN acpOcorrenciaCurso E
+                    ON (D.ocorrenciaCursoId = E.ocorrenciaCursoId)
+                 WHERE professorId = ? ";
+
+        $args[] = $personId;
+
+        if ( strlen($filters->ofertaCursoId) > 0 )
+        {
+            $sql .= " AND D.ofertaCursoId = ? ";
+            $args[] = $filters->ofertaCursoId;
+        }
+        
+        if ( strlen($filters->ofertaTurmaId) > 0 )
+        {
+            $sql .= " AND C.ofertaTurmaId = ? ";
+            $args[] = $filters->ofertaTurmaId;
+        }
+        
+        if ( strlen($filters->ofertaComponenteCurricularId) > 0 )
+        {
+            $sql .= " AND B.ofertaComponenteCurricularId = ? ";
+            $args[] = $filters->ofertaComponenteCurricularId;
+        }
+        
+        $result = SDatabase::query($sql, $args);
+        
+        return strlen($result[0][0]) > 0;
+    }
+
+    public function retornaDocentesDoCurso($cursoId)
+    {
+        $sql = "SELECT B.personid, B.name
+                  FROM acpCursoDocente A INNER JOIN basphysicalpersonprofessor B
+                    ON A.personid  = B.personid
+                 WHERE A.cursoid = ? 
+                 ORDER BY B.name";
+
+        $args[] = $cursoId;
+
+        $result = SDatabase::query($sql, $args);
+
+        $docentes = array();
+
+        foreach ($result as $docente) {
+            $docentes[$docente[0]] = $docente[1];
+        }
+
+        return $docentes;
+    }
+
+
+    public function retornaTiposDisponiveisProDocenteNoCurso($cursoId, $personId)
+    {
+        $sql = "SELECT C.tipodedocenteid, C.descricao
+                  FROM acpCursoDocente A INNER JOIN basphysicalpersonprofessor B
+                    ON A.personid  = B.personid
+                  INNER JOIN acptipodedocente C ON A.tipodedocenteid = C.tipodedocenteid
+                 WHERE A.cursoid = ? AND A.personid = ?";
+
+        $args[] = $cursoId;
+        $args[] = $personId;
+
+        $result = SDatabase::query($sql, $args);
+
+        $tiposDisponiveis = array();
+
+
+
+        foreach ($result as $tipo) {
+            $tiposDisponiveis[$tipo[0]] = $tipo[1];
+        }
+
+        return $tiposDisponiveis;
+    }
+}
+?>

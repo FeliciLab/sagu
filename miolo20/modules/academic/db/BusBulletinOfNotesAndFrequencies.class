@@ -1,0 +1,264 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ *
+ *
+ * @author Andre Chagas Dias [andre@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ *
+ * @since
+ * Class created on 08/09/2008
+ */
+/**
+ * Class to manipulate the acdEnroll table
+ */
+class BusinessAcademicBusBulletinOfNotesAndFrequencies extends sBusiness
+{
+    public function getTotalOfDegrees($contractId, $learningPeriodId, $courseId, $courseVersion)
+    {
+        $MIOLO  = MIOLO::getInstance();
+
+        $sql = 'SELECT A.degreeid,
+                       A.learningperiodid,
+                       A.description,
+                       A.limitdate,
+                       A.degreenumber ,
+                       A.concept,
+                       A.weight
+                     FROM acddegree A
+            INNER JOIN acddegreeenroll B
+                       ON (A.degreeid=B.degreeid AND A.learningperiodid = ? )
+            LEFT JOIN unit_acdEnroll C
+                       ON(B.enrollid=C.enrollid AND C.contractid = ?)
+            LEFT JOIN unit_acdGroup D
+                       ON(C.groupid=D.groupid)
+            LEFT JOIN unit_acdlearningperiod E
+                       ON(D.learningperiodid=E.learningperiodid AND E.courseid = ? AND E.courseversion = ? )
+                 GROUP BY A.degreeid,
+                          A.learningperiodid,
+                          A.description,
+                          A.limitdate,
+                          A.degreenumber,
+                          A.concept,
+                          A.weight';
+
+        $args = array ( $learningPeriodId,
+                        $contractId,
+                        $courseId,
+                        $courseVersion);
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql,$args));
+
+        return $result;
+    }
+
+    public function getNotesAndFrequencies($degrees, $learningPeriodId, $contractId)
+    {
+        if(!empty($degrees))
+        {
+           $sql = 'SELECT   name';
+
+            //number of degrees
+            foreach($degrees as $row)
+            {
+
+                  $sql .= ',CONCAT(degree'.$row[4].'::text) ';
+            }
+
+            $sql .= ' ,examnote,
+                       finalnote,
+                       frequency,
+                       academicnumberhours,
+                       status  FROM (SELECT  F.curricularComponentId as curricularComponent,
+                                             F.name';
+
+            //number of degrees
+            foreach($degrees as $key => $row)
+            {
+
+                  $sql .= ', CASE WHEN I.degreeNumber = '.$row[4].' THEN H.note::text ELSE \' \'              END as degree'.($key + 1);
+            }
+
+            $sql .= '  ,A.examnote,
+                        A.finalnote,
+                        A.frequency,
+                        A.numberhourexploitation,
+                        F.academicnumberhours,
+                        G.description as status
+                        FROM  unit_acdEnroll A
+                    INNER JOIN  unit_acdGroup B
+                                ON  (A.groupId = B.groupId)
+                    INNER JOIN unit_acdlearningperiod C
+                                ON  (B.learningPeriodId = C.learningPeriodId)
+                    INNER JOIN  unit_acdContract D
+                                ON  (A.contractId = D.contractId)
+                    INNER JOIN  unit_acdcurriculum E
+                                ON  (B.curriculumId = E.curriculumId)
+                    LEFT JOIN  acdCurricularComponent F
+                                ON  (E.curricularComponentId = F.curricularComponentId AND E.curricularComponentVersion = F.curricularComponentVersion)
+                    LEFT JOIN acdEnrollStatus G
+                                ON(A.statusId = G.statusId)
+                    INNER JOIN acdDegreeEnroll H
+                                ON(A.enrollId=H.enrollId)
+                    INNER JOIN acdDegree I
+                                ON(H.degreeId=I.degreeId)
+                    WHERE C.learningperiodId = ? AND A.contractId = ?)s
+                    GROUP BY name,
+                             examnote,
+                             finalnote,
+                             frequency,
+                             academicnumberhours,
+                             status';
+
+            $args = array($learningPeriodId, $contractId);
+
+            $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        }
+        return $result;
+    }
+
+    /**
+     * Função para obter os dados para os boletins e folhas individuais para um contrato
+     *
+     * @author Leovan Tavares da Silva
+     *
+     * @param $contractId (int): Código do contrato
+     * @param $learningPeriodId (int): Código do período letivo
+     * @return (array): Matriz com os dados
+     *
+     * Formato: Disciplina, Grau 1, Grau 2, ..., Grau n, Frequencia, Estado
+     */
+    public function getContractEnrollsResults($contractId, $periodData)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = 'academic';
+
+        $busDegreeEnroll = new BusinessAcademicBusDegreeEnroll();
+
+        $sql = ' SELECT A.enrollId,
+                        F.curricularComponentId,
+                        F.curricularComponentVersion,
+                        CASE WHEN E.name <> G.name THEN
+                            G.name || \' (\' || E.name || \')\'
+                        ELSE
+                            G.name
+                        END,
+                        CASE WHEN A.frequency > G.academicNumberHours THEN
+                            G.academicNumberHours
+                        ELSE
+                            ROUND(A.frequency::numeric, 2)
+                        END,
+                        G.academicNumberHours,
+                        A.statusId,
+                        H.description,
+                        B.useConcept,
+                        B.learningPeriodId,
+                        B.classId
+                   FROM unit_acdEnroll A
+             INNER JOIN unit_acdGroup B
+                      ON (B.groupId = A.groupId)
+             INNER JOIN unit_acdlearningperiod C
+                      ON (C.learningPeriodId = B.learningPeriodId)
+             INNER JOIN unit_acdcurriculum D
+                      ON (D.curriculumId = B.curriculumId)
+             INNER JOIN acdCurricularComponent E
+                      ON (E.curricularComponentId = D.curricularComponentId AND
+                           E.curricularComponentVersion = D.curricularComponentVersion)
+             INNER JOIN unit_acdcurriculum F
+                      ON (F.curriculumId = A.curriculumId)
+             INNER JOIN acdCurricularComponent G
+                      ON (G.curricularComponentId = F.curricularComponentId AND
+                           G.curricularComponentVersion = F.curricularComponentVersion)
+             INNER JOIN acdEnrollStatus H
+                      ON (H.statusId = A.statusId)
+                   WHERE A.contractId = ?';
+
+        $args = array($contractId);
+
+        if( strlen($periodData->learningPeriodId) )
+         {
+             $sql .= ' AND B.learningPeriodId = ? ';
+             $args[] = $periodData->learningPeriodId;
+         }
+         elseif( strlen($periodData->periodId) )
+         {
+             $sql .= ' AND C.periodId = ? ';
+            $args[] = $periodData->periodId;
+         }
+
+         $sql .= '   AND A.statusId NOT IN (' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_CANCELLED') . ',' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_DESISTING') . ')
+                     AND F.curriculumTypeId IN(' . SAGU::getParameter('ACADEMIC', 'CURRICULUM_TYPE_NON_OPTIONAL') . ')
+               ORDER BY 4';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        $return = array();
+        if (count($result) > 0)
+        {
+            foreach ($result as $res)
+            {
+                list($enrollId,
+                     $curricularComponentId,
+                     $curricularComponentVersion,
+                     $curricularComponentName,
+                     $frequency,
+                     $numberHours,
+                     $statusId,
+                     $statusDescription,
+                     $useConcept,
+                     $learningPeriodId,
+                     $classId) = $res;
+
+                $row = array($curricularComponentId,
+                    $curricularComponentVersion,
+                    $curricularComponentName,
+                    $classId,
+                    $frequency,
+                    $numberHours,
+                    $statusDescription);
+
+                $grades = $busDegreeEnroll->getEnrollGrades($enrollId, $learningPeriodId);
+
+                if (count($grades) > 0)
+                {
+                    foreach ($grades as $grade)
+                    {
+                        $row[] = ($useConcept == DB_TRUE) ? $grade->concept : $grade->note;
+                    }
+                }
+
+                $return[] = $row;
+            }
+        }
+
+        return $return;
+    }
+}
+?>

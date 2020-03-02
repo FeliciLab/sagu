@@ -1,0 +1,329 @@
+<?php
+class MQuery extends MDataSet
+{
+    var $conn; // the connection object
+    var $objSql; // the SQL object
+    var $sql; // the SQL command string
+    var $error; // the query's error message from the query execution
+    var $statement; // a parsed sql command - used by some drivers
+    var $fetched; // true for a valid result
+    var $maxrows; // a max number of rows to be fetched
+    var $offset; // a start point to fetch
+    var $order; // fields names used to sort resultset
+    var $filtered; // is filtered?
+    var $pagelength; // pagelength for paging
+    var $queryfilter; // object used to filter
+    var $_miolo;     // MIOLO object
+
+    function __construct()
+    {
+        parent::__construct();
+        $this->fetched = false;
+        $this->row = -1;
+        $this->error = NULL;
+        $this->filtered = false;
+        $this->pagelength = 0;
+        $this->queryfilter = NULL;
+        $this->_miolo = MIOLO::GetInstance();
+    }
+
+    public function _query()
+    {
+    }
+
+    public function _error()
+    {
+    }
+
+    public function _close()
+    {
+    }
+
+    public function _setmetadata()
+    {
+    }
+
+    function GetError()
+    {
+        return $this->error;
+    }
+
+    function Open($maxrows = null, $offset = null, $stmt = NULL)
+    {        
+        $this->_miolo->LogSQL($this->sql, false, $this->conn->db->conf);
+
+        $this->maxrows = $maxrows;
+        $this->offset = $offset;
+
+        if ($stmt != NULL)
+        {
+            $this->_querystmt($stmt);
+        }
+        else
+        {
+            $this->_query();
+        }
+
+        $this->_setmetadata();
+
+        if ($this->rowCount)
+        {
+            $this->row = 0;
+            $this->eof = $this->bof = false;
+            $this->fetched = true;
+        }
+        else
+        {
+            $this->result = NULL;
+            $this->row = -1;
+            $this->eof = $this->bof = true;
+            $this->fetched = false;
+        }
+
+        $this->error = $this->_error();
+
+        if ($this->error)
+            throw new EDatabaseQueryException($this->error);
+
+        return ($this->result != NULL);
+    }
+
+    function Close()
+    {
+        if ($this->fetched)
+        {
+            $this->_close();
+        }
+    }
+
+    function SetConnection(&$conn)
+    {
+        $this->conn = $conn;
+    }
+
+    function SetSQL(&$sql)
+    {
+        $this->sql = $sql->Select();
+        $this->objSql = &$sql;
+    }
+
+    function SetSQLCommand($sqlCommand)
+    {
+        $this->sql = $sqlCommand;
+    }
+
+    function SetOrder($order)
+    {
+        $order = explode(',', $order);
+        $this->order = $order;
+
+        foreach ($this->order as $o)
+            $p[] = $this->GetColumnNumber($o);
+
+        $n = count($this->result[0]);
+
+        foreach ($this->result as $key => $row)
+        {
+            for ($i = 0; $i < $n; $i++)
+                $arr[$i][$key] = $row[$i];
+        }
+
+        foreach ($p as $i => $o)
+            $sortcols .= ($i > 0 ? ",\$arr[$o]" : "\$arr[$o]");
+
+        for ($i = 0; $i < $n; $i++)
+            if (!in_array($i, $p))
+                $sortcols .= ",\$arr[$i]";
+
+        eval ("array_multisort({$sortcols}, SORT_ASC);");
+        $this->result = array
+            (
+            );
+
+        for ($i = 0; $i < $n; $i++)
+        {
+            foreach ($arr[$i] as $key => $row)
+                $this->result[$key][$i] = $row;
+        }
+    }
+
+    function isFiltered()
+    {
+        return $this->filtered;
+    }
+
+    function AddFilter($field, $oper, $value, $conector = 'AND')
+    {
+        if (!$this->queryfilter)
+            $this->queryfilter = new QueryFilter($this);
+        $this->queryfilter->AddFilter($field, $oper, $value, $conector);
+    }
+
+    function ApplyFilter()
+    {
+        if (!$this->queryfilter)
+            return;
+
+        $this->result = $this->queryfilter->ApplyFilter($this->result);
+        $this->filtered = true;
+        $this->rowCount = count($this->result);
+
+        if ($this->rowCount)
+        {
+            $this->row = 0;
+            $this->eof = $this->bof = false;
+            $this->fetched = true;
+        }
+        else
+        {
+            $this->result = NULL;
+            $this->row = -1;
+            $this->eof = $this->bof = true;
+            $this->fetched = false;
+        }
+    }
+
+    function SetPageLength($pagelength)
+    {
+        $this->pagelength = $pagelength;
+    }
+
+    function GetPageCount()
+    {
+        return (int)(($this->rowCount - 1 + $this->pagelength) / $this->pagelength);
+    }
+
+    function GetPage($pageno)
+    {
+        if ($this->result)
+        {
+            if ($this->pagelength)
+            {
+                return array_slice($this->result, $this->pagelength * ($pageno - 1), $this->pagelength);
+            }
+            else
+                return $this->result;
+        }
+    }
+
+    function GetCSV($filename = '')
+    {
+        global $MIOLO;
+        $MIOLO->Uses('csv.class');
+        $csvdump = new csvdump();
+
+        if ($this->result)
+        {
+            $csvdump->dump($this->result, $filename);
+        }
+        exit;
+    }
+}
+
+
+class QueryFilter
+{
+    var $filters; //array with filters
+    var $count = 0;
+    var $query;
+
+    function __construct($query)
+    {
+        $this->query = $query;
+    }
+
+    function AddFilter($field, $oper, $value, $conector = 'AND')
+    {
+        $oper = strtolower($oper);
+
+        if ($oper == 'like')
+        {
+            $value = str_replace("?", ".", $value);
+            $value = str_replace("_", ".", $value);
+            $value = str_replace("%", "(.*?)", $value);
+            $value = "^" . $value . "(.*?)";
+            $oper = 'regex';
+        }
+
+        $this->filters[$this->count]['field'] = $field;
+        $this->filters[$this->count]['fieldpos'] = $this->query->GetColumnNumber($field);
+        $this->filters[$this->count]['oper'] = $oper;
+        $this->filters[$this->count]['value'] = trim($value);
+        $this->filters[$this->count]['sizevalue'] = strlen(trim($value));
+        $this->filters[$this->count]['conector'] = strtoupper($conector);
+        $this->count++;
+    }
+
+    function ApplyFilter($data) // a multidimensional array
+    {
+        foreach ($this->filters as $f)
+        {
+            $value[$this->query->GetColumnNumber($f['field'])] = $f['value'];
+        }
+
+        foreach ($data as $row)
+        {
+            $this->filtered = array
+                (
+                );
+
+            foreach ($this->filters as $f)
+            {
+                $p = $f['fieldpos'];
+                $n = $f['sizevalue'];
+                $v = $f['value'];
+
+                switch ($f['oper'])
+                    {
+                    case "=":
+                        $this->filtered[] = (!strncasecmp($row[$p], $v, $n));
+
+                        break;
+
+                    case "!=":
+                        $this->filtered[] = (strncasecmp($row[$p], $v, $n));
+
+                        break;
+
+                    case "like":
+                        $this->filtered[] = (!strncasecmp($row[$p], $v, $n));
+
+                        break;
+
+                    case "regex":
+                        $this->filtered[] = preg_match("/$v/i", $row[$p]);
+
+                        break;
+
+                    default: $this->filtered[] = (!strncasecmp($row[$p], $v, $n));
+                    }
+            }
+
+            $filtered = $this->filtered[0];
+
+            for ($i = 1; $i < count($this->filtered); $i++)
+            {
+                switch ($this->filters[$i]['conector'])
+                    {
+                    case "AND":
+                        $filtered = $filtered && $this->filtered[$i];
+
+                        break;
+
+                    case "OR":
+                        $filtered = $filtered || $this->filtered[$i];
+
+                        break;
+                    }
+            }
+
+            if ($filtered)
+            {
+                $result[] = $row;
+            }
+        }
+
+        return $result;
+    }
+}
+?>

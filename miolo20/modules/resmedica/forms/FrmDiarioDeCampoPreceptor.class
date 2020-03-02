@@ -1,0 +1,371 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Moises Heberle [moises@solis.com.br]
+ *
+ * \b Maintainers: \n
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ * Moises Heberle [moises@solis.com.br]
+ *
+ * @since
+ * Class created on 22/01/2015
+ *
+ * */
+class FrmDiarioDeCampoPreceptor extends SForm
+{
+
+    public function __construct()
+    {
+        $module = MIOLO::getCurrentModule();
+
+        parent::__construct(_M('Diário de campo do preceptor', $module));
+
+        $this->disableToolbar();
+    }
+
+    public function btnManage($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $ofertadeunidadetematicaid = $this->getFormValue('ofertadeunidadetematicaid');
+
+
+        $filters = new stdClass();
+        $filters->personId = SAGU::getUsuarioLogado()->personId;
+        $ofertas = MedPreceptoria::search($filters);
+        $preceptorId = $ofertas[0]->preceptorid;
+
+        $oferta = new MedOfertaDeUnidadeTematica($ofertadeunidadetematicaid);
+        $tipos = MedUnidadeTematica::listTipos();
+        $periodos = MedUnidadeTematica::listPeriodos();
+
+        //Hidden fields
+        $fields[] = new SHiddenField('ofertadeunidadetematicaid', $ofertadeunidadetematicaid);
+        $fields[] = new SHiddenField('diariodecampopreceptorid', $this->getFormValue('diariodecampopreceptorid'));
+
+        //Informações da unidade temática
+        $options = array(
+            'title' => _M('Dados da oferta do rodízio', $module),
+            'columns' => 1,
+            'textWidth' => '500px',
+            'value' => array(
+                _M('Descrição') => $oferta->ofertadeunidadetematicaid . ' - ' . $oferta->unidadeTematica->descricao,
+                _M('CH lançada/prevista') => $oferta->cargahorariaCursada,
+                _M('Frequência mínima') => $oferta->unidadeTematica->frequenciaMinima . '%',
+                _M('Tipo') => $tipos[$oferta->unidadeTematica->tipo],
+                _M('Período') => $periodos[$oferta->unidadeTematica->periodo],
+                _M('Início') => $oferta->inicio,
+                _M('Fim') => $oferta->fim )
+        );
+        $fields[] = new SInformationField($options);
+        $fields[] = new MSeparator();
+
+        // carrega objeto diario de campo se for edicao de registro
+        if ( MIOLO::_REQUEST('function') == SForm::FUNCTION_UPDATE )
+        {
+            $diario = new MedDiarioDeCampoPreceptor(MIOLO::_REQUEST('diariodecampopreceptorid'));
+        }
+
+        // campos
+        //Data e hora do encontro caso tenha quebra timestamp em data e hora
+        list($diario->inicioData, $diario->inicioHora) = explode(' ', $diario->inicio);
+        list($diario->fimData, $diario->fimHora) = explode(' ', $diario->fim);
+
+        //Valores para data e hora(caso edição peaga data e hora registrada, caso inserção data e hora atual)
+        $dateValue = new stdClass();
+        $dateValue->inicioData = strlen($this->getFormValue('inicioData', $diario->inicioData)) > 0 ? $this->getFormValue('inicioData', $diario->inicioData) : SAGU::getDateNow();
+        $dateValue->fimData = strlen($this->getFormValue('fimData', $diario->fimData)) > 0 ? $this->getFormValue('fimData', $diario->fimData) : SAGU::getDateNow();
+        $dateValue->inicioHora = strlen($this->getFormValue('inicioHora', $diario->inicioHora)) > 0 ? $this->getFormValue('inicioHora', $diario->inicioHora) : SAGU::getDateNow(SAGU::getParameter('BASIC', 'MASK_TIME_PHP_DEFAULT'));
+        $dateValue->fimHora = strlen($this->getFormValue('fimHora', $diario->fimHora)) > 0 ? $this->getFormValue('fimHora', $diario->fimHora) : SAGU::getDateNow(SAGU::getParameter('BASIC', 'MASK_TIME_PHP_DEFAULT'));
+        $fields[] = $obj = new SBeginEndPeriod(array(
+            'data' => $dateValue,
+            'required' => true,
+            'baseGroup' => false,
+            'type' => 'timestamp',
+            'begin' => array(
+                'dateId' => 'inicioData',
+                'timeId' => 'inicioHora',
+                'label' => _M('Início', $module),
+                'dateHint' => _M('Informe a data de início', $module),
+                'timeHint' => _M('Informe a hora de início. Formato: hh:mm', $module)
+            ),
+            'end' => array(
+                'dateId' => 'fimData',
+                'timeId' => 'fimHora',
+                'label' => _M('Fim', $module),
+                'dateHint' => _M('Informe a data de fim', $module),
+                'timeHint' => _M('Informe a hora de fim. Formato: hh:mm', $module)
+            )
+        ));
+
+        //Evento quando tiver alguma alteração no período(calcula a carga horária)
+        $obj->getField('inicioData')->addAttribute('onchange', $this->getAjaxAction('timestampDiff', 'divNull', false));
+        $obj->getField('inicioHora')->addAttribute('onchange', $this->getAjaxAction('timestampDiff', 'divNull', false));
+        $obj->getField('fimData')->addAttribute('onchange', $this->getAjaxAction('timestampDiff', 'divNull', false));
+        $obj->getField('fimHora')->addAttribute('onchange', $this->getAjaxAction('timestampDiff', 'divNull', false));
+
+        $fields[] = new MDiv('divNull', null);
+        // Campo carga horária
+        if ( strlen($this->getFormValue('cargahoraria', $diario->cargahoraria)) == 0 )
+        {
+            $this->page->onLoad($this->getAjaxAction('timestampDiff', 'divNull', false));
+        }
+
+        $campoCargaHoraria = new MTextField('cargahoraria', $this->getFormValue('cargahoraria', $diario->cargahoraria), _M('Carga horária', $module), SAGU::getParameter('basic', 'FIELD_ID_SIZE'), _M('horas', $module));
+        $campoCargaHoraria->setJsHint(_M('Informe a carga horária(em horas). Ex.: 140', $module));
+        $fields[] = $campoCargaHoraria;
+        // Campo conteúdo abordado
+        $fields[] = $conteudoabordado = new MMultilineField('conteudoabordado', $this->getFormValue('conteudoabordado', $diario->conteudoabordado), _M('Conteúdo abordado', $module), SAGU::getParameter('basic', 'FIELD_DESCRIPTION_SIZE'), SAGU::getParameter('basic', 'FIELD_MULTILINE_NUM_ROWS'), SAGU::getParameter('basic', 'FIELD_MULTILINE_NUM_COLS'));
+        $conteudoabordado->setJsHint(_M('Informe o conteúdo abordado', $module));
+
+        // botoes
+        $fields[] = new MSeparator();
+
+        $hct = array();
+
+        $opts = array( 'event' => 'btnPrint', 'ofertadeunidadetematicaid' => $ofertadeunidadetematicaid, 'preceptorid' => $preceptorId );
+        $url = $MIOLO->getActionURL(MIOLO::getCurrentModule(), MIOLO::getCurrentAction(), null, $opts);
+        $hct[] = new MButton('btnPrint', _M('Imprimir diário de campo'), $url);
+
+        $url = $MIOLO->GetActionURL('services', 'main:resmedica:unidadesTematicasDoPreceptor', null);
+        $hct[] = new MButton('tbBtnBack', _M('Voltar'), $url);
+
+        $hct[] = new MButton('tbBtnSave', _M('Salvar'));
+
+        $fields[] = $hct = new MHContainer('hctBtns', $hct, MControl::FORM_MODE_WHOLE_ROW);
+        $fields[] = new MSeparator();
+
+        //Validadores
+        $validators[] = new MDATEDMYValidator('inicioData', _M('Início', $module), 'required');
+        $validators[] = new MTIMEValidator('inicioHora', _M('Hora fim', $module), 'required');
+        $validators[] = new MDATEDMYValidator('fimData', _M('Fim', $module), 'required');
+        $validators[] = new MTIMEValidator('fimHora', _M('Hora fim', $module), 'required');
+        $validators[] = new MFloatValidator('cargahoraria', _M('Carga horária', $module), '.', null, 'required');
+
+
+        $diario = new MedDiarioDeCampoPreceptor();
+        $sql = $diario->msql();
+        $sql->addEqualCondition('MedDiarioDeCampoPreceptor.ofertadeunidadetematicaid', $ofertadeunidadetematicaid);
+        $sql->addEqualCondition('MedDiarioDeCampoPreceptor.preceptorId', $preceptorId);
+        $dados = $diario->findManyAsArray($sql);
+
+        // grid
+        $grid = $MIOLO->getUI()->getGrid($module, 'GrdDiarioDeCampoPreceptor');
+        $grid->setData($dados);
+
+        $divGrid = new MDiv('divGrd', $grid);
+        $divGrid->addBoxStyle('width', '100%');
+        $fields[] = $divGrid;
+
+        $chTotal = MedDiarioDeCampoPreceptor::obterCHTotal($preceptorId, $ofertadeunidadetematicaid);
+
+        $fields[] = new MSeparator('<br/>');
+        $fields[] = new MTextLabel('lblCH', _M('Total de carga horária: ' . $chTotal . 'h'));
+        $fields[] = new MSeparator('<br/>');
+
+        $this->setFields($fields);
+        $this->SetValidators($validators);
+    }
+
+    /**
+     * Obtém a diferença em horas de um timestemp e outro
+     */
+    public function timestampDiff($args)
+    {
+        $inicioData = $this->getFormValue('inicioData', $args->inicioData);
+        $inicioHora = $this->getFormValue('inicioHora', $args->inicioHora);
+        $fimData = $this->getFormValue('fimData', $args->fimData);
+        $fimHora = $this->getFormValue('fimHora', $args->fimHora);
+
+        if ( strlen($inicioData) > 0 && strlen($inicioHora) > 0 && strlen($fimData) > 0 && strlen($fimHora) > 0 )
+        {
+            $hours = MedEncontro::timestampDiff($inicioData . ' ' . $inicioHora, $fimData . ' ' . $fimHora);
+            $this->page->addAJAXJsCode("xGetElementById('cargahoraria').value = {$hours};");
+        }
+
+        return null;
+    }
+
+    public function tbBtnDelete_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        $diariodecampopreceptorid = MIOLO::_REQUEST('diariodecampopreceptorid');
+        $ofertadeunidadetematicaid = MIOLO::_REQUEST('ofertadeunidadetematicaid');
+
+        $gotoYes = $MIOLO->getActionURL('services', 'main:resmedica:diarioDeCampoPreceptor', null, array( 'event' => 'btnDelete_confirm', 'diariodecampopreceptorid' => $diariodecampopreceptorid, 'ofertadeunidadetematicaid' => $ofertadeunidadetematicaid ));
+        $gotoNo = $MIOLO->getActionURL('services', 'main:resmedica:diarioDeCampoPreceptor', null, array( 'ofertadeunidadetematicaid' => $ofertadeunidadetematicaid ));
+        $MIOLO->question(SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE'), $gotoYes, $gotoNo);
+    }
+
+    public function btnDelete_confirm($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $diariodecampopreceptorid = MIOLO::_REQUEST('diariodecampopreceptorid');
+        $ofertadeunidadetematicaid = MIOLO::_REQUEST('ofertadeunidadetematicaid');
+
+        try
+        {
+            SDatabase::beginTransaction();
+
+            $diario = new MedDiarioDeCampoPreceptor($diariodecampopreceptorid);
+            $diario->delete();
+
+            SDatabase::commit();
+
+            $goto = $MIOLO->getActionURL('services', 'main:resmedica:diarioDeCampoPreceptor', null, array( 'ofertadeunidadetematicaid' => $ofertadeunidadetematicaid, 'event' => 'btnManage' ));
+            $MIOLO->information(SAGU::getParameter('BASIC', 'MSG_RECORD_DELETED'), $goto);
+        }
+        catch ( Exception $e )
+        {
+            SDatabase::rollback();
+            $this->AddError($e->getMessage());
+        }
+    }
+
+    public function tbBtnSave_click($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $data = $this->getTypesData();
+
+        try
+        {
+            SDatabase::beginTransaction();
+
+            //Verifica carga horaria
+             if(MIOLO::_REQUEST('cargahoraria') < 0)
+             {
+                 throw new Exception(_M("Carga horaria inválida, informe uma carga horária maior ou igual a zero"));
+             }
+            // Verificar se o encontro nao está sendo cadastro fora da oferta da unidade
+            $oferta = new MedOfertaDeUnidadeTematica($data->ofertadeunidadetematicaid);
+
+            if ( SAGU::dateDiff($oferta->getInicio(), $data->inicioData) > 0 )
+            {
+                throw new Exception(_M("Você está tentando cadastrar um encontro fora do período da oferta de unidade temática."));
+            }
+
+            if ( SAGU::dateDiff($oferta->getFim(), $data->fimData) < 0 )
+            {
+                throw new Exception(_M("Você está tentando cadastrar um encontro fora do período da oferta de unidade temática."));
+            }
+
+            if ( SAGU::dateDiff($data->inicioData, $data->fimData) > 0 )
+            {
+                throw new Exception(_M("A data de início não pode ser maior que a de fim"));
+            }
+
+            // insere o diario
+            if ( strlen($data->diariodecampopreceptorid) > 0 )
+            {
+                $diario = new MedDiarioDeCampoPreceptor($data->diariodecampopreceptorid);
+            }
+            else
+            {
+                $diario = new MedDiarioDeCampoPreceptor();
+            }
+
+
+            $filters = new stdClass();
+            $filters->personId = SAGU::getUsuarioLogado()->personId;
+            $ofertas = MedPreceptoria::search($filters);
+
+            $diario->diariodecampopreceptorid = $data->diariodecampopreceptorid;
+            $diario->inicio = $data->inicioData . " " . $data->inicioHora;
+            $diario->fim = $data->fimData . " " . $data->fimHora;
+            $diario->cargahoraria = $data->cargahoraria;
+            $diario->conteudoabordado = $data->conteudoabordado;
+            $diario->ofertadeunidadetematicaid = $data->ofertadeunidadetematicaid;
+            $diario->preceptorid = $ofertas[0]->preceptorid;
+
+            $ok = $diario->save();
+
+            SDatabase::commit();
+
+            if ( $ok )
+            {
+                $goto = $MIOLO->getActionURL('services', 'main:resmedica:diarioDeCampoPreceptor', null, array( 'ofertadeunidadetematicaid' => $data->ofertadeunidadetematicaid, 'event' => 'btnManage' ));
+                if ( strlen($data->diariodecampopreceptorid) > 0 )
+                {
+                    SAGU::information(_M('Encontro atualizado com sucesso'), $goto);
+                }
+                else
+                {
+                    SAGU::information(_M('Encontro inserido com sucesso'), $goto);
+                }
+            }
+        }
+        catch ( Exception $e )
+        {
+            SDatabase::rollback();
+            $this->AddError($e->getMessage());
+        }
+    }
+
+    public function getTypesData()
+    {
+        $data = new stdClass();
+        $data->ofertadeunidadetematicaid = $this->getFormValue('ofertadeunidadetematicaid', MIOLO::_request('ofertadeunidadetematicaid'));
+        $data->diariodecampopreceptorid = $this->getFormValue('diariodecampopreceptorid', MIOLO::_request('diariodecampopreceptorid'));
+        $data->inicioData = $this->getFormValue('inicioData', MIOLO::_request('inicioData'));
+        $data->inicioHora = $this->getFormValue('inicioHora', MIOLO::_request('inicioHora'));
+        $data->fimData = $this->getFormValue('fimData', MIOLO::_request('fimData'));
+        $data->fimHora = $this->getFormValue('fimHora', MIOLO::_request('fimHora'));
+        $data->cargahoraria = $this->getFormValue('cargahoraria', MIOLO::_request('cargahoraria'));
+        $data->conteudoabordado = $this->getFormValue('conteudoabordado', MIOLO::_request('conteudoabordado'));
+
+        return $data;
+    }
+
+    public function btnPrint($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $preceptorid = MIOLO::_REQUEST('preceptorid');
+        $ofertadeunidadetematicaid = MIOLO::_REQUEST('ofertadeunidadetematicaid');
+
+        $parameters = array();
+        $parameters['preceptorid'] = $preceptorid;
+        $parameters['ofertadeunidadetematicaid'] = $ofertadeunidadetematicaid;
+
+        $report = new SReport(array(
+            'module' => 'resmedica',
+            'reportName' => 'diarioDeCampoPreceptor',
+            'parameters' => $parameters
+        ));
+
+        if ( !$report->generate() )
+        {
+            $this->addError(_M('Não foi possível gerar o documento.', $module));
+        }
+    }
+
+}
+
+?>

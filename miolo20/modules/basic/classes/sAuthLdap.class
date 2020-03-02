@@ -1,0 +1,440 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Classe com funcoes extras de LDAP/ActiveDirectory
+ *
+ * @author Equipe SAGU [sagu@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Equipe SAGU [sagu@solis.coop.br]
+ *
+ * @since
+ * Class created on 13/03/2012
+ */
+$MIOLO = MIOLO::getInstance();
+$MIOLO->import('classes::security::mauthldap');
+
+class sAuthLdap extends MAuthLdap
+{
+    private $lastError;
+    private $isDelete = false;
+
+    const TYPE_AD = 'ad';
+    const ERRO_AD_SENHA_EXPIRADA = '532';
+    const ERRO_AD_TROCADA_DE_SENHA_REQUERIDA = '773';
+
+    public function __construct()
+    {
+        // Nao chamar parent construct caso nao tenha configuracao ativada para nao conectar no ldap
+        if ( $this->isEnabled() )
+        {
+            parent::__construct();
+        }
+    }
+
+    public function __destruct()
+    {
+        if ( $this->isEnabled() )
+        {
+            parent::__destruct();
+        }
+    }
+
+    /**
+     * Sincroniza usuarios do SAGU com o servidor LDAP configurado
+     */
+    public function synchronizeUsers()
+    {
+        if ( $this->isEnabled() )
+        {
+            $MIOLO = MIOLO::getInstance();
+            $module = SAGU::getFileModule(__FILE__);
+
+            $busUser = new BusinessAdminUser();
+            foreach ( (array) $busUser->listAll()->result as $row )
+            {
+                list($id) = $row;
+                $this->syncronizeMioloUser($id);
+            }
+        }
+    }
+    
+    
+   /**
+     * Sincroniza um usuario do MIOLO com o LDAP
+     *
+     * @param int $id Id do usuario na miolo_user
+     * 
+     * @return boolean Sucesso ou falha
+     * 
+     * @deprecated Utilizar funcao sincronizarUsuario()
+     */
+    public function synchronizeMioloUser($id)
+    {
+        // metodo aposentado
+        
+        return true;
+    }
+    
+    public function getLastError()
+    {
+        return $this->lastError;
+    }
+
+    public function setLastError($lastError)
+    {
+        $this->lastError = $lastError;
+    }
+    
+    function getIsDelete()
+    {
+        return $this->isDelete;
+    }
+
+    function setIsDelete($isDelete)
+    {
+        $this->isDelete = $isDelete;
+    }
+    
+    public static function basicTest()
+    {
+        $ldif = 'dn: CN=%name%,OU=FUNCIONARIOS,OU=SOLISTECH,DC=solistech,DC=local
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: user
+cn: %name%
+sn: %name%
+givenName: Sagu
+name: %name%
+displayName: %name%
+sAMAccountName: %login%
+userPrincipalName: %login%@solistech.local';
+
+        $ldif = 'dn: CN=Maria Jose,OU=FUNCIONARIOS,OU=SOLISTECH,DC=solistech,DC=local
+objectClass: top
+objectClass: person
+objectClass: organizationalPerson
+objectClass: user
+cn: Maria Jose
+sn: Maria Jose
+givenName: Maria Jose
+name: Maria Jose
+displayName: Maria Jose
+sAMAccountName: mariajose
+userPrincipalName: mariajose@solistech.local';
+        
+        $auth = new sAuthLdap();
+        $auth->sincronizarUsuario(8, $ldif);
+    }
+    
+   /**
+     * Sincroniza um usuario do MIOLO com o LDAP
+     *
+     * @param int $mioloIdUser Id do usuario na miolo_user
+     * @param string $ldifText Texto de configuracao LDAP
+     * @param string $novaSenha Utilizado para trocas de senha
+     * 
+     * @return boolean Sucesso ou falha
+     */
+    public function sincronizarUsuario($mioloIdUser, $ldifText = null, $novaSenha = null)
+    {
+        require_once 'Net/LDAP2.php';
+
+        $ok = false;
+
+        $MIOLO = $this->manager = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        // Obtem configuracoes LDAP
+        $baseDn = $this->manager->getConf('login.ldap.base');
+
+        // Obtem business e variaveis do usuario
+        $sql= new MSQL();
+        $sql->createFrom("SELECT * FROM miolo_user WHERE iduser={$mioloIdUser}");
+        $user = current(SDatabase::queryAssociative($sql));
+
+        $login = $user['login'];
+        $name = $user['name'];
+
+        @list($firstName, $lastName) = explode(' ', $name);
+
+        // substituicao de variaveis
+        $vars = array(
+            '%uid%' => $mioloIdUser,
+            '%login%' => $login,
+            '%name%' => ucwords(strtolower($name)),
+            '%firstname%' => ucfirst(strtolower($firstName)),
+            '%lastname' => ucfirst(strtolower($lastName)),
+        );
+
+        // substitui apenas sob demanda para evitar processamento extra
+        if ( strpos($ldifText, '%sambaNTPassword%') !== false )
+        {
+            $vars['%sambaNTPassword%'] = $this->prepareSambaNTPassword($novaSenha);
+        }
+
+        // substitui apenas sob demanda para evitar processamento extra
+        if ( strpos($ldifText, '%userPassword%') !== false )
+        {
+            $vars['%userPassword%'] = $this->prepareUserPassword($novaSenha);
+        }
+
+        // aplica substituicao de variaveis
+        $ldifText = strtr($ldifText, $vars);
+
+        // cria arquivo temporario pois a biblioteca exige
+        $tempFile = '/tmp/ldap_' . rand() . '.ldif';
+        file_put_contents($tempFile, $ldifText);
+
+        // open some LDIF file for reading
+        $ldif = new Net_LDAP2_LDIF($tempFile, 'r');
+
+        if ($ldif->error())
+        {
+            $error_o = $ldif->error(); // get Net_LDAP_Error object on error
+            echo 'LDIF ERROR: '.$error_o->getMessage() . "\n";
+        }
+
+        // parse the entries of the LDIF file into objects
+        do
+        {
+            $readEntry = $ldif->read_entry();
+
+            if ( $readEntry )
+            {
+                $entry = $readEntry->getValues();
+                $dn = $readEntry->dn();
+            }
+
+            if ($ldif->error())
+            {
+                echo 'LDIF ERROR AT INPUT LINE '.$ldif->error_lines().': '.$ldif->error(true) . "\n";
+            }
+        }
+        while (!$ldif->eof());
+
+        // We should call done() once we are finished
+        $ldif->done();
+
+        // remove arquivo
+        @unlink($tempFile);
+
+        if ( !$this->conn )
+        {
+            $this->connect();
+        }
+
+        if ( $this->isDelete )
+        {
+            $ok = ldap_delete($this->conn, $dn);
+        }
+        else
+        {
+            $filter = explode(',', $dn);
+            // busca por usuario existente no LDAP
+            $search = ldap_search($this->conn, $baseDn, $filter[0]);
+            $entries = ldap_get_entries($this->conn, $search);
+    
+            // caso usuario exista, executa MODIFY, senao, ADD
+            if ( count($entries[0]) > 0 )
+            {
+                unset($entry['objectClass']);
+                unset($entry['cn']);
+                unset($entry['name']);
+
+                $ok = ldap_modify($this->conn, $dn, $entry);
+                $this->checkError();
+                
+                if ( $MIOLO->getConf('login.ldap.type') == self::TYPE_AD )
+                {
+                    $ok = true;
+                    
+                    // Obtém informações do usuário administrativo.
+                    $host = $MIOLO->getConf('login.ldap.host');
+                    $adminUserDn = MAuthLdap::getUserDn($this->conn, "CN=" . $MIOLO->getConf('login.ldap.user'));
+                    $adminUserPwd = $MIOLO->getConf('login.ldap.password');
+                    
+                    // Obtém informações do usuário que terá sua senha atualizada.
+                    $userDn = MAuthLdap::getUserDn($this->conn, $filter[0]);
+                    $newpw64 = MAuthLdap::pwdEncrypt($novaSenha);
+                    
+                    $ldif = "dn: $userDn\n" . 
+                            "changetype: modify\n" .
+                            "replace: unicodePwd\n" .
+                            "unicodePwd:: $newpw64\n";
+                    
+                    $cmd = sprintf("/usr/bin/ldapmodify -H %s -D '%s' -x -w %s", $host, $adminUserDn, $adminUserPwd);
+
+                    if ( ( $fh = popen($cmd, 'w') ) === false )
+                    {
+                        $ok = false;
+                        $MIOLO->error(_M("Open failed: ${php_errormsg}\n"));
+                    }
+
+                    fwrite($fh, "$ldif\n");
+                    pclose($fh);
+                    
+                    $MIOLO->session->setValue("senhaADExpirada", DB_FALSE);
+                }
+            }
+            else
+            {
+                $ok = ldap_add($this->conn, $dn, $entry);
+                $this->checkError();
+            }
+        }
+
+        return $ok;
+    }
+
+    /**
+     * Salva/exibe mensagem de erro
+     */
+    public function checkError()
+    {
+        $error = ldap_error($this->conn);
+
+        if ( strtolower($error) == 'success' )
+        {
+            $error = '';
+        }
+
+        if ( strlen($error) > 0 )
+        {
+            echo 'LDAP ERROR: ' . $error . "\n";
+
+            $this->lastError = $error;
+        }
+    }
+    
+    private function prepareUserPassword($novaSenha)
+    {
+        $userpassword = "{SHA}".base64_encode(pack("H*",sha1($novaSenha)));
+        return $userpassword;
+    }
+
+    private function prepareSambaNTPassword($novaSenha)
+    {
+        $SambaNTPassword = strtoupper(bin2hex(mhash(MHASH_MD4, iconv("UTF-8","UTF-16LE", $novaSenha))));
+        return $SambaNTPassword;
+    }
+    
+    public function isEnabled($throwException = false)
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        $isAuthLdap = SAGU::getParameter('BASIC', 'AUTH_METHOD') == 'LDAP';
+        
+        if ( $throwException )
+        {
+            if ( ! $isAuthLdap )
+            {
+                throw new Exception( _M('O tipo de autenticação do SAGU (@1) não está definido como LDAP.', $module, 'AUTH_METHOD') );
+            }
+        }
+        
+        return $isAuthLdap && $isSyncEnabled;
+    }
+
+    /**
+     * Realiza a substituicao das variaveis configuradas no XML.
+     * 
+     * @param int $personId
+     * @return string
+     */
+    public function obterDados($mioloIdUser)
+    {
+        $sql = new MSQL();
+        $sql->setColumns('
+           PP.personid,
+           PP.name,
+           PP.name AS firstname,
+           PP.name AS lastname,
+           PP.sex,
+           PP.miolousername,
+           MU.login,
+           MU.iduser,
+           MU.password
+        ');
+        $sql->setTables('ONLY basphysicalperson PP');
+        $sql->addInnerJoin('miolo_user MU', 'MU.login = PP.miolousername');
+//        $sql->addLeftJoin('basdocument D', "D.personid = PP.personId AND D.documentTypeId = GETPARAMETER('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF')::int");
+        $sql->setWhere('MU.iduser = ?', array($mioloIdUser));
+        
+        $rows = SDatabase::queryAssociative($sql);
+        $dados = SAGU::getParameter('BASIC', 'DADOS_SINCRONIZADOS_PELO_LDAP');
+
+        foreach ( (array) $rows[0] as $key => $val )
+        {
+            $tag = '>$' . $key .'<';
+            $dados = str_replace($tag, $val, $dados);
+        }
+        
+        return $dados;
+    }
+    
+    /**
+     * Verifica se a senha do usuário AD expirou.
+     * 
+     * @param ldap_connect $conn
+     * @param String $uid
+     * @param String $pwd
+     * @return boolean
+     */
+    public function verificaSeSenhaDoUsuarioExpirou($uid, $pwd)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $expirou = false;
+        
+        if ( SAGU::getParameter('BASIC', 'AUTH_METHOD') == 'LDAP' && $MIOLO->getConf("login.class") == 'mauthLdap' )
+        {
+            if ( $MIOLO->getConf('login.ldap.type') == sAuthLdap::TYPE_AD )
+            {   
+                if ( !$this->conn )
+                {
+                    $this->connect();
+                }
+                
+                $bind = ldap_bind($this->conn, MAuthLdap::getUserDn($this->conn, "CN=" . $uid), $pwd);
+                $errno = ldap_errno($this->conn);
+
+                if ( $errno == 49 ) 
+                {
+                    if ( ldap_get_option($this->conn, LDAP_OPT_ERROR_STRING, $extended_error) ) 
+                    {
+                        $extended_error = explode(', ', $extended_error);
+
+                        if ( strpos($extended_error[2], self::ERRO_AD_TROCADA_DE_SENHA_REQUERIDA) || 
+                             strpos($extended_error[2], self::ERRO_AD_SENHA_EXPIRADA) )
+                        {
+                            $expirou = true;
+                        }
+                    }
+                }                     
+            }
+        }
+        
+        return $expirou;
+    }
+}
+?>

@@ -1,0 +1,265 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ *
+ * Classe para efetuar consultas de BI.
+ *
+ * @author Bruno E. Fuhr [bruno@solis.com.br]
+ *
+ * $version: $Id$
+ *
+ * @since
+ * Class created on 19/02/2014
+ */
+class BusinessAcademicBusBusinessIntelligence extends sBusiness
+{
+    
+    public function obterEstadoContratualPorPeriodo($periodo, $curso, $unidade)
+    {
+        $sql = "
+            SELECT estado_contratual, COUNT(contrato)
+              FROM (
+                    SELECT estado_contratual, contrato
+                      FROM bi_obter_estados_contratuais_matriculados(?, ?, ?)
+                     UNION
+                    SELECT estado_contratual, contrato
+                      FROM bi_obter_evasoes(?, ?, ?)
+                   )
+                AS sel
+          GROUP BY 1 
+        ";
+        
+        $params[] = $periodo;
+        $params[] = $curso;
+        $params[] = $unidade;
+        $params[] = $periodo;
+        $params[] = $curso;
+        $params[] = $unidade;
+        
+        $db = $this->getDatabase();
+        try
+        {            
+            $result = $db->query(SAGU::prepare($sql, $params));
+        }
+        catch(Exception $e)
+        {
+            $result = NULL;
+        }
+
+        return $result;
+    }
+    
+    public function obterEstadoDasMatriculas($periodo, $curso, $unidade)
+    {
+        $sql = "
+            SELECT s.description, COUNT(sel.cod_aluno)
+              FROM bi_obter_matriculas(?, ?, ?) AS sel 
+         LEFT JOIN acdenrollstatus s ON (sel.cod_estado = s.statusid)
+             WHERE sel.cod_estado NOT IN (5, 6, 7)
+          GROUP BY 1;
+        ";
+        
+        $params[] = $periodo;
+        $params[] = $curso;
+        $params[] = $unidade;
+        
+        $db = $this->getDatabase();
+        try
+        {
+            $result = $db->query(SAGU::prepare($sql, $params));
+        }
+        catch(Exception $e)
+        {
+            $result = NULL;
+        }
+
+        return $result;
+    }
+    
+    public function obterMediaDeAlunosPorDisciplinaPorSemestre($periodo, $curso, $unidade)
+    {
+        $db = $this->getDatabase();
+        $data = array();
+        
+        $params[0] = $periodo;
+        $params[1] = $curso;
+        $params[2] = $unidade;
+        
+        $sql = " SELECT DISTINCT(serie)
+                   FROM bi_obter_matriculas(?, ?, ?) AS sel 
+                  WHERE cod_estado NOT IN (5, 6, 7) 
+               ORDER BY 1 ";
+        
+        $series = $db->query(SAGU::prepare($sql, $params));
+        
+        $sql = " SELECT ((count(distinct cod_aluno))::numeric(9,2) / (count(distinct cod_oferecida))::numeric(9,2))::numeric(9,2) 
+                   FROM bi_obter_matriculas(?, ?, ?) AS sel 
+                  WHERE cod_estado NOT IN (5, 6, 7) 
+                    AND serie = ? ";
+            
+        foreach ( $series as $serie )
+        {
+            $params[3] = $serie[0];
+            $result = $db->query(SAGU::prepare($sql, $params));
+            
+            $data[$serie[0]] = $result[0][0];
+        }
+        
+        return $data;
+    }
+    
+    public function obterNumeroDeAlunosPorSemestre($periodo, $curso, $unidade)
+    {
+        $db = $this->getDatabase();
+        
+        $params[] = $periodo;
+        $params[] = $curso;
+        $params[] = $unidade;
+        
+        $sql = "SELECT serie, COUNT(DISTINCT cod_aluno)
+                  FROM bi_obter_matriculas(?, ?, ?) AS sel
+                 WHERE cod_estado NOT IN (5, 6, 7)
+              GROUP BY 1";
+        
+        try
+        {
+            $result = $db->query(SAGU::prepare($sql, $params));
+        }
+        catch(Exception $e)
+        {
+            $result = NULL;
+        }
+
+        return $result;
+    }
+    
+    public function obterNumeroInscritosProcessoSeletivo($dataInicio, $dataFim)
+    {
+        $db = $this->getDatabase();
+        
+        $sql = " SELECT SU.selectiveprocessid, SE.description, count(distinct SU.personid) 
+                  FROM spr.selectiveprocess SE 
+             LEFT JOIN spr.subscription SU 
+                    ON (SE.selectiveprocessid = SU.selectiveprocessid) 
+                 WHERE SE.subscriptionstartdate::date >= datetodb(?) 
+                   AND SE.endofprocessdate::date <= datetodb(?)
+              GROUP BY 1,2 
+              ORDER BY 1 ";
+        
+        $params[] = $dataInicio;
+        $params[] = $dataFim;
+        
+        try
+        {
+            $result = $db->query(SAGU::prepare($sql, $params));
+        }
+        catch(Exception $e)
+        {
+            $result = NULL;
+        }
+
+        return $result;
+    }
+    
+    public function obterNumeroInadimplentesPorSemestre($periodo, $curso, $unidade)
+    {
+        $db = $this->getDatabase();
+        
+        $params[] = $periodo;
+        $params[] = $curso;
+        $params[] = $unidade;
+        
+        $sql = " SELECT serie, COUNT(cod_aluno), SUM(inv.balance)
+                   FROM bi_obter_titulos(?, ?, ?) AS sel
+             INNER JOIN finreceivableinvoice inv ON (inv.invoiceid = sel.titulo)
+                  WHERE sel.data_vencimento < now()::date 
+                    AND inv.balance > 0
+                    AND serie IS NOT NULL
+               GROUP BY 1
+               ORDER BY 1 ";
+        
+        try
+        {
+            $result = $db->query(SAGU::prepare($sql, $params));
+        }
+        catch(Exception $e)
+        {
+            $result = NULL;
+        }
+
+        return $result;
+    }
+    
+    public function obterInadimplenciaPorPeriodo($periodo, $curso, $unidade)
+    {
+        $db = $this->getDatabase();
+        
+        $params[] = $periodo;
+        $params[] = $curso;
+        $params[] = $unidade;
+        
+        $sql = " SELECT periodo, 
+                        ROUND(((COUNT(inad.*) * 100) / COUNT(sel.*)), getParameter('BASIC', 'REAL_ROUND_VALUE')::INT)
+                   FROM bi_obter_titulos(?, ?, ?) as sel
+              LEFT JOIN (SELECT invoiceid, balance
+                           FROM finreceivableinvoice
+                          WHERE maturitydate < now()::date
+                            AND balance > 0) AS inad
+                     ON (inad.invoiceid = sel.titulo)
+               GROUP BY 1";
+        
+        try
+        {
+            $result = $db->query(SAGU::prepare($sql, $params));
+        }
+        catch(Exception $e)
+        {
+            $result = NULL;
+        }
+
+        return $result;
+    }
+    
+    public function obterInadimplenciaAtual($curso, $unidade)
+    {
+        $busPeriodo = new BusinessAcademicBusPeriod();
+        $periodos = $busPeriodo->listPeriod('periodId DESC');
+        
+        $numAlunos = 0;
+        $valor = 0;
+        
+        foreach ( $periodos as $periodo )
+        {
+            $inadimplentesPorSemestre = $this->obterNumeroInadimplentesPorSemestre($periodo[0], $curso, $unidade);
+            foreach ( $inadimplentesPorSemestre as $semestre )
+            {
+                $numAlunos += $semestre[1];
+                $valor += $semestre[2];
+            }
+        }
+        
+        return array($numAlunos, $valor);
+        
+    }
+    
+}
+
+?>

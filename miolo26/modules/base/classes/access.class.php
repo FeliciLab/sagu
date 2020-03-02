@@ -1,0 +1,16 @@
+<?
+class BusinessBaseAccess extends MBusiness implements IAccess
+{
+    public $idTransaction;
+    public $idGroup;
+    public $rights;
+
+    public $group;  // a Group object
+    public $transaction; // a Transaction object
+
+    public function _construct($data = NULL)
+    {
+        return parent::_construct('base', $data);
+    }
+}
+?>

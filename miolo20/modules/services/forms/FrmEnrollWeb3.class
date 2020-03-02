@@ -1,0 +1,250 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Passo a passo matrícula web.
+ *
+ * @author Jonas Guilherme Dahmer [jonas@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Guilherme Dahmer [jonas@solis.coop.br]
+ * Luís Felipe Wermann[luis_felipe@solis.com.br]
+ *
+ * @since
+ * Class created on 02/05/2012
+ */
+
+class FrmEnrollWeb3 extends FrmEnrollWeb
+{
+
+    public function __construct($steps = null)
+    {
+        parent::__construct(__CLASS__, null, $steps );
+    }
+
+    public function createFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+
+        // Load data
+        $contrato = MatriculaWeb::obterContratoGravado();
+        
+        SDatabase::beginTransaction();
+        
+        try
+        {
+            //Info aluno
+            $fields[] = $this->obterCamposInfoAluno();
+            
+            //Mensagem do passo
+            $fields[] = new MDiv('divMensagem', $this->mensagemPasso());
+            
+            //Monta a DIV com as disciplinas que estarão sendo matriculadas
+            $matriculadas = MatriculaWeb::filtrarSelecionadas();
+
+            foreach ( $matriculadas as $groupId => $curriculumId )
+            {
+                $filters = new stdClass();
+                $filters->groupId = $groupId;
+                $disciplina = MatriculaWeb::filtrarOferecidas($filters);
+                
+                $fieldsMatriculadas[] = new MSeparator();
+                $fieldsMatriculadas[] = $this->gerarGradeDisciplinaMatriculada($disciplina[0]);
+            }
+            $fields[] = $bsgMatriculadas = new MBaseGroup('bsgMatriculadas ',_M("Disciplinas"), $fieldsMatriculadas);
+            
+            //Simulação financeira
+            if ( $contrato->periodoGeraFinanceiro )
+            {
+                $fields[] = new MDiv('divSimularFinanceiro', $this->simularFinanceiro($allData));
+            }
+        }
+        catch ( Exception $e )
+        {
+            SDatabase::rollback();
+            $this->addError($e->getMessage());
+        }
+
+        SDatabase::commit();
+        
+        $this->setFields($fields);
+    }
+    
+    public function finalizeButton_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $allData = $this->getStepData();
+        $allData->originEnroll = AcdEnroll::MATRICULA_WEB;
+        
+        // quando for via academico, pega a pessoa selecionada no primeiro passo
+        if ( $module == 'academic' )
+        {
+            $allData->personId = $allData->contractPersonId;
+            $tipoDeMatricula = MatriculaWeb::MATRICULA_NORMAL;
+        }
+        else
+        {
+            //Obtem pessoa logada
+            $mioloUserName = trim($MIOLO->getLogin()->id);
+            $busPerson = new BusinessBasicBusPerson();
+            $personData = $busPerson->getPersonByMioloUserName($mioloUserName);
+            $allData->personId = $personData->personId;
+            $tipoDeMatricula = MatriculaWeb::MATRICULA_WEB;
+        }
+
+        $fields[] = new MDiv('', MatriculaWeb::salvar($allData, $tipoDeMatricula));
+        
+        //Campos configuráveis
+        AcdCamposConfiguraveisPessoa::salvarCampos($allData);
+        
+        $this->finalizeStepByStep(null);
+        
+        $this->setFields($fields);
+        
+        //Limpar selecionadas
+        MatriculaWeb::limparSelecionadasNaSessao();
+        
+        parent::finalizeButton_click($args);
+    }
+    
+    public function btnBackReturnToPortal_click()
+    {
+        //Limpar selecionadas
+        MatriculaWeb::limparSelecionadasNaSessao();
+        
+        $MIOLO = MIOLO::getInstance();
+        $portalURL = $MIOLO->getActionURL( 'portal', 'main');
+        $MIOLO->page->Redirect($portalURL);
+    }
+
+    public function cancelButton_click($args = null)
+    {
+        //Limpar selecionadas
+        MatriculaWeb::limparSelecionadasNaSessao();
+        
+        if(MIOLO::_REQUEST('returnTo') == 'PORTAL')
+        {
+            $MIOLO = MIOLO::getInstance();
+            $portalURL = $MIOLO->getActionURL( 'portal', 'main');
+            $MIOLO->page->redirect($portalURL);
+        }
+        else
+        {
+            parent::cancelButton_click($args);
+        }
+    }
+    
+    public function gerarGradeDisciplinaMatriculada($disciplina)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $caminho = $MIOLO->getUI()->getImageTheme(SAGU::getCurrentTheme(), 'botao_aplicar.png');
+        
+        //Título
+        $imagemOk = new MImage('imgOk', null, $caminho);
+        $name = $disciplina->curricularComponentId . '/' . $disciplina->curricularComponentVersion . ' - ' . $disciplina->curricularComponentName;
+        $nameTxt = new MText('txtName', $name);
+        $nameTxt->addAttribute('style', 'font-weight: bold; text-align: left;');
+        
+        //Horário,se aplicado
+        if ( MatriculaWeb::obterConfiguracaoDeMatricula('scheduleDisplayModeExternal') )
+        {
+            $horario = $this->gerarHorarioDisciplina($disciplina);
+        }
+        
+        $professores = $this->gerarNomeProfessorDisciplina($disciplina);
+        $fieldProfessores = new MText('txtProfs', $professores);
+
+        $hctTitulo = new MHContainer('hctTitulo', array($imagemOk, $nameTxt));
+        $hctInfo = new MHContainer('hctInfo', array($horario, $fieldProfessores));
+        
+        $div = new MDiv('div' . $disciplina->groupId, new MVContainer('hvtDisciplina', array($hctTitulo, $hctInfo, new MSeparator('&nbsp;'))));
+        
+        return $div;
+    }
+    
+    /**
+     * Cria MText com o valor do horário da disciplina.
+     * 
+     * @param stdClass $disciplina
+     * @return \MText
+     */
+    public function gerarHorarioDisciplina($disciplina)
+    {
+        //Garante que funcionará também para eletivas
+        $explode = explode('_', $disciplina->groupId);
+        $groupId = $explode[0];
+        
+        $busEnroll = new BusinessAcademicBusEnroll();
+        
+        //Busca horários
+        $datahora = $busEnroll->getScheduleBeginAndEndHoursByWeekDayForEnrollWeb($groupId);
+
+        foreach($datahora as $d)
+        {
+            $horarios[] = $d;
+        }
+
+        $horarios = implode('',$horarios);
+
+        //Caso nao venham horarios, vamos dizer para o usuario isso
+        if ( is_null($horarios) )
+        {
+            $horarios = _M("Horário não definido");
+        }
+
+        $field = new MText('txtStartEndDate', $horarios);
+        $field->addAttribute('style', 'text-align: left;');
+        
+        return $field;
+    }
+    
+    /**
+     * Retorna nome dos professores da disciplina.
+     * 
+     * @param (stdClass) $disciplina - Disciplina para gera nome do professor.
+     * @return (string) $professores - Professores, quebrados por linhas.
+     */
+    public function gerarNomeProfessorDisciplina($disciplina)
+    {
+        //Garante que funcionará também para eletivas
+        $explode = explode('_', $disciplina->groupId);
+        $groupId = $explode[0];
+        
+        $busEnroll = new BusinessAcademicBusEnroll();
+        
+        $professor = $busEnroll->getGroupProfessors($groupId);
+        
+        foreach ( $professor as $p )
+        {
+            $professores = $p[0] . '</br>'; 
+        }
+        
+        return $professores;
+    }
+}
+
+?>

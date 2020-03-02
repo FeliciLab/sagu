@@ -1,0 +1,260 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 13/05/2011
+ *
+ **/
+class FrmNotificationPendingRequests extends SManagementForm
+{
+    public function __construct($data)
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        parent::__construct(null, null, null, _M('Notificação de solicitações pendentes', $module));
+    }
+
+    public function defineFields()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        //Desabilita os botões da toolbar
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+
+        //Field unit
+        $filters = new stdClass();
+        $unit = new MSelection('unitId', $this->getFormValue('unitId', $data->unitId), _M('Unidade', $module), TraUnit::listUnit($filters));
+        $unit->setJsHint(_M('Informe a unidade', $module));
+        $unit->addAttribute('onChange', $this->getAjaxAction('changeUnitId', 'divUnitArea', false));
+        $fields[] = $unit;
+
+        $validators[] = new MRequiredValidator('unitId', _M('Unidade', $module));
+
+        //Field area
+        $fields[] = new MDiv('divUnitArea');
+        $fields[] = new MDiv('divSendMail');
+
+        parent::defineFields($fields, $validators, $data);
+    }
+    
+
+    /**
+     * Popula selection da area
+     * @param <object> $args
+     * @return Fields
+     */
+    public function changeUnitId($args, $readOnly = false)
+    {
+        //Limpa os campos
+        $args->unitId = strlen($args->unitId)>0 ? $args->unitId : $this->getFormValue('unitId');
+        
+        if ( strlen($args->unitId) > 0 )
+        {
+            // Field unit area
+            $fields[] = new MSeparator();
+            $unitAreaLabel = new MText('areaLabel', _M('Área', $module) . ':');
+            if ( !$readOnly )
+            {
+                $unitAreaLabel->setClass('m-caption m-caption-required');
+            }
+            $unitAreaLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE') );
+            $unitArea = new MSelection('unitAreaId', $this->getFormValue('unitAreaId',$args->unitAreaId), null, TraUnitArea::listCurrentUnitAreaByUnit($args));
+            $unitArea->addAttribute('onChange', $this->getAjaxAction('changeUnitId', 'divUnitArea', true));
+            $unitArea->setJsHint(_M('Informe a área', $module));
+            $unitArea->setReadOnly($readOnly);
+            $fields[] = new MHContainer('hctunitArea', array($unitAreaLabel, $unitArea));
+        }
+        
+        $fields = array_merge ((array) $fields, (array) $this->loadUnitArea($args) );
+        
+        return $fields ? $fields : new MHiddenField('unitAreaId',null);
+    }
+
+    
+    /**
+     * Carrega as informações referentes a unidade e área selecionada
+     * @param <type> $args
+     */
+    public function loadUnitArea($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $filters = new stdClass();
+        $filters->unitId = $args->unitId;
+        if ( strlen($args->unitAreaId) > 0 )
+        {
+            $filters->unitAreaId = $args->unitAreaId;
+        }
+        $searchUnitArea = TraUnitArea::search($filters);
+
+        $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+        
+        $hasPendingRequest = false;
+        if ( count( $searchUnitArea ) > 0)
+        {            
+            foreach($searchUnitArea as $dataUnitArea)
+            {
+                //Busca as inscrições pendentes
+                $filters2 = new StdClass();
+                $filters2->notInSubscription = DB_TRUE;//Não inscrito
+                $filters2->unitAreaId = $dataUnitArea->unitAreaId; //unitAreaId
+                $filters2->status = TraRequest::PENDING; //Status pendente
+                $searchRequest = TraRequest::searchGrid($filters2);
+
+                if( count($searchRequest) > 0 )
+                {
+                    $hasPendingRequest = true;
+                    
+                    $bsgFields = array();
+                    
+                    //Dados do preceptor
+                    $preceptorData = $busPhysicalPerson->getPhysicalPerson($dataUnitArea->preceptorId);
+
+                    //Preceptor
+                    $preceptorLabel = new MText('preceptorLabel' . rand(), _M('Preceptor', $module) . ':');
+                    $preceptorLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                    $preceptorId = new MTextField('preceptorId' . rand(), $preceptorData->personId, null, SAGU::getParameter('BASIC', 'FIELD_LOOKUPFIELD_SIZE'));
+                    $preceptorId->setJsHint(_M('Código do preceptor', $module));
+                    $preceptorId->setReadOnly(true);
+                    $preceptorName = new MTextField('preceptorName' . rand(), $preceptorData->name, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+                    $preceptorName->setReadOnly(true);
+                    $preceptorName->setJsHint(_M('Nome do preceptor',$module));
+                    $bsgFields[] = $ctnPreceptor = new MHContainer('preceptorCtn' . rand(),array($preceptorLabel, $preceptorId, $preceptorName));
+                    $ctnPreceptor->showLabel = true;
+
+                    //Total de inscrições pendentes
+                    $requestTotalCount = count($searchRequest);
+                    $requestTotalLabel = new MText('requestLabel' . rand(), _M('Total de inscrições pendentes', $module) . ':');
+                    $requestTotalLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                    $requestTotal = new MTextField('requestTotal' . rand(), $requestTotalCount);
+                    $requestTotal->setJsHint(_M('Número total de inscrições pendentes', $module));
+                    $requestTotal->setReadOnly(true);
+                    $bsgFields[] = $ctnRequest = new MHContainer('ctnRequest' . rand(),array($requestTotalLabel, $requestTotal));
+                    $ctnRequest->showLabel = true;
+                    
+                    //
+                    $ajaxArgs = array(
+                        'requestTotal' => $requestTotalCount,
+                        'preceptorId' => $dataUnitArea->preceptorId,
+                        'unitId' => $dataUnitArea->unitId,
+                        'areaId' => $dataUnitArea->areaId,
+                    );
+                    $bsgFields[] = new MButton('btnSendMail' . rand(), _M('Notificar preceptor'), SForm::getAjaxAction('sendEmail', 'divSendMail', true, $ajaxArgs));
+                    
+                    $fields[] = new MSeparator();
+                    $fields[] = new MBaseGroup('bsgNotify' . rand(), '', $bsgFields, 'vertical');
+                }
+            }
+        }
+
+        if ( !$hasPendingRequest )
+        {
+            $this->addInfo(_M('Nenhuma solicitação pendente para a área/unidade selecionada', $module));
+        }
+
+        return $fields;
+    }
+
+    public function getTypesData()
+    {
+        $data = new stdClass();
+        $data->areaId = $this->getFormValue('areaId');
+        $data->unitId = $this->getFormValue('unitId');
+        $data->preceptorId = $this->getFormValue('preceptorId');
+        $data->requestTotal = $this->getFormValue('requestTotal');
+        
+        return $data;
+    }
+
+    /**
+     * Envia a mensagem ao preceptor
+     */
+    public function sendEmail($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        try
+        {
+            $areaId = $args->areaId;
+            $unitId = $args->unitId;
+            $preceptorId = $args->preceptorId;
+            $requestTotal = $args->requestTotal;
+
+            //Dados do preceptor
+            $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+            $preceptorData = $busPhysicalPerson->getPhysicalPerson($preceptorId);
+            $to = $preceptorData->email; //E-mail do preceptor
+          
+            //Email
+            $busEmail = new BusinessBasicBusEmail();
+            $dataEmail = $busEmail->getEmail(SAGU::getParameter($module, 'PENDING_REQUESTS_EMAIL_ID'));
+            
+            //Dados da empresa
+            $busCompany = new BusinessBasicBusCompany();
+            $dataCompany = $busCompany->getCompany(SAGU::getParameter('BASIC', 'DEFAULT_COMPANY_CONF'));
+            
+            //Dados da unidade
+            $unit = new TraUnit($unitId);
+                        
+            $from = strtolower($dataEmail->from);
+            $fromName = $dataCompany->acronym;
+
+            $tags = array( '$preceptor$' => $preceptorData->name,
+                           '$pendingRequests$' => $data->requestTotal,
+                           '$unit$' => $unit->description );
+
+            $body = strtr($dataEmail->body, $tags);
+
+            $sendEmail = new sendEmail($from, $fromName, $to, $dataEmail->subject, $body, $dataEmail->bcc);
+
+            if( $sendEmail->sendEmail() ) //Envia o email
+            {
+                $msg = _M('E-mail de notificação enviado com sucesso', $module);
+                $this->addInfo($msg);
+            }
+            else
+            {
+                $msg = _M('Erro com o servidor de email. Entre em contato com o responsável pelo sistema para resolver o problema', $module).'.';
+                throw new Exception($msg);
+            }   
+        }
+        catch(Exception $e)
+        {
+            $this->addError($e->getMessage());
+        }
+    }
+}
+?>

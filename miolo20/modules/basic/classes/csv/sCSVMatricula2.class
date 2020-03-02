@@ -1,0 +1,285 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Gerencia importacao de documentos para o SAGU
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.com.br]
+ *
+ * @since
+ * Class created on 28/06/2012
+ *
+ **/
+class sCSVMatricula2 extends sCSVFileImporter
+{
+    public function getTitle()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        return _M('Matriculas V2', $module);
+    }
+    
+    public function __construct()
+    {
+        $typeDefs = array('name', 'label', 'isRequired', 'type', 'replaceVars' );
+        $defs = array(
+            // Contrato
+            array( 'cpf', _M('Identificador (CPF)'), true ),
+            array( 'curso', _M('Curso Descrição'), true ),
+            array( 'versao', _M('Versao'), true ),
+            array( 'turno', _M('Turno'), true ),
+            array( 'campus', _M('Campus'), true ),
+            
+            // Disciplina oferecida
+            array( 'periodo', _M('Periodo'), true ),
+            array( 'codigooferecida', _M('Cod. disciplina oferecida'), false),
+            array( 'codigodisciplina', _M('Cod. disciplina'), true ),            
+            array( 'versaodisciplina', _M('Versão disciplina'), true ),
+            array( 'cursooferecida', _M('Código do curso a qual a disciplina pertence'), false ),
+            array( 'versaocursooferecida', _M('Versão do curso a qual a disciplina pertence'), false ),
+            array( 'turnocursooferecida', _M('Turno do curso a qual a disciplina pertente'), false ),
+            array( 'campuscursooferecida', _M('Unidade do curso a qual a disciplina pertence'), false ),
+            array( 'nometurma', _M('Turma'), true ),
+            array( 'isClosed', _M('Disciplina fechada'),  false, bCSVColumn::TYPE_BOOLEAN ),
+            array( 'regime', _M('Regime'), false),
+            
+            // Matricula
+            array( 'frequencia', _M('Frequencia do aluno (em horas)'), true),
+            array( 'datacancelamento', _M('Data do cancelamento'), false),
+            array( 'nota', _M('Nota'), false),
+            array( 'statusDetail', _M('Status detalhado'), false),
+            array( 'status', _M('Status'), true),
+            array( 'beginDate', _M('Data de inicio do semestre'), false),
+            array( 'endDate', _M('Data de termino do semestre'), false),
+            
+            // Disciplina do curriculo
+            array( 'codigodisciplinacurso', _M('Código disciplina curso aluno'), false),
+            array( 'versaodisciplinacurso', _M('Versão disciplina curso aluno'), false)
+            
+        );
+        
+        $this->setColumnsArray($typeDefs, $defs);
+        
+        parent::__construct();
+    }
+    
+    public function importLine2($data)
+    {
+        $personId = $this->obterPersonId($data->cpf);
+        
+        if ( strlen($personId) == 0 )
+        {
+            throw new Exception(_M('Código da pessoa não localizado utilizando o identificador ' . $data->cpf));
+        }
+        
+        $data->versaodisciplinacurso = $this->fixValue($data->versaodisciplinacurso);
+        
+        // Obter o contrato
+        $courseIdContrato = $data->curso;
+        $courseVersionContrato = $data->versao;
+        $turnIdContrato = $this->obterTurno($data->turno);
+        $unitIdContrato = $this->obterUnidade($data->campus);
+        
+        $contractId = $this->obterContratoDaPessoa($personId, $courseIdContrato, $courseVersionContrato, $turnIdContrato, $unitIdContrato);
+        $data->contractId = $contractId;
+        
+        // Disciplina cursada
+        $curricularComponentId = $data->codigodisciplina;
+        $curricularComponentVersion = $data->versaodisciplina;
+        
+        // Curso turno versao unidade da disciplina que o aluno cursou
+        $courseId = $data->cursooferecida;
+        $courseVersion = $data->versaocursooferecida;
+        $unitId = $this->obterUnidade($data->campuscursooferecida);
+        $turnId = $this->obterTurno($data->turnocursooferecida);
+        
+        // CurriculumId da disciplina que o aluno cursou
+        $data->curriculumId = $this->obterMatrizCurricularDeDisciplina(
+                $curricularComponentId, 
+                $curricularComponentVersion,
+                $courseId, 
+                $courseVersion, 
+                $unitId,
+                $turnId
+        );
+
+        //Verifica se a disciplina existe
+        $this->verificarDisciplina($curricularComponentId, $curricularComponentVersion);
+
+        //Componente curricular que o aluno cursou
+        //$curriculumId = $this->obterMatrizCurricularDeDisciplina($curricularComponentId, $curricularComponentVersion, $courseId, $courseVersion, $unitId, $turnId);
+        $curriculumId = $data->curriculumId;
+
+        $periodId = $this->obterPeriodo($data->periodo);
+        
+        // Na planilha diz que a ocorrencia ja deve estar cadastrada
+        $this->verificarOcorrenciaDeCurso($data, $courseId, $courseVersion, $turnId, $unitId);
+
+        //Se não tem data inicial e final de período letivo, pega através do código do período ex (2013/2)
+        if( (strlen($data->beginDate)<=0) && (strlen($data->endDate)<=0) )
+        {
+            $datasPeriodoLetivo = $this->obterDatasPeriodoLetivo($data->periodo);
+            $data->beginDate = $datasPeriodoLetivo->beginDate;
+            $data->endDate = $datasPeriodoLetivo->endDate;
+        }
+                
+        // Periodo letivo da oferecida
+        $learningPeriodId = $this->obterPeriodoLetivo($periodId, $courseId, $courseVersion, $turnId, $unitId, $data->beginDate, $data->endDate);
+        $data->learningPeriodId = $learningPeriodId;
+        
+        //Obtem a data inicial e final do período letivo, caso o período letivo já estava na base é necessário utilizar as mesmas 
+        //datas para que a matrícula seja inserida na data correta
+        $learningPeriod = $this->busLearningPeriod->getLearningPeriod($learningPeriodId);
+        $data->beginDate = $learningPeriod->beginDate;
+        $data->endDate = $learningPeriod->endDate;     
+        
+        // Insere nota final caso nao exista
+        $degreeId = $this->obterDegreeNotaFinal($learningPeriodId);        
+        
+        if( !strlen($data->isClosed) > 0 )
+        {
+           $data->isClosed = DB_TRUE; 
+        }
+        
+        // Obter o regime
+        $busRegime = new BusinessAcademicBusRegimen();
+        $regime = $busRegime->obterRegimeNormal();
+        $regimeId = $regime[0];
+        $data->regime = str_replace('.', '', $data->regime);
+        if ( strlen($data->regime) > 0 )
+        {            
+            $data->regime = substr($data->regime, 0, strlen($data->regime)-1);
+            $searchRegime = new stdClass();
+            $searchRegime->description = $data->regime;
+            $regime = $busRegime->searchRegimen($searchRegime);
+            if ( strlen($regime[0][0]) > 0 )
+            {
+                $regimeId = $regime[0][0];
+            }
+        }
+        
+        // Se possuir valor na coluna de disciplina oferecida, verifica se já existe a oferecida, senão cria.
+        if ( strlen($data->codigooferecida) > 0 )
+        {
+            $busGroup = new BusinessAcademicBusGroup();
+            $group = $busGroup->getGroup($data->codigooferecida, true);
+            if ( strlen($group->groupId) > 0 )
+            {
+                $data->groupId = array($group->groupId => $curriculumId);
+                $groupId = $group->groupId;
+            }
+            else
+            {
+                $group = new stdClass();
+                $group->groupId = $data->codigooferecida;
+                $group->learningPeriodId = $learningPeriodId;
+                $group->unitId = $unitId;
+                $group->curriculumId = $curriculumId;
+                $group->regimenId = $regimeId;
+                $group->isClosed = $data->isClosed;
+                $group->classId = $data->nometurma;
+                
+                // Valores HARDCODE de acordo com a função obterDisciplinaOferecida.
+                $group->evaluationTypeId = 4;
+                $group->financeCredits = 10;
+                $group->useConcept = DB_FALSE;
+                $group->vacant = 9999;
+                
+                $busGroup->insertGroup($group);
+                $groupId = $data->codigooferecida;
+                $data->groupId = array($groupId => $curriculumId);
+            }
+        }
+        else
+        {
+            $groupId = $this->obterDisciplinaOferecida($learningPeriodId, $curriculumId, $data->nometurma, $data->isClosed );
+            $data->groupId = array($groupId => $curriculumId);
+        }
+
+        //Status do aluno na matrícula
+        $data->forceStatusId = $this->obterEstadoDeMatricula($data->status, $data->statusDetail);
+
+        //Obtém status detalhado apenas se tiver valor nos campos status e status detalhado
+        if ( strlen($data->statusDetail) > 0 )
+        {
+            $data->detailEnrollStatusId = $this->obterEstadoDetalhadoDeMatricula($data->statusDetail);   
+        }
+        
+        // Insere matricula e movimentacao contratual
+        $filters = new stdClass();
+        $filters->groupId = $groupId;
+        $filters->contractId = $contractId;
+        $rows = $this->busEnroll->searchEnroll($filters);
+
+        // Se as duas ultimas colunas estiverem preenchidas, trocar o curriculumId pelo do curso do contrato.
+        if ( strlen($data->codigodisciplinacurso) > 0 && strlen($data->versaodisciplinacurso) > 0 )
+        {
+            $data->curriculumId = $this->obterMatrizCurricularDeDisciplina(
+                    $data->codigodisciplinacurso, 
+                    $data->versaodisciplinacurso,
+                    $data->curso, 
+                    $data->versao, 
+                    $unitIdContrato,
+                    $turnIdContrato
+            );
+        }
+        
+        if ( count($rows) > 0 )
+        {
+            $enrollId = $rows[0][0];
+            $enrollData = $this->busEnroll->getEnroll($enrollId);
+            
+            foreach ( $data as $key => $value )
+            {
+                $enrollData->$key = $value;
+            }
+            
+            $enrollData->isInternet = DB_FALSE;
+            
+            $enrollData->curriculumId = $data->curriculumId;
+            $ok = $this->busEnroll->updateEnroll($enrollData);
+        }
+        else
+        {
+            $data->isInternet = DB_FALSE;
+            $data->dateEnroll = $data->beginDate;
+            
+            $ok = $this->busEnroll->insertNewEnroll($data, true, true);
+            $enrollId = $this->busEnroll->getLastInsertId();
+        }
+        
+        if( strlen($data->nota) > 0 )
+        {
+            $this->inserirNotaMatricula($degreeId, is_numeric($ok) ? $ok : $enrollId, $data->nota);
+        }
+        
+        parent::importLineEnd($data);
+        
+        // Caso esteja definido para o semestre ser equivalente a carga horária cursada.
+        $acdSemesterContractPeriod = new AcdSemesterContractPeriod(null, $contractId);
+        $acdSemesterContractPeriod->atualizaSemestreDoContrato();
+    }
+}
+?>

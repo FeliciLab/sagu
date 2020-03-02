@@ -1,0 +1,1224 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Intermediate form that inherits MForm
+ * and implements basic functions
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ *
+ * @since
+ * Class created on 15/10/2010
+ *
+ * */
+
+/**
+ * extends MForm
+ */
+class SStepByStepForm extends SForm {
+
+    public $steps;
+    public $forms;
+    public $step;
+    public $nextStep;
+    public $stepName;
+    public $prevStep;
+    public $data;
+    public $formName;
+    public $idStep;
+
+    /**
+     * @var array Campos que devem ser exibidos no modo de edição.
+     */
+    private $editFields;
+
+    /**
+     * Define se formulário está sendo acessado em modo de edição. Se estiver,
+     * é exibido um componente de abas, ao invés dos passos.
+     *
+     * @var boolean
+     */
+    private static $isEditMode = false;
+    private static $defaultButtons = true;
+    private static $showImageOnButtons = false;
+
+    const BUTTONS_DIV_ID = 'stepButtonsDiv';
+    const BUTTONS_DIV_STYLE = 'm-stepbystep-buttons';
+    const BUTTONS_DIV_IMG_STYLE = 'm-stepbystep-buttons-img';
+
+    public $MIOLO;
+    public $module;
+    public $mStepByStep;
+
+    /**
+     * Bloqueia passo a passo quando houver conflito de dados, pedindo uma confirmacao para o usuario se deseja continuar, limpando os dados anteriores.
+     *
+     * @var boolean
+     */
+    private $blockWhenNotFinish = false;
+
+    public function __construct($title = null, $steps, $formName, $object = null, $pkey = null)
+    {
+        $this->MIOLO = MIOLO::getInstance();
+        $this->module = MIOLO::getCurrentModule();
+
+        $this->steps = SStepByStepForm::getTitles($steps);
+        $this->forms = SStepByStepForm::getForms($steps);
+        $this->stepName = MIOLO::getCurrentAction();
+        $this->formName = $formName;
+
+        $this->buttons = array();
+
+        $stepForms = SStepByStepForm::getForms($steps);
+        $this->step = array_search($formName, $stepForms);
+        $tmpNextStep = $this->step + 1;
+        if (strlen($stepForms[$tmpNextStep]) > 0)
+        {
+            $this->nextStep = $tmpNextStep;
+        }
+
+        $this->setShowImageOnButtons(TRUE);
+
+        if (!(strlen($title) > 0))
+        {
+            $title = $steps[$this->step]->title;
+        }
+
+        $this->idStep = SAGU::NVL($_REQUEST['randomid'], rand());
+        
+        parent::__construct($title, $object, $pkey);
+
+        /**
+         * O randomId é setado no request e na sessão. Deve ser chamado e setado na primeira
+         * vez em que o passo-a-passo é aberto. Estávamos tendo problemas com esta primeira
+         * validação. Como (podemos ver mais acima), o $this->idStep é pego ou do $_REQUEST
+         * ou cria um randomid novo, quando ia do primeiro passo para o segundo, estava trocando
+         * o id sempre. Criando um campo hidden, o $_REQUEST garante que o $this->idStep permaneça
+         * correto. - Resolve ticket #37999
+         */
+        $fields[] = new SHiddenField('randomid', $this->idStep);
+        $this->AddFields($fields);
+        
+        //Default toolbar buttons
+
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+
+        //Auto go to next step (for debug only).
+        if (false) //Set TRUE for activate. Not apply commit with TRUE defined.
+        {
+            $this->page->onload("
+            if (document.getElementById('nextStepButton'))
+            {
+                document.getElementById('nextStepButton').onclick();
+            }
+            else if (document.getElementById('finalizeButton'))
+            {
+                document.getElementById('finalizeButton').onclick();
+            }
+            document.forms[0].submit();
+        ");
+        }
+
+        // Verificacao multiplas abas
+        if ($this->isFirstStep() && $this->getBlockWhenNotFinish() && strlen($this->MIOLO->session->getValue('randomid')) > 0)
+        {
+            if ($this->isUnfinishedStep())
+            {
+                $this->checkUnfinishedStep();
+            }
+
+            $this->defineUnfinishedStep();
+        }
+    }
+
+    /**
+     * @return boolean
+     */
+    public function getBlockWhenNotFinish()
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        // Quando estiver em modo edicao em abas...
+        $tabCond = $MIOLO->getConf('step.istabmode') && $this->isUpdateFunction();
+
+        return $this->blockWhenNotFinish && !$tabCond;
+    }
+
+    public function setBlockWhenNotFinish($blockWhenNotFinish)
+    {
+        $this->blockWhenNotFinish = $blockWhenNotFinish;
+    }
+
+    /**
+     * @return array
+     */
+    public function getUnfinishedSteps()
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        return (array) $MIOLO->session->get('unfinished_steps');
+    }
+
+    /**
+     * Define o passo como nao-finalizado.
+     */
+    public function defineUnfinishedStep()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $stepName = $this->getStepName();
+
+        $unfinish = $this->getUnfinishedSteps();
+        $unfinish[$stepName] = true;
+
+        $MIOLO->session->set('unfinished_steps', $unfinish);
+    }
+
+    /**
+     * Define o passo como finalizado. 
+     */
+    public function defineFinishedStep()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $stepName = $this->getStepName();
+
+        $unfinish = $this->getUnfinishedSteps();
+
+        unset($unfinish[$stepName]);
+
+        $MIOLO->session->set('unfinished_steps', $unfinish);
+        $MIOLO->session->set('randomid', null);
+    }
+
+    /**
+     * @return boolean 
+     */
+    public function isUnfinishedStep()
+    {
+        $unfinish = $this->getUnfinishedSteps();
+        $randomId = $_GET['randomid'];
+
+        return $unfinish[$this->getStepName()] === true && ( strlen($randomId) == 0 );
+    }
+
+    public function checkUnfinishedStep()
+    {
+        if (MIOLO::_REQUEST('clearUnfinishStep') == 1)
+        {
+            $this->cleanStepData();
+            $this->defineFinishedStep();
+
+            $url = $this->MIOLO->getCurrentURL();
+            $url = str_replace('&clearUnfinishStep=1', '', $url);
+            $url = str_replace('&amp;clearUnfinishStep=1', '', $url);
+
+            // Redireciona para URL do passo a passo
+            $this->MIOLO->session->set('randomid', null);
+            $this->MIOLO->page->Redirect($url);
+        }
+        else
+        {
+            $this->unfinishedConfirmation();
+        }
+    }
+
+    /**
+     * Exibe mensagem de conflito de dados detectado
+     */
+    public function unfinishedConfirmation()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $stepName = $this->getStepName();
+
+        $gotoOK = $MIOLO->getCurrentURL() . '&clearUnfinishStep=1';
+        $gotoCancel = $MIOLO->getCurrentURL();
+
+        $MIOLO->question(_M('Aparentemente este passo a passo foi aberto em outra instância, sem ter sido finalizado. Deseja continuar e apagar os dados anteriores?'), $gotoOK, $gotoCancel);
+    }
+
+    public function setFields($fields)
+    {
+        if (!self::getCurrentStep() && !MIOLO::_REQUEST('__EVENTTARGETVALUE'))
+        {
+            $this->cleanStepData();
+        }
+
+        $this->step = $this->step ? $this->step : self::getCurrentStep();
+        $this->step = $this->step ? $this->step : 1;
+        $this->nextStep = $this->nextStep ? $this->nextStep : $this->step + 1;
+
+        // Caso esteja em modo de edição, não são necessários os botões de passos
+        if (self::$isEditMode)
+        {
+            $this->editFields = $fields;
+            return;
+        }
+
+        foreach ($this->steps as $k => $stp)
+        {
+            if ($this->step == $k)
+            {
+                $type = MStep::TYPE_CURRENT;
+            }
+            elseif ($this->step < $k)
+            {
+                $type = MStep::TYPE_NEXT;
+            }
+            elseif ($this->step > $k)
+            {
+                $type = MStep::TYPE_PREVIOUS;
+            }
+
+            $stepsDiv[$k] = $mstep = new MStep($k, $stp, $type);
+            
+            // ao clicar no passo, faz submit no form para salvar os dados atuais
+            $mstep->goTo = "document.getElementById('stepDestination').value = {$k};";
+            $mstep->goTo .= "document.getElementById('transitionStep').onclick();";
+            $mstep->goTo .= "document.forms[0].submit();";
+        }
+
+        /*
+         * If it has more than five steps shows the first, the previous,
+         * the current, the next and the last one.
+         */
+        if (count($this->steps) > 5)
+        {
+            $asteps[] = $stepsDiv[1];
+            if ($this->step <= 3)
+            {
+                $asteps[] = $stepsDiv[2];
+                $asteps[] = $stepsDiv[3];
+                $asteps[] = $stepsDiv[4];
+                $asteps[] = new MDiv(NULL, '...', MStep::HIDE_STYLE);
+                $asteps[] = $stepsDiv[count($this->steps)];
+            }
+            elseif ($this->step >= (count($this->steps) - 2))
+            {
+                $step = count($this->steps) - 2;
+                $asteps[] = new MDiv(NULL, '...', MStep::HIDE_STYLE);
+                $asteps[] = $stepsDiv[$step - 1];
+                $asteps[] = $stepsDiv[$step];
+                $asteps[] = $stepsDiv[$step + 1];
+                $asteps[] = $stepsDiv[count($this->steps)];
+            }
+            else
+            {
+                $asteps[] = new MDiv(NULL, '...', MStep::HIDE_STYLE);
+                $asteps[] = $stepsDiv[$this->step - 1];
+                $asteps[] = $stepsDiv[$this->step];
+                $asteps[] = $stepsDiv[$this->step + 1];
+                $asteps[] = new MDiv('', '...', MStep::HIDE_STYLE);
+                $asteps[] = $stepsDiv[count($this->steps)];
+            }
+        }
+        else
+        {
+            $asteps = $stepsDiv;
+        }
+
+        if (!$fields)
+        {
+            $fields = array();
+        }
+
+        // Adiciona campos customizados para passo a passo
+        if ($this instanceof SStepByStepForm)
+        {
+            $custFields = $this->getCustomFields($this->getTransaction(), $this->getPkeyValue());
+            $custFields[] = new MSeparator();
+
+            $fields = array_merge($fields, (array) $custFields);
+        }
+
+        $fields = array_merge(array(new MBaseGroup(NULL, NULL, $asteps, NULL)), $fields);
+        $fields[] = new MHiddenField("firstAccess{$this->formName}", 1);
+
+        if (self::$defaultButtons)
+        {
+            $fields[] = $this->getButtons();
+        }
+
+        // botao e campo invisivel de transicao de passo
+        $divHidden[] = new MButton('transitionStep');
+        $divHidden[] = new MTextField('stepDestination');
+        $fields[] = $div = new MDiv('divhidden', $divHidden);
+        $div->addBoxStyle('display', 'none');
+        
+        parent::defineFields(array('fields' => $fields));
+    }
+
+    /**
+     * Retorna a transação do formulário
+     * 
+     * @return string
+     */
+    public function getTransaction()
+    {
+        return get_class($this);
+    }
+
+    public function getSessionValue($key)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        return $_SESSION['stepByStep'][$this->idStep][$key];
+    }
+
+    public function setSessionValue($key, $value)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $_SESSION['stepByStep'][$this->idStep][$key] = $value;
+    }
+
+    /**
+     * Saves the step data and redirects to the next step
+     *
+     */
+    public function nextStepButton_click($args = null)
+    {
+        if (!$this->nextStep)
+        {
+            $this->nextStep = $this->step ? $this->step + 1 : 2;
+        }
+
+        $this->prepareData($this->getData());
+
+        self::setCurrentStep($this->nextStep);
+        $args = is_array($args) ? array_merge($_GET, $args) : $_GET;
+
+        $dat = $this->getData();
+
+        $args['randomid'] = $this->idStep;
+        $args['personId'] = $dat->personId;
+        $this->MIOLO->session->set('randomid', $this->idStep);
+
+        $this->redirect(MIOLO::getCurrentModule(), MIOLO::getCurrentAction(), $args);
+    }
+
+    /**
+     * Saves the step data and redirects to the previous step
+     *
+     */
+    public function previousStepButton_click($args = null)
+    {
+        if (!$this->prevStep)
+        {
+            $this->prevStep = $this->step - 1;
+        }
+
+        if ($this->prevStep < 1)
+        {
+            $this->prevStep = 1;
+        }
+
+        $this->prepareData($this->getData());
+        self::setCurrentStep($this->prevStep);
+
+        $args = is_array($args) ? array_merge($_GET, $args) : $_GET;
+        $this->redirect(MIOLO::getCurrentModule(), MIOLO::getCurrentAction(), $args);
+    }
+    
+    public function transitionStep_click($args = null)
+    {
+        $stepDestination = MIOLO::_REQUEST('stepDestination');
+        
+        $this->prepareData($this->getData());
+        self::setCurrentStep($stepDestination);
+        
+        $args = is_array($args) ? array_merge($_GET, $args) : $_GET;
+        $this->redirect(MIOLO::getCurrentModule(), MIOLO::getCurrentAction(), $args);        
+    }
+
+    /**
+     * Redirects the user to the given step
+     *
+     * @param integer $step Step number
+     */
+    public function gotoStep($step)
+    {
+        self::setCurrentStep($step);
+        $this->redirect(MIOLO::getCurrentModule(), MIOLO::getCurrentAction(), $_GET);
+    }
+
+    /**
+     * Converts an object to array
+     *
+     * @param object Object
+     * @return array Array
+     */
+    public function objectToArray($object)
+    {
+        if (count($object) > 1)
+        {
+            $arr = array();
+            for ($i = 0; $i < count($object); $i++)
+            {
+                $arr[] = get_object_vars($object[$i]);
+            }
+            return $arr;
+        }
+        else
+        {
+            return get_object_vars($object);
+        }
+    }
+
+    /**
+     * @return string Returns the step name
+     */
+    public function getStepName()
+    {
+        return $this->stepName;
+    }
+
+    /**
+     * @param string $stepName Sets the step name
+     */
+    public function setStepName($stepName)
+    {
+        $this->stepName = $stepName;
+    }
+
+    /**
+     * Sets data on the given step
+     *
+     * @param object $data Data object
+     * @param integer $step Step number
+     */
+    public function setStepData($data, $step = null)
+    {
+        $data = (object) array_merge((array) $this->getStepData($step, false), (array) $data);
+        $this->prepareData($data, $step);
+    }
+
+    /**
+     * Returns the given step data, or all steps data, if $step is null
+     *
+     * @param integer $step Step number
+     * @param boolean $returnAsObject Sets the return type
+     * @return unknown Returns an object if $returnAsObject is true and an array if false
+     */
+    public function getStepData($step = null, $returnAsObject = true)
+    {
+        $stepsData = $this->getAllStepData();
+
+        // gets the last step data because it's not on session yet
+        if ($this->isLastStep() || (self::getCurrentStep() == $this->step))
+        {
+            $data = self::objectToArray($this->getData());
+            $lastStep = array_pop(array_keys($this->steps));
+            if (!$stepsData[$lastStep])
+            {
+                $stepsData[$lastStep] = $data;
+            }
+        }
+
+        // if a step is given, returns only the specific step data
+        if ($step)
+        {
+            $data = $returnAsObject ? (object) $stepsData[$step] : $stepsData[$step];
+        }
+        else
+        {
+            if ($returnAsObject)
+            {
+                $returnData = array();
+                if ($stepsData)
+                {
+                    foreach ($stepsData as $key => $data)
+                    {
+                        $returnData = array_merge($returnData, $data);
+                    }
+                }
+
+                $data = (object) $returnData;
+            }
+            else
+            {
+                $data = $stepsData;
+            }
+        }
+
+        return $data;
+    }
+
+    public function getStepDataByForm($formName = null, $returnAsObject = true)
+    {
+        if (is_null($formName))
+        {
+            $formName = $this->formName;
+        }
+
+        if (!self::$isEditMode)
+        {
+            $stepNumber = array_search($formName, $this->forms);
+            if ($stepNumber > 0)
+            {
+                return $this->getStepData($stepNumber, $returnAsObject);
+            }
+        }
+    }
+
+    /**
+     * Clean the data of one step or of all steps
+     *
+     * @param integer $step Step number
+     */
+    public function cleanStepData($step = null)
+    {
+        if ($step)
+        {
+            $stepsData = $this->getAllStepData();
+            $stepsData[$step] = NULL;
+
+            $this->setAllStepData($stepsData);
+        }
+        else
+        {
+            $this->setAllStepData(NULL);
+        }
+    }
+
+    /**
+     * Prepares the step data (current step, if none is informed) to put them on session
+     *
+     * @param unknown $data Array or object
+     * @param integer $step Step number
+     */
+    public function prepareData($data = null, $step = null)
+    {        
+        if (!$step)
+        {
+            // the first time on the first step, the step is still undefined
+            $step = $this->step ? $this->step : 1;
+        }
+
+        if (is_object($data))
+        {
+            $data = self::objectToArray($data);
+        }
+
+        //FIXME Ao voltar para o passo e desmarcar um checkbox, o valor continua setado no StepData.
+        foreach ((array) $data as $key => $val)
+        {
+            //Fix para valor de MCheckBox se comportar no passo a passo igual ao MForm
+            if ($this->GetField($key) instanceof MCheckBox && !(strlen($val) > 0))
+            {
+                unset($data[$key]);
+            }
+        }
+
+        // verifies if there is already data on session of this step by step
+        $stepData = $this->getStepData(null, false);
+        
+        // adds the step data array to be saved on session
+        $stepData[$step] = $data;
+        
+        $this->setAllStepData($stepData);
+    }
+
+    /**
+     * Saves data from all steps on session
+     *
+     * @param array $stepData Data from all the steps
+     */
+    public function setAllStepData($stepData)
+    {
+        // serializes the data and saves it
+        $MIOLO = MIOLO::getInstance();
+        $this->setSessionValue($this->getStepName(), serialize($stepData));
+    }
+
+    /**
+     * Gets steps data from session and unserialize it
+     *
+     * @return array Unserialized data array
+     */
+    public function getAllStepData()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $data = unserialize($this->getSessionValue($this->getStepName()));
+        return $data;
+    }
+
+    /**
+     * Gets steps data from session and unserialize it
+     *
+     * @return array Unserialized data array
+     */
+    public static function getAllStepDataStatic()
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $data = unserialize($_SESSION['stepByStep'][SAGU::NVL(MIOLO::_REQUEST('randomid'), rand())][MIOLO::getCurrentAction()]);
+
+        $mergedData = array();
+
+        foreach ($data as $value)
+        {
+            $mergedData += (array) $value;
+        }
+
+        return $mergedData;
+    }
+
+    /**
+     * @return integer Returns the current step
+     */
+    public static function getCurrentStep()
+    {
+        return MIOLO::_REQUEST('step');
+    }
+
+    /**
+     * @param integer $step Sets the current step
+     */
+    public static function setCurrentStep($step)
+    {
+        $_GET['step'] = $step;
+    }
+
+    /**
+     * @return boolean Returns if it is set to show image on buttons or not
+     */
+    public static function getShowImageOnButtons()
+    {
+        return self::$showImageOnButtons;
+    }
+
+    /**
+     * @param boolean $showImageOnButtons Sets to show image on buttons or not
+     */
+    public static function setShowImageOnButtons($showImageOnButtons)
+    {
+        self::$showImageOnButtons = $showImageOnButtons;
+    }
+
+    /**
+     * This method is generally used in handlers, to get current form object of step by strep
+     *
+     * @param array $steps Array containing step informations
+     * @param boolean $enableTabEdit Ativa ou desativa edicao em abas
+     * 
+     * @return MForm $form Object of MForm
+     */
+    public static function getCurrentForm($steps, $enableTabEdit = false, $defaultTitle = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        $defaultTitle = SAGU::NVL($defaultTitle, _M('Edição', $module));
+        $stepInfo = self::getCurrentStepInfo($steps);
+
+        $MIOLO->setConf('step.istabmode', true);
+
+        // Edicao em abas
+        if ($enableTabEdit && ( $function == SForm::FUNCTION_UPDATE ))
+        {
+            $form = self::createTabEditForm($steps, $defaultTitle);
+        }
+        else
+        {
+            $form = $MIOLO->getUI()->getForm($stepInfo->module, $stepInfo->formName, $steps);
+        }
+
+        return $form;
+    }
+
+    /**
+     * Cria um SForm com abas sendo que cada aba é um passo na ordem em que foi definido no array $steps
+     *
+     * @param type $steps
+     * @param type $defaultTitle
+     * 
+     * @return SForm 
+     */
+    public static function createTabEditForm($steps, $defaultTitle)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        $fields = array();
+        $validators = array();
+
+        $fields[] = $tab = new MTabbedBaseGroup('tab' . rand());
+
+        $params = new stdClass();
+        $params->disableConstruct = true;
+
+        foreach ($steps as $stepInfo)
+        {
+            SStepByStepForm::setIsEditMode(TRUE);
+            $stepForm = $MIOLO->getUI()->getForm($stepInfo->module, $stepInfo->formName, $params);
+            $stepForm instanceof MForm;
+            $stepForm->SetPage($MIOLO->page);
+            $stepForm->name = $MIOLO->page->name;
+
+            // Verifica se o formulário sobrescreve o defineFields
+            $rc = new ReflectionClass($stepForm);
+            $hasDefineFields = FALSE;
+
+            foreach ($rc->getMethods() as $methodData)
+            {
+                if ($methodData->class == get_class($stepForm) &&
+                        $methodData->name == 'defineFields')
+                {
+                    $hasDefineFields = TRUE;
+                    break;
+                }
+            }
+
+            if ($hasDefineFields)
+            {
+                $stepForm->defineFields();
+            }
+            else
+            {
+                $stepForm->createFields();
+            }
+
+            $tab->createTab('tab' . $stepInfo->formName, $stepInfo->title, $stepForm->editFields);
+        }
+
+        // Cria o form de exibicao das abas
+        $form = new $stepInfo->formName();
+        $form instanceof SForm;
+        $form->addFields($fields);
+        $form->SetValidators($validators);
+        $form->SetPage($MIOLO->page);
+        $form->getToolbar()->enableButton(MToolBar::BUTTON_SAVE); //People need to be Physical or Legal
+
+        if ($form instanceof SStepByStepForm)
+        {
+            $form->setBlockWhenNotFinish(false);
+        }
+
+        return $form;
+    }
+
+    /**
+     * Obtem a lista 
+     *
+     * @param array $steps
+     * @return SStepInfo
+     */
+    public static function getCurrentStepInfo($steps)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $step = SStepByStepForm::getCurrentStep() ? SStepByStepForm::getCurrentStep() : current(array_keys($steps));
+        $stepInfo = $steps[$step];
+
+        return $stepInfo;
+    }
+
+    public static function getForms($steps)
+    {
+        $forms = array();
+        if ($steps)
+        {
+            foreach ($steps as $i => $s)
+            {
+                $forms[$i] = $s->formName;
+            }
+        }
+        return $forms;
+    }
+
+    public static function getTitles($steps)
+    {
+        $titles = array();
+        if ($steps)
+        {
+            foreach ($steps as $i => $s)
+            {
+                $titles[$i] = $s->title;
+            }
+        }
+        return $titles;
+    }
+
+    /**
+     * Returns a div with buttons based on the current step
+     *
+     * @return MDiv A div with a MButton array
+     */
+    public function getButtons()
+    {
+        if ($this->isFirstStep())
+        {
+            $buttons = $this->firstStepButtons();
+        }
+        elseif ($this->isLastStep())
+        {
+            $buttons = $this->lastStepButtons();
+        }
+        else
+        {
+            $buttons = $this->innerStepButtons();
+        }
+
+        return $this->buttonsDiv($buttons);
+    }
+
+    /**
+     * Finalizes the step by step, by changing the buttons with the specified
+     * ones (or with a default close button) and disabling the step buttons
+     *
+     * @param array $buttons Array with buttons (MButton) to be displayed
+     */
+    public function finalizeStepByStep($buttons = NULL)
+    {
+        $label = _M('Passo final', 'basic');
+
+        $jsCode = "
+            document.getElementById('" . self::BUTTONS_DIV_ID . "').innerHTML = '';
+            document.getElementById('stepImage_{$this->step}').className = '" . MStep::PREVIOUS_ICON_STYLE . "';
+            document.getElementById('stepDescription_{$this->step}').innerHTML = '$label'; ";
+
+        foreach ($this->steps as $step => $stepName)
+        {
+            $jsCode .= "
+                var element = document.getElementById('divStep_$step');
+                if ( element )
+                {
+                   element.className = '" . MStep::DISABLED_STYLE . "';
+                   element.onclick = '';
+                }";
+        }
+
+        $this->page->onLoad($jsCode);
+
+        if ($buttons)
+        {
+            $this->addField($this->buttonsDiv($buttons));
+        }
+        else
+        {
+            $div = $this->buttonsDiv(array(new MButton('closeButton', _M('Fechar', 'basic'))));
+            $this->addField($div);
+        }
+    }
+
+    /**
+     * @param boolean $defaultButtons Sets if the default buttons must be shown
+     */
+    public static function setDefaultButtons($defaultButtons)
+    {
+        self::$defaultButtons = $defaultButtons;
+    }
+
+    /**
+     * @return boolean Returns if the default buttons must be shown
+     */
+    public static function getDefaultButtons()
+    {
+        return self::$defaultButtons;
+    }
+
+    /**
+     * @return boolean Returns true if current step is the first step
+     */
+    public function isFirstStep()
+    {
+        if (self::getCurrentStep() == 1 || !self::getCurrentStep())
+        {
+            return true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+
+    /**
+     * @return boolean Returns true if the current step is the last step
+     */
+    public function isLastStep()
+    {
+        if (!$this->steps)
+        {
+            return false;
+        }
+        $lastStep = array_pop(array_keys($this->steps));
+        return $lastStep == $this->step;
+    }
+
+    /**
+     * Checks on session if the data of the given step was already set
+     *
+     * @param $step The step number. If not informed, it uses the current step
+     * @return boolean True if data was already set
+     */
+    public function isFirstAccess($step = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $event = MIOLO::_REQUEST('__EVENTTARGETVALUE');
+
+        if (!$step)
+        {
+            $step = $this->step;
+        }
+
+        $allStepData = $this->getAllStepData();
+        $stepData = (object) $allStepData[$step];
+        $isFirstAccess = !(strlen($stepData->{'firstAccess' . $this->formName}) > 0);
+
+        //If event is next/previous step click, not consider as first access
+        $isButtonEvent = ($event == 'nextStepButton:click') || ($event == 'previousStepButton:click') || ($event == 'tbBtnSave:click') || ($event == 'finalizeButton:click');
+
+        $cpaintFunction = (strlen(MIOLO::_REQUEST('cpaint_function')) > 0);
+        $isSaveEvent = SAGU::getEventName() == 'tbBtnSave:click';
+
+        // if is set, returns true
+        return $isFirstAccess && !$isButtonEvent && !$cpaintFunction && !$isSaveEvent || (!self::getCurrentStep() && !$isSaveEvent );
+    }
+
+    /**
+     * Method called on cancel button action
+     *
+     */
+    public function cancelButton_click($args)
+    {
+        $this->redirect(MIOLO::getCurrentModule(), MIOLO::getCurrentAction());
+    }
+
+    /**
+     * Method called on finalize button action
+     * This is an example method. You must override it to save the form data
+     *
+     */
+    public function finalizeButton_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+//        $buttons[] = $this->closeButton($args);
+//        $this->finalizeStepByStep($buttons);
+
+        $this->defineFinishedStep();
+    }
+
+    /**
+     * Redirects the page to the given action of the given module, with the
+     * given arguments
+     *
+     * @param string $module Module
+     * @param string $action Action
+     * @param array $args Arguments
+     */
+    public function redirect($module, $action, $args = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        unset($args['module']);
+        unset($args['action']);
+        unset($args['stepDestination']);
+
+        $url = $MIOLO->getActionURL($module, $action, '', $args);
+        $MIOLO->page->redirect($url);
+    }
+
+    /**
+     * @return MButton Default cancel button
+     */
+    public function cancelButton()
+    {
+        if (self::$showImageOnButtons)
+        {
+            $image = 'images/button_cancel.png';
+        }
+        $button = new MButton('cancelButton', '<span>' . _M('Cancelar', 'basic') . '</span>', "document.forms[0].onsubmit=function(event){return showLoading();}; return _doPostBack('cancelButton:click','', '_self');", $image);
+        $button->type = 'submit';
+        return $button;
+    }
+
+    /**
+     * @return MButton Default next step button
+     */
+    public function nextStepButton()
+    {
+        if (self::$showImageOnButtons)
+        {
+            $image = 'images/button_next.png';
+        }
+        return new MButton('nextStepButton', '<span>' . _M('Próximo passo', 'basic') . '</span>', NULL, $image);
+    }
+
+    /**
+     * @return MButton Default previous step button
+     */
+    public function previousStepButton()
+    {
+        if (self::$showImageOnButtons)
+        {
+            $image = 'images/button_previous.png';
+        }
+        $button = new MButton('previousStepButton', '<span>' . _M('Passo anterior', 'basic') . '</span>', "document.forms[0].onsubmit=function(event){return showLoading();}; return _doPostBack('previousStepButton:click','', '_self');", $image);
+        $button->type = 'submit';
+        return $button;
+    }
+
+    /**
+     * @return MButton Default finalize button
+     */
+    public function finalizeButton()
+    {
+        if (self::$showImageOnButtons)
+        {
+            $image = 'images/button_finalize.png';
+        }
+        $button = new MButton('finalizeButton', '<span>' . _M('Finalizar', 'basic') . '</span>', NULL, $image);
+        $button->onclick = "if ( _doPostBack('finalizeButton:click','', '_self') && miolo_onSubmit() ) { this.style.color='gray'; this.onclick=function(){return false;}; return true; } return false;";
+        return $button;
+    }
+
+    /**
+     * @return MDiv Default buttons for the first step
+     */
+    public function firstStepButtons()
+    {
+        return $this->buttonsDiv(array($this->nextStepButton(), $this->cancelButton()));
+    }
+
+    /**
+     * @return MDiv Default buttons for steps between the first and the last
+     */
+    public function innerStepButtons()
+    {
+        return $this->buttonsDiv(array($this->nextStepButton(), $this->previousStepButton(), $this->cancelButton()));
+    }
+
+    /**
+     * @return MDiv Default buttons for the last step
+     */
+    public function lastStepButtons()
+    {
+        return $this->buttonsDiv(array($this->finalizeButton(), $this->previousStepButton(), $this->cancelButton()));
+    }
+
+    public function closeButton($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        $args['function'] = 'search';
+        $url = $MIOLO->getActionUrl($module, $action, null, $args);
+        return new MButton(NULL, _M('Fechar', 'basic'), $url);
+    }
+
+    /**
+     * @param array $buttons MButton array
+     * @return MDiv Default buttons div
+     */
+    public function buttonsDiv($buttons)
+    {
+        $class = self::$showImageOnButtons ? self::BUTTONS_DIV_IMG_STYLE : self::BUTTONS_DIV_STYLE;
+        $div = new MDiv(self::BUTTONS_DIV_ID, $buttons, $class, 'align="center"');
+        $div->addBoxStyle('direction', 'rtl');
+        $div->addBoxStyle('width', '100%');
+        return $div;
+    }
+
+    /**
+     * Obtem todos campos de edicao deste formulario
+     * Deve ser sobrescrito em cada formulario de Etapa
+     * 
+     * @return array
+     */
+    public function getEditFields()
+    {
+        return array();
+    }
+
+    /**
+     * @return boolean Retorna se formulário está em modo de edição.
+     */
+    public static function getIsEditMode()
+    {
+        return self::$isEditMode;
+    }
+
+    /**
+     * @param boolean $isEditMode Define se formulário está em modo de edição.
+     */
+    public static function setIsEditMode($isEditMode)
+    {
+        self::$isEditMode = $isEditMode;
+    }
+
+    /**
+     * Retorna o valor da chave primaria, geralmente utilizado em edicao de passo a passo.
+     * Foi criado esta funcao para ser sobrescrita por passo a passos, para funcionar corretamente o Salvar de campos personalizados (mioloCustomFields).
+     * 
+     * @return int 
+     */
+    public function getPkeyValue()
+    {
+        return null;
+    }
+
+    /**
+     * Recebe um array com o número do step que deve ser desabilitado
+     * @param type array $steps
+     */
+    public function disableSteps($steps = array())
+    {
+        MIOLO::getInstance()->setConf('temp.disable.steps', $steps);
+    }
+
+    /*
+     * Desabilita navegaçao por numeros (por cima).
+     * 
+     */
+
+    public function disableAllSteps()
+    {
+        foreach ($this->steps as $step => $stepName)
+        {
+            $jsCode .= "
+                var element = document.getElementById('divStep_$step');
+                if ( element )
+                {
+                   element.className = '" . MStep::DISABLED_STYLE . "';
+                   element.onclick = '';
+                }";
+        }
+
+        $this->page->onLoad($jsCode);
+    }
+
+}
+
+?>

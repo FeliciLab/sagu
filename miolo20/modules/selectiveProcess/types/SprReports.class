@@ -1,0 +1,755 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Classe que contém funções específicas de relatórios
+ *
+ * @author Arthur Lehdermann [arthur@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 19/01/2011
+ */
+class SprReports
+{
+
+    /**
+     * Função responsável por buscar inscritos por cursos em processos seletivos abertos
+     *
+     * @param (object) $filters - Filtros
+     * @return (array)
+     */
+    public static function buscaInscritosPorCurso($filters)
+    {
+        $sql = " SELECT C.description,
+                        (SELECT count(AA.subscriptionid) AS inscritos
+                           FROM spr.subscription AA
+                     INNER JOIN spr.subscriptionoption BB
+                             ON AA.subscriptionid = BB.subscriptionid
+                          WHERE BB.optionnumber = 1
+                            AND BB.optionid = C.optionid
+                            AND AA.selectiveprocessid = ?)
+                   FROM spr.option C
+                  WHERE c.selectiveProcessId = ?";
+
+        $params[] = $filters->selectiveProcessId;
+        $params[] = $filters->selectiveProcessId;
+        
+        return SDatabase::query($sql, $params);
+    }
+
+
+    /**
+     * Função responsável por buscar as inscrições de uma opção de uma avaliação
+     *
+     * @param (object) $filters - Filtros
+     * @return (array)
+     */
+    public static function searchStudentsByEvaluation($filters)
+    {
+        $sql = 'SELECT A.selectiveProcessId,
+                       A.description AS selectiveProcessDescription,
+                       B.stepId,
+                       B.description AS stepDescription,
+                       C.evaluationId,
+                       C.description AS evaluationDescription,
+                       D.description AS evaluationOptionDescription,
+                       (SELECT COUNT(subscriptionId) FROM spr.subscriptionEvaluationOption WHERE evaluationOptionId = E.evaluationOptionId) AS totalSubscriptions
+                  FROM spr.selectiveProcess A
+            INNER JOIN spr.step B
+                    ON (A.selectiveProcessId = B.selectiveProcessId)
+            INNER JOIN spr.evaluation C
+                    ON (B.stepId = C.stepId)
+             LEFT JOIN spr.evaluationOption D
+                    ON (C.evaluationId = D.evaluationId)
+             LEFT JOIN spr.subscriptionEvaluationOption E
+                    ON (D.evaluationOptionId = E.evaluationOptionId)';
+
+        $where = '';
+        $params = array();
+
+        if ( $filters->selectiveProcessId )
+        {
+            $where .= ' AND A.selectiveProcessId = ?';
+            $params[] = $filters->selectiveProcessId;
+        }
+
+        if ( $filters->stepId )
+        {
+            $where .= ' AND B.stepId = ?';
+            $params[] = $filters->stepId;
+        }
+
+        if ( $filters->evaluationId )
+        {
+            $where .= ' AND C.evaluationId = ?';
+            $params[] = $filters->evaluationId;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5) . ' GROUP BY 1,2,3,4,5,6,7,8';
+        }
+
+        return SDatabase::query($sql, $params);
+    }
+
+    /**
+     * Função responsável por buscar as inscrições filtrando se concluiu ou não o ensino médio
+     *
+     * @param (integer) $selectiveProcessId - Código do processo seletivo
+     * @return (array)
+     */
+    public static function searchStatisticForHighSchool($selectiveProcessId)
+    {
+        $sql = 'SELECT B.selectiveProcessId,
+                       B.description AS selectiveProcessDescription,
+                       ( SELECT COUNT(AA.subscriptionId)
+                                 FROM spr.subscription AA
+                                WHERE AA.finishedhighschool = ?
+                       ) AS finishedhighschool,
+                       COUNT(A.subscriptionId) AS totalSubscriptions
+                  FROM spr.subscription A
+            INNER JOIN spr.selectiveProcess B
+                    ON (A.selectiveProcessId = B.selectiveProcessId)';
+
+        $where = '';
+        $params[] = DB_TRUE;
+
+        if ( $selectiveProcessId )
+        {
+            $where .= ' AND B.selectiveProcessId = ?';
+            $params[] = $selectiveProcessId;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5) . ' GROUP BY 1, 2, 3';
+        }
+
+        return SDatabase::query($sql, $params);
+    }
+
+    /**
+     * Função responsável por buscar as inscrições separando por idade (20- até 40+)
+     *
+     * @param (integer) $selectiveProcessId - Código do processo seletivo
+     * @return (array)
+     */
+    public static function searchStatisticForAge($selectiveProcessId)
+    {
+        $sql = "SELECT B.selectiveProcessId,
+                       B.description AS selectiveProcessDescription,
+
+                       (SELECT COUNT(AA.personId)
+                           FROM ONLY basPhysicalPerson AA
+                          INNER JOIN spr.subscription BB
+                                  ON (AA.personId = BB.personId)
+                               WHERE EXTRACT(YEAR FROM AGE(CURRENT_DATE, datebirth)) <= 20) AS ateVinte,
+
+                       (SELECT COUNT(AA.personId)
+                           FROM ONLY basPhysicalPerson AA
+                          INNER JOIN spr.subscription BB
+                                  ON (AA.personId = BB.personId) WHERE EXTRACT(YEAR FROM AGE(CURRENT_DATE, AA.datebirth)) > 20 AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, AA.datebirth)) <= 30) AS ateTrinta,
+
+                       (SELECT COUNT(AA.personId)
+                           FROM ONLY basPhysicalPerson AA
+                          INNER JOIN spr.subscription BB
+                                  ON (AA.personId = BB.personId) WHERE EXTRACT(YEAR FROM AGE(CURRENT_DATE, AA.datebirth)) > 30 AND EXTRACT(YEAR FROM AGE(CURRENT_DATE, AA.datebirth)) <= 40) AS ateQuarenta,
+
+                       (SELECT COUNT(AA.personId)
+                           FROM ONLY basPhysicalPerson AA
+                          INNER JOIN spr.subscription BB
+                                  ON (AA.personId = BB.personId) WHERE EXTRACT(YEAR FROM AGE(CURRENT_DATE, AA.datebirth)) > 40) AS maisDeQuarenta
+
+                  FROM spr.subscription A
+            INNER JOIN spr.selectiveProcess B
+                    ON (A.selectiveProcessId = B.selectiveProcessId)";
+
+        $where = '';
+        $params = array();
+
+        if ( $selectiveProcessId )
+        {
+            $where .= ' AND B.selectiveProcessId = ?';
+            $params[] = $selectiveProcessId;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5) . ' GROUP BY 1,2';
+        }
+
+        return SDatabase::query($sql, $params);
+    }
+
+    /**
+     * Função responsável por buscar as inscrições separando necessidade especial
+     *
+     * @param (integer) $selectiveProcessId - Código do processo seletivo
+     * @return (array)
+     */
+    public static function searchStatisticForSpecialNecessity($selectiveProcessId)
+    {
+        $sql = 'SELECT A.selectiveProcessId,
+                       A.description AS selectiveProcessDescription,
+                       D.description AS specialNecessityDescription,
+                       COUNT(*)
+                  FROM spr.selectiveProcess A
+            INNER JOIN spr.subscription B
+                    ON (A.selectiveProcessId = B.selectiveProcessId)
+       INNER JOIN ONLY basPhysicalPerson C
+                    ON (B.personId = C.personId)
+            INNER JOIN basSpecialNecessity D
+                    ON (C.specialNecessityId = D.specialNecessityId)';
+
+        $where = '';
+        $params = array();
+
+        if ( $selectiveProcessId )
+        {
+            $where .= ' AND A.selectiveProcessId = ?';
+            $params[] = $selectiveProcessId;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5) . ' GROUP BY 1,2,3 ORDER BY 3';
+        }
+
+        return SDatabase::query($sql, $params);
+    }
+
+    /**
+     * Função responsável por buscar o número de inscrições de cada cidade
+     *
+     * @param (integer) $selectiveProcessId - Código do processo seletivo
+     * @return (array)
+     */
+    public static function searchStatisticForSubscriptionCity($selectiveProcessId)
+    {
+        $sql = 'SELECT B.cityid,
+                       B.name,
+                       ( SELECT COUNT(AA.personid)
+                      FROM ONLY basphysicalperson AA
+                     INNER JOIN spr.subscription BB
+                             ON (AA.personid = BB.personid)
+                          WHERE AA.cityid = B.cityid
+                            AND BB.selectiveprocessid = C.selectiveprocessid )
+                  FROM basphysicalperson A
+            INNER JOIN bascity B
+               ON (A.cityid = B.cityid)
+       INNER JOIN spr.subscription C
+               ON (A.personid = C.personid)
+            WHERE C.selectiveprocessid = ?
+         GROUP BY 1, 2, 3
+         ORDER BY 2';
+
+        $params = $selectiveProcessId;
+
+        return SDatabase::query($sql, $params);
+    }
+
+    /**
+     * Função responsável por buscar o número de inscrições de cada cidade
+     *
+     * @param (integer) $selectiveProcessId - Código do processo seletivo
+     * @return (array)
+     */
+    public static function searchStatisticForSex($selectiveProcessId)
+    {
+        $sql = "SELECT ( SELECT COUNT(AA.personid)
+                      FROM ONLY basphysicalperson AA
+                     INNER JOIN spr.subscription BB
+                             ON (AA.personid = BB.personid)
+                          WHERE BB.selectiveprocessid = C.selectiveprocessid
+                            AND AA.sex = 'M') As Masculino,
+                       ( SELECT COUNT(AA.personid)
+                      FROM ONLY basphysicalperson AA
+                     INNER JOIN spr.subscription BB
+                             ON (AA.personid = BB.personid)
+                          WHERE BB.selectiveprocessid = C.selectiveprocessid
+                            AND AA.sex = 'F') As Feminino
+                  FROM basphysicalperson A
+            INNER JOIN bascity B
+               ON (A.cityid = B.cityid)
+       INNER JOIN spr.subscription C
+               ON (A.personid = C.personid)
+            WHERE C.selectiveprocessid = ?
+         GROUP BY 1, 2";
+
+        $params = $selectiveProcessId;
+
+        return SDatabase::query($sql, $params);
+    }
+
+    /**
+     * Função responsável por buscar os documentos entregues
+     * @param Object $filters Filtros
+     */
+    public function searchDeliveredDocuments($filters)
+    {
+        $sql = 'SELECT  A.subscriptionId,
+                        D.name,
+                        A.stepDocumentId,
+                        B.description,
+                        A.contents,
+                        A.isDelivered
+                FROM spr.subscriptiondocument A
+                INNER JOIN spr.stepdocument B
+                        ON (A.stepDocumentId = B.stepDocumentId)
+                INNER JOIN spr.subscription C
+                        ON (A.subscriptionId = C.subscriptionId)
+                INNER JOIN basphysicalperson D
+                        ON (C.personId = D.personId)';
+
+        if ( strlen($filters->selectiveProcessId)>0 )
+        {
+            $where .= ' AND C.selectiveProcessId = ?';
+            $args[] = $filters->selectiveProcessId;
+        }
+        if ( strlen($filters->subscriptionId)>0 )
+        {
+            $where .= ' AND C.subscriptionId = ?';
+            $args[] = $filters->subscriptionId;
+        }
+        if ( strlen($filters->isDelivered)>0 )
+        {
+            $where .= ' AND A.isDelivered = ?';
+            $args[] = $filters->isDelivered;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5) . ' GROUP BY 1,2,3,4,5,6 ORDER BY 1,3';
+        }
+
+        return SDatabase::query($sql, $args);
+    }
+
+    /**
+     * Função responsável por buscar quantas incrições tem por sexo no processo seletivo e curso
+     * @param <object> $filters
+     * @return <array>
+     */
+    public function searchSubscriptionBySex($filters = null)
+    {
+
+        if (strlen($filters->optionId) > 0)
+        {
+            $course = "AND (OPT.optionId = ?)";
+            $args[] = $filters->optionId;
+            $args[] = $filters->optionId;
+        }
+
+        $sql = "SELECT ( SELECT COUNT(AA.personid)
+                      FROM ONLY basphysicalperson AA
+                     INNER JOIN spr.subscription BB
+                             ON (AA.personid = BB.personid)
+                     INNER JOIN spr.subscriptionOption OPT
+			     ON (BB.subscriptionId = OPT.subscriptionId)
+                          WHERE BB.selectiveprocessid = SPR.selectiveprocessid
+		            $course
+                            AND AA.sex = 'M') As Masculino,
+                       ( SELECT COUNT(AA.personid)
+                      FROM ONLY basphysicalperson AA
+                     INNER JOIN spr.subscription BB
+                             ON (AA.personid = BB.personid)
+                     INNER JOIN spr.subscriptionOption OPT
+			     ON (BB.subscriptionId = OPT.subscriptionId)
+                          WHERE BB.selectiveprocessid = SPR.selectiveprocessid
+			    $course
+                            AND AA.sex = 'F') As Feminino
+                FROM spr.selectiveProcess SPR";
+
+
+        if (strlen($filters->selectiveProcessId) > 0)
+        {
+            $where .= ' AND SPR.selectiveProcessId = ?';
+            $args[] = $filters->selectiveProcessId;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 4);
+            $result = SDatabase::query(SAGU::prepare($sql, $args));
+        }
+
+        return $result;
+    }
+
+    /**
+     * Função responsável por buscar a lista de aprovados no processo seletivo
+     * @param <object> $filters
+     * @return <array>
+     */
+    public function searchAprovedList($filters = null)
+    {
+        // Adiciona o filtro de classificado
+        $filters->subscriptionStatusId = SprSubscriptionStatus::CLASSIFIED;
+
+        // Chama a função de listagem de inscritos
+        return SprReports::searchSubscriptionList($filters);
+    }
+
+    /**
+     * Função responsável por buscar a lista de inscritos por instituição
+     * @param <object> $filters
+     * @return <array>
+     */
+    public static function searchStatisticForSubscriptionInstitution( $selectiveProcessId )
+    {
+        $sql = "SELECT COALESCE(A.workemployername, 'NÃO INFORMADA'),
+                       COUNT(B.*)
+             FROM ONLY basPhysicalPerson A
+            INNER JOIN spr.subscription B
+                    ON (A.personId = B.personId)
+                 WHERE B.selectiveProcessId = ?
+              GROUP BY 1
+              ORDER BY 1";
+
+        $params = $selectiveProcessId;
+
+        return SDatabase::query($sql, $params);
+    }
+
+
+
+    /**
+     * Função responsável por buscar o resultado final do processo seletivo
+     * @param <object> $filters
+     * @return <array>
+     */
+    public function searchFinalResult($filters = null)
+    {
+        $sql = "SELECT E.description AS courseDescription,
+                       A.position,
+                       I.position AS geralPosition,
+                       A.subscriptionId,
+                       B.personId,
+                       D.name AS personName,
+                       C.description AS status,
+                       ROUND(I.totalPoints::numeric,2),
+                       CASE WHEN A.classificadopeloenem IS TRUE THEN 'ENEM' ELSE 'Vestibular' END,
+                       ";
+
+        if ( $filters->exibeResultadoAvaliacoes == DB_TRUE )
+        {
+            $finalResultEvaluationList = self::searchFinalResultEvaluationList($filters);
+            
+            if ( isset($finalResultEvaluationList) )
+            {
+                foreach ( $finalResultEvaluationList as $evaluations )
+                {
+                    $sql.= "(SELECT ROUND(totalPoints::numeric,2::integer) AS totalPoints_".$evaluations[0]."
+                               FROM spr.evaluationPoints
+                              WHERE subscriptionId = B.subscriptionId
+                                AND evaluationId = " .$evaluations[0].") AS _".$evaluations[0].",";
+                }
+            }
+        }
+        
+        $sql.= "       F.description AS selectiveProcess
+                  FROM spr.subscriptionOption A
+             LEFT JOIN spr.subscription B
+                    ON A.subscriptionId = B.subscriptionId
+             LEFT JOIN spr.subscriptionstatus C
+                    ON A.subscriptionstatusid = C.subscriptionstatusId
+        LEFT JOIN ONLY basphysicalperson D
+                    ON B.personId = D.personId
+             LEFT JOIN spr.option E
+                    ON A.optionId = E.optionid
+             LEFT JOIN spr.selectiveProcess F
+                    ON B.selectiveProcessId = F.selectiveProcessId
+             LEFT JOIN spr.subscriptionStepInfo I
+                    ON I.subscriptionId = B.subscriptionId
+                 WHERE A.position IS NOT NULL";
+
+        $where = '';
+        if( strlen($filters->selectiveProcessId) > 0 )
+        {
+            $where .= ' AND B.selectiveProcessId = ?';
+            $args[] = $filters->selectiveProcessId;
+        }
+
+        if( strlen($filters->stepId) > 0 )
+        {
+            $where .= ' AND I.stepId = ?';
+            $args[] = $filters->stepId;
+        }
+
+        if( strlen($filters->optionId) > 0 )
+        {
+            $where .= ' AND A.optionId = ?';
+            $args[] = $filters->optionId;
+        }
+
+        if( strlen($filters->optionNumber) > 0 )
+        {
+            $where .= ' AND A.optionNumber = ?';
+            $args[] = $filters->optionNumber;
+        }
+
+        if( strlen($filters->statusId) > 0 )
+        {
+            $where .= ' AND A.subscriptionStatusId = ?';
+            $args[] = $filters->statusId;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= '    AND ' . substr($where, 5);
+
+            if( strlen($filters->orderType) > 0 )
+            {
+                if ($filters->orderType == 'P')
+                {
+                    $sql .= ' ORDER BY A.position';
+                }
+                if ($filters->orderType == 'A')
+                {
+                    $sql .= ' ORDER BY D.name';
+                }
+                if ($filters->orderType == 'G')
+                {
+                    $sql .= ' ORDER BY I.position';
+                }
+            }
+
+            $results = SDatabase::query($sql, $args);
+        }
+        
+        return $results;
+    }
+
+    /**
+     * Função responsável por buscar as avaliações do processo seletivo
+     * @param <object> $filters
+     * @return <array>
+     */
+    public function searchFinalResultEvaluationList($filters = null)
+    {
+        $sql = "SELECT C.evaluationId,
+                       C.description
+                  FROM spr.selectiveProcess A
+            INNER JOIN spr.step B
+                    ON A.selectiveProcessId = B.selectiveProcessId
+            INNER JOIN spr.evaluation C
+                    ON B.stepId = C.stepId";
+             
+        $where = '';
+        if( strlen($filters->selectiveProcessId) > 0 )
+        {
+            $where .= ' AND A.selectiveProcessId = ?';
+            $args[] = $filters->selectiveProcessId;
+        }
+
+        if( strlen($filters->stepId) > 0 )
+        {
+            $where .= ' AND B.stepId = ?';
+            $args[] = $filters->stepId;
+        }
+        if ( strlen($where) > 0 )
+        {
+            $sql .= '    WHERE ' . substr($where, 5);
+            $sql .= ' ORDER BY C.description';
+
+            $results = SDatabase::query($sql, $args);
+        }
+        
+        return $results;
+    }
+
+
+    /**
+     * Função responsável por buscar a lista de inscritos no processo seletivo
+     * @param <object> $filters
+     * @return <array>
+     */
+    public function searchSubscriptionList($filters = null)
+    {
+        $sql = "SELECT A.subscriptionid,
+                       B.personId,
+                       D.name,
+                       C.description
+                  FROM spr.subscriptionoption A
+            INNER JOIN spr.subscription B
+                    ON A.subscriptionId = B.subscriptionId
+            INNER JOIN spr.subscriptionstatus C
+                    ON A.subscriptionstatusid = C.subscriptionstatusId
+       INNER JOIN ONLY basphysicalperson D
+                    ON B.personid = D.personId";
+
+        $where = '';
+        if( strlen($filters->selectiveProcessId) > 0 )
+        {
+            $where .= ' AND B.selectiveProcessId = ?';
+            $args[] = $filters->selectiveProcessId;
+        }
+
+        if( strlen($filters->subscriptionStatusId) > 0 )
+        {
+            $where .= ' AND A.subscriptionStatusId = ?';
+            $args[] = $filters->subscriptionStatusId;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= '    WHERE ' . substr($where, 5);
+            $sql .= ' GROUP BY A.subscriptionid,
+                            B.personId,
+                            D.name,
+                            C.description
+                   ORDER BY D.name';
+
+            $results = SDatabase::query($sql, $args);
+        }
+
+        return $results;
+    }
+    
+    
+    /**
+     * Busca para grid do documento Resultado em etapa
+     * 
+     * @param stdClass $filters
+     * @return array
+     */
+    public static function searchResultadoEmEtapa($filters = null)
+    {
+        $sql = "SELECT S.subscriptionid,
+                       PP.name AS personName,
+                       SS.description AS status,
+                       SSI.position,
+                       SSI.totalPoints,                       
+                       SSI.totalPointsStep
+                  FROM spr.subscription S
+            INNER JOIN spr.subscriptionStepInfo SSI
+                    ON SSI.subscriptionId = S.subscriptionId
+            INNER JOIN spr.step STP
+                    ON STP.stepId = SSI.stepId
+            INNER JOIN spr.subscriptionstatus SS
+                    ON SS.subscriptionstatusid = SSI.subscriptionstatusId
+       INNER JOIN ONLY basphysicalperson PP
+                    ON S.personid = PP.personId";
+
+        $where = '';
+        if ( strlen($filters->selectiveProcessId) > 0 )
+        {
+            $where .= ' AND S.selectiveProcessId = ?';
+            $args[] = $filters->selectiveProcessId;
+        }
+        
+        if ( strlen($filters->stepId) > 0 )
+        {
+            $where .= ' AND STP.stepId = ?';
+            $args[] = $filters->stepId;
+        }
+
+        if ( strlen($filters->subscriptionStatusId) > 0 )
+        {
+            $where .= ' AND SS.subscriptionStatusId = ?';
+            $args[] = $filters->subscriptionStatusId;
+        }
+        
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5);
+            
+            if ( strlen($filters->order) > 0 )
+            {
+                $order = str_replace(array('name', 'subscription', 'position'),
+                                     array('PP.name', 'S.subscriptionId', 'SSI.position'), $filters->order);
+                $sql .= ' ORDER BY ' . $order;
+            }
+
+            $results = SDatabase::query($sql, $args);
+        }
+
+        return $results;
+    }
+    
+    /**
+     * Busca pessoas que nao pagaram a inscricao do Processo Seletivo
+     * 
+     * @param stdClass $filters
+     * @return array
+     */
+    public function searchPagosNaoPagos($filters = null)
+    {
+        $maskDate = SAGU::getParameter('BASIC', 'MASK_DATE');
+        
+        $sql =     "SELECT OPT.optionId,
+                           OPT.description AS option,
+                           B.personId AS Codigo,
+                           C.name AS Nome,
+                           B.invoiceId AS Titulo,
+                           C.residentialPhone AS Telefone,
+                           C.cellphone AS Celular,
+                           C.workphone AS Trabalho,
+                           LOWER(C.email) AS Email,
+                           TO_CHAR(E.maturityDate, '{$maskDate}') AS Vencimento
+                      FROM spr.selectiveProcess A
+                INNER JOIN spr.subscription B
+                        ON (A.selectiveProcessId = B.selectiveProcessId)
+           INNER JOIN ONLY basphysicalperson C
+                        ON (B.personId = C.personId)
+                INNER JOIN finInvoice E
+                        ON (B.invoiceId = E.invoiceId)
+                INNER JOIN spr.subscriptionOption SO
+                        ON SO.subscriptionId = B.subscriptionId
+                       AND SO.optionNumber = (SELECT MIN(optionNumber) FROM spr.subscriptionoption _SO WHERE _SO.subscriptionId = B.subscriptionId)
+                INNER JOIN spr.option OPT
+                        ON OPT.optionId = SO.optionId";
+
+        //
+        $where .= ' AND A.selectiveProcessId = ?';
+        $args[] = $filters->selectiveProcessId;
+
+        // titulos
+        $paymentOperations = SAGU::getParameter('FINANCE', 'PAYMENT_OPERATIONS');
+        $inNotIn = $filters->hasPayed == DB_TRUE ? 'IN' : 'NOT IN';
+        $where .= " AND B.invoiceid {$inNotIn} (SELECT F.invoiceid FROM finentry AS F WHERE F.operationid IN ({$paymentOperations}))";
+        
+        if ( strlen($filters->optionId) > 0 )
+        {
+            $where .= ' AND OPT.optionId = ? ';
+            $args[] = $filters->optionId;
+        }
+        
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5);
+            $sql .= " GROUP BY 1,2,3,4,5,6,7,8,9,10";
+            $sql .= " ORDER BY 1,4";
+
+            $results = SDatabase::query($sql, $args);
+        }
+
+        return $results;
+    }
+}
+?>

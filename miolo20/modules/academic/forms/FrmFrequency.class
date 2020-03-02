@@ -1,0 +1,1646 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulario de registro de frequencias.
+ * ATENCAO: Este formulario e utilizado para Alunos (visualizacao) e Professores/Funcionarios (registro),
+ * ao alterar leve em consideracao todos os casos.
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 20/05/2008
+ */
+class FrmFrequency extends SForm
+{
+    private $krono; // krono
+    private $hasAdminAccess; // se tem permissão de admin
+    private $isEmployee; // se pessoa logada e funcionario(a)
+    private $isProfessor; // se pessoa logada e professor(a)
+    private $isStudent; // se pessoa logada e estudante
+    private $loginPersonId; // id pessoa logada
+    private $isClosed; // Se disciplina ou periodo letivo esta fechado
+    private $isAllowChange; // Se tiver permissao de escrita, ou seja, se for funcionario/professor/administrador geral
+    private $blockByDate; // Verifica se o parâmetro BLOCK_BY_DATE está habilitado. Se estiver, o sistema dever checar se a data atual é menor do que a data de fim do período letivo e só liberar as alterações se este teste retornar TRUE. Caso contrário, a tela deve ficar read-only.
+
+    /**
+     * Class constructor
+     */
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        $busPerson = new BusinessBasicBusPerson();
+
+        $this->krono = new MKrono( );
+
+        // Verifica permissoes, caso seja professor/funcionario, permite editar. Caso seja estudante (ou qualquer outro), exibe apenas visualizacao
+        $loginPerson = $busPerson->getCurrentLoginPerson();
+
+        $busGroup = new BusinessAcademicBusGroup();
+        $groupProfessors = $busGroup->getProfessorNamesOfGroup(MIOLO::_REQUEST('groupId'));
+        $group = $busGroup->getGroup( MIOLO::_REQUEST('groupId') );
+
+        // Abilita a edição dos dados quando o usuário tem permissão de inserção, edição ou quando for um dos professores da disciplina.
+        $this->hasAdminAccess = $MIOLO->checkAccess('FrmFrequency', A_ADMIN, false, true);
+        $this->isAllowChange = $this->hasAdminAccess || in_array($loginPerson->personId, array_keys($groupProfessors));
+        $this->isEmployee = $loginPerson->isEmployee;
+        $this->isProfessor = $loginPerson->isProfessor;
+        $this->isStudent = $loginPerson->isStudent;
+        $this->loginPersonId = $loginPerson->personId;
+        
+        
+        $title = $this->isAllowChange ? _M('Registro de frequência', $module) : _M('Consulta de frequências', $module);
+        parent::__construct($title, null, null);
+
+        $enabledImage = $MIOLO->getUI()->GetImageTheme($MIOLO->theme->id, 'save-20x20.png');
+        $disabledImage = $MIOLO->getUI()->GetImageTheme($MIOLO->theme->id, 'save-disabled-20x20.png');
+
+        // Disable toolbar buttons
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+        
+        if ( SAGU::getParameter('academic', 'SAVE_FREQUENCY_IN_REAL_TIME') == DB_FALSE )
+        {
+            $this->page->addJsCode("window.onbeforeunload = confirmExit;");
+        }
+        
+        if ( ( $this->isAllowChange && !$this->isClosed && !$this->blockByDate ) && ( SAGU::getParameter('academic', 'SAVE_FREQUENCY_IN_REAL_TIME') == DB_FALSE ) )
+        {
+            if ( SAGU::getParameter('academic', 'SAVE_FREQUENCY_IN_REAL_TIME') != DB_TRUE  )
+            {
+                $this->toolbar->addButton('tbBtnSave', _M('Salvar', $module), 'javascript:this.foiModificado=false;saveData();', null, true, $enabledImage, $disabledImage);
+            }
+        }
+        else
+        {
+            $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        }
+
+        // carrega arquivo externo com funções JS
+        $this->page->scripts->add($MIOLO->getActionURL($module, 'html:scripts:professorFrequency.js'));
+
+        // Carrega o javascript da MPopup
+        $this->page->AddScript('m_popup_control.js');
+
+        // Carrega os javascripts da lookup
+        $this->page->AddScript('m_lookup_ajax.js');
+        $this->page->AddScript('m_lookup.js');
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        $MIOLO->session->set('scheduleProfessorContent', '');
+        $MIOLO->session->set('professorId', '');
+
+        // Pega os parâmetros
+        $data = $this->getTypesData();
+
+        // Guarda-os em campos escondidos
+        $fields[] = new MHiddenField('webservices', $data->webservices);
+        $fields[] = new MHiddenField('groupId', $data->groupId);
+        $fields[] = new MHiddenField('periodId', $data->periodId);
+
+        // Instancia os bussines
+        $busFrequencyGradeTyping = new BusinessAcademicBusGradeTyping();
+        $busPerson = new BusinessBasicBusPerson();
+        $busFrequencyLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $busSchedule = new BusinessAcademicBusSchedule();
+        $busGroup = new BusinessAcademicBusGroup();
+        $busFrequency = new BusinessAcademicBusFrequency();
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+
+        // Pega os dados necessários
+        $personData = $busPerson->getPersonByMioloUserName(trim($MIOLO->getLogin()->id));
+        $group = $busFrequencyGradeTyping->getGroupData($data->groupId);
+        $dataLearningPeriod = $busFrequencyLearningPeriod->getLearningPeriod($group->learningPeriodId);
+
+        // Verifica se deve bloquear digitacao de dados caso periodo letivo ja tenha terminado
+        if ( SAGU::getParameter('BASIC', 'BLOCK_BY_DATE') == DB_TRUE )
+        {
+            $finalLimit = $this->krono->daysDiff($dataLearningPeriod->endDate, SAGU::getDateNow());
+            $this->blockByDate = ($finalLimit > 0);
+        }
+        else
+        {
+            $this->blockByDate = false;
+        }
+
+        // Se a disciplina ou o período letivo está(ão) fechado(s)
+        if ( $this->isAllowChange )
+        {
+            if ( $group->isClosed == DB_TRUE )
+            {
+                $this->addInfo(_M('Esta disciplina está fechada, por este motivo, nenhum dado poderá ser alterado.', $module));
+
+                if ( $dataLearningPeriod->isClosed == DB_TRUE )
+                {
+                    $this->addInfo(_M('Período letivo também está fechado.', $module));
+                }
+            }
+            else if ( $dataLearningPeriod->isClosed == DB_TRUE )
+            {
+                $this->addInfo(_M('Período letivo está fechado. Nenhuma alteração é permitida.', $module));
+            }
+            else if ( $this->blockByDate )
+            {
+                $this->addInfo(_M('Os dados não poderão ser alterados devido o período letivo já ter terminado. (@1)', $module, $dataLearningPeriod->endDate));
+            }
+            else if ( SAGU::userIsFromServices() && !$busLearningPeriod->permiteRegistrarNotaOuFrequencia($group->groupId) )
+            {
+                $this->blockByDate = true;
+                $this->addAlert( $busLearningPeriod->obterMensagemDigitacaoBloqueada($group->groupId) );
+            }
+        }
+        
+        $fields[] = new MDiv('errorDiv');
+
+        // Define se disciplina/periodo letivo esta fechado esta fechado
+        $this->isClosed = ($group->isClosed == DB_TRUE || $dataLearningPeriod->isClosed == DB_TRUE);
+
+        $busCurriculum = new BusinessAcademicBusCurriculum();
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $busCurricularComponent = new BusinessAcademicBusCurricularComponent();
+        $busUnit = new BusinessBasicBusUnit();
+        
+        $curriculum = $busCurriculum->getCurriculum($group->curriculumId);
+        $curricularComponent = $busCurricularComponent->getCurricularComponent($curriculum->curricularComponentId, $curriculum->curricularComponentVersion);
+        $learningPeriod = $busLearningPeriod->getLearningPeriod($group->learningPeriodId);
+        $unit = $busUnit->getUnit($learningPeriod->unitId);
+        $_group = $busGroup->getGroup($group->groupId);
+        $groupProfessors = $busGroup->getProfessorNamesOfGroup($group->groupId);
+
+        // BaseGroup de informações da disciplina
+        $info = array(
+            _M('Disciplina', $module) => $curricularComponent->name,
+            _M('Período', $module) => $learningPeriod->periodId,
+            _M('Professor(es)', $module) => implode(', ', (array)$groupProfessors),
+            _M('Unidade', $module) => $unit->description,
+            _M('Disciplina oferecida', $module) => $group->groupId,
+            _M('Carga horária total', $module) => $_group->lessonNumberHours . _M('H', $module),
+            _M('Frequência mínima', $module) => $learningPeriod->minimumFrequency . '%',
+            _M('Carga horária realizada', $module) => $_group->completedLessonHours . _M('H', $module),
+            _M('Média final', $module) => $learningPeriod->finalAverage,
+            _M('Data inicial/final', $module) => $_group->startDate . ' - ' . $_group->endDate,
+        );
+        $fields[] = new SInformationField(array( 'title' => _M('Informações da disciplina', $module), 'value' => $info ));
+
+        if ( $this->isAllowChange )
+        {
+            // Professor
+            // Caso nao haja professor, tenta pegar o atual logado
+            if ( !$data->professorId )
+            {
+                if ( $personData->isProfessor && !$this->hasAdminAccess )
+                {
+                    $data->professorId = $personData->personId;
+                }
+                else
+                {
+                    $data->professorId = current(array_keys((array)$groupProfessors));
+                }
+            }
+            
+            if ( count((array)$groupProfessors) > 0 )
+            {
+                $fields[] = $professorId = new MSelection('professorId', $data->professorId, _M('Professor', $module));
+                $professorId->options = (array)$groupProfessors;
+
+                // Se professor logado for a mesma pessoa logada, só pode alterar ele mesmo OU
+                // Se NÃO possuir permissão administrador, pode alterar frequências/dados de qualquer professor
+                if ( (( strlen($data->professorId) > 0 ) && ( $data->professorId == $personData->personId )) &&
+                        ( ! $this->hasAdminAccess ) )
+                {
+                    $professorId->addAttribute('disabled', '1');
+                }
+
+                $validators[] = new MIntegerValidator('professorId', _M('Professor', $module), 'required');
+
+                // Se professor logado for a mesma pessoa logada, só pode alterar ele mesmo OU
+                // Se NÃO possuir permissão administrador, pode alterar frequências/dados de qualquer professor
+                if ( (( strlen($data->professorId) > 0 ) && ( $data->professorId == $personData->personId )) &&
+                        ( ! $this->hasAdminAccess ) )
+                {
+                    $professorId->addAttribute('disabled', '1');
+                }
+            }
+
+            $validators[] = new MIntegerValidator('professorId', _M('Professor', $module), 'required');
+            $MIOLO->session->set('professorId', $data->professorId);
+
+            // Se data final for maior que data inicial
+            if ( SAGU::compareTimestamp($data->beginDate, '>', $data->endDate) )
+            {
+                $this->addError(_M('A data final não pode ser menor que a data inicial', $module));
+            }
+            $fields[] = new SBeginEndPeriod(array(
+                        'begin' => array( 'dateValue' => $data->beginDate ),
+                        'end' => array( 'dateValue' => $data->endDate ),
+                    ));
+            $validators[] = new MDateDMYValidator('beginDate', _M('Início', $module));
+            $validators[] = new MRequiredValidator('beginDate', _M('Início', $module));
+            $validators[] = new MDateDMYValidator('endDate', _M('Fim', $module));
+            $validators[] = new MRequiredValidator('endDate', _M('Fim', $module));
+
+            $buttons = array();
+            $buttons[] = new MButton('btnFilter', _M('Filtrar', $module));
+
+            // Quando estiver via portal
+            if ( $action == 'main:professor:frequency' )
+            {
+                $url = 'javascript:history.go(-1)';
+                $buttons = array_merge(array(new MButton('btnBack', '<< ' . _M('Voltar', $module), $url)), $buttons);
+
+                $opts = array(
+                    'groupId' => $data->groupId,
+                    'emissionDate' => SAGU::getDateNow(),
+                    'printMode' => 1,
+//                  'reportModel' => 'attendanceReport',
+//                  'event' => 'tbBtnPrint_click',
+                    'professorId' => $MIOLO->session->get('professorId'),
+                    'beginDate' => $data->beginDate,
+                    'endDate' => $data->endDate,
+                );
+                
+                // Make print url
+                $url = $MIOLO->getActionURL('academic', 'main:document:attendanceReport', null, $opts);
+
+                $buttons[] = new MButton('btnPrint', _M('Imprimir', $module), $url);
+                if ( $this->isAllowChange )
+                {
+                    if ( SAGU::getParameter('academic', 'SAVE_FREQUENCY_IN_REAL_TIME') != DB_TRUE )
+                    {
+                        $buttons[] = new MButton('btnSave', _M('Salvar', $module), 'javascript:saveData()', $MIOLO->getUI()->getImageTheme(SAGU::getCurrentTheme(), 'save-16x16.png'));
+                    }
+                }
+            }
+            else
+            {
+                $opts = array(
+                    'groupId' => $data->groupId,
+                    'event' => 'tbBtnPrint_Click'
+                        
+                );
+                
+                $this->toolbar->setButtonURL(MToolBar::BUTTON_PRINT, $MIOLO->getActionURL('academic', 'main:process:listenrolledpupils', null, $opts));                
+            }
+
+            ksort($buttons);
+            
+            if ( SAGU::getParameter('ACADEMIC', 'REGISTRO_FREQUENCIAS_MENSAGEM') )
+            {
+                $msgLabel = new MLabel( SAGU::getParameter('ACADEMIC', 'REGISTRO_FREQUENCIAS_MENSAGEM') );
+            }
+            else
+            {
+                $msgLabel = new MDiv('divMsg', null);
+            }
+
+            $fields[] = $msgLabel;
+            
+            $fields[] = new MHContainer('hctButtons', $buttons);
+        }
+        
+        $imgPresence = $MIOLO->getActionUrl($module, 'html:images:presence.png');
+        
+        // Define funções AJAX que serão chamadas ao clique do botão para armazenar dados
+        $url = str_replace('&amp;', '&', $this->manager->getCurrentURL());
+        $code = "
+            function saveData()
+            {   
+                MIOLO_ajaxCall('{$url}', 'POST', 'ajax_btnSave', php_serialize(enrolls), updateData, 'TEXT');
+            }
+            
+            function saveDataColumn(classOccurred, scheduleId, timeId, date, turnId)
+            {
+                for ( x in this.enrolls )
+                {  
+                    if ( classOccurred != null )
+                    {
+                        enrollsFrequency[x] = new objEnrollFrequency(this.enrolls[x].enrollId, classOccurred, scheduleId, timeId, date, turnId);
+                    }
+
+                    var element = 'imgFreq_' + date + '_' + timeId + '_' + scheduleId + '_' + this.enrolls[x].enrollId;
+                    document.getElementById(element).setAttribute('src', '{$imgPresence}');
+                    setData(timeId, scheduleId, this.enrolls[x].enrollId, date, turnId, 'presence', 'insert');
+                }
+        ";
+                    
+        if ( SAGU::getParameter('academic', 'SAVE_FREQUENCY_IN_REAL_TIME') == DB_TRUE  )
+        {
+            $code .=
+                "var msg = document.getElementById('divSaguMessages');
+                var text = document.createElement('p');
+                var div = document.createElement('div');
+                var t = document.createTextNode('Aguarde o registro das frequências...');
+                
+                text.appendChild(t);                
+                text.style.position = \"absolute\";
+                text.style.top = \"50%\";
+                text.style.left = \"40%\";
+                text.style.marginTop = \"-50px\";
+                text.style.marginLeft = \"-50px\";
+                text.style.fontSize = \"28px\";
+                text.style.color = \"#EEEEEE\";
+                text.style.fontWeight = \"bold\";
+                
+                msg.appendChild(text);
+                msg.style.display = 'block';";
+        }
+        
+        $code .= "        
+                // Caso tenha que salvar em tempo real.
+                if ( classOccurred != null )
+                {
+                    MIOLO_ajaxCall('{$url}', 'POST', 'insertFrequenciesColumn', php_serialize(enrollsFrequency), updateData, 'TEXT');                   
+                }
+            }
+            
+            function updateData(result)
+            {
+                xGetElementById('divContent').innerHTML = result;
+                MIOLO_parseAjaxJavascript(result);
+            } ";
+                    
+        $this->page->addJsCode($code);
+
+        $fields[] = new MDiv('divContent');
+        $fields[] = new MHiddenField('currentUrl', $url);
+
+        // Importar JS para serialização de dados
+        SAGU::importJsSerialize($this);
+
+        $fields = array_merge($fields, $this->getMainTable($data));
+        $fields[] = new MDiv('divMPopup');
+        
+        // Desabilita toolbar quando estiver via portal
+        $displayToolbar = !( $action == 'main:professor:frequency' );
+
+        if ( $action == 'main:professor:frequency' ) // Quando estiver via portal
+        {
+            $url = 'javascript:history.go(-1)';
+            $btnBack = new MButton('btnBack', '<< ' . _M('Voltar', $module), $url);
+            
+            if ( SAGU::getParameter('academic', 'SAVE_FREQUENCY_IN_REAL_TIME') != DB_TRUE )
+            {            
+                $btnSave = new MButton('btnSave', _M('Salvar', $module), 'javascript:saveData()', $MIOLO->getUI()->getImageTheme(SAGU::getCurrentTheme(), 'save-16x16.png'));
+            }            
+            
+            $fields[] = new MHContainer('hctButton', array($btnBack, $btnSave, $btnPrint));
+        }
+
+        $fields[] = new MSeparator();
+        $this->setFields($fields);
+        $this->setValidators($validators);
+        parent::defineFields(array('toolbar' => $displayToolbar));
+
+        MCalendarField::loadDeps();
+    }
+
+    /**
+     * Obtém tabela de frequencias
+     */
+    public function getMainTable($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        // Instancia os bussines
+        $busPerson = new BusinessBasicBusPerson();
+        $busGroup = new BusinessAcademicBusGroup();
+        $busScheduleProfessor = new BusinessAcademicBusScheduleProfessor();
+        $busScheduleProfessorContent = new BusinessAcademicBusScheduleProfessorContent();
+        $busFrequenceEnroll = new BusinessAcademicBusFrequenceEnroll();
+        
+        $ui = $this->manager->getUI();
+
+        // Define imagens que serão utilizadas
+        $imgPresence = $ui->getImage($module, 'presence.png');
+        $imgHalfPresence = $ui->getImage($module, 'halfPresence.png');
+        $imgAbsence = $ui->getImage($module, 'absence.png');
+        $imgJustifiedAbsence = $ui->getImage($module, 'justifiedAbsense.png');
+        $imgEmpty = $ui->getImage($module, 'empty.png');
+        $imgEmptyOld = $ui->getImage($module, 'empty_old.png');
+        $imgDescribeOn = $ui->getImage($module, 'button_edit.png');
+        $imgDescribePro = $ui->getImage('services', 'prohibited.png');
+        $imgDescribeOff = $ui->getImage($module, 'describe-off.png');
+        $imgWarning = $ui->getImage('basic', 'warning.png');
+
+        // Define os caminhos para as imagens que serão utilizadas
+        $this->page->AddJsCode("setImageSources('{$imgPresence}', '{$imgHalfPresence}', '{$imgAbsence}', '{$imgEmpty}', '{$imgEmptyOld}', '{$imgJustifiedAbsence}');");
+
+        $busFrequency = new BusinessAcademicBusFrequency();
+
+        $mainTable = new MTableRaw(null, null);
+
+        // Cria as primeiras colunas da tabela (número, código e nome)
+        $mainTable->array[1][0] = '';
+        $mainTable->setCellClass(1, 0, 'm-tableraw-column-title');
+        $mainTable->setCellAttribute(1, 0, 'rowspan', 2);
+
+        $mainTable->array[1][1] = _M('Código', $module);
+        $mainTable->setCellClass(1, 1, 'm-tableraw-column-title');
+        $mainTable->setCellAttribute(1, 1, 'rowspan', 2);
+
+        $mainTable->array[1][2] = _M('Nome da pessoa', $module);
+        $mainTable->setCellClass(1, 2, 'm-tableraw-column-title');
+        $mainTable->setCellAttribute(1, 2, 'rowspan', 2);
+        
+        $data = $this->getTypesData();
+        $busFrequencyGradeTyping = new BusinessAcademicBusGradeTyping();
+        $group = $busFrequencyGradeTyping->getGroupData($data->groupId);
+        
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $learningPeriod = $busLearningPeriod->getLearningPeriod($group->learningPeriodId);
+
+        // Quando for funcionário ou professor, pega tudo
+        if ( $this->hasAdminAccess || $this->isProfessor )
+        {
+            $pupils = $busFrequency->listGroupPupilsObject($data->groupId, null, $learningPeriod->periodId);
+        }
+        else // Quando for estudante, filtra apenas pelo aluno logado (supõe-se que seja um aluno logado)
+        {
+            $pupils = $busFrequency->listGroupPupilsObject($data->groupId, $this->loginPersonId, $learningPeriod->periodId);
+        }
+
+        // Busca o calendário acadêmico da oferecida
+        $academicCalendars = $busFrequency->listGroupAcademicCalendar($data->groupId, null, null, $MIOLO->session->get('professorId'));
+//        $academicCalendars = $busFrequency->listGroupAcademicCalendar($data->groupId, $data->beginDate, $data->endDate);        
+
+        $academicCalendarDates = array();
+        if ( count($academicCalendars) > 0 )
+        {
+            foreach ( (array)$academicCalendars as $academicCalendar )
+            {
+                if ( is_null($daySchedulesNumber[$academicCalendar->simpleDate]) )
+                {
+                    $daySchedulesNumber[$academicCalendar->simpleDate] = array();
+                }
+
+                if ( !in_array($academicCalendar->timeId, $daySchedulesNumber[$academicCalendar->simpleDate]) )
+                {
+                    $daySchedulesNumber[$academicCalendar->simpleDate][] = $academicCalendar->timeId;
+                    $numberMinutes = SAGU::NVL($academicCalendar->numberMinutes, 1);
+                    $numberHoursSchedule[$academicCalendar->timeId] = SAGU::calcNumber($numberMinutes . '/ 60.0');
+                    $this->page->AddJsCode('setNumberHours(' . $academicCalendar->timeId . ',' . $numberHoursSchedule[$academicCalendar->timeId] . ',"' . (SAGU::getParameter('BASIC', 'HALF_PRESENCE') == DB_TRUE) . '");');
+                }
+                
+                //
+                if ( !in_array($academicCalendar->date, $academicCalendarDates) )
+                {
+                    $academicCalendarDates[] = $academicCalendar->date;
+                }
+            }
+        }
+        else
+        {
+            $msg = _M('Não há horários para esta disciplina', $module);
+            $opts = array( 'periodId' => $data->periodId );
+            $action = 'main:process:gradesTyping';
+            $goto = $MIOLO->getActionURL($module, $action, null, $opts);
+            $caption = _M('Erro', $module);
+            $MIOLO->error($msg, $goto, $caption);
+        }
+
+        unset($code);
+
+        if ( count($pupils) > 0 )
+        {
+            // Declarar todas as matrículas, adicionando-as no
+            // Objeto JavaScript enrolls
+            foreach ( $pupils as $key => $pupil )
+            {
+                $mainTable->array[$key + 3][0] = $key + 1;
+                $mainTable->array[$key + 3][1] = $pupil->personId;
+                $mainTable->array[$key + 3][2] = $pupil->personName;
+                $enrollId = $pupil->enrollId;
+                $this->enrolls[] = $enrollId;
+                $code[] = "this.enrolls.push(new objEnroll($enrollId));";
+            }
+
+            $this->page->AddJsCode(implode($code, "\n"));
+        }
+        else
+        {
+            // Quando estiver via portal
+            if ( $action == 'main:professor:frequency' )
+            {
+                $action = 'main:professor:curricularComponents';
+                $modules = 'services';
+
+                $opts[] = array( 'periodId' => $data->periodId );
+
+            }
+            else
+            {
+                $action = 'main:process:gradesTyping';
+                $modules = $module;
+
+                $groupData = $busGroup->getGroup($data->groupId);
+
+                $opts = array( 'periodId' => $data->periodId,
+                               'courseId' => $groupData->curriculumCourseId,
+                               'courseVersion' => $groupData->curriculumCourseVersion,
+                               'turnId' => $groupData->turnId);
+            }
+
+            $msg = _M('Não há alunos matriculados nesta disciplina', $module);
+            
+            $goto = $MIOLO->getActionURL($modules, $action, null, $opts);
+            $caption = _M('Erro', $module);
+            $MIOLO->error($msg, $goto, $caption);
+        }
+
+        // Define funções javascript que serão executadas após a carga do form
+        // Para popular a tabela com as frequências já existentes
+        // Quando for readOnly (aluno) , filtrar apenas por ele
+        $includeCancelled = SAGU::getParameter('BASIC', 'SHOW_CANCELLED_PUPILS_IN_GRADE_TYPING') == DB_TRUE;
+        if ( $this->isStudent && !$this->hasAdminAccess )
+        {
+            $frequencies = $busFrequency->listFrequenceEnroll($data->groupId, null, null, $this->loginPersonId, $includeCancelled, $learningPeriod->periodId);
+        }
+        else
+        {
+            $frequencies = $busFrequency->listFrequenceEnroll($data->groupId, null, null, null, $includeCancelled, $learningPeriod->periodId);
+        }
+
+        // Exclui datas que possam estar nas frequencias mas nao no calendario academico
+        foreach ( (array) $frequencies as $key => $frequency )
+        {
+            if (!in_array($frequency->frequencyDate, $academicCalendarDates))
+            {
+                unset($frequencies[$key]);
+            }
+        }
+
+        // Cria listas indexadas para saber quando inserir bolinha cinza na tela
+        $frequencyUniqueList = array();
+        $countFrequencies = array();
+        foreach ( (array) $frequencies as $frequency )
+        {
+            $id = "{$frequency->frequencyDate}_{$frequency->timeId}_{$frequency->scheduleId}_{$frequency->enrollId}";
+            $frequencyUniqueList[$id] = $frequency;
+            $countFrequencies["{$frequency->frequencyDate}_{$frequency->timeId}"] ++;
+        }
+        
+        $backupDate = null;
+        $count = 0;
+        $professorId = $MIOLO->session->get('professorId');
+        $fields[] = new MDiv('returnUpdate');
+
+        // Cria componentes da tabela que relaciona aluno a horarios
+        foreach ( $academicCalendars as $keyAC => $academicCalendar )
+        {
+            // Verifica se a data deste calendario academico esta dentro do filtro
+            //  passado no formulario de frequencias. (campo Periodo)
+            $beginBetween = SAGU::compareTimestamp($academicCalendar->date, '>=', $data->beginDate);
+            $endBetween = SAGU::compareTimestamp($academicCalendar->date, '<=', $data->endDate);
+            if ( !$beginBetween || !$endBetween )
+            {
+                continue;
+            }
+            
+            if ( !$this->blockByDate )
+            {
+                // Search professorId:
+                $filters = new stdClass();
+                $filters->scheduleId = $academicCalendar->scheduleId;
+                $dataProfessor = $busScheduleProfessor->searchScheduleProfessorObject($filters);
+                
+                $_professorId = $busScheduleProfessorContent->getProfessorId($academicCalendar->date, $academicCalendar->timeId, $academicCalendar->scheduleId);
+                $dataDescription = $busScheduleProfessorContent->getScheduleProfessorContentObject($academicCalendar->date, $academicCalendar->timeId, $_professorId, $academicCalendar->scheduleId);
+                
+                // Campo oculto para controlar se foi registrada a descrição da aula, as frequências não podem ser registradas sem antes registrar a aula.
+                $id = "{$academicCalendar->date}_{$academicCalendar->timeId}_{$academicCalendar->scheduleId}";
+                $descriAula = new SHiddenField("descriAula_" . $id, ($dataDescription->description) ? DB_TRUE : DB_FALSE);
+                $descriAula->addAttribute("name", "descriAula_" . $id);
+                $fields[] = $descriAula;
+                
+                $imgId = "imgDescribe_{$id}";
+                $imgWarningId = "imgWarning_{$id}";
+                $divImgWarningId = 'div' . ucfirst($imgWarningId);
+                if ( count($dataProfessor) > 0 )
+                {
+                    $_professorId = $busScheduleProfessorContent->getProfessorId($academicCalendar->date, $academicCalendar->timeId, $academicCalendar->scheduleId);
+                    $spc = $busScheduleProfessorContent->getScheduleProfessorContentObject($academicCalendar->date, $academicCalendar->timeId, $_professorId, $academicCalendar->scheduleId);
+
+                    $academicCalendar->groupId = $group->groupId;
+                    $goto = SForm::getPopupLink(array( 'args' => $academicCalendar, 'method' => 'popupDescription' ));
+
+                    $describeImage = new MImageLink($imgId, _M('Adicionar uma descrição para esta aula ministrada', $module), $goto, $imgDescribeOn);
+                    $describeImage->addStyle('cursor', 'pointer');
+                    
+                    if ( SAGU::getParameter('services', 'LOCK_FUTURE_FREQUENCY') == DB_TRUE )
+                    {
+                        $dataAtual = date("d/m/Y");
+                                   
+                        if ( SAGU::compareTimestamp($dataAtual, '<', $academicCalendar->date) )                        
+                        { 
+                            $ajaxAction = SForm::getAjaxAction('errorDiv', 'errorDiv', true, array( 'error' => 'true' ));
+                            $describeImage = new MImageLink('describeImage', _M('Esta aula ainda não ocorreu!'), $ajaxAction, $imgDescribePro);
+                        }
+                    }
+
+                    $warningImage = new MImage($imgWarningId, null, $imgWarning);
+                    $divImgWarning = new MDiv($divImgWarningId, $warningImage);
+
+                    // Quando nao foi alterado o horario de aula, nao exibir o icone de alerta
+                    $changedInfo = $this->getChangedInfo($spc->realStartDate, $spc->realEndDate, $academicCalendar->date, $academicCalendar->timeId);
+                    $divImgWarning->addBoxStyle('display', $changedInfo->changed && $spc->classOccurred == DB_TRUE ? 'inline' : 'none');
+                    $warningImage->label = $changedInfo->alt;
+                }
+                else
+                {
+                    $describeImage = new MImage($imgId, _M('Não é possível descrever esta aula pois não há nenhum professor definido para esta data/horário.', $module), $imgDescribeOff);
+                }
+                $describeImage->addBoxStyle('display', 'inline');
+            }
+
+            if ( $backupDate != $academicCalendar->simpleDate )
+            {
+                $y = count($mainTable->array[1]);
+                $header = $academicCalendar->simpleDate;
+                $divHeader = new MDiv('divHeader', $header, null, 'align=center');
+                $mainTable->array[1][$y] = $divHeader;
+                $mainTable->setCellClass(1, $y, 'm-tableraw-column-title');
+                $mainTable->setCellAttribute(1, $y, 'colspan', count(array_unique($daySchedulesNumber[$academicCalendar->simpleDate])));
+            }
+
+            $backupDate = $academicCalendar->simpleDate;
+
+            if ( in_array($academicCalendar->timeId, $daySchedulesNumber[$academicCalendar->simpleDate]) )
+            {
+                $y1 = count($mainTable->array[2]);
+
+                $subHeader = $academicCalendar->beginHour . '<br>' . $academicCalendar->endHour;
+
+                if ( $this->isAllowChange && !$this->isClosed && !$this->blockByDate )
+                {
+                    $subHeader .= '<br>' . $describeImage->generate();
+                    if ( $divImgWarning )
+                    {
+                        $subHeader .= $divImgWarning->generate();
+                    }
+                }
+
+                $divSubHeader = new MDiv('divSubHeader', $subHeader, null, 'align=center');
+                $mainTable->array[2][$y1] = $divSubHeader;
+                $mainTable->setCellClass(2, $y1, 'm-tableraw-column-title');
+            }
+
+            foreach ( $pupils as $keyPP => $pupil )
+            {
+                $enrollId = $pupil->enrollId;
+                $id = 'imgFreq_' . $academicCalendar->date . '_' . $academicCalendar->timeId . '_' . $academicCalendar->scheduleId . '_' . $enrollId;
+                $images = new MImage($id, '', $imgEmpty);
+                
+                // Preenche bolinha cinza quando nao existe frequencia para este aluno (acdFrequenceEnroll)
+                // Ex.: Quando marcam frequencias para alguns alunos e posteriormente realizam matricula para outro, este ficará com bolinha cinza.
+                $uniqueId = "{$academicCalendar->date}_{$academicCalendar->timeId}_{$academicCalendar->scheduleId}_{$enrollId}";
+                $_count = $countFrequencies["{$academicCalendar->date}_{$academicCalendar->timeId}"];
+                
+                $enter = false;
+                
+                if ( ( ($_count > 0) || (is_null($_count) && (strlen($dataDescription->description) > 0)) ) 
+                        && ( !in_array($uniqueId, array_keys($frequencyUniqueList)) ) )
+                {   
+                    $filters = new stdClass();
+                    $filters->frequencyDate = $academicCalendar->date;
+                    $filters->timeId = $academicCalendar->timeId;
+                    $filters->enrollId = $enrollId;
+                    $filters->groupId = MIOLO::_REQUEST("groupId");
+                    
+                    // Caso a disciplina possua mais de um professor registrado para o mesmo dia e horário.
+                    $freqValue = $busFrequency->searchFrequency($filters);                    
+                    $mode = ( $freqValue ) ? $this->searchMode($freqValue[0][6]) : 'empty';
+                    
+                    $code = "setData('{$academicCalendar->timeId}', '{$academicCalendar->scheduleId}', '{$enrollId}', '{$academicCalendar->date}', '{$academicCalendar->turnId}', '{$mode}', 'insert');";
+                    $this->page->AddJsCode($code);
+                    
+                    $enter = true;
+                }
+                
+                // Caso a frequência não tenha sido registrada.
+                if ( !$enter )
+                {                    
+                    $code = "setData('{$academicCalendar->timeId}', '{$academicCalendar->scheduleId}', '{$enrollId}', '{$academicCalendar->date}', '{$academicCalendar->turnId}', '', 'insert');";
+                    $this->page->AddJsCode($code);
+                }
+
+                if ( $this->isAllowChange && !$this->isClosed && !$this->blockByDate )
+                {
+                    $updateFrequencyInBase = null;
+                    
+                    if ( SAGU::getParameter('academic', 'SAVE_FREQUENCY_IN_REAL_TIME') == DB_TRUE )
+                    {
+                        $args = array(
+                            "timeId" => $academicCalendar->timeId,
+                            "frequencyDate" => $academicCalendar->date,
+                            "scheduleId" => $academicCalendar->scheduleId,
+                            "enrollId" => $enrollId
+                        );
+                        
+                        $updateFrequencyInBase = $this->getAjaxAction('updateFrequencyInBase', 'returnUpdate', false, $args);
+                    }
+                    
+                    $images->addAttribute('onclick', "updateFrequency('{$academicCalendar->timeId}', '{$academicCalendar->date}', '{$academicCalendar->scheduleId}', '{$academicCalendar->turnId}', {$enrollId}); {$updateFrequencyInBase}");
+                }
+                else if ( $this->isAllowChange )
+                {
+                    $images->setLabel(_M('Não pode fazer alterações devido à restrições.', $module));
+                }
+
+                $divFreq = new MDiv('divFreq_' . $academicCalendar->date . '_' . $academicCalendar->timeId . '_' . $academicCalendar->scheduleId . '_' . $enrollId, $images, null, 'align=center');
+
+                $mainTable->array[$keyPP + 3][$count + 3] = $divFreq;
+            }
+
+            $count++;
+        }
+        
+        $this->SetFields($fields);
+
+        // Cria duas últimas colunas (presenças e ausências)
+        $y2 = count($mainTable->array[1]);
+        $divPresence = new MDiv('divPresence', _M('Frequências', $module), null, 'align=center');
+        $mainTable->array[1][$y2] = $divPresence;
+        $mainTable->setCellClass(1, $y2, 'm-tableraw-column-title');
+        $mainTable->setCellAttribute(1, $y2, 'rowspan', 2);
+
+        $y3 = count($mainTable->array[1]);
+        $divAbsence = new MDiv('divAbsence', _M('Ausências', $module), null, 'align=center');
+        $mainTable->array[1][$y3] = $divAbsence;
+        $mainTable->setCellClass(1, $y3, 'm-tableraw-column-title');
+        $mainTable->setCellAttribute(1, $y3, 'rowspan', 2);
+
+        // Define os textos das duas últimas colunas
+        foreach ( $pupils as $key => $pupil )
+        {
+            $enrollId = $pupil->enrollId;
+
+            $labelSuffix = new MText('lbSuf', _M('H', $module));
+            $labelSuffix->color = 'blue';
+
+            $label = new MText('lbPres_' . $enrollId, '0');
+            $label->setBold(true);
+            $label->color = 'blue';
+
+            $labelPercent = new MText('lbPercentPres_' . $enrollId, '(0%)');
+            $labelPercent->color = 'blue';
+
+            $divPres = new MDiv('divPres_' . $enrollId, array( $label, $labelSuffix, $labelPercent ), null, 'align=center');
+            $mainTable->array[$key + 3][count($mainTable->array[$key + 3])] = $divPres;
+
+            $labelSuffix = new MText('lbSuf', _M('H', $module));
+            $labelSuffix->color = 'red';
+
+            $label = new MText('lbAbs_' . $enrollId, '0');
+            $label->setBold(true);
+            $label->color = 'red';
+
+            $labelPercent = new MText('lbPercentAbs_' . $enrollId, '(0%)');
+            $labelPercent->color = 'red';
+
+            $divAbs = new MDiv('divAbs_' . $enrollId, array( $label, $labelSuffix, $labelPercent ), null, 'align=center');
+            $mainTable->array[$key + 3][count($mainTable->array[$key + 3])] = $divAbs;
+        }
+
+        if ( count($frequencies) > 0 )
+        {
+            unset($code);
+            unset($codeFirst);
+
+            foreach ( $frequencies as $frequency )
+            {
+                $id = "{$frequency->frequencyDate}_{$frequency->timeId}";
+                $codeFirst[$id] = "setTotalNumberHour('{$frequency->timeId}');";
+
+                $acdRegimeDomiciliar = new AcdRegimeDomiciliar();
+                $regimeDomiciliar = $acdRegimeDomiciliar->obterRegimeDomiciliar($frequency);
+                
+                // Verifica se está em regime domiciliar.
+                if ( $regimeDomiciliar[0][0] )
+                {
+                    $frequency->frequency = 1;
+                    $frequency->justifiedAbsense = DB_TRUE;
+                    $frequency->justification = $regimeDomiciliar[0][3];
+                    
+                    $justification = _M('Esta frequência não pode ser alterada pois o aluno está cursando esta disciplina em regime domiciliar. ') . '(' . $regimeDomiciliar[0][3] . ')';
+                    $justification = str_replace("\r\n", ' ', $justification);
+                    
+                    $busFrequenceEnroll->updateOrInsertFrequenceEnroll($frequency);
+                }
+                else
+                {
+                    $mode = $this->searchMode($frequency->frequency);
+
+                    $justification = $frequency->justification;
+                    $justification = str_replace("\r\n", ' ', $justification);
+                }
+                
+                if ( $frequency->justifiedAbsense == DB_TRUE )
+                {
+                    $mode = 'justifiedAbsense';
+                }
+
+                $code[] = "setData('{$frequency->timeId}', '{$frequency->scheduleId}', '{$frequency->enrollId}', '{$frequency->frequencyDate}', '{$academicCalendar->turnId}', '{$mode}', 'insert', '{$justification}');";
+            }
+
+            $this->page->AddJsCode(implode($codeFirst, "\n"));
+            $this->page->AddJsCode(implode($code, "\n"));
+        }
+
+        $mainTableTitle = ($data->periodId ? $busFrequency->getCurricularComponentName($data->groupId) . ' - ' . $data->periodId : $busFrequency->getCurricularComponentName($data->groupId));
+        $mainTable->array[0][0] = $mainTableTitle;
+        $mainTable->setCellAttribute(0, 0, 'colspan', count($mainTable->array[3]));
+        $mainTable->setCellClass(0, 0, 'm-tableraw-title');
+        $mainTable->setCellAttribute(1, 2, 'style', 'min-width: 200px;');
+        $mainTable->setAlternate(true);
+
+        $fields[] = $div = new MBasegroup('divTable', '', array( $mainTable ));
+
+        $fields[] = new MSeparator();
+
+        if ( $data->webservices )
+        {
+            if ( SAGU::getParameter('academic', 'SAVE_FREQUENCY_IN_REAL_TIME') != DB_TRUE )
+            {
+                $fields[] = new MButton('btnSave', _M('Salvar', $module), 'javascript:saveData()');
+            }
+        }
+
+        return $fields;
+    }
+    
+    public function errorDiv($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        if ( $args->error == "true" )
+        {
+            $MIOLO->page->addAjaxJsCode("window.scrollTo(0,0);");
+            
+            $prompt = MPrompt::Error(_M('Não podem ser registradas as frequências de uma aula que ainda não ocorreu!'), 'NONE');
+            return $prompt; 
+        }
+    }
+
+    /**
+     * Event triggered when user click on the save button
+     */
+    public function ajax_btnSave($enrolls)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        $busFrequency = new BusinessAcademicBusFrequency();
+        $busFrequenceEnroll = new BusinessAcademicBusFrequenceEnroll();
+
+        $busFrequency->beginTransaction();
+        $data = unserialize(stripslashes($enrolls[0]));
+
+        try
+        {
+            foreach ( $data as $enroll )
+            {
+                $enrollId = $enroll->enrollId;
+                $frequencies = $enroll->frequencies;
+
+                foreach ( $frequencies as $frequency )
+                {
+                    if ( !in_array($frequency->frequency, array('emptyFreq', 'justifiedAbsense')) )
+                    {
+                        $acdFrequenceEnroll = new stdClass();
+                        $acdFrequenceEnroll->userName = trim($MIOLO->getLogin()->id);
+                        $acdFrequenceEnroll->ipAddress = $_SERVER['REMOTE_ADDR'];
+                        $acdFrequenceEnroll->timeId = $frequency->timeId;
+                        $acdFrequenceEnroll->enrollId = $enrollId;
+                        $acdFrequenceEnroll->scheduleId = $frequency->scheduleId;
+                        $acdFrequenceEnroll->frequencyDate = $frequency->frequencyDate;
+                        $acdFrequenceEnroll->frequency = $frequency->frequency ? number_format($frequency->frequency, 2, '.', '') : 0;
+
+                        if ( $frequency->removeFrequency == 1 )
+                        {
+                            $busFrequenceEnroll->deleteFrequenceEnrollByPk($enrollId, $frequency->scheduleId, $frequency->frequencyDate, $frequency->timeId);
+                        }
+                        else
+                        {
+                            $busFrequency->updateOrInsertFrequenceEnroll($acdFrequenceEnroll);
+                        }
+                    }
+                }
+            }
+            
+            $this->insertInfoClass();
+
+            $busFrequency->commit();
+
+            if ( SAGU::getParameter('academic', 'SAVE_FREQUENCY_IN_REAL_TIME') == DB_FALSE )
+            {
+                SAGU::information(_M('Dados armazenados com sucesso', $module), 'NONE');
+            }
+        }
+        catch ( Exception $e )
+        {
+            $busFrequency->rollback();
+            SAGU::error($e->getMessage(), 'NONE');
+        }
+    }
+    
+    /**
+     * Salva informacoes da aula
+     */
+    public function insertInfoClass()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $busFrequency = new BusinessAcademicBusFrequency();
+        $busScheduleProfessorContent = new BusinessAcademicBusScheduleProfessorContent();
+        $busScheduleProfessor = new BusinessAcademicBusScheduleProfessor();
+        $busSchedule = new BusinessAcademicBusSchedule();
+        $busFrequencyScheduleProfessor = new BusinessAcademicBusScheduleProfessor();
+        
+        try
+        {
+            $spcs = $MIOLO->session->get('scheduleProfessorContent');
+            $professorId = $MIOLO->session->get('professorId');
+
+            foreach ( (array) $spcs as $spc )
+            {
+                // Busca na acdSchedule
+                $filters = new stdClass();
+                $filters->groupId = MIOLO::_REQUEST('groupId');
+                $filters->professorId = $professorId;
+                $filters->occurrenceDates = array( $spc->date );
+                $filters->timeIds = array( $spc->timeId );
+                $rows = (array) $busSchedule->searchSchedule($filters);
+                foreach ( $rows as $row )
+                {
+                    // Busca na acdScheduleProfessor
+                    $filters = new stdClass();
+                    $filters->scheduleId = $row[0];
+                    $filters->professorId = $professorId;
+                    $scheduleProfessors = $busScheduleProfessor->searchScheduleProfessorObject($filters);
+                    $spc->scheduleProfessorId = current($scheduleProfessors)->scheduleProfessorId;
+                }
+
+                // Remove e tenta inserir
+                $busScheduleProfessorContent->deleteScheduleProfessorContent($spc->date, $spc->timeId, $spc->scheduleId);
+                if ( strlen($spc->scheduleProfessorId) > 0 )
+                {
+                    // Clona objeto para nao causar problema nas variaveis da popup
+                    $_spc = clone($spc);
+
+                    $_spc->realStartDate .= ' ' . $_spc->realStartTime;
+                    $_spc->realEndDate .= ' ' . $_spc->realEndTime;
+
+                    $_spc->realStartDate = trim($_spc->realStartDate);
+                    $_spc->realEndDate = trim($_spc->realEndDate);
+
+                    $busScheduleProfessorContent->saveScheduleProfessorContent($_spc);
+                }
+            }
+        }
+        catch ( Exception $e )
+        {
+            $this->Error(_M("Erro ao salvar as informações da aula."));
+        }
+    }
+
+    /**
+     * Abre o formulário de descrição da aula ministrada
+     * @param (array) $args - Array com date, timeId, scheduleId, groupId e professorId
+     */
+    public function popupDescription($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        // Instancia os bussines
+        $busPerson = new BusinessBasicBusPerson();
+        $busGradeTyping = new BusinessAcademicBusGradeTyping();
+        $busScheduleProfessor = new BusinessAcademicBusScheduleProfessor();
+        $busScheduleProfessorContent = new BusinessAcademicBusScheduleProfessorContent();
+        $busTime = new BusinessAcademicBusTimeSheet();
+
+        // Data
+        $professorId = $MIOLO->session->get('professorId');
+        $args = new stdClass();
+        foreach ( array( 'date', 'timeId', 'scheduleId', 'groupId' ) as $var )
+        {
+            $popupFields[] = new SHiddenField($var, MIOLO::_REQUEST($var));
+            $args->{$var} = MIOLO::_REQUEST($var);
+        }
+
+        // BUSCA OS DADOS
+        $filters = new stdClass();
+        $filters->scheduleId = $args->scheduleId;
+        $dataProfessor = $busScheduleProfessor->searchScheduleProfessorObject($filters);
+
+        $spc = $MIOLO->session->get('scheduleProfessorContent');
+        $data = $spc[$args->timeId . $args->date];
+
+        if ( !$data )
+        {
+            $_professorId = $busScheduleProfessorContent->getProfessorId($args->date, $args->timeId, $args->scheduleId);
+            $data = $busScheduleProfessorContent->getScheduleProfessorContentObject($args->date, $args->timeId, $_professorId, $args->scheduleId);
+            $data = (object)array_merge((array)$args, (array)$data);
+
+            list($data->realStartDate, $data->realStartTime) = explode(' ', $data->realStartDate);
+            list($data->realEndDate, $data->realEndTime) = explode(' ', $data->realEndDate);
+
+            if ( strlen($data->realStartDate) <= 0 )
+            {
+                $data->realStartDate = $args->date;
+            }
+
+            if ( strlen($data->realEndDate) <= 0 )
+            {
+                $data->realEndDate = $args->date;
+            }
+
+            if ( strlen($data->realStartTime) <= 0 || strlen($data->realEndTime) <= 0 )
+            {
+                $dataTime = $busTime->getTime($args->timeId);
+
+                if ( strlen($data->realStartTime) <= 0 )
+                {
+                    $data->realStartTime = $dataTime->beginHour;
+                }
+
+                if ( strlen($data->realEndTime) <= 0 )
+                {
+                    $data->realEndTime = $dataTime->endHour;
+                }
+            }
+        }
+        
+        $popupFields[] = new MDiv('divError');
+        
+        $popupFields[] = new SHiddenField('oldDescription', $data->description);
+        
+        // Descrição
+        $labelDescricao = new MText('labelDescricao', _M('Descrição', $module).':');
+        $fieldDescricao = new MMultiLineField('description', $data->description, null, 20, 3, 36);
+        $fieldDescricao->setJsHint(_M('Informe o conteúdo ministrado em aula ou o motivo de não haver aula', $module));
+        $btnShowContent = new MButton('btnShowContent', _M('Exibir conteúdo', $module), $this->getAjaxAction('showContent', 'divShowContent', false));
+        $description = new MHcontainer('ctnDescricao', array($labelDescricao, $fieldDescricao, $btnShowContent));
+        $popupFields[] = $description;
+
+        // Houve aula
+        if ( !$data->classOccurred )
+        {
+            $data->classOccurred = DB_TRUE;
+        }
+
+        $desabilitaCampo = SAGU::getParameter('ACADEMIC', 'DESABILITA_CAMPO_HOUVE_AULA');
+        
+        if( $desabilitaCampo == 'f' )
+        {
+            $labelHouveAula = new MText('labelHouveAula', _M('Houve aula', $module).':');
+            $fieldHouveAula = new MSelection('classOccurred', $data->classOccurred, null);
+            $fieldHouveAula->options = SAGU::listYesNo(0);
+            $fieldHouveAula->setJsHint(_M('Informe se houve aula ou não', $module));
+            $ctnHouveAula = new MHcontainer('ctnHouveAula', array($labelHouveAula, $fieldHouveAula));
+        }
+        else
+        {
+            $fieldHouveAula = new SHiddenField('classOccurred', DB_TRUE);
+            $ctnHouveAula = new MHcontainer('ctnHouveAula', array($fieldHouveAula));
+        } 
+        
+        $popupFields[] = $ctnHouveAula;
+
+        $dbtrue = DB_TRUE;
+        $dbfalse = DB_FALSE;
+        $MIOLO->page->addAJAXJsCode("
+            function changeClass(value)
+            {
+                xGetElementById('classFields').style.display = value == '{$dbtrue}' ? 'block' : 'none';
+            }
+            xGetElementById('classOccurred').setAttribute('onchange', 'changeClass(this.value)');
+            changeClass( xGetElementById('classOccurred').value ); ");
+
+        $classFields = array();
+
+        
+        $classFields[] = $div = new MDiv('divShowContent');
+        $div->addAttribute('style', 'z-index:50;');
+        
+        //Professor Substituto
+        $labelProfessorSubstitute = new MText('labelProfessorSubstitute', _M('Professor substituto', $module));
+        $fieldProfessorSubstitute = new MLookupContainer('substituteProfessorId', 'substituteProfessorIdDescription', $data->substituteProfessorId, _M('Professor substituto', $module), array( 'substituteProfessorIdDescription'), 'basic', 'PhysicalPersonProfessor');
+        $classFields[] = new MHcontainer('ctnProfessorSubstitute', array($labelProfessorSubstitute, $fieldProfessorSubstitute));
+        $fieldProfessorSubstitute->getDescriptionField()->setValue($data->substituteProfessorName);
+        
+        // Professor
+        $labelProfessor = new MText('labelProfessor', _M('Professor visitante', $module));
+        $fieldProfessor = new MLookupContainer('visitingProfessorId', 'visitingProfessorIdDescription', $data->visitingProfessorId, _M('Professor visitante', $module), array( 'visitingProfessorIdDescription'), 'basic', 'PhysicalPersonProfessor');
+        $classFields[] = new MHcontainer('ctnProfessor', array($labelProfessor, $fieldProfessor));
+        $fieldProfessor->getDescriptionField()->setValue($data->visitingProfessorName);
+
+        // Local de aula
+        $isInternalFlds[] = new MText('lblIsInternal', _M('Local de aula', $module).':');
+        $isInternal = new MSelection('isInternal', $data->isInternal, null);
+        $isInternal->options = array(
+            DB_TRUE => _M('Na instituição (atividade interna)', $module),
+            DB_FALSE => _M('Fora da instituição (atividade externa)', $module),
+        );
+        $isInternal->setJsHint(_M('Informe o local de aula', $module));
+        $isInternalFlds[] = $isInternal;
+        $classFields[] = new MHContainer('ctnIsInternal', $isInternalFlds);
+
+        // Categoria da aula
+        $listCategory = $this->getCategoryList();
+        if ( count($listCategory) > 0 )
+        {
+            $lblCategory = new MText('lblCategory', _M('Categoria', $module) . ':');
+            $category = new MSelection('curricularComponentCategoryId', $data->curricularComponentCategoryId, null, $listCategory);
+            $classFields[] = new MHContainer('hctCategory', array($lblCategory, $category));
+        }
+        
+        // Inicio / fim da aula
+        $opts = array(
+            'type' => 'timestamp',
+            'title' => _M('Período de aula', $module),
+            'data' => $data,
+            'begin' => array(
+                'dateId' => 'realStartDate',
+                'timeId' => 'realStartTime',
+                'dateValue' => $data->realStartDate,
+                'timeValue' => $data->realStartTime,
+                'dateHint' => _M('Informe a data de início da aula', $module),
+                'timeHint' => _M('Informe a hora de início da aula', $module)
+            ),
+            'end' => array(
+                'dateId' => 'realEndDate',
+                'timeId' => 'realEndTime',
+                'dateValue' => $data->realEndDate,
+                'timeValue' => $data->realEndTime,
+                'dateHint' => _M('Informe a data de fim da aula', $module),
+                'timeHint' => _M('Informe a hora de fim da aula', $module)
+            ),
+        );
+        $classFields[] = new SBeginEndPeriod($opts);
+
+        $popupFields[] = $cnt = new MDiv('classFields', $classFields);
+
+        // Se está fechado não pode mais inserir descrições
+        $btns[] = new MButton('btnFormDescriptionOk', _M('Ok', $module), $this->getAjaxAction('formDescriptionSave', 'divError'), false, $params);
+        $btns[] = new MButton('btnFormDescriptionCancel', _M('Cancelar', $module), "mpopup.remove();");
+        $controls[] = new MDiv('btns', $btns, $class, 'style="float:right;"');
+        $popupFields[] = $cnt = new MHContainer('CButtons', $controls);
+        $cnt->addBoxStyle('width', '100%');
+
+        $this->setFields($popupFields);
+
+        MPopup::show('popupDescription', $popupFields, _M('Confirmar aula ministrada', $module));
+
+        $this->generateAJAXValidators();
+    }
+    
+    private function getCategoryList()
+    {
+        $filters = new stdClass();
+        $filters->groupId = MIOLO::_REQUEST('groupId');
+        $list = AcdCurricularComponentCategory::listRecords($filters);
+        
+        return $list;
+    }
+    
+    /**
+     * Exibe popup com o conteúdo do plano de ensino
+     */
+    public function showContent($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $business = new BusinessAcademicBusGroup();
+        
+        $groupData = $business->getGroup($args->groupId);
+        
+        if( strlen($groupData->content) == 0 )
+        {
+            $fields[] = new MLabel(_M('Nenhum conteúdo informado', $module));
+        }        
+        else
+        {
+            // Conteúdo
+            $content = new MMultiLineField('content_', $this->getFormValue('content_', $groupData->content), null, 100, 20, 40);
+            $content->setJsHint(_M('Informe o conteúdo da disciplina', $module));
+            $content->setReadOnly(true);
+            $fields[] = $content;
+        }
+        
+        $btns[] = new MButton('btnContentClose', _M('Fechar', $module), "document.getElementById('divShowContent').style.display='none'");
+        $controls[] = new MDiv('btns', $btns, $class, 'style="float:right;"');
+        $fields[] = $cnt = new MHContainer('CButtons', $controls);
+        $cnt->addBoxStyle('width', '100%');
+        
+        $MIOLO->page->addAJAXJsCode("document.getElementById('divShowContent').style.display='block'");
+        
+        MPopup::show('popupContent', $fields, _M('Conteúdo', $module));
+    }
+
+    /**
+     * Função que salva os dados da MPopup
+     * @param $args
+     */
+    public function formDescriptionSave($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $jsCode = '';
+        $groupId = MIOLO::_REQUEST('groupId');
+
+        $busFrequency = new BusinessAcademicBusFrequency();
+
+        $args->realStartDate = trim($args->realStartDate);
+        $args->realEndDate = trim($args->realEndDate); 
+
+        try
+        {
+            if ( strlen($args->description) <= 0 )
+            {
+                throw new Exception(_M('Você precisa preencher o campo descrição.', $module));
+            }
+
+            if ( (strlen($args->realStartDate) > 0) && (strlen($args->realStartTime) <= 0) )
+            {
+                throw new Exception(_M('Você precisa informar a hora da data de início', $module));
+            }
+
+            if ( (strlen($args->realEndDate) > 0) && (strlen($args->realEndTime) <= 0) )
+            {
+                throw new Exception(_M('Você precisa informar a hora da data de fim', $module));
+            }
+
+            if ( (strlen($args->realStartDate) > 0) && (strlen($args->realEndDate) > 0) )
+            {
+                $start = $args->realStartDate . ' ' . $args->realStartTime;
+                $end = $args->realEndDate . ' ' . $args->realEndTime;
+
+                if ( SAGU::compareTimestamp($start, '>', $end) )
+                {
+                    throw new Exception(_M('A data final deve ser maior que a data inicial', $module));
+                }
+            }
+
+            $pkey = $args->timeId . $args->date;
+
+            $spc = $MIOLO->session->get('scheduleProfessorContent');
+            $spc[$pkey] = $args;
+
+            $MIOLO->session->set('scheduleProfessorContent', $spc);
+
+            // Simula insercao dos dados da aula ministrada para poder validar
+            //se esta ultrapassando horas permitidas
+            $curricularComponentCategoryId = $args->curricularComponentCategoryId;
+            $validateExceeded = MUtil::getBooleanValue(SAGU::getParameter('ACADEMIC', 'VALIDATE_CURRICULARCOMPONENT_CATEGORY_HOURS_EXCEEDED'));
+            if ( ( strlen($curricularComponentCategoryId) > 0 ) && $validateExceeded )
+            {
+                $busFrequency->beginTransaction();
+                $this->saveClassInformation();
+                $exceeded = $busFrequency->hasExceededHourCreditsLimit( $groupId, $curricularComponentCategoryId );                
+                $busFrequency->rollback();
+
+                if ( $exceeded )
+                {
+                    throw new Exception( _M('Não é possível selecionar esta categoria, pois ela excedeu o número de horas', $module) );
+                }
+            }
+            
+            // Obtem o turnId
+            $academicCalendars = $busFrequency->listGroupAcademicCalendar($args->groupId, $args->beginDate, $args->endDate);
+            $turnId = null;
+            
+            foreach ( (array) $academicCalendars as $academicCalendar )
+            {   
+                if ( $academicCalendar->timeId == $args->timeId )
+                {
+                    $turnId = $academicCalendar->turnId;
+                }
+            }
+
+            $jsCode .= " mpopup.remove(); ";
+            
+            $_classOccurred = $args->classOccurred == DB_TRUE;
+            $classOccurred = $_classOccurred ? 'true' : 'false';            
+            
+            $jsCode .= " setClassOccurred($classOccurred, '{$args->timeId}', '{$args->scheduleId}', '{$args->date}', '{$turnId}'); ";
+
+            $imgWarningId = "imgWarning_{$args->date}_{$args->timeId}_{$args->scheduleId}";
+            $divImgWarningId = 'div' . ucfirst($imgWarningId);
+            $changedInfo = $this->getChangedInfo($args->realStartDate . ' ' . $args->realStartTime, $args->realEndDate . ' ' . $args->realEndTime, $args->date, $args->timeId);
+            $display = $changedInfo->changed && $_classOccurred ? 'inline' : 'none';
+            $jsCode .= " xGetElementById('{$divImgWarningId}').style.display = '{$display}'; ";
+            $jsCode .= " xGetElementById('{$imgWarningId}').title = '{$changedInfo->alt}'; ";
+            
+            if ( SAGU::getParameter('academic', 'SAVE_FREQUENCY_IN_REAL_TIME') == DB_TRUE )
+            {
+                if ( strlen($args->oldDescription) < 1 )
+                {
+                    $jsCode .= " saveDataColumn('{$classOccurred}', {$args->scheduleId}, {$args->timeId}, '{$args->date}', {$turnId});";
+                }
+                else
+                {
+                    $busScheduleProfessorContent = new BusinessAcademicBusScheduleProfessorContent();
+                    $professorContent = $busScheduleProfessorContent->getScheduleProfessorContentObject($args->date, $args->timeId, $args->professorId, $args->scheduleId);
+                    $busScheduleProfessorContent->updateDescriptionScheduleProfessorContent($professorContent->scheduleProfessorContentId, $args->description);
+                }
+            }
+            else
+            {                
+                if ( strlen($args->oldDescription) < 1 )
+                {
+                    $jsCode .= " saveDataColumn(null, {$args->scheduleId}, {$args->timeId}, '{$args->date}', {$turnId});";
+                }
+                
+                $jsCode .= " this.foiModificado = true;";
+            }
+            
+            $id = "descriAula_{$args->date}_{$args->timeId}_{$args->scheduleId}";
+            $jsCode .= " document.getElementById('{$id}').value = '" . DB_TRUE . "';";
+
+            $MIOLO->page->addAJAXJsCode($jsCode);
+        }
+        catch ( Exception $e )
+        {
+            $prompt = MPrompt::Error($e->getMessage(), 'NONE');
+            return $prompt;
+        }
+    }
+
+    public function getTypesData()
+    {
+        static $beginEndDate = false;
+        static $beginDate;
+        static $endDate;
+                
+        $data = new stdClass();
+        $data->webservices = $this->getFormValue('webservices', MIOLO::_request('webservices'));
+        $data->groupId = $this->getFormValue('groupId', MIOLO::_request('groupId'));
+        $data->periodId = $this->getFormValue('periodId', MIOLO::_request('periodId'));
+        $data->beginDate = $this->getFormValue('beginDate', MIOLO::_request('beginDate'));
+        $data->endDate = $this->getFormValue('endDate', MIOLO::_request('endDate'));
+        $data->professorId = $this->getRequestValue('professorId');
+
+        // Busca data inicial/final
+        if ( !$beginEndDate && ( strlen($data->beginDate) == 0 || strlen($data->endDate) == 0 ) )
+        {
+            $beginEndDate = true;
+            
+            $busSchedule = new BusinessAcademicBusSchedule();
+            $nextClassDate = $busSchedule->getNextClassDate($data->groupId);
+            
+            // Caso parametro esteja habilitado, filtra apenas pela ultima aula, senao, pela primeira
+            $beginDateFilter = SAGU::getParameter('ACADEMIC', 'FREQUENCY_FILTER_LAST_CLASS') == DB_TRUE ? $nextClassDate : $busSchedule->getFirstClassDate($data->groupId);
+            
+            if ( strlen($data->beginDate) == 0 )
+            {
+                $data->beginDate = $beginDate = $beginDateFilter;
+            }
+            if ( strlen($data->endDate) == 0 )
+            {
+                $data->endDate = $endDate = $nextClassDate;
+            }
+        }
+        
+        if ( strlen($data->beginDate) == 0 )
+        {
+            $data->beginDate = $beginDate;
+        }
+        
+        if ( strlen($data->endDate) == 0 )
+        {
+            $data->endDate = $endDate;
+        }
+        
+        return $data;
+    }
+
+    /**
+     * Verifica se horario foi modificado
+     * Retorna informacoes dos horarios
+     *
+     * @param string $startDate TIMESTAMP
+     * @param string $endDate TIMESTAMP
+     * @param string $date DATE
+     * @param int $timeId
+     */
+    public function getChangedInfo($startDate, $endDate, $date, $timeId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $busTimeSheet = new BusinessAcademicBusTimeSheet();
+        $time = $busTimeSheet->getTime($timeId);
+
+        $startDate = trim($startDate);
+        $endDate = trim($endDate);
+
+        $out = new stdClass();
+        $out->changed = false;
+        $out->oldStartDate = $date . ' ' . $time->beginHour;
+        $out->oldEndDate = $date . ' ' . $time->endHour;
+        $out->alt = '';
+
+        // Compara timestamp's
+        if ( ((strlen($startDate) > 0) && ($startDate != $out->oldStartDate)) ||
+             ((strlen($endDate) > 0) && ($endDate != $out->oldEndDate)) )
+        {
+            $out->changed = true;
+        }
+
+        if ( $out->changed )
+        {
+            $hProg = $out->oldStartDate . ' - ' . $out->oldEndDate;
+            $hRea = $startDate . ' - ' . $endDate;
+            $out->alt = _M('Horário programado (@1) diferente do realizado (@2)', $module, $hProg, $hRea);
+        }
+
+        return $out;
+    }
+    
+    /**
+     * Verifica o modo que é a frequencia para setar a "bolinha".
+     * 
+     * @param int $frequency
+     * @return string
+     */
+    function searchMode($frequency)
+    {
+        $mode = 'empty';
+        
+        switch ( $frequency )
+        {
+            case 1:
+                $mode = 'presence';
+            break;
+            case 0.5:
+                $mode = 'halfPresence';
+            break;
+            case 0:
+                $mode = 'absence';
+            break;
+        }
+        
+        return $mode;
+    }
+    
+    /**
+     * Atualiza a frequência na base em tempo real ao clicar.
+     * 
+     * @param array $args
+     */
+    public function updateFrequencyInBase($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $busScheduleProfessorContent = new BusinessAcademicBusScheduleProfessorContent();
+        $_professorId = $busScheduleProfessorContent->getProfessorId($args->frequencyDate, $args->timeId, $args->scheduleId);
+        $dataDescription = $busScheduleProfessorContent->getScheduleProfessorContentObject($args->frequencyDate, $args->timeId, $_professorId, $args->scheduleId);
+        
+        // Não pode registrar frequências sem antes registrar a descrição da aula.
+        if ( $dataDescription->description )
+        {
+            $busFrequency = new BusinessAcademicBusFrequency();
+            $busFrequency->updateFrequency($args);
+        }
+        else
+        {
+            $MIOLO->page->addAJAXJsCode("alert('Não é possível registrar uma frequência sem antes registrar uma descrição para a aula ministrada.')");
+        }
+    }
+    
+    /**
+     * Insere as frequências da coluna selecionada.
+     * 
+     * @param String serialize $enrolls
+     */
+    public function insertFrequenciesColumn($enrolls)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $busFrequency = new BusinessAcademicBusFrequency();
+        $busFrequency->beginTransaction();
+        $data = unserialize(stripslashes($enrolls[0]));
+        
+        $userName = $MIOLO->getLogin()->id;
+        $idAddress = $_SERVER['REMOTE_ADDR'];
+        
+        try
+        {            
+            foreach ( $data as $enroll )
+            {
+                $filters = new stdClass();
+                $filters->userName = $userName;
+                $filters->idAddress = $idAddress;
+                $filters->timeId = $enroll->timeId_c;
+                $filters->enrollId = $enroll->enrollId_c;
+                $filters->scheduleId = $enroll->scheduleId_c;
+                $filters->frequencyDate = $enroll->date_c;
+                $filters->frequency = 1;
+                
+                $acdRegimeDomiciliar = new AcdRegimeDomiciliar();
+                $regimeDomiciliar = $acdRegimeDomiciliar->obterRegimeDomiciliar($filters);
+                
+                // Verifica se está em regime domiciliar.
+                if ( $regimeDomiciliar[0][0] )
+                {                    
+                    $filters->justifiedAbsense = DB_TRUE;
+                    $filters->justification = $regimeDomiciliar[0][3];
+                    
+                    $justification = _M('Esta frequência não pode ser alterada pois o aluno está cursando esta disciplina em regime domiciliar. ') . '(' . $regimeDomiciliar[0][3] . ')';
+                    $justification = str_replace("\r\n", ' ', $justification);
+                    
+                    $busFrequenceEnroll = new BusinessAcademicBusFrequenceEnroll();
+                    $busFrequenceEnroll->updateOrInsertFrequenceEnroll($filters);
+                    
+                    //imgFreq_16/11/2013_269_8356_716430
+                    $idImg = "imgFreq_{$filters->frequencyDate}_{$filters->timeId}_{$filters->scheduleId}_{$filters->enrollId}";
+                    $imgSrc = $MIOLO->getActionUrl($module, 'html:images:justifiedAbsense.png');
+                    $this->page->addAJAXJsCode("
+                        var img = document.getElementById('$idImg');
+                        img.src = '$imgSrc';
+                        img.onclick = '';
+                        img.title = '$justification';
+                    ");
+                }
+                else
+                {
+                
+                    if ( $enroll->classOccurred_c == "true" )
+                    {
+                        $busFrequency->updateOrInsertFrequenceEnroll($filters);
+                    }
+                    else
+                    {
+                        $busFrequency->deleteFrequency($filters);
+                    }
+                }
+            }
+            
+            $this->insertInfoClass();
+                        
+            $busFrequency->commit();
+            
+            if ( SAGU::getParameter('academic', 'SAVE_FREQUENCY_IN_REAL_TIME') == DB_TRUE  )
+            {
+                $this->page->addAJAXJsCode("
+                    var msg = document.getElementById('divSaguMessages');
+                    msg.style.display = 'none';
+                ");
+            }
+        }
+        catch ( Exception $e )
+        {
+            $busFrequency->rollback();
+        }
+    }
+}
+?>

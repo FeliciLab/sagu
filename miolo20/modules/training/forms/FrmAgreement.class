@@ -1,0 +1,437 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulário de cadastro de área
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 09/09/2011
+ */
+class FrmAgreement extends SManagementForm
+{
+    /**
+     * Class constructor
+     */
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $action = MIOLO::getCurrentAction();
+
+        $MIOLO->uses('/ui/controls/msubdetail.class');
+
+        parent::__construct(new TraAgreement(), array( 'agreementId' ), null);
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $function = MIOLO::_REQUEST('function');
+
+        if ( in_array($function, array( SForm::FUNCTION_UPDATE, SForm::FUNCTION_DELETE )) )
+        {
+            $data = new TraAgreement($this->getRequestValue('agreementId'));
+            $data->_object = $data->object;
+        }
+
+        $obj = self::getMyFields($this, $data);
+        $fields = $obj->fields;
+        $validators = $obj->validators;
+
+        parent::defineFields($fields, $validators, $data);
+    }
+
+    /**
+     * @param MForm $formInstance
+     * @param mixed $data Array or object
+     * @return stdClass
+     */
+    public static function getMyFields($formInstance, $data = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $function = MIOLO::_REQUEST('function');
+        $agreementId = MIOLO::_REQUEST('agreementId');
+        $addendumId = MIOLO::_REQUEST('addendumId');
+
+        // Indica se é primeiro acesso OU nao é instancia de SStepByStepForm
+        $stepFirstAccess = ( $formInstance instanceof SStepByStepForm && $formInstance->isFirstAccess() ) ||
+                (!($formInstance instanceof SStepByStepForm ));
+
+        if ( ( (strlen($agreementId) > 0) || (strlen($addendumId) > 0) ) && $stepFirstAccess )
+        {
+            $filters = new stdClass();
+            if ( self::isAdditiveTerm() )
+            {
+                $filters->addendumId = $addendumId;
+                $rows = TraAddendum::search($filters);
+            }
+            else
+            {
+                $filters->agreementId = $agreementId;
+                $rows = TraAgreement::search($filters);
+            }
+
+            if ( count($rows) > 0 )
+            {
+                $files = self::isAdditiveTerm() ? $data->addendumFile : $data->agreementFile;
+                foreach ( (array)$files as $i => $file )
+                {
+                    $varName = "file{$i}Id";
+                    $data->$varName = $file->fileId;
+                    $formInstance->setFormValue($varName, $file->fileId);
+                }
+
+                $data->countAgreementFile = self::isAdditiveTerm() ? count($data->addendumFile) : count($data->agreementFile);
+            }
+        }
+
+        if ( self::isAdditiveTerm() )
+        {
+            $agreement = new TraAgreement($agreementId);
+
+            // Dados do convenio relacionado
+            $options = array(
+                _M('Código', $module) => $agreement->agreementId,
+                _M('Período', $module) => $agreement->beginDate . ' - ' . $agreement->endDate,
+                _M('Conveniada', $module) => $agreement->legalPersonId . ' - ' . $agreement->legalPerson->name,
+            );
+            $fields[] = new SInformationField(array(
+                'label' => _M('Dados do convênio relacionado', $module),
+                'value' => $options,
+                'columns' => 1,
+            ));
+
+            // Codigo
+            $fields[] = $agreementId = new MTextField('agreementId', $formInstance->GetFormValue('agreementId', $data->agreementId), _M('Nº do convênio', $module), SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+            $agreementId->setReadOnly(true);
+            $agreementId->setJsHint(_M('Código do convênio principal', $module));
+        }
+
+        // Código
+        $title = (self::isAdditiveTerm() ? _M('Nº do termo aditivo', $module) : _M('Número do convênio', $module));
+        $id = self::isAdditiveTerm() ? 'addendumId' : 'agreementId';
+        $adAgreementId = new MTextField($id, $formInstance->GetFormValue($id, $data->$id), $title, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $adAgreementId->addAttribute('maxlength', '20');
+        $adAgreementId->setReadOnly($function == SForm::FUNCTION_UPDATE);
+        $adAgreementId->setJsHint(_M('Código do convênio', $module));
+        $validators[] = new MRequiredValidator($id, $title);
+        $fields[] = $adAgreementId;
+
+        // Conveniada
+        // Lookup legalPerson
+        if ( !self::isAdditiveTerm() )
+        {
+            $legalPersonIdLabel = new MText('legalPersonIdLabel', _M('Conveniada', $module) . ':');
+            $legalPersonIdLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $legalPersonIdLabel->setClass('m-caption m-caption-required');
+
+            $legalPersonId = new MLookupTextField('legalPersonId', $formInstance->GetFormValue('legalPersonId', $data->legalPersonId), NULL, SAGU::getParameter('BASIC', 'FIELD_LOOKUPFIELD_SIZE'), NULL, NULL, 'legalPersonIdDescription', 'basic', 'LegalPerson', NULL, NULL, true);
+
+            $legalPersonId->setReadOnly(true);
+            $legalPersonId = new MLookupTextField('legalPersonId', $formInstance->GetFormValue('legalPersonId', $data->legalPersonId), NULL, SAGU::getParameter('BASIC', 'FIELD_LOOKUPFIELD_SIZE'), NULL, NULL, 'legalPersonIdDescription', 'basic', 'LegalPerson', NULL, NULL, true);
+            $legalPersonId->setJsHint(_M('Informe o código da conveniada', $module));
+            $legalPersonDescriptionValue = $formInstance->GetFormValue('legalPersonIdDescription', $data->legalPersonIdDescription) > 0 ? $formInstance->GetFormValue('legalPersonIdDescription', $data->legalPersonIdDescription) : $fatherTraAgreement->legalPerson->description;
+            $legalPersonIdDescription = new MTextField('legalPersonIdDescription', $legalPersonDescriptionValue, NULL, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'), NULL, true);
+            $legalPersonIdDescription->setJsHint(_M('Descrição da conveniada', $module));
+            $legalPersonIdDescription->setReadOnly(true);
+            $legalPersonId = new MHContainer('legalPersonIdCnt', array( $legalPersonIdLabel, $legalPersonId, $legalPersonIdDescription ));
+            $fields[] = $legalPersonId;
+            $validators[] = new MIntegerValidator('legalPersonId', _M('Conveniada', $module), 'required');
+        }
+
+        // Inicio
+        $beginDateValue = strlen($formInstance->GetFormValue('beginDate', $data->beginDate)) > 0 ? $formInstance->GetFormValue('beginDate', $data->beginDate) : $fatherTraAgreement->beginDate;
+        $fields[] = $beginDate = new MCalendarField('beginDate', $beginDateValue, _M('Início', $module), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+        $beginDate->setJsHint(_M('Informe a data de início', $module));
+        $validators[] = new MDateDMYValidator('beginDate', _M('Início', $module));
+        $validators[] = new MRequiredValidator('beginDate', _M('Início', $module));
+
+        // Fim
+        $endDateValue = strlen($formInstance->GetFormValue('endDate', $data->endDate)) > 0 ? $formInstance->GetFormValue('endDate', $data->endDate) : $fatherTraAgreement->endDate;
+        $fields[] = $endDate = new MCalendarField('endDate', $endDateValue, _M('Fim', $module), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+        $endDate->setJsHint(_M('Informe a data de fim', $module));
+        $validators[] = new MDateDMYValidator('endDate', _M('Fim', $module));
+        $validators[] = new MRequiredValidator('endDate', _M('Fim', $module));
+
+        // Rescisao
+        if ( !self::isAdditiveTerm() )
+        {
+            $fields[] = $suspensionDate = new MCalendarField('suspensionDate', $formInstance->GetFormValue('suspensionDate', $data->suspensionDate), _M('Data da rescisão', $module), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+            $suspensionDate->setJsHint(_M('Informe a data de rescisão', $module));
+        }
+
+        // Objeto
+        // Colocado _ como prefixo para nao conflitar com o MIOLO
+        $objectValue = strlen($formInstance->GetFormValue('_object', $data->_object)) > 0 ? $formInstance->GetFormValue('_object', $data->_object) : $fatherTraAgreement->_object;
+        $fields[] = $object = new MMultiLineField('_object', $objectValue, _M('Objeto', $module), null, 5, 40);
+        $object->setJsHint(_M('Informe o objeto do contrato', $module));
+        $validators[] = new MRequiredValidator('_object', _M('Objeto', $module));
+
+        $countAgreementFile = $formInstance->GetFormValue('countAgreementFile', $data->countAgreementFile);
+        $fields[] = new MHiddenField('countAgreementFile', $countAgreementFile);
+
+        // Arquivos
+        $count = $countAgreementFile + 3;
+        for ( $i = 0; $i < $count; $i++ )
+        {
+            $fields[] = new SFileField("file{$i}", $formInstance, array(
+                'fieldLabel' => _M('Arquivo @1', $module, $i + 1),
+                'multiple' => false
+            ));
+        }
+
+        $fields[] = new MHiddenField('fileDel', $formInstance->GetFormValue('fileDel', $data->fileDel));
+        $fields[] = new MHiddenField('fileIds', $formInstance->GetFormValue('fileIds', $data->fileIds));
+
+        // Subdetail CURSOS
+        if ( self::isAdditiveTerm() )
+        {
+            $subFields[] = $lkp = new SLookupContainer('courseId', null, array(
+                'module' => $module,
+                'item' => 'Course',
+                'label' => _M('Curso', $module),
+                'required' => true,
+            ));
+            $subValidators[] = new MIntegerValidator('courseId', _M('Curso', $module), 'required');
+            $subValidators[] = new MSubDetailUniqueValidator('courseId', _M('Curso', $module));
+
+            $subColumns[] = new sSubDetailColumn('courseId', array( 'visible' => false ));
+            $subColumns[] = new sSubDetailColumn('courseIdDescription', array( 'label' => _M('Curso', $module) ));
+
+            $fields[] = $sub = new MSubDetail('courses', _M('Cursos do termo aditivo', $module), $subColumns, $subFields);
+            $sub->setValidators($subValidators);
+            if ( !$MIOLO->page->isPostBack() && ( count($data->addendumCourse) > 0 ) )
+            {
+                $sub->setData(SAGU::convertSTypeToSubDetail($subColumns, $data->addendumCourse));
+            }
+        }
+
+        $obj = new stdClass();
+        $obj->fields = $fields;
+        $obj->validators = $validators;
+
+        return $obj;
+    }
+
+    /**
+     *
+     * @param MForm $formInstance
+     * @param mixed $data
+     */
+    public static function saveFiles($formInstance, $data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $busFile = new BusinessBasicBusFile();
+
+        $fileIds = '';
+        foreach ( (array)$_FILES as $field => $file )
+        {
+            if ( strlen($file['name']) > 0 )
+            {
+                $fdata = new stdClass();
+                $fdata->uploadFileName = $file['name'];
+                $fdata->contentType = $file['type'];
+                $fdata->size = $file['size'];
+                $fileId = $busFile->insertFile($fdata, $file['tmp_name']);
+                $fileIds .= $fileId . ',';
+                $formInstance->setFormValue($field . 'Id', $fileId);
+            }
+        }
+
+        $formInstance->setFormValue('fileIds', $data->fileIds . $fileIds);
+    }
+
+    /**
+     *
+     * @param stdClass $data
+     */
+    public static function getFilesObject($data)
+    {
+        $fileIds = (array)explode(',', $data->fileIds);
+        $fileDel = (array)explode(',', $data->fileDel);
+        // Apaga arquivos que foram marcados como delete no form
+        foreach ( $fileDel as $id )
+        {
+            if ( strlen($id) > 0 )
+            {
+                $filters = new stdClass();
+                $filters->fileId = $id;
+                $rows = self::isAdditiveTerm() ? TraAddendumFile::search($filters) : TraAgreementFile::search($filters);
+                if ( count($rows) > 0 )
+                {
+                    $row = current($rows);
+                    $row->delete();
+                }
+            }
+        }
+        // Insere arquivos novos
+        $files = array();
+        foreach ( (array)$fileIds as $id )
+        {
+            if ( (strlen($id) > 0) && !(in_array($id, $fileDel)) )
+            {
+                $files[] = $obj = ( self::isAdditiveTerm() ? new TraAddendumFile() : new TraAgreementFile() );
+                $obj->fileId = $id;
+            }
+        }
+
+        return $files;
+    }
+
+    /**
+     * Adiciona os arquivos no objeto
+     */
+    public function beforeSave($typeObject)
+    {
+        $data = $this->getTypesData();
+        $typeObject->agreementFile = self::getFilesObject($data);
+
+        return $typeObject;
+    }
+
+    public function getObjectPk()
+    {
+        // Nao permite que seja obtido a primary key ao salvar, pois a tabela tra.agreement se comporta de forma diferente
+        $function = MIOLO::_REQUEST('function');
+
+        $isInsert = SAGU::getEventName() == 'tbBtnSave:click' && $function == SForm::FUNCTION_INSERT;
+
+        return $isInsert ? array() : parent::getObjectPk();
+    }
+
+    public function getTypesData()
+    {
+        $data = parent::getTypesData();
+        $data->object = $this->getRequestValue('_object');
+        $data->fileIds = $this->getRequestValue('fileIds');
+        $data->fileDel = $this->getRequestValue('fileDel');
+
+        return $data;
+    }
+
+    /**
+     * Salva os dados
+     * @param stdClass $sender
+     */
+    public function tbBtnSave_click($sender = NULL)
+    {
+        $data = $this->getData();
+
+        try
+        {
+            self::saveFiles($this, $data);
+            parent::tbBtnSave_click($sender);
+        }
+        catch ( Exception $e )
+        {
+            $this->AddError($e->getMessage());
+        }
+    }
+
+    /**
+     * Flag que indica se esta em termo aditivo ou convenio
+     * @return boolean
+     */
+    public static function isAdditiveTerm()
+    {
+        $action = MIOLO::getCurrentAction();
+        return $action == 'main:register:addendum';
+    }
+
+    /**
+     * Exibe a mensagem de inserido/atualizado com sucesso
+     * @param boolean $ok Informa sucesso ou falha ao gravar as alterações
+     */
+    /**
+     * Exibe a mensagem de registro inserido com sucesso
+     */
+    public function displayMessageInsert()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $action = MIOLO::getCurrentAction();
+        $module = MIOLO::getCurrentModule();
+
+        $mensagem = MPrompt::Question(SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED'));
+        $mensagem->buttons = array(); // Limpa os botões
+
+        // Botão continuar a inserir registros
+        $href = parent::getInsertGotoYes();
+        $mensagem->addButton(_M('Sim', $module), $href);
+
+        // Botão voltar para o formulário de busca
+        $href = parent::getInsertGotoNo();
+        $mensagem->addButton(_M('Não', $module), $href);
+
+        // Botão adicionar termo aditivo
+        $opts = array('function' => 'insert');
+        foreach ( (array)$this->pkey as $field )
+        {
+            $opts[$field] = $this->$field->value; // agreementId
+        }
+        $href = $MIOLO->getActionURL($module, 'main:register:addendum', null, $opts);
+        $mensagem->addButton(_M('Adicionar termo aditivo', $module), $href);
+
+        // Exibe a mensagem
+        $MIOLO->prompt($mensagem);// FIM da execução
+    }
+
+    /**
+     * Exibe a mensagem de registro atualizado com sucesso
+     */
+    public function displayMessageUpdate()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $action = MIOLO::getCurrentAction();
+        $module = MIOLO::getCurrentModule();
+
+        $mensagem = MPrompt::Information(SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED'), 'NONE');
+
+        // Botão ok
+        $href = $MIOLO->getActionURL($module, $action, null, parent::getUpdateOpts());
+        $mensagem->addButton(_M('OK', $module), $href);
+
+        // Botão adicionar termo aditivo
+        $opts = array();
+        $opts['function'] = 'insert';
+        foreach ( (array)$this->pkey as $field )
+        {
+            $opts[$field] = $this->$field->value; // agreementId
+        }
+        $href = $MIOLO->getActionURL($module, 'main:register:addendum', null, $opts);
+        $mensagem->addButton(_M('Adicionar termo aditivo', $module), $href);
+
+        // Exibe a mensagem
+        $MIOLO->prompt($mensagem);// FIM da execução
+    }
+}
+?>

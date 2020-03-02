@@ -1,0 +1,1963 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file handles the connection and actions for the enroll book document
+ *
+ * @author Leovan Tavares da Silva [leovan] [leovan@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Leovan Tavares da Silva [leovan@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 20/06/2006
+ *
+ **/
+
+/**
+ * Class to manipulate the basPupilListing table
+ **/
+class BusinessAcademicBusEnrollBook extends sBusiness
+{
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $contractId
+     * @param unknown_type $periodId
+     * @return unknown
+     */
+    public function getContractPeriodHistoric($contractId, $periodId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $sql = 'SELECT A.stateContractId
+                  FROM acdMovementContract A
+            INNER JOIN unit_acdContract B
+                    ON (A.contractId = B.contractId)
+             LEFT JOIN unit_acdlearningperiod C
+                    ON (C.courseId = B.courseId AND
+                        C.courseVersion = B.courseVersion AND
+                        C.unitId = B.unitId AND
+                        C.turnId = B.turnId)
+                 WHERE A.contractId = ?
+                   AND C.periodId = ?
+                   AND A.stateTime BETWEEN C.beginDate AND C.endDate
+              ORDER BY A.stateTime DESC';
+             
+        $args     = array($contractId, $periodId);
+
+        $historic = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        
+        if (count($historic) > 0)
+        {
+            foreach ($historic as $row)
+            {
+                $return[] = $row[0];
+            }
+            return $return;
+        }
+        else
+        {
+            return null;
+        }
+    }
+    
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $contractId
+     * @param unknown_type $periodId
+     * @return unknown
+     */
+    public function getActualContractStatus($contractId, $periodId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $historic = $this->getContractPeriodHistoric($contractId, $periodId);
+        
+        $sql = 'SELECT stateEnrollBookId 
+                  FROM acdStateEnrollBookRules';
+
+        //$dependentStates = explode(',', SAGU::getParameter('ACADEMIC', 'STATE_CONTRACT_IDS_DEPENDENTS'));
+        unset($actualStatus);
+        
+        while (($actualStatus == null) && (count($historic) > 0))
+        {
+            $sql2 = $sql . ' WHERE stateIdRules = array[' . implode(',', $historic) . ']';
+            $result = $this->getDatabase()->query($sql2);
+            
+            if (count($result) == 1)
+            {
+                $actualStatus = $result[0][0];
+            }
+            elseif (count($result) > 1)
+            {
+                return 0;
+            }
+            else
+            {
+                unset($historic[count($historic)-1]);
+            }
+        }
+
+        return $actualStatus;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @return unknown
+     */
+    public function getPeriodActiveContracts($data)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $sql = 'SELECT DISTINCT A.contractId
+                           FROM unit_acdContract A
+                     INNER JOIN acdMovementContract C
+                             ON (C.contractId = A.contractId)
+                     INNER JOIN unit_acdlearningperiod B
+                             ON (B.courseId = A.courseId AND
+                                 B.courseVersion = A.courseVersion AND
+                                 B.unitId = A.unitId AND
+                                 B.turnId = A.turnId)
+                          WHERE C.stateTime BETWEEN B.beginDate and B.endDate
+                            AND B.periodId = ?
+                            AND A.courseId IN (SELECT courseId
+                                                 FROM acdCourse
+                                                WHERE formationLevelId = ? )';
+
+        $args[] = $data->periodId;
+        $args[] = $data->formationLevelId;
+
+        if ( strlen($data->isListener)>0 )
+        {
+            $sql.= 'AND A.isListener = ?';
+            $args[] = $data->isListener;
+        }
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $contractId
+     * @param unknown_type $stateEnrollBookId
+     * @return unknown
+     */
+    public function getRelatedContractData($contractId, $stateEnrollBookId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $busContract  = new BusinessAcademicBusContract();
+        $contractData = $busContract->getContract($contractId);
+        
+        if ($stateEnrollBookId == SAGU::getParameter('ACADEMIC', 'STATE_ENROLL_BOOK_INTERNAL_TRANSFER_FROM_ID'))
+        {
+            $sql = 'SELECT A.contractId,
+                           C.courseId,
+                           C.courseVersion,
+                           C.turnId,
+                           C.unitId,
+                           A.stateTime
+                      FROM acdMovementContract A
+                INNER JOIN acdMovementContract B
+                        ON (B.contractId = ? AND
+                            B.stateContractId = ' . SAGU::getParameter('ACADEMIC', 'STATE_CONTRACT_ID_INTERNAL_TRANSFER_TO') . ')
+                INNER JOIN unit_acdContract C
+                        ON (C.contractId = A.contractId)
+                     WHERE A.stateContractId = ' . SAGU::getParameter('ACADEMIC', 'STATE_CONTRACT_ID_INTERNAL_TRANSFER_FROM') . '
+                       AND A.stateTime >= B.stateTime
+                       AND C.personId = ?
+                  ORDER BY A.stateTime LIMIT 1';
+        }
+        elseif ($stateEnrollBookId == SAGU::getParameter('ACADEMIC', 'STATE_ENROLL_BOOK_INTERNAL_TRANSFER_TO_ID'))
+        {
+            $sql = 'SELECT A.contractId,
+                           C.courseId,
+                           C.courseVersion,
+                           C.turnId,
+                           C.unitId,
+                           A.stateTime
+                      FROM acdMovementContract A
+                INNER JOIN acdMovementContract B
+                        ON (B.contractId = ? AND
+                            B.stateContractId = ' . SAGU::getParameter('ACADEMIC', 'STATE_CONTRACT_ID_INTERNAL_TRANSFER_FROM') . ')
+                INNER JOIN unit_acdContract C
+                        ON (C.contractId = A.contractId)
+                     WHERE A.stateContractId = ' . SAGU::getParameter('ACADEMIC', 'STATE_CONTRACT_ID_INTERNAL_TRANSFER_TO') . '
+                       AND A.stateTime <= B.stateTime
+                       AND C.personId = ?
+                  ORDER BY A.stateTime LIMIT 1';
+        }
+                   
+        $args = array ( $contractId, $contractData->personId );
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        
+        list ( $return->contractId,
+               $return->courseId,
+               $return->courseVersion,
+               $return->turnId,
+               $return->unitId,
+               $return->stateTime ) = $result[0];
+
+        return $return;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @return unknown
+     */
+    public function generateEnrollBookTable($data)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $periodId = $data->periodId;
+
+        $busContract  = new BusinessAcademicBusContract();
+        $busPeriod    = new BusinessAcademicBusPeriod();
+
+        set_time_limit(0);
+
+        $this->getDatabase()->execute('BEGIN');
+
+        $busPeriod->setPeriodEnrollBookDate(date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')), $periodId);
+
+        $sql = 'DELETE FROM acdEnrollBookData WHERE periodId = ?';
+
+        $this->getDatabase()->execute(SAGU::prepare($sql, $periodId));
+
+        $contracts = $this->getPeriodActiveContracts($data);
+
+        $count = 0;
+
+        if ( count($contracts) > 0 )
+        {
+            foreach ($contracts as $contract)
+            {
+                $contractId = $contract[0];
+
+                $contractData = $busContract->getContract($contractId);
+
+                $actualContractStatus = $this->getActualContractStatus($contractId, $periodId);
+
+                if ($actualContractStatus != null)
+                {
+                    $personId      = $contractData->personId;
+                    $courseId      = $contractData->courseId;
+                    $courseVersion = $contractData->courseVersion;
+                    $turnId        = $contractData->turnId;
+                    $unitId        = $contractData->unitId;
+
+                    $stateContractId   = $actualContractStatus;
+
+                    if (($stateContractId == SAGU::getParameter('ACADEMIC', 'STATE_ENROLL_BOOK_INTERNAL_TRANSFER_TO_ID')) ||
+                        ($stateContractId == SAGU::getParameter('ACADEMIC', 'STATE_ENROLL_BOOK_INTERNAL_TRANSFER_FROM_ID')))
+                    {
+                        $prevContractData = $this->getRelatedContractData($contractId, $stateContractId);  
+
+                        if (strlen($prevContractData->contractId) > 0)
+                        {
+                            $prevCourseId      = $prevContractData->courseId;
+                            $prevCourseVersion = $prevContractData->courseVersion;
+                            $prevTurnId        = $prevContractData->turnId;
+                            $prevUnitId        = $prevContractData->unitId;
+
+                            $sql = 'INSERT INTO acdEnrollBookData
+                                                (personId,
+                                                 courseId,
+                                                 courseVersion,
+                                                 turnId,
+                                                 unitId,
+                                                 prevCourseId,
+                                                 prevCourseVersion,
+                                                 prevTurnId,
+                                                 prevUnitId,
+                                                 stateEnrollBookId,
+                                                 periodId) 
+                                         VALUES ( ?, 
+                                                  ?, 
+                                                  ?, 
+                                                  ?, 
+                                                  ?,
+                                                  ?, 
+                                                  ?, 
+                                                  ?, 
+                                                  ?,
+                                                  ?, 
+                                                  ?  )';
+
+                            $args = array( $personId, 
+                                           $prevCourseId, 
+                                           $prevCourseVersion, 
+                                           $prevTurnId, 
+                                           $prevUnitId,
+                                           $courseId, 
+                                           $courseVersion, 
+                                           $turnId, 
+                                           $unitId,
+                                           $stateContractId, 
+                                           $periodId );
+
+                            $this->getDatabase()->execute(SAGU::prepare($sql, $args));
+                            $count++;
+                        }
+                    }
+                    else
+                    {
+                        $prevCourseId      = '';
+                        $prevCourseVersion = '';
+                        $prevTurnId        = '';
+                        $prevUnitId        = '';
+                    }
+
+                    $sql = 'INSERT INTO acdEnrollBookData
+                                        (personId,
+                                         courseId,
+                                         courseVersion,
+                                         turnId,
+                                         unitId,
+                                         prevCourseId,
+                                         prevCourseVersion,
+                                         prevTurnId,
+                                         prevUnitId,
+                                         stateEnrollBookId,
+                                         periodId) 
+                                 VALUES ( ?, 
+                                          ?, 
+                                          ?, 
+                                          ?, 
+                                          ?, 
+                                          ?, 
+                                          ?, 
+                                          ?, 
+                                          ?, 
+                                          ?, 
+                                          ? )';
+
+                    $args = array( $personId, 
+                                   $courseId, 
+                                   $courseVersion, 
+                                   $turnId, 
+                                   $unitId, 
+                                   $prevCourseId, 
+                                   $prevCourseVersion, 
+                                   $prevTurnId, 
+                                   $prevUnitId, 
+                                   $stateContractId, 
+                                   $periodId );
+
+                    $this->getDatabase()->execute(SAGU::prepare($sql, $args));
+                    $count++;
+                }
+                
+                unset($args);
+            }
+        }
+
+        $this->getDatabase()->execute('COMMIT');
+
+        return $count;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @param unknown_type $orderOption
+     * @return unknown
+     */
+    public function getEnrollBookSummary($periodId, $orderOption=1)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $sql = 'SELECT DISTINCT A.courseId,
+                       A.courseVersion,
+                       A.turnId,
+                       A.unitId,
+                       B.enrollBookSequence
+                  FROM acdEnrollBookData A
+            INNER JOIN acdCourse B
+                    ON (B.courseId = A.courseId)
+                 WHERE A.periodId = ?';
+
+        if ($orderOption == 2)
+        {
+            $sql .= ' ORDER BY B.enrollBookSequence, A.courseId';
+        }
+        else
+        {
+            $sql .= ' ORDER BY A.courseId';
+        }
+
+        $result1 = $this->getDatabase()->query(SAGU::prepare($sql, $periodId));
+
+        if (count($result1) > 0)
+        {
+            foreach ($result1 as $r1)
+            {
+                list (  $courseId,
+                        $courseVersion,
+                        $turnId,
+                        $unitId,
+                        $enrollBookSequence) = $r1;
+
+                $sql = 'SELECT name FROM acdCourse WHERE courseId = ?';
+
+                $courseName = $this->getDatabase()->query(SAGU::prepare($sql, $courseId));
+                $courseName = $courseName[0][0];
+
+                $sql = 'SELECT description FROM basTurn WHERE turnId = ?';
+
+                $turnDesc = $this->getDatabase()->query(SAGU::prepare($sql, $turnId));
+                $turnDesc = $turnDesc[0][0];
+
+                $sql = 'SELECT description FROM basUnit WHERE unitId = ?';
+
+                $unitDesc = $this->getDatabase()->query(SAGU::prepare($sql, $unitId));
+                $unitDesc = $unitDesc[0][0];
+
+                $sql = 'SELECT A.stateEnrollBookId,
+                               B.description,
+                               B.isSumToTotal,
+                               sum(CASE WHEN C.sex ILIKE \'M\' THEN 1 ELSE 0 END),
+                               sum(CASE WHEN C.sex ILIKE \'F\' THEN 1 ELSE 0 END),
+                               sum(CASE WHEN C.sex = NULL THEN 1 ELSE 0 END),
+                               count(A.personId)
+                          FROM acdEnrollBookData A
+                    INNER JOIN acdStateEnrollBook B
+                            ON (B.stateEnrollBookId = A.stateEnrollBookId)
+                    INNER JOIN ONLY basPhysicalPersonStudent C
+                            ON (C.personId = A.personId)
+                         WHERE A.courseId = ?
+                           AND A.courseVersion = ?
+                           AND A.turnId = ?
+                           AND A.unitId = ?
+                           AND A.periodId = ?
+                      GROUP BY A.stateEnrollBookId, B.description, B.isSumToTotal
+                      ORDER BY 1';
+
+                $args = array(  $courseId,
+                                $courseVersion,
+                                $turnId,
+                                $unitId,
+                                $periodId   );
+
+                $result2 = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+                if (count($result2) > 0)
+                {
+                    foreach ($result2 as $r2)
+                    {
+                        list(   $stateEnrollBookId,
+                                $stateEnrollBookDesc,
+                                $isSumToTotal,
+                                $totalMale,
+                                $totalFemale,
+                                $totalUnknown,
+                                $totalPupils    ) = $r2;
+
+                        $index = $courseId . '-' . $courseVersion . '-' . $turnId . '-' . $unitId;
+                        $title = $courseId . '(' . $courseVersion . ') - ' . $courseName . ' - ' . $turnDesc . ' - ' . $unitDesc;
+
+                        $stateData = array($stateEnrollBookId, $stateEnrollBookDesc, $totalMale, $totalFemale, $totalUnknown, $totalPupils);
+
+                        $returnData[$index]->title        = $title;
+                        $returnData[$index]->statesData[] = $stateData;
+
+                        $returnData[$index]->totalM += $totalMale;
+                        $returnData[$index]->totalF += $totalFemale;
+                        $returnData[$index]->totalU += $totalUnknown;
+                        $returnData[$index]->total  += $totalPupils;
+
+                        if ($isSumToTotal == DB_TRUE)
+                        {
+                            $returnData[$index]->totalMA += $totalMale; 
+                            $returnData[$index]->totalFA += $totalFemale; 
+                            $returnData[$index]->totalUA += $totalUnknown; 
+                            $returnData[$index]->totalA  += $totalPupils; 
+                        }
+                    }
+                }
+            }
+        }
+
+        return $returnData;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @param unknown_type $sex
+     * @return unknown
+     */
+    public function getEnrollBookSummaryByAge($periodId, $sex=null)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $sql = 'SELECT DISTINCT courseId,
+                       courseVersion,
+                       turnId,
+                       unitId
+                  FROM acdEnrollBookData
+                 WHERE periodId = ?';
+
+        $result1 = $this->getDatabase()->query(SAGU::prepare($sql, $periodId));
+
+        if (count($result1) > 0)
+        {
+            foreach ($result1 as $r1)
+            {
+                list (  $courseId,
+                        $courseVersion,
+                        $turnId,
+                        $unitId) = $r1;
+
+                $sql = 'SELECT name FROM acdCourse WHERE courseId = ?';
+
+                $courseName = $this->getDatabase()->query(SAGU::prepare($sql, $courseId));
+                $courseName = $courseName[0][0];
+
+                $sql = 'SELECT description FROM basTurn WHERE turnId = ?';
+
+                $turnDesc = $this->getDatabase()->query(SAGU::prepare($sql, $turnId));
+                $turnDesc = $turnDesc[0][0];
+
+                $sql = 'SELECT description FROM basUnit WHERE unitId = ?';
+
+                $unitDesc = $this->getDatabase()->query(SAGU::prepare($sql, $unitId));
+                $unitDesc = $unitDesc[0][0];
+
+                $sql = 'SELECT A.stateEnrollBookId,
+                               A.description,
+                               A.isSumToTotal,
+                               sum(CASE WHEN A.age <= 18 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 19 AND 24 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 25 AND 29 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 30 AND 34 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 35 AND 39 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 40 AND 44 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 45 AND 49 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 50 AND 54 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 55 AND 59 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 60 AND 64 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age >= 64 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN (A.age IS NULL OR A.age = 0) THEN 1
+                               ELSE 0 END),
+                               count(A.personId) as totalPupils
+                          FROM (SELECT A.stateEnrollBookId,
+                                       B.description,
+                                       B.isSumToTotal,
+                                       EXTRACT (YEAR FROM age(C.dateBirth)) as age,
+                                       A.personId
+                                  FROM acdEnrollBookData A
+                            INNER JOIN acdStateEnrollBook B
+                                    ON (B.stateEnrollBookId = A.stateEnrollBookId)
+                            INNER JOIN ONLY basPhysicalPersonStudent C
+                                    ON (C.personId = A.personId)
+                                 WHERE A.courseId = ?
+                                   AND A.courseVersion = ?
+                                   AND A.turnId = ?
+                                   AND A.unitId = ?
+                                   AND A.periodId = ?';
+
+               $args = array(  $courseId,
+                               $courseVersion,
+                               $turnId,
+                               $unitId,
+                               $periodId );
+
+
+                if (strlen($sex) > 0)
+                {
+                    $sql .= ' AND C.sex = ? ';
+
+                    $args[] = $sex;
+                }
+
+                $sql .= ' ORDER BY 1) AS A
+                          GROUP BY A.stateEnrollBookId, A.description, A.isSumToTotal
+                          ORDER BY 1';
+
+                $result2 = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+                if (count($result2) > 0)
+                {
+                    foreach ($result2 as $r2)
+                    {
+                        list (  $stateEnrollBookId,
+                                $description,
+                                $isSumToTotal,
+                                $under18,
+                                $from19to24,
+                                $from25to29,
+                                $from30to34,
+                                $from35to39,
+                                $from40to44,
+                                $from45to49,
+                                $from50to54,
+                                $from55to59,
+                                $from60to64,
+                                $over65,
+                                $unknown,
+                                $number ) = $r2;
+
+                        $index = $courseId . '-' . $courseVersion . '-' . $turnId . '-' . $unitId;
+                        $title = $courseId . '(' . $courseVersion . ') - ' . $courseName . ' - ' . $turnDesc . ' - ' . $unitDesc;
+
+                        $returnData[$index]->title        = $title;
+                        unset($r2[2]);
+                        $returnData[$index]->statesData[] = array ( $stateEnrollBookId,
+                                                                    $description,
+                                                                    $under18,
+                                                                    $from19to24,
+                                                                    $from25to29,
+                                                                    $from30to34,
+                                                                    $from35to39,
+                                                                    $from40to44,
+                                                                    $from45to49,
+                                                                    $from50to54,
+                                                                    $from55to59,
+                                                                    $from60to64,
+                                                                    $over65,
+                                                                    $unknown,
+                                                                    $number );
+
+                        $returnData[$index]->totalUnder18 += $under18;
+                        $returnData[$index]->total19to24  += $from19to24;
+                        $returnData[$index]->total25to29  += $from25to29;
+                        $returnData[$index]->total30to34  += $from30to34;
+                        $returnData[$index]->total35to39  += $from35to39;
+                        $returnData[$index]->total40to44  += $from40to44;
+                        $returnData[$index]->total45to49  += $from45to49;
+                        $returnData[$index]->total50to54  += $from50to54;
+                        $returnData[$index]->total55to59  += $from55to59;
+                        $returnData[$index]->total60to64  += $from60to64;
+                        $returnData[$index]->totalOver65  += $over65;
+                        $returnData[$index]->totalUnknown += $unknown;
+                        $returnData[$index]->total        += $number;
+
+                        if ($isSumToTotal == DB_TRUE)
+                        {
+                            $returnData[$index]->totalUnder18A += $under18;
+                            $returnData[$index]->total19to24A  += $from19to24;
+                            $returnData[$index]->total25to29A  += $from25to29;
+                            $returnData[$index]->total30to34A  += $from30to34;
+                            $returnData[$index]->total35to39A  += $from35to39;
+                            $returnData[$index]->total40to44A  += $from40to44;
+                            $returnData[$index]->total45to49A  += $from45to49;
+                            $returnData[$index]->total50to54A  += $from50to54;
+                            $returnData[$index]->total55to59A  += $from55to59;
+                            $returnData[$index]->total60to64A  += $from60to64;
+                            $returnData[$index]->totalOver65A  += $over65;
+                            $returnData[$index]->totalUnknownA += $unknown;
+                            $returnData[$index]->totalA        += $number;
+                        }
+                    }
+                }
+            }
+        }
+
+        return $returnData;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @return unknown
+     */
+    public function getEnrollBookDataByCity($periodId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $sql = 'SELECT C.name,
+                       count(A.personId)
+                  FROM acdEnrollBookData A
+            INNER JOIN acdStateEnrollBook D
+                    ON (D.stateEnrollBookId = A.stateEnrollBookId)
+            INNER JOIN ONLY basPhysicalPersonStudent B
+                    ON (B.personId = A.personId)
+            INNER JOIN basCity C
+                    ON (C.cityId = B.cityId)
+                 WHERE A.periodId = ?
+                   AND D.isSumToTotal = true
+              GROUP BY C.name
+              ORDER BY 2 DESC'; 
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $periodId));
+
+        return $result;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @return unknown
+     */
+    public function getEnrollBookDataByGroupOffer($periodId)
+    {
+        set_time_limit(0);
+
+        $sql = 'SELECT B.groupId,
+                       F.courseId,
+                       F.courseVersion,
+                       F.turnId,
+                       F.unitId,
+                       B.curriculumId,
+                       count(D.personId)
+                  FROM unit_acdEnroll A
+            INNER JOIN unit_acdGroup B
+                    ON (B.groupId = A.groupId)
+            INNER JOIN unit_acdContract C
+                    ON (C.contractId = A.contractId)
+            INNER JOIN acdEnrollBookData D
+                    ON (D.personId = C.personId)
+            INNER JOIN acdStateEnrollBook E
+                    ON (E.stateEnrollBookId = D.stateEnrollBookId)
+            INNER JOIN unit_acdcurriculum F
+                    ON (F.curriculumId = B.curriculumId)
+            INNER JOIN acdSchedule G
+                    ON (G.groupId = B.groupId)
+                 WHERE D.periodId = ?
+                   AND E.isSumToTotal = true
+              GROUP BY B.groupId, 
+                       F.courseId, 
+                       F.courseVersion, 
+                       F.turnId, 
+                       F.unitId,
+                       B.curriculumId
+              ORDER BY B.groupId';
+
+        $result1 = $this->getDatabase()->query(SAGU::prepare($sql, $periodId));
+
+        if (count($result1) > 0)
+        {
+            foreach ($result1 as $res1)
+            {
+                list( $groupId,
+                      $courseId,
+                      $courseVersion,
+                      $turnId,
+                      $unitId,
+                      $curriculumId,
+                      $number ) = $res1;
+
+                $sql = 'SELECT DISTINCT A.professorId, 
+                               B.name
+                          FROM acdSchedule C
+                     LEFT JOIN acdScheduleProfessor A
+                            ON (A.scheduleId = C.scheduleId)
+                    INNER JOIN ONLY basPhysicalPersonProfessor B
+                            ON (B.personId = A.professorId)
+                         WHERE C.groupId = ?';
+
+                $result3 = $this->getDatabase()->query(SAGU::prepare($sql, $groupId));
+
+                unset($professor);
+                if (count($result3) > 1)
+                {
+                    foreach ($result3 as $res3)
+                    {
+                        if (strlen($professor) > 0)
+                        {
+                            $professor .= '/' . $res3[1];
+                        }
+                        else
+                        {
+                            $professor = $res3[1];
+                        }
+                    }
+                }
+                elseif (count($result3) == 1)
+                {
+                    $professor = $result3[0][1];
+                }
+                else
+                {
+                    $professor = '';
+                }
+
+                $sql = 'SELECT A.curricularComponentId,
+                               A.curricularComponentVersion,
+                               B.name
+                          FROM unit_acdcurriculum A
+                    INNER JOIN acdCurricularComponent B
+                            ON (B.curricularComponentId = A.curricularComponentId AND
+                                B.curricularComponentVersion = A.curricularComponentVersion)
+                         WHERE A.curriculumId = ?';
+
+                $currComp = $this->getDatabase()->query(SAGU::prepare($sql, $curriculumId));
+                $currComp = $currComp[0][0] . '(' . $currComp[0][1] . ') - ' . $currComp[0][2];
+
+                $sql    = 'SELECT shortName FROM acdCourse WHERE courseId = ?';
+                $course = $this->getDatabase()->query(SAGU::prepare($sql, $courseId));
+                $course = $course[0][0];
+
+                $sql        = 'SELECT description FROM basTurn WHERE turnId = ?';
+                $courseTurn = $this->getDatabase()->query(SAGU::prepare($sql, $turnId));
+                $courseTurn = $courseTurn[0][0];
+
+                $sql  = 'SELECT description FROM basUnit WHERE unitId = ?';
+                $unit = $this->getDatabase()->query(SAGU::prepare($sql, $unitId));
+                $unit = $unit[0][0];
+
+                $courseIndex   = $courseId . '-' . $courseVersion . '-' . $turnId . '-' . $unitId;
+                $title         = $courseId . '(' . $courseVersion . ') - ' . $course . ' - ' . $courseTurn . ' - ' . $unit;
+                $row           = array($groupId, $currComp, $professor, $number);
+
+                $return[$scheduleIndex]->data[$courseIndex]->title  = $title;
+                $return[$scheduleIndex]->data[$courseIndex]->data[] = $row;
+                $return[$scheduleIndex]->data[$courseIndex]->total  += $number;
+            }
+        }
+
+        if (count($return) > 0)
+        {
+            return $return;
+        }
+        else
+        {
+            return null;
+        }
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @return unknown
+     */
+    public function getEnrollBookDataByGroupOccurrence($periodId)
+    {
+        $sql = 'SELECT DISTINCT F.courseId,
+                                F.courseVersion,
+                                F.turnId,
+                                F.unitId,
+                                B.groupId,
+                                I.curricularComponentId,
+                                I.curricularComponentVersion,
+                                I.name,
+                                count(D.personId)
+                           FROM unit_acdEnroll A
+                     INNER JOIN unit_acdGroup B
+                             ON (B.groupId = A.groupId AND
+                                 B.learningPeriodId IN (SELECT learningPeriodId 
+                                                          FROM unit_acdlearningperiod 
+                                                         WHERE periodId = ?) )
+                     INNER JOIN unit_acdContract C
+                             ON (C.contractId = A.contractId)
+                     INNER JOIN acdEnrollBookData D
+                             ON (D.personId = C.personId AND
+                                 D.courseId = C.courseId AND
+                                 D.courseVersion = C.courseVersion AND
+                                 D.unitId = C.unitId AND
+                                 D.turnId = C.turnId)
+                     INNER JOIN acdStateEnrollBook E
+                             ON (E.stateEnrollBookId = D.stateEnrollBookId)
+                     INNER JOIN unit_acdcurriculum F
+                             ON (F.curriculumId = B.curriculumId)
+                     INNER JOIN acdSchedule G
+                             ON (G.groupId = B.groupId)
+                     INNER JOIN acdCurricularComponent I
+                             ON (I.curricularComponentId = F.curricularComponentId AND
+                                 I.curricularComponentVersion = F.curricularComponentVersion)
+                          WHERE D.periodId = ?
+                            AND E.isSumToTotal = \'' . DB_TRUE . '\'
+                       GROUP BY F.courseId, 
+                                F.courseVersion, 
+                                F.turnId, 
+                                F.unitId, 
+                                G.scheduleId, 
+                                B.groupId, 
+                                I.curricularComponentId, 
+                                I.curricularComponentVersion, 
+                                I.name
+                       ORDER BY F.courseId, 
+                                F.courseVersion, 
+                                I.name';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, array($periodId, $periodId)));
+
+        if (count($result) > 0)
+        {
+            foreach ($result as $res)
+            {
+                list (  $courseId,
+                        $courseVersion,
+                        $courseTurnId,
+                        $courseUnitId,
+                        $groupId,
+                        $currCompId,
+                        $currCompVersion,
+                        $currCompDesc,
+                        $number ) = $res;
+
+                $sql        = 'SELECT shortName 
+                                 FROM acdCourse 
+                                WHERE courseId = ? ';
+                
+                $courseName = $this->getDatabase()->query(SAGU::prepare($sql, array($courseId)));
+                $courseName = $courseName[0][0];
+
+                $sql        = 'SELECT description 
+                                 FROM basUnit 
+                                WHERE unitId = ? ';
+                
+                $courseUnit = $this->getDatabase()->query(SAGU::prepare($sql, array($courseUnitId)));
+                $courseUnit = $courseUnit[0][0];
+
+                $sql = 'SELECT B.name 
+                          FROM acdScheduleProfessor A
+                    INNER JOIN basPhysicalPersonProfessor B
+                            ON (B.personId = A.professorId)
+                         WHERE A.scheduleId = ? ';
+
+                $professors = $this->getDatabase()->query(SAGU::prepare($sql, array($scheduleId)));
+
+                unset($scheduleProfessor);
+                if (count($professors) > 0)
+                {
+                    foreach ($professors as $professor)
+                    {
+                        if (strlen($scheduleProfessor) > 0)
+                        {
+                            $scheduleProfessor .= '/' . $professor[0];
+                        }
+                        else
+                        {
+                            $scheduleProfessor = $professor[0];
+                        }
+                    }
+                }
+
+                $courseIndex = $courseId . '-' . $courseVersion . '-' . $courseTurnId . '-' . $courseUnitId;
+                $courseTitle = $courseId . '('. $courseVersion . ') - ' . $courseName . ' - ' . $courseUnit;
+
+                $return[$scheduleIndex]->data[$courseIndex]->title        = $courseTitle;
+                $return[$scheduleIndex]->data[$courseIndex]->total       += $number;
+                $return[$scheduleIndex]->data[$courseIndex]->courseData[] = array($groupId, $currCompId . '(' . $currCompVersion . ') - ' . $currCompDesc, $scheduleProfessor, $number);
+            }
+            return $return;
+        }
+        return null;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @return unknown
+     */
+    public function getProfessorGroups($periodId)
+    {
+        $sql = 'SELECT F.professorId,
+                       G.name,
+                       J.courseId,
+                       J.courseVersion,
+                       J.turnId,
+                       J.unitId,
+                       K.shortName,
+                       L.description,
+                       count(DISTINCT A.groupId)
+                  FROM unit_acdEnroll A
+            INNER JOIN unit_acdContract B
+                    ON (B.contractId = A.contractId)
+            INNER JOIN acdEnrollBookData C
+                    ON (C.personId = B.personId)
+            INNER JOIN acdStateEnrollBook D
+                    ON (D.stateEnrollBookId = C.stateEnrollBookId)
+            INNER JOIN acdSchedule E
+                    ON (E.groupId = A.groupId)
+            INNER JOIN acdScheduleProfessor F
+                    ON (F.scheduleId = E.scheduleId)
+            INNER JOIN basPhysicalPersonProfessor G
+                    ON (G.personId = F.professorId)
+            INNER JOIN unit_acdGroup H
+                    ON (H.groupId = A.groupId)
+            INNER JOIN unit_acdlearningperiod I
+                    ON (I.learningPeriodId = H.learningPeriodId)
+            INNER JOIN unit_acdcurriculum J
+                    ON (J.curriculumId = H.curriculumId)
+            INNER JOIN acdCourse K
+                    ON (K.courseId = J.courseId)
+            INNER JOIN basUnit L
+                    ON (L.unitId = J.unitId)
+                 WHERE I.periodId = ?
+                   AND D.isSumToTotal = \'' . DB_TRUE . '\'
+                   AND K.formationLevelId = ' . SAGU::getParameter('ACADEMIC', 'COURSE_FORMATIONLEVELID_GRADUATE') . '
+              GROUP BY F.professorId, 
+                       G.name, 
+                       J.courseId, 
+                       J.courseVersion, 
+                       J.turnId, 
+                       J.unitId,
+                       K.shortName,
+                       L.description
+              ORDER BY K.shortName, 
+                       G.name';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $periodId));
+
+        if (count($result) > 0)
+        {
+            foreach ($result as $res)
+            {
+                list(  $professorId,
+                       $name,
+                       $courseId,
+                       $courseVersion,
+                       $turnId,
+                       $unitId,
+                       $course,
+                       $unit,
+                       $number  ) = $res;
+
+                $index  = $courseId . '-' . $courseVersion . '-' . $turnId . '-' . $unitId;
+                $title  = $courseId . '(' . $courseVersion . ') - ' . $course . ' - ' . $unit;
+
+                $return[$index]->title  = $title;
+                $return[$index]->data[] = array($professorId, $name, $number);
+                $return[$index]->total += $number;
+            }
+        }
+
+        if (count($return) > 0)
+        {
+            return $return;
+        }
+        else
+        {
+            return null;
+        }
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @return unknown
+     */
+    public function getProfessorCurricularComponents($periodId)
+    {
+        $sql = 'SELECT F.professorId,
+                       G.name,
+                       count(DISTINCT A.groupId)
+                  FROM unit_acdEnroll A
+            INNER JOIN unit_acdContract B
+                    ON (B.contractId = A.contractId)
+            INNER JOIN acdEnrollBookData C
+                    ON (C.personId = B.personId)
+            INNER JOIN acdStateEnrollBook D
+                    ON (D.stateEnrollBookId = C.stateEnrollBookId)
+            INNER JOIN acdSchedule E
+                    ON (E.groupId = A.groupId)
+            INNER JOIN acdScheduleProfessor F
+                    ON (F.scheduleId = E.scheduleId)
+            INNER JOIN basPhysicalPersonProfessor G
+                    ON (G.personId = F.professorId)
+            INNER JOIN unit_acdGroup H
+                    ON (H.groupId = A.groupId)
+            INNER JOIN unit_acdlearningperiod I
+                    ON (I.learningPeriodId = H.learningPeriodId)
+            INNER JOIN unit_acdcurriculum J
+                    ON (J.curriculumId = H.curriculumId)
+            INNER JOIN acdCourse K
+                    ON (K.courseId = J.courseId)
+                 WHERE I.periodId = ?
+                   AND D.isSumToTotal = \'' . DB_TRUE . '\'
+                   AND K.formationLevelId = ' . SAGU::getParameter('ACADEMIC', 'COURSE_FORMATIONLEVELID_GRADUATE') . '
+              GROUP BY F.professorId, 
+                       G.name
+              ORDER BY G.name';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $periodId));
+
+        return $result;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @return unknown
+     */
+    public function getEnrollBookDataByCityAndCourse($periodId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $sql = 'SELECT A.courseId,
+                       A.courseVersion,
+                       A.turnId,
+                       A.unitId,
+                       F.name,
+                       E.description,
+                       C.cityId,
+                       C.name,
+                       count(A.personId)
+                  FROM acdEnrollBookData A
+            INNER JOIN acdStateEnrollBook D
+                    ON (D.stateEnrollBookId = A.stateEnrollBookId)
+            INNER JOIN ONLY basPhysicalPersonStudent B
+                    ON (B.personId = A.personId)
+            INNER JOIN basCity C
+                    ON (C.cityId = B.cityId)
+            INNER JOIN acdCourse F
+                    ON (F.courseId = A.courseId)
+            INNER JOIN basUnit E
+                    ON (E.unitId = A.unitId)
+                 WHERE A.periodId = ?
+                   AND D.isSumToTotal = \'' . DB_TRUE . '\'
+              GROUP BY A.courseId,
+                       A.courseVersion,
+                       A.turnId,
+                       A.unitId,
+                       F.name,
+                       E.description,
+                       C.cityId,
+                       C.name
+              ORDER BY 1, 8'; 
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $periodId));
+
+        if (count($result) > 0)
+        {
+            foreach ($result as $res)
+            {
+                list(   $courseId,
+                        $courseVersion,
+                        $turnId,
+                        $unitId,
+                        $courseName,
+                        $unitDesc,
+                        $cityId,
+                        $cityName,
+                        $number     ) = $res;
+
+                $index = $courseId . '-' . $courseVersion . '-' . $turnId . '-' . $unitId;
+
+                $title = $courseId . '(' . $courseVersion . ') - ' . $courseName . ' - ' . $unitDesc;
+
+                $return[$index]->title  = $title;
+                $return[$index]->data[] = array($cityId, $cityName, $number);
+                $return[$index]->total += $number;
+            }
+        }
+
+        return $return;
+    }
+
+    //FIXME: Add comment
+    public function getEnrollBookDataByCourseAndIncentive($periodId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $sql = 'SELECT A.courseId,
+                       A.courseVersion,
+                       E.shortName,
+                       A.unitId,
+                       F.description,
+                       A.turnId,
+                       D.incentiveTypeId,
+                       D.description,
+                       CASE WHEN C.valueIsPercent = true
+                       THEN round(C.value, 2) || \'%\'
+                       ELSE \'$ \' || round(C.value, 2) END,
+                       count(A.personId)
+                  FROM acdEnrollBookData A
+            INNER JOIN unit_acdContract B
+                    ON (B.personId = A.personId AND
+                        B.courseId = A.courseId AND
+                        B.courseVersion = A.courseVersion AND
+                        B.turnId = A.turnId AND
+                        B.unitId = A.unitId)
+            INNER JOIN ONLY finIncentive C
+                    ON (C.contractId = B.contractId AND 
+                        C.startDate <= date(now()) AND 
+                        ((C.cancellationdate = NULL) OR C.endDate >= date(now())) AND 
+                        C.value <> 0)
+            INNER JOIN finIncentiveType D
+                    ON (D.incentiveTypeId = C.incentiveTypeId)
+            INNER JOIN acdCourse E
+                    ON (E.courseId = A.courseId)
+            INNER JOIN basUnit F
+                    ON (F.unitId = A.unitId)
+                 WHERE A.periodId = ?     
+              GROUP BY A.courseId, 
+                       A.courseVersion,
+                       E.shortName,
+                       A.unitId,
+                       F.description,
+                       A.turnId,
+                       D.incentiveTypeId,
+                       D.description,
+                       C.valueIsPercent,
+                       C.value
+              ORDER BY A.courseId, D.incentiveTypeId, C.value';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $periodId));
+
+        if (count($result) > 0)
+        {
+            foreach ($result as $res)
+            {
+                list (  $courseId,
+                        $courseVersion,
+                        $courseName,
+                        $unitId,
+                        $unitDesc,
+                        $turnId,
+                        $incentiveTypeId,
+                        $incentiveTypeDesc,
+                        $value,
+                        $number  ) = $res;
+
+                $index = $courseId . '-' . $courseVersion . '-' . $unitId . '-' . $turnId;
+
+                $title = $courseId . '(' . $courseVersion . ') - ' . $courseName . ' - ' . $unitDesc;
+
+                $return[$index]->title  = $title;
+                $return[$index]->data[] = array($incentiveTypeId, $incentiveTypeDesc, $value, $number);
+                $return[$index]->total += $number;
+            }
+
+            return $return;
+        }
+        else
+        {
+            return null;
+        }
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @return unknown
+     */
+    public function getPupilsByCourseAndAgeBand($periodId)
+    {
+        $module = MIOLO::getCurrentModule();
+        
+        $sql =         'SELECT A.courseId,
+                               A.courseVersion,
+                               A.unitId,
+                               C.description,
+                               B.name,
+                               A.sex,
+                               sum(CASE WHEN A.age <= 18 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 19 AND 24 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 25 AND 29 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 30 AND 34 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 35 AND 39 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 40 AND 44 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 45 AND 49 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 50 AND 54 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 55 AND 59 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 60 AND 64 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age >= 64 THEN 1
+                               ELSE 0 END),
+                               count(A.personId) as totalPupils
+                          FROM (SELECT A.courseId,
+                                       A.courseVersion,
+                                       A.unitId,
+                                       C.sex,
+                                       EXTRACT (YEAR FROM age(C.dateBirth)) as age,
+                                       A.personId
+                                  FROM acdEnrollBookData A
+                            INNER JOIN acdStateEnrollBook B
+                                    ON (B.stateEnrollBookId = A.stateEnrollBookId)
+                            INNER JOIN ONLY basPhysicalPersonStudent C
+                                    ON (C.personId = A.personId)
+                                 WHERE A.periodId = ?
+                                   AND B.isSumToTotal = \''. DB_TRUE . '\'
+                              ORDER BY 1) AS A
+                    INNER JOIN acdCourse B
+                            ON (B.courseId = A.courseId)
+                    INNER JOIN basUnit C
+                            ON (C.unitId = A.unitId)
+                      GROUP BY A.courseId, A.courseVersion, A.unitId, C.description, B.name, A.sex
+                      ORDER BY 1';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $periodId));
+
+        if (count($result) > 0)
+        {
+            foreach ($result as $res)
+            {
+                $index = $res[0] . '-' . $res[1] . '-' . $res[2];
+
+                $return[$index]->data[0] = $res[0];
+                $return[$index]->data[1] = $res[3];
+                $return[$index]->data[2] = $res[4];
+
+                $strData = array('<=18 '   . '<font color=\'red\'>' . $res[6]  . '</font>', 
+                                 '19..24 ' . '<font color=\'red\'>' . $res[7]  . '</font>', 
+                                 '25..29 ' . '<font color=\'red\'>' . $res[8]  . '</font>', 
+                                 '30..34 ' . '<font color=\'red\'>' . $res[9]  . '</font>', 
+                                 '35..39 ' . '<font color=\'red\'>' . $res[10] . '</font>', 
+                                 '40..44 ' . '<font color=\'red\'>' . $res[11] . '</font>', 
+                                 '45..49 ' . '<font color=\'red\'>' . $res[12] . '</font>', 
+                                 '50..54 ' . '<font color=\'red\'>' . $res[13] . '</font>', 
+                                 '55..59 ' . '<font color=\'red\'>' . $res[14] . '</font>', 
+                                 '60..64 ' . '<font color=\'red\'>' . $res[15] . '</font>', 
+                                 '>=65 '   . '<font color=\'red\'>' . $res[16] . '</font>', 
+                                 '<b>' . _M('Total', $module) . ' <font color=\'red\'>' . $res[17] . '</font></b>');
+
+                $str = implode('<br>', $strData);
+
+                if ($res[5] == 'M')
+                {
+                    $return[$index]->data[3] = $str;
+                    $return[$index]->totalM += $res[17];
+                }
+                else
+                {
+                    $return[$index]->data[4] = $str;
+                    $return[$index]->totalF += $res[17];
+                }
+            }
+        }
+
+        return $return;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @return unknown
+     */
+    public function getPupilsByCityAndAge($periodId)
+    {
+        $sql = 'SELECT B.cityId,
+                       C.name,
+                       EXTRACT (YEAR FROM age(B.dateBirth)) as age,
+                       count(A.personId)
+                  FROM acdEnrollBookData A
+            INNER JOIN acdStateEnrollBook D
+                    ON (D.stateEnrollBookId = A.stateEnrollBookId)
+            INNER JOIN ONLY basPhysicalPersonStudent B
+                    ON (B.personId = A.personId)
+            INNER JOIN basCity C
+                    ON (C.cityId = B.cityId)
+                 WHERE A.periodId = ?
+                   AND D.isSumToTotal = \'' . DB_TRUE . '\'
+              GROUP BY B.cityId, C.name, age
+              ORDER BY 1, 2';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $periodId));
+
+        return $result;
+    }
+    
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @return unknown
+     */ 
+    public function getPupilsByCourseAgeBandAndCurrComp($periodId)
+    {
+        $module = MIOLO::getCurrentModule();
+        
+        $sql =         'SELECT A.courseId,
+                               A.courseVersion,
+                               A.unitId,
+                               C.description,
+                               B.name,
+                               G.name,
+                               A.sex,
+                               sum(CASE WHEN A.age <= 18 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 19 AND 24 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 25 AND 29 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 30 AND 34 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 35 AND 39 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 40 AND 44 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 45 AND 49 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 50 AND 54 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 55 AND 59 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age BETWEEN 60 AND 64 THEN 1
+                               ELSE 0 END),
+                               sum(CASE WHEN A.age >= 64 THEN 1
+                               ELSE 0 END),
+                               count(A.personId) as totalPupils
+                          FROM (SELECT A.courseId,
+                                       A.courseVersion,
+                                       A.unitId,
+                                       A.turnId,
+                                       C.sex,
+                                       EXTRACT (YEAR FROM age(C.dateBirth)) as age,
+                                       A.personId
+                                  FROM acdEnrollBookData A
+                            INNER JOIN acdStateEnrollBook B
+                                    ON (B.stateEnrollBookId = A.stateEnrollBookId)
+                            INNER JOIN ONLY basPhysicalPersonStudent C
+                                    ON (C.personId = A.personId)
+                                 WHERE A.periodId = ?
+                                   AND B.isSumToTotal = \''. DB_TRUE . '\'
+                              ORDER BY 1) AS A
+                    INNER JOIN unit_acdContract D
+                            ON (D.personId = A.personId AND
+                                D.courseId = A.courseId AND
+                                D.courseVersion = A.courseVersion AND
+                                D.unitId = A.unitId AND
+                                D.turnId = A.turnId)
+                    INNER JOIN unit_acdEnroll H
+                            ON (H.contractId = D.contractId)
+                    INNER JOIN unit_acdGroup E
+                            ON (E.groupId = H.groupId)
+                    INNER JOIN unit_acdlearningperiod I
+                            ON (I.learningPeriodId = E.learningPeriodId AND I.periodId = ?)
+                    INNER JOIN unit_acdcurriculum F
+                            ON (F.curriculumId = E.curriculumId)
+                    INNER JOIN acdCurricularComponent G
+                            ON (G.curricularComponentId = F.curricularComponentId AND
+                                G.curricularComponentVersion = F.curricularComponentVersion) 
+                    INNER JOIN acdCourse B
+                            ON (B.courseId = A.courseId)
+                    INNER JOIN basUnit C
+                            ON (C.unitId = A.unitId)
+                      GROUP BY A.courseId, A.courseVersion, A.unitId, C.description, B.name, G.name, A.sex
+                      ORDER BY 1,3,6';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, array($periodId, $periodId)));
+
+        if (count($result) > 0)
+        {
+            foreach ($result as $res)
+            {
+                $index = $res[0] . '-' . $res[1] . '-' . $res[2] . '-' . $res[5];
+
+                $return[$index]->data[0] = $res[0];
+                $return[$index]->data[1] = $res[3];
+                $return[$index]->data[2] = $res[4];
+                $return[$index]->data[3] = $res[5];
+
+                $strData = array('<=18 '   . '<font color=\'red\'>' . $res[7]  . '</font>', 
+                                 '19..24 ' . '<font color=\'red\'>' . $res[8]  . '</font>', 
+                                 '25..29 ' . '<font color=\'red\'>' . $res[9]  . '</font>', 
+                                 '30..34 ' . '<font color=\'red\'>' . $res[10]  . '</font>', 
+                                 '35..39 ' . '<font color=\'red\'>' . $res[11] . '</font>', 
+                                 '40..44 ' . '<font color=\'red\'>' . $res[12] . '</font>', 
+                                 '45..49 ' . '<font color=\'red\'>' . $res[13] . '</font>', 
+                                 '50..54 ' . '<font color=\'red\'>' . $res[14] . '</font>', 
+                                 '55..59 ' . '<font color=\'red\'>' . $res[15] . '</font>', 
+                                 '60..64 ' . '<font color=\'red\'>' . $res[16] . '</font>', 
+                                 '>=65 '   . '<font color=\'red\'>' . $res[17] . '</font>', 
+                                 '<b>' . _M('Total', $module) . ' <font color=\'red\'>' . $res[18] . '</font></b>');
+
+                $str = implode('<br>', $strData);
+
+                if ($res[6] == 'M')
+                {
+                    $return[$index]->data[4] = $str;
+                    $return[$index]->totalM += $res[18];
+                }
+                else
+                {
+                    $return[$index]->data[5] = $str;
+                    $return[$index]->totalF += $res[18];
+                }
+            }
+        }
+
+        return $return;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @return unknown
+     */
+    public function getEnrollBookDataByCityCourseAndCurrComp($periodId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $sql = 'SELECT A.courseId,
+                       A.courseVersion,
+                       A.turnId,
+                       A.unitId,
+                       F.name,
+                       E.description,
+                       C.cityId,
+                       C.name,
+                       L.curricularComponentId,
+                       L.name,
+                       count(A.personId)
+                  FROM acdEnrollBookData A
+            INNER JOIN acdStateEnrollBook D
+                    ON (D.stateEnrollBookId = A.stateEnrollBookId)
+            INNER JOIN ONLY basPhysicalPersonStudent B
+                    ON (B.personId = A.personId)
+            INNER JOIN unit_acdContract G
+                    ON (G.personId = A.personId AND
+                        G.courseId = A.courseId AND
+                        G.courseVersion = A.courseVersion AND
+                        G.unitId = A.unitId AND
+                        G.turnId = A.turnId)
+            INNER JOIN unit_acdEnroll H
+                    ON (H.contractId = G.contractId)
+            INNER JOIN unit_acdGroup I
+                    ON (I.groupId = H.groupId)
+            INNER JOIN unit_acdlearningperiod J
+                    ON (J.learningPeriodId = I.learningPeriodId AND J.periodId = ?)
+            INNER JOIN unit_acdcurriculum K
+                    ON (K.curriculumId = I.curriculumId)
+            INNER JOIN acdCurricularComponent L
+                    ON (L.curricularComponentId = K.curricularComponentId AND
+                        L.curricularComponentVersion = K.curricularComponentVersion)
+            INNER JOIN basCity C
+                    ON (C.cityId = B.cityId)
+            INNER JOIN acdCourse F
+                    ON (F.courseId = A.courseId)
+            INNER JOIN basUnit E
+                    ON (E.unitId = A.unitId)
+                 WHERE A.periodId = ?
+                   AND D.isSumToTotal = \'' . DB_TRUE . '\'
+              GROUP BY A.courseId,
+                       A.courseVersion,
+                       A.turnId,
+                       A.unitId,
+                       F.name,
+                       E.description,
+                       C.cityId,
+                       C.name,
+                       L.curricularComponentId,
+                       L.name
+              ORDER BY 1, 10, 8'; 
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, array($periodId, $periodId)));
+
+        if (count($result) > 0)
+        {
+            foreach ($result as $res)
+            {
+                list(   $courseId,
+                        $courseVersion,
+                        $turnId,
+                        $unitId,
+                        $courseName,
+                        $unitDesc,
+                        $cityId,
+                        $cityName,
+                        $currCompId,
+                        $currCompName,
+                        $number     ) = $res;
+
+                $index = $courseId . '-' . $courseVersion . '-' . $turnId . '-' . $unitId . '-' . $currCompId;
+
+                $title = $courseId . '(' . $courseVersion . ') - ' . $courseName . ' - ' . $unitDesc . ' - ' . $currCompName;
+
+                $return[$index]->title  = $title;
+                $return[$index]->data[] = array($cityId, $cityName, $number);
+                $return[$index]->total += $number;
+            }
+        }
+
+        return $return;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @return unknown
+     */
+    public function getPupilsInExternalTransfer($periodId)
+    {
+        $sql = 'SELECT A.courseId,
+                       A.courseVersion,
+                       C.name,
+                       A.unitId,
+                       D.description,
+                       A.turnId,
+                       E.description,
+                       A.personId,
+                       B.name
+                  FROM acdEnrollBookData A
+            INNER JOIN ONLY basPhysicalPersonStudent B
+                    ON (B.personId = A.personId)
+            INNER JOIN acdCourse C
+                    ON (C.courseId = A.courseId)
+            INNER JOIN basUnit D
+                    ON (D.unitId = a.unitId)
+            INNER JOIN basTurn E
+                    ON (E.turnId = A.turnId)
+                 WHERE A.stateEnrollBookId = ' . SAGU::getParameter('ACADEMIC', 'STATE_ENROLL_BOOK_EXTERNAL_TRANSFER_TO_ID') . '
+                   AND A.periodId = ?
+              ORDER BY A.courseId, 
+                       A.courseVersion, 
+                       A.unitId, 
+                       A.turnId, 
+                       B.name'; 
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $periodId));
+
+        if (count($result) > 0)
+        {
+            foreach ($result as $res)
+            {
+                list (  $courseId,
+                        $courseVersion,
+                        $courseName,
+                        $unitId,
+                        $unitDesc,
+                        $turnId,
+                        $turnDesc,
+                        $personId,
+                        $personName ) = $res;
+
+                $index = $courseId . '-' . $courseVersion . '-' . $unitId . '-' . $turnId;
+
+                $return[$index]->title = $courseId . '(' . $courseVersion . ') - ' . $courseName . ' - ' . $turnDesc . ' - ' . $unitDesc;
+                $return[$index]->data[] = array($personId, $personName);
+                $return[$index]->total++;
+            }
+
+            return $return;
+        }
+
+        return null;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @param unknown_type $stateEnrollBookId
+     * @return unknown
+     */
+    public function getPupilsByState($periodId, $stateEnrollBookId)
+    {
+        $sql = 'SELECT A.courseId,
+                       A.courseVersion,
+                       B.name,
+                       A.unitId,
+                       C.description,
+                       A.turnId,
+                       D.description,
+                       A.prevCourseId,
+                       A.prevCourseVersion,
+                       E.name,
+                       A.prevUnitId,
+                       F.description,
+                       A.prevTurnId,
+                       G.description,
+                       A.personId,
+                       H.name
+                  FROM acdEnrollBookData A
+            INNER JOIN acdCourse B
+                    ON (B.courseId = A.courseId)
+            INNER JOIN basUnit C
+                    ON (C.unitId = A.unitId)
+            INNER JOIN basTurn D
+                    ON (D.turnId = A.turnId)
+             LEFT JOIN acdCourse E
+                    ON (E.courseId = A.prevCourseId)
+             LEFT JOIN basUnit F
+                    ON (F.unitId = A.prevUnitId)
+             LEFT JOIN basTurn G
+                    ON (G.turnId = A.prevTurnId)
+            INNER JOIN ONLY basPhysicalPersonStudent H
+                    ON (H.personId = A.personId)
+                 WHERE A.periodId = ?
+                   AND A.stateEnrollBookId = ?
+              ORDER BY A.courseId, 
+                       A.courseVersion, 
+                       A.unitId, 
+                       A.turnId, 
+                       H.name';
+
+        $args = array(
+                $periodId,
+                $stateEnrollBookId
+        );
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        if (count($result) > 0)
+        {
+            foreach ($result as $res)
+            {
+                list (  $courseId,
+                        $courseVersion,
+                        $courseName,
+                        $unitId,
+                        $unitDesc,
+                        $turnId,
+                        $turnDesc,
+                        $prevCourseId,
+                        $prevCourseVersion,
+                        $prevCourseName,
+                        $prevUnitId,
+                        $prevUnitDesc,
+                        $prevTurnId,
+                        $prevTurnDesc,
+                        $personId,
+                        $personName ) = $res;
+
+                $index = $courseId . '-' . $courseVersion . '-' . $unitId . '-' . $turnId;
+
+                $return[$index]->title  = $courseId . '(' . $courseVersion . ') - ' . $courseName . ' - ' . $unitDesc . ' - ' . $turnDesc;
+                $return[$index]->data[] = array($personId, $personName, $prevCourseId, $prevCourseName, $prevUnitDesc);
+                $return[$index]->total++;
+            }
+
+            return $return;
+        }
+
+        return null;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @param unknown_type $orderByOption
+     * @return unknown
+     */
+    public function getCoursesSequenceConfig($periodId, $orderByOption=1)
+    {
+        $sql = 'SELECT DISTINCT A.courseId,
+                       B.name,
+                       B.enrollBookSequence
+                  FROM acdEnrollBookData A
+            INNER JOIN acdCourse B
+                    ON (B.courseId = A.courseId)
+                 WHERE A.periodId = ? ';
+
+        if ($orderByOption == 1)
+        {
+            $sql .= ' ORDER BY B.name,
+                               A.courseId';
+        }
+        elseif ($orderByOption == 2)
+        {
+            $sql .= ' ORDER BY B.enrollBookSequence, 
+                               A.courseId';
+        }
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $periodId));
+
+        return $result;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @return unknown
+     */
+    public function isAlreadyGenerated($periodId)
+    {
+        $sql = 'SELECT count(*) 
+                 FROM acdEnrollBookData 
+                WHERE periodId = ?';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $periodId));
+
+        return ($result[0][0] > 0);
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $periodId
+     * @return unknown
+     */
+    public function getEnrollBookStatePupils($periodId)
+    {
+        $sql = 'SELECT A.courseId,
+                       A.courseVersion,
+                       A.turnId,
+                       A.unitId,
+                       A.prevCourseId,
+                       A.prevCourseVersion,
+                       A.prevTurnId,
+                       A.prevUnitId,
+                       A.personId,
+                       C.name,
+                       A.stateEnrollBookId,
+                       A.periodId,
+                       B.enrollBookSequence
+                  FROM acdEnrollBookData A
+            INNER JOIN acdCourse B
+                    ON (A.courseId = B.courseId)
+            INNER JOIN ONLY basPhysicalPersonStudent C
+                    ON (C.personId = A.personId)
+                 WHERE A.periodId = ?
+              ORDER BY B.enrollBookSequence, 
+                       A.courseId, 
+                       A.stateEnrollBookId, 
+                       C.name ';
+
+        $args = array ( $periodId );
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        if (count($result) > 0)
+        {
+            foreach ($result as $res)
+            {
+                list (  $courseId,
+                        $courseVersion,
+                        $turnId,
+                        $unitId,
+                        $prevCourseId,
+                        $prevCourseVersion,
+                        $prevTurnId,
+                        $prevUnitId,
+                        $personId,
+                        $personName,
+                        $stateEnrollBookId,
+                        $periodId,
+                        $enrollBookSequence ) = $res;
+
+                $sql        = 'SELECT name 
+                                 FROM acdCourse 
+                                WHERE courseId = ?';
+                $courseName = $this->getDatabase()->query(SAGU::prepare($sql, $courseId));
+                $courseName = $courseName[0][0];
+
+                $sql      = 'SELECT description 
+                               FROM basTurn 
+                              WHERE turnId = ?';
+                $turnDesc = $this->getDatabase()->query(SAGU::prepare($sql, $turnId));
+                $turnDesc = $turnDesc[0][0];
+
+                $sql      = 'SELECT description 
+                               FROM basUnit 
+                              WHERE unitId = ?';
+                $unitDesc = $this->getDatabase()->query(SAGU::prepare($sql, $unitId));
+                $unitDesc = $unitDesc[0][0];
+
+                if ( ( ($prevCourseId == $courseId) || (strlen($prevCourseId) == 0) ) &&
+                     ( ($prevCourseVersion == $courseVersion) || (strlen($prevCourseVersion)) == 0 ) &&
+                     ( ($prevTurnId == $turnId) || (strlen($prevTurnId) == 0) ) &&
+                     ( ($prevUnitId == $unitId) || (strlen($prevUnitId) == 0) ) )
+                {
+                    $prevCourseId = $prevCourseVersion = $prevUnitId = $prevTurnId = '';
+                    unset($prevCourseData);
+                }
+                else
+                {
+                    $prevCourseData = $prevCourseId . '(' . $prevCourseVersion . ')'; 
+                }
+
+                $sql                 = 'SELECT description 
+                                          FROM acdStateEnrollBook 
+                                         WHERE stateEnrollBookId = ?';
+                $stateEnrollBookDesc = $this->getDatabase()->query(SAGU::prepare($sql, $stateEnrollBookId));
+                $stateEnrollBookDesc = $stateEnrollBookDesc[0][0];
+
+                $index = $courseId . '-' . $courseVersion . '-' . $turnId . '-' . $unitId;
+
+                $title      = $courseId . '(' . $courseVersion . ') - ' . $courseName . ' - ' . $turnDesc . ' - ' . $unitDesc;
+                $personData = array($personId, $personName, $prevCourseData, $prevTurnId, $prevUnitId);
+
+                $return[$index]->title = $title;
+                $return[$index]->states[$stateEnrollBookId]->title    = $stateEnrollBookDesc;
+                $return[$index]->states[$stateEnrollBookId]->pupils[] = $personData;
+            }
+        }
+        return $return;
+    }
+}
+?>

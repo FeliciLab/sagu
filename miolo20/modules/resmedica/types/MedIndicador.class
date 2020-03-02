@@ -1,0 +1,258 @@
+<?php
+
+class MedIndicador extends SType
+{
+    /**
+     * @AttributeType integer
+     */
+    protected $indicadorId;
+
+    /**
+     * @AttributeType integer
+     */
+    protected $enfaseId;
+
+    /**
+     * @AttributeType integer
+     */
+    protected $periodoId;
+
+    /**
+     * @AttributeType character varying
+     */
+    protected $descricao;
+
+    const PERIODICIDADE_SEMANA = 'S';
+    const PERIODICIDADE_MES = 'M';
+    const PERIODICIDADE_BIMESTRE = 'B';
+    const PERIODICIDADE_POR_PROGRAMA = 'P';
+    protected $periodicidade;
+
+    protected $meta;
+
+    const SITUACAO_ATIVADO = 'A';
+    const SITUACAO_DESATIVADO = 'D';
+    protected $situacao;
+
+
+    public function __construct($indicadorId = NULL)
+    {
+        if ( (strlen($indicadorId)  >  0) )
+        {
+            $this->indicadorId = $indicadorId;
+            $this->populate();
+        }
+    }
+
+    public static function getSearchGridSQL($filters  =  null)
+    {
+        $where = null;
+        $usuario = MedEnfase::retornaAdminDaEspecialidadeResidenciaMedica();
+        if ( $usuario )
+        {
+            $where = " WHERE E.enfaseid in (SELECT AA.enfaseid FROM med.enfaseresponsavel AA WHERE AA.responsavel = " . $usuario . ")";
+        }
+
+        $sql = "SELECT A.indicadorId,
+                       (SELECT B.descricao FROM med.enfase B WHERE B.enfaseid = A.enfaseid) AS enfase,
+                       (SELECT C.descricao FROM med.periodo C WHERE C.periodoid = A.periodoid) AS periodo,
+                       A.descricao,
+                       CASE WHEN A.periodicidade = '" . self::PERIODICIDADE_SEMANA . "' THEN 'Semanal'
+                            WHEN A.periodicidade = '" . self::PERIODICIDADE_MES . "' THEN 'Mensal'
+                            WHEN A.periodicidade = '" . self::PERIODICIDADE_BIMESTRE . "' THEN 'Bimestral'
+                            WHEN A.periodicidade = '" . self::PERIODICIDADE_POR_PROGRAMA . "' THEN 'Duração do Programa'
+                       END AS periodicidade,
+                       A.meta,
+                       CASE WHEN A.situacao = '" . self::SITUACAO_ATIVADO . "' THEN 'Ativado'
+                            WHEN A.situacao = '" . self::SITUACAO_DESATIVADO . "' THEN 'Desativado'
+                       END AS situacao
+                  FROM med.indicador A INNER JOIN med.enfase E
+                    ON A.enfaseid = E.enfaseid
+                    $where";
+
+        $params = array();
+
+        $sql .= ' ORDER BY indicadorId ';
+
+        return SAGU::prepare($sql, $params);
+    }
+
+    public static function listarSituacoes()
+    {
+        $module = MIOLO::getCurrentModule();
+
+        return array(
+            self::SITUACAO_ATIVADO => _M('Ativado', $module),
+            self::SITUACAO_DESATIVADO => _M('Desativado', $module)
+        );
+    }
+
+    public static function listarPeriodicidades()
+    {
+        $module = MIOLO::getCurrentModule();
+
+        return array(
+            self::PERIODICIDADE_SEMANA => _M('Semanal', $module),
+            //self::PERIODICIDADE_MES => _M('Mensal', $module),
+            //self::PERIODICIDADE_BIMESTRE => _M('Bimestral', $module),
+            //self::PERIODICIDADE_POR_PROGRAMA => _M('Duração do Programa', $module)
+        );
+    }
+
+    public static function retornaIndicadoresPorEspecialidadeEPeriodoEPeriodicidade($especialidadeid, $periodo, $periodicidade)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $periodos = implode(',', $periodo);
+
+        if (!empty($periodos)) {
+
+            $sql = "SELECT indicadorId,
+                           enfaseid,
+                           periodoid,
+                           descricao,
+                           periodicidade,
+                           meta,
+                           situacao
+                      FROM med.indicador
+                     WHERE enfaseid = ? AND periodoid IN ({$periodos}) AND periodicidade = ?";
+
+            $result = SDatabase::query($sql, array($especialidadeid, $periodicidade));
+
+            $retorno = array();
+            foreach ($result as $valor) {
+                $retorno[] = array(
+                    'indicadorId' => $valor[0],
+                    'enfaseid' => $valor[1],
+                    'periodoid' => $valor[2],
+                    'descricao' => $valor[3],
+                    'periodicidade' => $valor[4],
+                    'meta' => $valor[5],
+                    'situacao' => $valor[6]
+                );
+            }
+
+            return $retorno;
+        }
+    }
+    
+    private function populate()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $sql = "SELECT indicadorId,
+                       enfaseid,
+                       periodoid,
+                       descricao,
+                       periodicidade,
+                       meta,
+                       situacao
+                  FROM med.indicador
+                 WHERE indicadorid = ?";
+
+        $result = SDatabase::query($sql, array($this->indicadorId));
+
+        if ( !isset($result[0][1]) )
+        {
+            throw new Exception(_M('Registro inexistente. (@1)', $module, __CLASS__));
+        }
+
+        list( $this->indicadorId,
+              $this->enfaseId,
+              $this->periodoId,
+              $this->descricao,
+              $this->periodicidade,
+              $this->meta,
+              $this->situacao) = $result[0];
+    }
+
+    public function save()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        if ( strlen($this->indicadorId)  ==  0 )
+        {
+            $retVal = $this->insert();
+        }
+        else
+        {
+            $retVal = $this->update();
+        }
+
+        return $retVal;
+    }
+
+    private function insert()
+    {
+        $sql = 'INSERT INTO med.indicador
+                            (enfaseid,
+                             periodoid,
+                             descricao,
+                             periodicidade,
+                             meta,
+                             situacao)
+                     VALUES (?, ?, ?, ?, ?, ?)';
+
+        $params = array();
+        $params[] = $this->enfaseId;
+        $params[] = $this->periodoId;
+        $params[] = $this->descricao;
+        $params[] = $this->periodicidade;
+        $params[] = $this->meta;
+        $params[] = $this->situacao;
+        
+        $result = SDatabase::execute($sql, $params);
+
+        return $result;
+    }
+
+    private function update()
+    {
+        $sql = 'UPDATE med.indicador
+                   SET enfaseid = ?,
+                       periodoid = ?,
+                       descricao = ?,
+                       periodicidade = ?,
+                       meta = ?,
+                       situacao = ?
+                 WHERE indicadorid = ?';
+
+        $params = array();
+        $params[] = $this->enfaseId;
+        $params[] = $this->periodoId;
+        $params[] = $this->descricao;
+        $params[] = $this->periodicidade;
+        $params[] = $this->meta;
+        $params[] = $this->situacao;
+        $params[] = $this->indicadorId;
+
+        return SDatabase::execute($sql, $params);
+    }
+
+
+    public function delete()
+    {
+        if ( strlen($this->indicadorId)  ==  0 )
+        {
+            throw new Exception(_M('Não é possível excluir um registro que ainda não foi salvo.', $module));
+        }
+
+        $sql = 'DELETE FROM med.indicador
+                      WHERE indicadorid = ?';
+
+        $params = array($this->indicadorId);
+        $result = SDatabase::execute($sql, $params);
+
+        if ( $result )
+        {
+            $this->indicadorId = null;
+        }
+
+        return $result;
+    }
+
+}
+?>

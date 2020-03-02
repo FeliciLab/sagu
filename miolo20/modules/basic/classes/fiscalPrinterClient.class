@@ -1,0 +1,262 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Class Fiscal Socket Server
+ *
+ * @author Samuel Koch [samuel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Samuel Koch [samuel@solis.coop.br]
+ *
+ * @since
+ * Class created on 20/08/2009
+ *
+ **/
+
+@define("PRINTER_CLIENT_VERSION",   "1.0");
+@define("PRINTER_CLIENT_AUTOR",     "Sagu-2.2 [sagu2@solis.coop.br]");
+@define("PRINTER_CLIENT_CREATE",    "20/08/2009");
+
+
+/**
+ * Constantes utilizadas na comunicação
+ */
+
+@define("PRINT_SERVER_SIGNAL_FINISH",             "--finish--");
+@define("PRINT_SERVER_SIGNAL_PRINT",              "--print--");
+@define("PRINT_SERVER_SIGNAL_EXIT",               "--exit--");
+
+@define("PRINT_SERVER_SIGNAL_PRINTER_SUCCESSFUL", "--printerSuccessful--");
+@define("PRINT_SERVER_SIGNAL_PRINTER_FAIL",       "--printerFail--");
+@define("PRINT_SERVER_SIGNAL_EXIT_OK",            "--closingConnection--");
+@define("PRINT_SERVER_SIGNAL_DATA_RECEIVE_MD5",   "--MD5Response--[MD5CODE]--");
+
+class fiscalPrinterClient
+{
+    private $serverAddress  = "127.0.0.1";
+    private $serverPort     = "1515";
+    private $socket         = null;
+    private $connect        = null;
+    private $errorCode      = 0;
+    private $lineEnding     = "\n\r";
+    private $md5Mensage     = null;
+
+    private $watingCount    = 0;
+
+    private $terminalDisplayLine = "+=============================================================================+";
+
+    /**
+     * Constructor method
+     *
+     */
+    function __construct($serverAddress = null, $serverPort = null)
+    {
+        if ( ! extension_loaded('sockets') )
+        {
+            die('skip sockets extension not available.');
+        }
+
+        @date_default_timezone_set('America/Sao_Paulo');
+
+        if ( ! is_null($serverAddress) )
+        {
+            $this->serverAddress = $serverAddress;
+        }
+        if ( ! is_null($serverPort) )
+        {
+            $this->serverPort = $serverPort;
+        }
+    }
+
+    /**
+     * Esta função cria o socket resource
+     *
+     * @return boolean
+     */
+    private function createSocket()
+    {
+        if ( ($this->socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP)) === false )
+        {
+            $this->errorCode = 1;
+
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Esta função efetua a conexao com o server
+     *
+     * @return boolean
+     */
+    private function connectSocket()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $this->connect = @socket_connect($this->socket, $this->serverAddress, $this->serverPort);
+     
+        if ( ! $this->connect )
+        {
+            $this->errorCode = 2;
+            
+            $module = MIOLO::getCurrentModule();
+            $action = MIOLO::getCurrentAction(); 
+            
+            $goto = $MIOLO->GetActionURL($module, $action);
+            
+            $MIOLO->error(_M('Não foi possível conectar ao servidor de impressão. Verifique se as configurações foram feitas corretamente.', $module), $goto);
+        }
+
+        return true;
+    }
+
+    /**
+     * Inicia a conexao com o servidor
+     *
+     * @return boolean
+     */
+    public function starting()
+    {
+        if ( ! $this->createSocket() )
+        {
+            return false;
+        }
+        if ( ! $this->connectSocket() )
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    /**
+     * Envia mensagem para o server
+     *
+     * @param string $msg
+     */
+    public function send($msg)
+    {
+        $msg.= $this->lineEnding;
+
+        $codes = array(PRINT_SERVER_SIGNAL_FINISH, PRINT_SERVER_SIGNAL_PRINT, PRINT_SERVER_SIGNAL_EXIT);
+        if ( array_search(str_replace(array("\n", "\r", "\t"), "", $msg), $codes) === false )
+        {
+            $this->md5Mensage.= $msg;
+        }
+
+        socket_write($this->socket, $msg, strlen($msg));
+
+        $this->watingCount = 0;
+    }
+
+    /**
+     * Aguarda uma resposta do servidor.
+     *
+     */
+    public function waitingResponse($validateCode)
+    {
+        while ( $out = @socket_read($this->socket, 2048) )
+        {
+            return ($out == $validateCode);
+        }
+
+        if ( $this->watingCount > 20 )
+        {
+            $this->watingCount = 0;
+
+            return false;
+        }
+
+        $this->watingCount++;
+    }
+
+    /**
+     * retorna o codigo validador
+     *
+     * @return string
+     */
+    public function getTextConfirmCode()
+    {
+        $md5 = str_replace(array("\n", "\r", "\t"), "", $this->md5Mensage);
+
+        return str_replace('MD5CODE', md5($md5), PRINT_SERVER_SIGNAL_DATA_RECEIVE_MD5);
+    }
+
+    /**
+     * Desconecta com servidor
+     *
+     */
+    public function closeConnection()
+    {
+        socket_close($this->socket);
+    }
+
+    /**
+     * Exibe uma mensagem na tela;
+     *
+     * @param unknown_type $msg
+     */
+    public function displayMsg($msg, $align = "LEFT", $X = " ")
+    {
+        if ( is_null($align) )
+        {
+            $align = "LEFT";
+        }
+
+        if ( $msg == "--LINE--" )
+        {
+            $msg = "{$this->terminalDisplayLine}{$this->lineEnding}";
+        }
+        elseif ( $msg == "--LN--" )
+        {
+            $msg = $this->lineEnding;
+        }
+        elseif ( $align == "LEFT" )
+        {
+            $msg = str_pad("| {$msg}", strlen($this->terminalDisplayLine)-1, $X, STR_PAD_RIGHT) ."|{$this->lineEnding}";
+        }
+        elseif ( $align == "CENTER" )
+        {
+            $msgLength  = strlen($msg);
+            $msg        = str_pad($msg, ( ceil(strlen($this->terminalDisplayLine)/2) + ceil($msgLength/2.5)), $X, STR_PAD_LEFT);
+            $msg        = "|". str_pad($msg,  strlen($this->terminalDisplayLine)-2, $X, STR_PAD_RIGHT) ."|{$this->lineEnding}";
+        }
+    }
+
+    /**
+     * Retorna o codigo do erro.
+     *
+     * @return integer
+     */
+    public function getError()
+    {
+        echo socket_strerror(socket_last_error());
+
+        return $this->errorCode;
+    }
+
+
+}
+
+?>

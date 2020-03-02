@@ -1,0 +1,930 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class
+ *
+ * @author Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Equipe solis [sagu2@solis.coop.br]
+ *
+ * @since
+ * Class created on 03/12/2010
+ */
+
+$MIOLO = MIOLO::getInstance();
+$MIOLO->uses('classes/breport.class','base');
+class SReport extends BReport
+{
+    // Relatorios do tipo CONTRATO (utilizado para identificacao em BusFormationLevel)
+    const TYPE_CONTRACT = 20;
+    
+    const FILETYPE_PDF = 'PDF';
+    const FILETYPE_ODT = 'ODT';
+    const FILETYPE_HTML = 'HTML';
+    const FILETYPE_XLS = 'XLS';
+    const FILETYPE_CSV = 'CSV';
+    const FILETYPE_TXT = 'TXT';
+
+    /**
+     * @var string
+     *
+     */
+    private $module = null;
+
+    /**
+     * @var string
+     *
+     */
+    private $reportName = null;
+
+    /**
+     * @var array
+     *
+     */
+    private $parameters = null;
+
+    /**
+     * @var string
+     *
+     */
+    private $fileType = null;
+    
+    /**
+     *
+     * @var string
+     */
+    private $codVerificador;
+    
+    /*
+     * @var int
+     */
+    private $numeroRegistro;
+    
+    /**
+     * @var string
+     */
+    private $_reportFile;
+
+    /**
+     *
+     * @var String 
+     */
+    private $arquivoRecemGerado;
+    
+    /**
+     * @param array $options
+     * <b>module</b> Report module<br>
+     * <b>reportName</b> Name of the report file<br>
+     * <b>reportFile</b> Absolute path of the report file<br>
+     * <b>parameters</b> Parameters for send to the report<br>
+     * <b>fileType</b> File type of the output (default: PDF)
+     */
+    public function __construct($options = null)
+    {
+        /**
+         * Posto "gatilho" para fazer o checkin de users para as funcionalidades de 
+         * multiunidades funcionarem nos parâmetros do jasperreport, (não remover).
+         */
+        SDatabase::query("SELECT 1");
+        
+        if ( strlen($options['reportFile']) > 0 )
+        {
+            $this->_reportFile = $options['reportFile'];
+        }
+        
+        parent::__construct($options['reportName'], $options['module'], $options['reportFile']);
+        
+        $this->setModule( $options['module'] );
+        $this->setReportName( $options['reportName'] );
+        $this->setParameters( $options['parameters'] );
+        $this->setFileType( $options['fileType'] );
+
+        $this->addFieldBlackList('SAGU_PATH');
+        $this->addFieldBlackList('COD_VERIFICADOR');
+        $this->addFieldBlackList('COD_VERIFICADOR_MSG');
+        $this->addFieldBlackList('NUMERO_DE_REGISTRO');
+        $this->addFieldBlackList('NUMERO_DE_REGISTRO_MSG');
+    }
+    
+    /**
+     * List the report format.
+     * @author Fabiano Tomasini [fabiano@solis.coop.br]
+     *
+     * @param $type string type of the return.
+     * @return array report formats.
+     *
+     */
+    public static function listReportFormat($type = 0)
+    {
+        // For MSelection
+        if ( $type == 0 )
+        {
+            $data = array(
+                self::FILETYPE_PDF  => _M('Arquivo PDF (não-editável)', 'basic'),
+                self::FILETYPE_ODT => _M('Documento OpenOffice.org (editável)', 'basic'),
+                self::FILETYPE_HTML => _M('HTML', 'basic'),
+                self::FILETYPE_CSV => _M('Planilha eletrônica (CSV)', 'basic'),
+                self::FILETYPE_TXT => _M('Arquivo de texto simples (TXT)', 'basic'),
+                self::FILETYPE_XLS => _M('Planilha do Excel (XLS)', 'basic')
+            );
+        }
+        // For MRadioButtonGroup
+        elseif ( $type == 1 )
+        {
+            $data = array(
+                array( _M('Arquivo PDF (não-editável)', 'basic'), self::FILETYPE_PDF ),
+                array( _M('Documento OpenOffice.org (editável)', 'basic'), self::FILETYPE_ODT ),
+                array( _M('HTML', 'basic'), self::FILETYPE_HTML ),
+                array( _M('Planilha eletrônica (CSV)', 'basic'), self::FILETYPE_CSV ),
+                array( _M('Arquivo de texto simples (TXT)', 'basic'), self::FILETYPE_TXT ),
+                array( _M('Planilha do Excel (XLS)', 'basic'), self::FILETYPE_XLS )
+            );
+        }
+        return $data;
+    }
+    
+    public function listAllReports($type = SReport::TYPE_ALL, $modules=null, $source=null)
+    {
+        if ( !$modules )
+        {
+            $modules = array_keys(SModules::getList());
+        }
+        
+        foreach ($modules as $module)
+        {
+            foreach($this->listReports($type, $module, true, $source) as $k=>$r)
+            {
+                $reports[$k] = $r;
+            }
+        }
+        
+        return $reports;
+    }
+
+    /**
+     * Obtain the report format.
+     * @author Fabiano Tomasini [fabiano@solis.coop.br]
+     *
+     * @param $key string Report format.
+     * @return string Value associated with the specified parameter.
+     *
+     */
+    public static function getReportFormat($key)
+    {
+        $data = array(
+            self::FILETYPE_PDF => _M('Arquivo PDF (não-editável)', 'basic'),
+            self::FILETYPE_ODT => _M('Documento OpenOffice.org (editável)', 'basic'),
+            self::FILETYPE_HTML => _M('HTML', 'basic')
+        );
+
+        return $data[$key];
+    }
+
+    /**
+     * Generate jasper report.
+     * @author Fabiano Tomasini [fabiano@solis.coop.br]
+     *
+     * @return boolean If generate true Otherwise false.
+     *
+     */
+    public function generate($gerarRodape = true, $download = true)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $reportFile = $this->findCurrentReport();
+        
+        if( is_array($this->parameters) )
+        {
+            foreach ( $this->parameters as $key=>$parameter )
+            {                
+                $parameterType = gettype($parameter);
+
+                if ( substr($key, 0, 4) == 'str_' || substr($key, 0, 4) == 'int_' || substr($key, 0, 4) == 'dbl_' || substr($key, 0, 4) == 'boo_' )
+                {
+                    $mJasperParameters[$key] = $parameter;
+                }
+                else if ( $parameterType == 'integer' )
+                {
+                    $mJasperParameters['int_'.$key] = $parameter;
+                }
+                else if ( $parameterType == 'string' )
+                {
+                    $mJasperParameters['str_' . $key] = $parameter;
+                }
+                else if ( $parameterType == 'double' )
+                {
+                    $mJasperParameters['dbl_'.$key] = $parameter;
+                }
+                else if ( $parameterType == 'boolean' )
+                {
+                    $mJasperParameters['boo_'.$key] = $parameter;
+                }
+                else if ( ! is_null($parameter) )
+                {
+                    $mJasperParameters[$key] = $parameter;
+                }
+            }
+        }
+
+        // Parameter miolo path
+        $mJasperParameters['str_MIOLO_PATH'] = $MIOLO->getConf("home.miolo");
+        $mJasperParameters['str_SAGU_PATH'] = strlen($mJasperParameters['str_SAGU_PATH']) > 0 ? $mJasperParameters['str_SAGU_PATH'] : $MIOLO->getConf("home.modules"). '/basic/reports/';
+        $mJasperParameters['str_username'] = SAGU::NVL($MIOLO->getLogin()->id, 'sagu2');
+        $mJasperParameters['str_mask_date'] = SAGU::getParameter('BASIC', 'MASK_DATE');
+        $mJasperParameters['str_mask_timestamp'] = SAGU::getParameter('BASIC', 'MASK_TIMESTAMP');
+        $mJasperParameters['str_DATE_EXTENSE'] = SAGU::getDateByExtense(SAGU::getDateNow());
+        
+        if( $gerarRodape )
+        {
+            $mJasperParameters['str_COD_VERIFICADOR'] = $this->obterCodigoVerificador();
+            $mJasperParameters['str_COD_VERIFICADOR_MSG'] = $this->obterCodigoVerificadorMsg();
+            
+        }
+        else
+        {
+            $mJasperParameters['str_COD_VERIFICADOR'] = "";
+            $mJasperParameters['str_COD_VERIFICADOR_MSG'] = "";
+            
+        }
+        
+        $mJasperParameters['str_NUMERO_DE_REGISTRO'] = $this->obterNumeroRegistro();
+        $mJasperParameters['str_NUMERO_DE_REGISTRO_MSG'] = $this->obterNumeroRegistroMsg();
+                
+        // Limpa valores vazios, estava por algum motivo causando fatal error na geracao de relatorios
+        $mJasperParameters = array_filter($mJasperParameters);
+
+        $result = $this->generateJRXML($reportFile, $mJasperParameters, $this->fileType, $download);
+        
+        return $result;
+    }
+    
+    /**
+     *
+     * @return string 
+     */
+    public function findCurrentReport()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        if ( strlen($this->_reportFile) > 0 )
+        {
+            $reportFile = $this->_reportFile;
+        }
+        else
+        {
+            if ( substr_count($this->reportName, '.jasper') > 0 )
+            {
+                $findUserReport = $this->findReportFile($this->module, $this->reportName);
+
+                if ( strlen($findUserReport) > 0 )
+                {
+                    $reportFile = $findUserReport;
+                }
+            }
+            else
+            {
+                // File user extension
+                // Quando vindo do portal, já é passado o caminho completo do arquivo
+                if ( ($this->module == 'portal') && (substr_count($this->reportName, '.jrxml') > 0) )
+                {
+                    $reportFile = $this->reportName;
+                }
+                else
+                {
+                    $reportFile = $MIOLO->getModulePath($this->module, 'reports/' . $this->reportName . '.jrxml');
+                }
+
+                // Busca relatorio alternativo
+                $fileUserJrxml = $this->reportName .'.jrxml';
+                $findUserReport = $this->findReportFile($this->module, $fileUserJrxml);
+
+                if ( strlen($findUserReport) > 0 )
+                {
+                    $reportFile = $findUserReport;
+                }
+            }
+        }
+        
+        return $reportFile;
+    }
+
+    /**
+     * Verify that the report exists in file
+     *
+     * @param $module string Module to verify if exists the report
+     * @param $reportName string Name of the report
+     * 
+     * @return string Filepath
+     *
+     */
+    public function findReportFile($module, $reportName)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $retFilePath = null;
+        
+        foreach ( $this->getReportPaths($module) as $path )
+        {
+            $filePath = $path . '/' . $reportName;
+
+            if ( file_exists($filePath) )
+            {
+                $retFilePath = $filePath;
+                break;
+            }
+        }
+        
+        return $retFilePath;
+    }
+    
+    /**
+     * Adjusts fields for sagu properties
+     *
+     * @return Fields.
+     *
+     */
+    public function getFieldsReport()
+    {
+        $fields = parent::getFieldsReport();
+        
+        foreach($fields as $k=>$f)
+        {
+            if($f instanceof MTextField && !$f instanceof MCalendarField && !$f instanceof sEscolha)
+            {   
+                $fields[$k]->size = SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE');
+            }
+            elseif($f instanceof MMultiLineField)
+            {
+                $fields[$k]->rows = 4;
+                $fields[$k]->cols = SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE');
+                $fields[$k]->size = SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE');
+            }
+        }
+        
+        return $fields;
+    }
+
+    /**
+     * Check if report is empty
+     */
+    public function isEmpty()
+    {
+        // TODO Function logic
+    }
+
+    public function setParameter($parameter, $value)
+    {
+        $this->parameters[$parameter] = $value;
+    }
+
+    public function getParameter($parameter)
+    {
+        return $this->parameters[$parameter];
+    }
+
+    /**
+     * setModule()
+     *
+     * @param string $module 
+     */
+    public function setModule($module = null)
+    {
+        if (!(strlen($module) > 0))
+        {
+            $module = MIOLO::getCurrentModule();
+        }
+        $this->module = $module;
+    }
+
+    /**
+     * getModule()
+     *
+     * @return string
+     */
+    public function getModule()
+    {
+        return $this->module;
+    }
+
+    /**
+     * getReportName()
+     *
+     * @return string
+     */
+    public function getReportName()
+    {
+        return $this->reportName;
+    }
+
+    /**
+     * setReportName()
+     *
+     * @param string $reportName
+     */
+    public function setReportName($reportName)
+    {
+        $this->reportName = $reportName;
+    }
+
+    /**
+     * getParameters()
+     *
+     * @return array
+     */
+    public function getParameters()
+    {
+        return $this->parameters;
+    }
+
+    /**
+     * setParameters()
+     *
+     * @param array $parameters
+     */
+    public function setParameters($parameters)
+    {
+        $this->parameters = $parameters;
+    }
+    
+    /**
+     * setFileType()
+     *
+     * @param string $fileType 
+     */
+    public function setFileType($fileType = null)
+    {
+        if (!(strlen($fileType) > 0))
+        {
+            $fileType = MUtil::NVL( MIOLO::_REQUEST('reportFormat'), self::FILETYPE_PDF );
+        }
+        $this->fileType = $fileType;
+    }
+
+    /**
+     * getFileType()
+     *
+     * @return string
+     */
+    public function getFileType()
+    {
+        return $this->fileType;
+    }
+    
+    
+    /**
+     * Sincroniza relatorios dinamicos (arquivos) com a tabela de transacoes do SAGU.
+     *
+     */
+    public function synchronizeWithMenu()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $busTransaction = new BusinessAdminTransaction();
+        
+        $dynamicReportsList = AdmMioloTransaction::listDynamicReports();
+
+        foreach ( SModules::getInstalledModules() as $sysModule )
+        {
+            $reports = (array) $this->listReports( SReport::TYPE_ALL, $sysModule->getName() );
+            foreach ( $reports as $report )
+            {
+                $prefix = $sysModule->getModulePrefix();
+                
+                // Define transacoes de relatorios /documentos
+                $prefixs = array(
+                    SReport::TYPE_CONTRACT => "{$prefix}Document|main:document",
+                    SReport::TYPE_DOCUMENT => "{$prefix}Document|main:document",
+                    SReport::TYPE_REPORT => "{$prefix}Report|main:report",
+                );
+
+                foreach ( $prefixs as $reportType => $handler )
+                {
+                    if ( in_array($report['type'], array( self::TYPE_ALL, $reportType )) )
+                    {
+                        $name = str_replace( $sysModule->getSystemPath(), '', $report['filepath'] );
+                        if ( strlen( $MIOLO->getConf('options.reportsdir') ) > 0 )
+                        {
+                            $name = str_replace( $MIOLO->getConf('options.reportsdir'), '', $report['filepath'] );
+                        }
+                        $name = str_replace( '.jrxml', '', $name );
+                        
+                        $rptName = str_replace('/', '', $report['name']);
+
+                        // Id unico do relatorio (modulo + nome do arquivo + tipo)
+                        $unique = "{$sysModule->getName()}{$name}_{$reportType}";
+
+                        // Adiciona registro temporario
+                        $row = new AdmMioloTransaction( $dynamicReportsList[$unique] );
+                        list($parentTransaction, $action) = explode('|', $handler);
+
+                        // Workaround pois sumiu a permissão 'acpDocument'
+                        if ( $parentTransaction == 'acpDocument' )
+                        {
+                            $parentTransaction = 'acpReport';
+                        }
+                        
+                        if ( $report['type'] == self::TYPE_ALL || $report['type'] == self::TYPE_REPORT || $report['type'] == self::TYPE_DOCUMENT )
+                        {
+                            $row->parentTransaction = $parentTransaction;
+                            $row->action = "{$action}:generateReport&report={$rptName}";
+                            $row->idModule = $sysModule->getName();
+                            $row->nameTransaction = '* ' . $report['title'];
+                            $row->mTransaction = $unique;
+                            $row->isDynamicReport = DB_TRUE;
+                            $row->dynamicReportType = $reportType;
+                            $row->save();
+                        }
+                        
+                        if ( strlen($report['show_into_modules']) > 0 )
+                        {
+                            $modules = explode(',', $report['show_into_modules']);
+                            foreach( $modules as $modulo )
+                            {
+                                if ( $sysModule->getName() != $modulo )
+                                {
+                                    $uniqueKey = "{$modulo}{$name}_{$reportType}";
+                                    
+                                    if ( substr_count($modulo, 'portal') )
+                                    {
+                                        $prefix = $modulo . '|' . $report['name'] . '|' . $report['module'] . '|' . $report['filepath'] . '|';
+                                        $modulo = 'portal';
+                                    }
+                                    else
+                                    {
+                                        $smodules = new SModules();
+                                        $currentModule = $smodules->getModule($modulo);
+
+                                        $prefix = $currentModule->getModulePrefix();
+                                    }
+                                    
+                                    $row = new AdmMioloTransaction( $dynamicReportsList[$uniqueKey] );
+                                    list($parentTransaction, $action) = explode('|', $handler);
+                                    
+                                    $row->parentTransaction = $prefix . substr($parentTransaction, 3);                                    
+                                    $row->action = "{$action}:generateReport&report={$rptName}&modulo={$sysModule->getName()}";
+                                    $row->idModule = $modulo;
+                                    $row->nameTransaction = '* ' . $report['title'];
+                                    $row->mTransaction = $uniqueKey;
+                                    $row->isDynamicReport = DB_TRUE;
+                                    $row->dynamicReportType = $reportType;
+                                    $row->save();
+                                    
+                                    unset($dynamicReportsList[$uniqueKey]);
+                                }
+                            }
+                        }                        
+
+                        unset($dynamicReportsList[$unique]);
+                    }
+                }
+            }
+        }
+        
+        // Remove registros do menu que nao estao mais nos arquivos do sistema
+        if ( count($dynamicReportsList) > 0 )
+        {
+            $idsDeleted = array_values($dynamicReportsList);
+            $idsDeleted = implode(',', $idsDeleted);
+            SDatabase::execute("DELETE FROM miolo_access WHERE idtransaction IN({$idsDeleted})");
+            SDatabase::execute("DELETE FROM miolo_transaction WHERE idtransaction IN({$idsDeleted})");
+        }
+    }
+    
+    /**
+     * Define o caminho do relatorio
+     * 
+     * @TODO Fazer exception caso nao exista este relatorio no sistema de arquivos
+     * 
+     * @param $module string
+     * @param $reportName string
+     */
+    public function setReportPath($module, $reportName)
+    {
+        $this->setModule($module);
+        $this->setReportName($reportName);
+    }
+    
+    /**
+     * Retorna o hash MD5 de cod. verificador
+     *
+     * @return string
+     */
+    public function obterCodigoVerificador()
+    {
+        if ( $this->utilizaCodigoVerificador() )
+        {
+            if ( !$this->codVerificador )
+            {
+                //nome do relatório(nome do arquivo xml), usuário logado e o timestamp atual
+                $str = implode('|', array(
+                    $this->getReportName(),
+                    SAGU::getUsuarioLogado()->mioloUserName,
+                    SAGU::getDateNow(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_WITH_SECONDS_PHP'))
+                ));
+
+                $str = md5($str);
+                $str = base_convert($str, 10, 36);
+                $str = strtoupper($str);
+
+                $this->codVerificador = $str;
+            }
+        }
+        
+        return $this->codVerificador;
+    }
+    
+    /**
+     *
+     * @return string
+     */
+    public function obterCodigoVerificadorMsg()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        return _M('Código de verificação de autenticidade deste documento: @1', $module, $this->obterCodigoVerificador());
+    }
+    
+    /*
+     * Retorna o número da sequência de registro
+     * 
+     */
+    public function obterNumeroRegistro()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $parameters = $this->getParameters();
+                
+        //Verifica se o parâmetro está no documentado que está sendo gerado
+        $verificaParametro = DB_FALSE;
+        foreach( $parameters as $key => $parameter )
+        {
+            if( $key == 'str_NUMERO_DE_REGISTRO' )
+            {
+                $verificaParametro = DB_TRUE;
+                break;
+            }
+        }
+        
+        // Verificado novamente pois o miolo26 já passa os parâmetro igonorando o NUMERO_DE_REGISTRO
+        $parametros = self::getParametersReport();
+        $verificaParametro = isset($parametros['NUMERO_DE_REGISTRO']) ? DB_TRUE : $verificaParametro;
+        
+        if( (SAGU::getParameter('BASIC', 'VALIDACAO_DE_DOCUMENTOS_POR_NUMERO_DE_REGISTRO') == DB_TRUE) && ($verificaParametro == DB_TRUE) )
+        {       
+            foreach( $parameters as $key => $parameter )
+            {
+                if( $parameter && $key != 'format' )
+                {
+                    $argsToUpper[$key] = strtoupper($key.'='.$parameter.' ');
+                }
+            }
+            
+            $info = $this->getReportInfoCurrent();
+            
+            //Verifica se esse relatório já foi gerado com estes filtros e tenta obter o número de registro
+            $consulta = " SELECT numeroregistro
+                            FROM basdocumentogerado
+                           WHERE UPPER(parametros) = ? 
+                             AND UPPER(titulo) = ? ";
+            
+            $param[] = implode($argsToUpper);
+            $param[] = $info['title'];
+            
+            $documento = SDatabase::query($consulta, $param, true);
+            
+            if( !$documento )
+            {
+                $sql = "SELECT nextval('numero_de_registro')";
+
+                SDatabase::execute($sql);
+
+                $query = "SELECT currval('numero_de_registro')";
+
+                $return = SDatabase::query($query);
+                
+                $numeroRegistro = $return[0][0];
+            }
+            else
+            {
+                $numeroRegistro = $documento[0][0];
+            }
+            
+            return $this->numeroRegistro = $numeroRegistro;
+        }
+        
+        return '';
+    }
+    
+    public function obterNumeroRegistroMsg()
+    {
+        $sql = "SELECT count(numeroRegistro) 
+                  FROM basDocumentoGerado
+                 WHERE numeroRegistro = ? ";
+        
+        $param[] = $this->numeroRegistro;
+        
+        $result = SDatabase::query($sql, $param);
+        
+        return "{$result[0][0]}° via deste documento.";
+    }
+    
+    /**
+     * @return array
+     */
+    public function getReportInfoCurrent()
+    {
+        return $this->getReportInfo( $this->findCurrentReport() );
+    }
+    
+    /**
+     * @return boolean 
+     */
+    public function utilizaCodigoVerificador()
+    {
+        $info = $this->getReportInfoCurrent();
+        $parametros = self::getParametersReport();
+        
+        return $info['cod_verificador'] == DB_TRUE || isset($parametros['COD_VERIFICADOR']);
+    }
+    
+    /**
+     * Callback method.
+     * 
+     * Chamado apos geracao do arquivo de relatorio no disco. 
+     */
+    public function afterGenerateReport()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $parameters = $this->getParameters();
+        
+        foreach( $parameters as $key => $parameter )
+        {
+            if( $parameter && $key != 'format' )
+            {
+                $args[$key] = $key.'='.$parameter.' ';
+            }
+        }
+        
+        // Executa rotinas relacionadas a funcionalidade de codigo verificador em documentos
+        // Executa apenas se a tag cod_verificador estiver como "t" dentro do REPORT_INFO
+        if ( $this->utilizaCodigoVerificador() || strlen($this->numeroRegistro) > 0 )
+        {
+            // Salva relatorio no disco permanentemente
+            $busFile = new BusinessBasicBusFile();
+            $fileId = $busFile->insertFileSimple( $this->getAbsoluteFileOut() );
+
+            $info = $this->getReportInfoCurrent();
+            
+            // Salva registro na tabela de rastreamento de documentos
+            $doc = new BasDocumentoGerado();
+            $doc->codigoverificador = $this->obterCodigoVerificador();
+            $doc->fileid = $fileId;
+            $doc->usuario = strlen($MIOLO->GetLogin()->id) > 0 ? $MIOLO->GetLogin()->id : 'Relatorio gerado sem autenticacao' ;
+            $doc->nomedocumento = $this->getReportName();
+            $doc->titulo = $info['title'];
+            $doc->modulo = $this->getModule();
+            $doc->personiddocumento = $this->buscaPessoaDocumento();
+            $doc->parametros = implode($args);
+            $doc->numeroregistro = $this->numeroRegistro;
+            $doc->save();
+        }
+    }
+    
+    /**
+     * Busca cod. pessoa ou contrato para quem esta sendo gerado o relatorio/documento.
+     * 
+     * @return int
+     */
+    private function buscaPessoaDocumento()
+    {
+        $personId = null;
+        
+        foreach ( $this->parameters as $key => $value )
+        {
+            $pname = strtolower($key);
+            $pname = str_replace('str_', '', $pname);
+
+            if ( preg_match('/personid$|codpessoa$/', $pname) )
+            {
+                $personId = $value;
+                break;
+            }
+            
+            if ( preg_match('/contractid$|codcontrato$/', $pname) )
+            {
+                $busContract = new BusinessAcademicBusContract();
+                $personId = $busContract->getPersonIdByContract($value);
+                
+                break;
+            }
+        }
+        
+        return $personId;
+    }
+    
+    /**
+     * @return string
+     */
+    public function getDefaultType()
+    {
+        $info = $this->getReportInfoCurrent();
+        
+        return SAGU::NVL(strtoupper($info['default_filetype']), 'PDF');
+    }
+    
+    /**
+     * Atualiza o parametro show_into_modules do REPORT_INFO de um relatorio.
+     * Se nao existir, cria.
+     */
+    public static function updateShowIntoModules($path, $modules = array())
+    {
+        $modules = array_unique($modules);
+        
+        //
+        // Escreve os modulos de destino no parametro show_into_modules do arquivo JRXML
+        //
+        $dom = new DOMDocument();
+        $dom->preserveWhiteSpace = false;
+        $dom->formatOutput = true;
+        $dom->load( $path );
+
+        $jasperReport = $dom->getElementsByTagName('jasperReport');
+
+        if ( $jasperReport )
+        {
+            $parameters = $jasperReport->item(0)->getElementsByTagName('parameter');
+
+            foreach ($parameters as $param)
+            {
+                if ( $param->getAttribute('name') == 'REPORT_INFO' )
+                {
+                    $properties = $param->getElementsByTagName('property');
+
+                    foreach ( $properties as $prop )
+                    {
+                        if ( $prop->getAttribute('name') == 'show_into_modules' )
+                        {
+                            // atualiza a propriedade show_into_modules do relatorio para os modulos selecionados na interface
+
+                            $foundShowIntoModules = true;
+                            $prop->setAttribute('value', implode(',', $modules));
+                            $dom->save($path);
+
+                            break;
+                        }
+                    }
+                    
+                    if (!$foundShowIntoModules)
+                    {
+                        // Remove a tag parameterDescription e salva o seu valor para depois adicionar novamente 
+                        $parameterDescription = $param->getElementsByTagName('parameterDescription');
+                        $item = $parameterDescription->item(0);  
+                        
+                        foreach ( $parameterDescription as $description )
+                        {
+                            $description->parentNode->removeChild($description);
+                        }
+                        
+                        // cria nova propriedade: show_into_modules no REPORT_INFO
+                        $prop = $dom->createElement('property');
+                        $prop->setAttribute('name', 'show_into_modules');
+                        $prop->setAttribute('value', implode(',', $modules));
+                        $param->appendChild($prop);
+                        
+                        // Adiciona após todos property a tag parameterDescription
+                        $propDesc = $dom->createElement('parameterDescription');
+                        $propDesc->appendChild($dom->createCDATASection($item->textContent));
+                        $param->appendChild($propDesc);
+                        
+                        $dom->save($path);
+                    }
+                }
+            }
+        }
+    }   
+}
+?>

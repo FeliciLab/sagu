@@ -1,0 +1,605 @@
+<?php
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * \b Maintainers \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ * Luís Felipe Wermann [luis_felipe@solis.com.br]
+ *
+ * @since
+ * Class created on 17/07/2011
+ */
+class FrmOfertaDoResidente extends SManagementForm
+{
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        parent::__construct(new ApsOfertaDoResidente(), array( 'ofertaDoResidenteId' ), null, _M('Matrícula do aluno', $module));
+
+        // Disable buttons
+        $this->toolbar->setButtonURL(MToolBar::BUTTON_BACK, $this->getPreviousURL());
+        $this->toolbar->setButtonURL(MToolBar::BUTTON_SAVE, SAGU::getActionURL($module, $action, array('event'=>'tbBtnSave:click')));
+    }
+
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+
+        try
+        {
+            if ( !strlen($residenteId = $this->getFormValue('residenteId')) > 0 )
+            {
+                throw new Exception(_M('Residente não informado', $module) . '.');
+            }
+            $residente = new ApsResidente($residenteId);
+            //Business de pessoa
+            $busPerson = new BusinessBasicBusPerson();
+            //Pessoa
+            $person = $busPerson->getPerson($residente->personId);
+            //Núcleo
+            $nucleo = new ApsNucleoProfissional($residente->nucleoProfissionalId);
+            //Ênfase
+            $enfase = new ApsEnfase($residente->enfaseId);
+            //Turma
+            $turma = new ApsTurma($residente->turmaId);
+        }
+        catch ( Exception $e )
+        {
+            $MIOLO->error($e->getMessage());
+        }
+
+        $getInicio = $residente->inicio;
+        $getFim = $residente->fimPrevisto;
+        $fields[] = new SHiddenField('residenteId', $this->getRequestValue('residenteId'));
+        $fields[] = new SHiddenField('inicio', $getInicio);
+        $fields[] = new SHiddenField('fimPrevisto', $getFim);
+
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+
+        $values = array();
+        $values[_M('Nome')] = $person->personId . ' - ' . $person->name;
+        $values[_M('Ênfase')] = $enfase->descricao;
+        $values[_M('Núcleo profissional')] = $nucleo->descricao;
+        $values[_M('Período letivo')] = $residente->inicio . ' à ' . $residente->fimPrevisto;
+        if ( $turma->turmaId )
+        {
+            $values[_M('Turma')] = $turma->descricao;
+            $values[_M('Período de duração')] = $turma->quantidadePeriodo . ' anos';
+        }
+
+        $options = array(
+            'title' => _M('Dados do aluno', $module),
+            'columns' => 1,
+            'textWidth' => '350',
+            'value' => $values
+        );
+        $fields[] = new SInformationField($options);
+
+        //Tabs para separar ofertas dos anos
+        $ofertasCurriculares = new MTabbedBaseGroup('ofertasCurriculares');
+
+        //A montagem das TABS é feita dinamicamente, busca da turma, ou o padrao é 2
+        strlen($turma->codigoTurma) > 0 ? $quantTabs = $turma->quantidadePeriodo : $quantTabs = 2;
+
+        for ($i = 0; $i < $quantTabs; $i++)
+        {
+            $gridFilters = new stdClass();
+            $gridFilters->inicio = $getInicio;
+            //$gridFilters->fim = $getFim;
+            $gridFilters->periodo =  'P' . ($i + 1);
+            $gridFilters->apenasAno = ($i + 1);
+            $gridFilters->nucleosProfissionais = array($residente->nucleoProfissionalId);
+            $gridFilters->enfases = array($residente->enfaseId);
+            $gridFilters->encerradasSemMatricula = DB_TRUE;
+            $gridFilters->residenteId = $this->getRequestValue('residenteId');
+            $gridFilters->turmaId = $residente->turmaId;
+
+            $gridData = array();
+            $gridData = $this->getGridDataOfertaDoResidente($gridFilters, true);
+            $gridFilters = new stdClass();
+            $gridFilters->residenteId = $this->getRequestValue('residenteId');
+            $gridFilters->extracurricular = false;
+            // Altera o nome da Grid, para evitar conflito de Ids
+            $gridFilters->gridName = 'GrdOfertaDoResidenteTab' . ($i + 1);
+            $grid = $MIOLO->getUI()->getGrid($module, 'GrdOfertaDoResidente', $gridFilters);
+            $grid->addActionSelect();
+            $grid->setData($gridData);
+            $fieldsTab[] = new MDiv('gridAno' . ($i + 1),array($grid));
+
+            //Seta tab do ano no painel
+            $ofertasCurriculares->createTab('ano' . ($i + 1), _M('Ano ' . ($i + 1), $module), $fieldsTab);
+
+            //Limpa variáveis
+            unset($fieldsTab);
+            unset($gridFilters);
+            unset($grid);
+            unset($gridData);
+        }
+
+        $statusSelectionLabel = new MLabel( _M('Novo status',$module). ':');
+        $statusSelectionLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+        $statusSelection = new MSelection("statusCurricular", null, null, ApsOcorrenciaDeOferta::listStatus());
+        $statusSelection->setAllowNullValue(false);
+        $statusSelection->addAttribute('onChange', $this->getAjaxAction('changeStatus', 'divChangeStatus', false, array( 'curricular' => true)));
+        $hctStatusSelection = new MHContainer('hctStatusCurricular', array($statusSelectionLabel, $statusSelection));
+
+        $fields[] = new MBaseGroup('bgOfertasCurriculares', _M('Curricular', $module), array($ofertasCurriculares,$hctStatusSelection), 'vertical');
+        $fields[] = new SHiddenField('observacaoCurricular');
+
+        $checked = $this->getFormValue('exibeUnidadesTematicasExtra', MIOLO::_REQUEST('exibeUnidadesTematicasExtra'));
+        if ( $checked == DB_TRUE )
+        {
+            $this->page->onLoad($this->getAjaxAction('exibeUnidadesTematicasExtracurriculares', 'divUnidadeTematicaExtra'));
+        }
+        $fields[] = new MSeparator();
+        $fields[] = $exibeUnidadesTematicasExtracurriculares = new MCheckBox('exibeUnidadesTematicasExtra', DB_TRUE, _M('Exibir rodízios extracurriculares',$module), $checked);
+        $exibeUnidadesTematicasExtracurriculares->addAttribute('onChange', $this->getAjaxAction('exibeUnidadesTematicasExtracurriculares', 'divUnidadeTematicaExtra'));
+        $fields[] = new MSeparator();
+
+        $fields[] = new MDiv('divUnidadeTematicaExtra');
+
+        // Volta para a tela de busca de residente pesquisando pelo residente atual
+        $action = 'main:process:residente';
+        $opts = array('residenteIdS' => $this->getRequestValue('residenteId'));
+        $goto = $MIOLO->getActionURL($module, $action, null, $opts);
+        $fields[] = new MButton('button_back', _M('Voltar', $module), $goto);
+
+        // Divs
+        $fields[] = new MDiv('divPopup');
+        $fields[] = new MDiv('divQuestionConfirm');
+        $fields[] = new MDiv('divChangeStatus');
+
+        parent::defineFields($fields, $validators, $data);
+    }
+
+    /**
+     * Obtém os dados para popular na grid e trata conforme necessário
+     * @param stdClass $filters
+     * @return <array>
+     */
+    public function getGridDataOfertaDoResidente($filters, $curricular = false)
+    {
+        $gridData = ApsOfertaDeUnidadeTematica::searchGrid($filters);
+        //Percorre as ofertas do período
+        if( count($gridData)>0 )
+        {
+            for ( $i = 0; $i < count($gridData); $i++ )
+            {
+                unset($ultimaOcorrenciaDeOferta);
+                unset($ofertaDoResidente);
+
+                list( $ofertaDeUnidadeTematicaId,
+                      $descricao,
+                      $periodo,
+                      $tipo,
+                      $cargaHoraria,
+                      $frequenciaMinima,
+                      $nucleos,
+                      $enfases,
+                      $inicio,
+                      $fim,
+                      $preceptor) = $gridData[$i];
+
+                $filters = new stdClass();
+                $filters->residenteId = $this->getFormValue('residenteId');
+                $filters->ofertaDeUnidadeTematicaId = $ofertaDeUnidadeTematicaId;
+                $ofertaDoResidente = ApsOfertaDoResidente::search($filters);
+
+                if ( is_array($ofertaDoResidente) )
+                {
+                    $oferta = $ofertaDoResidente[0];
+                    $ofertaDoResidenteId = $oferta->ofertaDoResidenteId;
+                    $ultimaOcorrenciaDeOferta = ApsOcorrenciaDeOferta::getLastOccurrence($ofertaDoResidenteId);
+                }
+
+                $listStatus = ApsOcorrenciaDeOferta::listStatus();
+                $lastStatus = is_object($ultimaOcorrenciaDeOferta) ? $ultimaOcorrenciaDeOferta->status : null;
+                $statusSelection = new MSelection("status[$ofertaDeUnidadeTematicaId]", null, null, ApsOcorrenciaDeOferta::listStatusBylastStatus($lastStatus));
+                if ( $curricular )
+                {
+                    $statusSelection->setReadOnly(true);
+                }
+                else
+                {
+                    $statusSelection->addAttribute('onChange', $this->getAjaxAction('changeStatus', 'divChangeStatus', false, array( 'ofertaDeUnidadeTematicaId' => $ofertaDeUnidadeTematicaId )));
+                }
+                $fieldObservation = new SHiddenField("observacoes[$ofertaDeUnidadeTematicaId]", $this->getRequestValue("observation[$ofertaDeUnidadeTematicaId]"));
+
+                // Data grid
+                $gridData[$i][0] = $ofertaDeUnidadeTematicaId;
+                $gridData[$i][1] = is_object($ultimaOcorrenciaDeOferta) ? $listStatus[$ultimaOcorrenciaDeOferta->status] : '-';
+                $gridData[$i][2] = $statusSelection->generate() . $fieldObservation->generate();
+                $gridData[$i][3] = $ofertaDeUnidadeTematicaId;
+                $gridData[$i][4] = $descricao;
+                $gridData[$i][5] = $periodo;
+                $gridData[$i][6] = $tipo;
+                $gridData[$i][7] = $cargaHoraria;
+                $gridData[$i][8] = $frequenciaMinima;
+                $gridData[$i][9] = $nucleos;
+                $gridData[$i][10] = $enfases;
+                $gridData[$i][11] = $inicio;
+                $gridData[$i][12] = $fim;
+                $gridData[$i][13] = $preceptor;
+            }
+        }
+
+        return $gridData;
+    }
+
+
+    /**
+     * Função responsável por exibir as ofertas de unidade temática que não fazem parte
+     * do currículo do residente
+     *
+     * @param <stdClass> $args
+     * @return <MGrid>
+     */
+    public function exibeUnidadesTematicasExtracurriculares($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $fields[] = new MSeparator();
+        if ( $args->exibeUnidadesTematicasExtra == DB_TRUE )
+        {
+            $residenteId = $this->getFormValue('residenteId');
+            $residente = new ApsResidente($residenteId);
+
+            $gridFilters = new stdClass();
+            $gridFilters->inicio = $args->inicio;
+            $gridFilters->fim = $args->fimPrevisto;
+            $gridFilters->apenasExtracurricular = true;
+            $gridFilters->nucleoProfissionalId = $residente->nucleoProfissionalId;
+            $gridFilters->enfaseId = $residente->enfaseId;
+            $gridData = $this->getGridDataOfertaDoResidente($gridFilters);
+
+            // Instantiate the results grid
+            $gridFilters = new stdClass();
+            $gridFilters->residenteId = $residenteId;
+            $gridFilters->extracurricular = true;
+            $grid = $MIOLO->getUI()->getGrid($module, 'GrdOfertaDoResidente', $gridFilters);
+            $grid->setData($gridData);
+            $divGridExtracurricular = new MDiv('divExtracurricular', $grid);
+            $fields[] = new MBaseGroup('bgExtracurriculares', _M('Extracurricular',$module), array($divGridExtracurricular));
+        }
+
+        return $fields;
+    }
+
+    /**
+     * Ação do botão deletar da grid
+     * */
+    public function tbBtnDelete_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $args->residenteId = $args->residenteId ? $args->residenteId : MIOLO::_REQUEST('residenteId');
+        $args->ofertaDeUnidadeTematicaId = $args->ofertaDeUnidadeTematicaId ? $args->ofertaDeUnidadeTematicaId : MIOLO::_REQUEST('ofertaDeUnidadeTematicaId');
+
+        $gotoYes = SAGU::getActionURL($module, 'main:register:ofertaDoResidente', array( 'event' => 'btnDelete_confirm', 'residenteId' => $args->residenteId, 'ofertaDeUnidadeTematicaId' => $args->ofertaDeUnidadeTematicaId ));
+        $gotoNo = SAGU::getActionURL($module, 'main:register:ofertaDoResidente', array( 'residenteId' => $args->residenteId, 'ofertaDeUnidadeTematicaId' => $args->ofertaDeUnidadeTematicaId ));
+        $MIOLO->question(SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE'), $gotoYes, $gotoNo);
+    }
+
+    /**
+     * Ação do botão confirmar da popup
+     * */
+    public function btnDelete_confirm($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $args->residenteId = $args->residenteId ? $args->residenteId : MIOLO::_REQUEST('residenteId');
+        $args->ofertaDeUnidadeTematicaId = $args->ofertaDeUnidadeTematicaId ? $args->ofertaDeUnidadeTematicaId : MIOLO::_REQUEST('ofertaDeUnidadeTematicaId');
+        $filters = new stdClass();
+        $filters->residenteId = $args->residenteId;
+        $filters->ofertaDeUnidadeTematicaId = $args->ofertaDeUnidadeTematicaId;
+        $ofertasDoResidente = ApsOfertaDoResidente::search($filters);
+        $ofertaDoResidente = $ofertasDoResidente[0];
+
+        try
+        {
+            SDatabase::beginTransaction();
+
+            if ( is_numeric($ofertaDoResidente->ofertaDoResidenteId) )
+            {
+                $object = new ApsOfertaDoResidente($ofertaDoResidente->ofertaDoResidenteId);
+                $ok = $object->delete();
+            }
+
+            SDatabase::commit();
+            $MIOLO->information(SAGU::getParameter('BASIC', 'MSG_RECORD_DELETED'), SAGU::getActionURL($module, 'main:register:ofertaDoResidente', array( 'residenteId' => $args->residenteId )));
+        }
+        catch ( Exception $e )
+        {
+            SDatabase::rollback();
+            $this->AddError($e->getMessage());
+        }
+    }
+
+    /**
+     * Observações do status da matrícula
+     * @param <type> $args
+     * @return MPopup
+     */
+    public function changeStatus($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        $status = $args->status;
+
+        if ( strlen($status[$args->ofertaDeUnidadeTematicaId]) > 0 || $args->curricular )
+        {
+            $observationField = new MMultiLineField('newObservacoes', null, _M('Observações', $module), null, 5, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $fields[] = $divObs = new MDiv('divObservation', $observationField);
+
+            if ( !$args->curricular )
+            {
+
+                $js = " //Seta valor no campo observacao
+                        var newEvaluation = document.getElementById('newObservacoes');
+                        document.getElementById('observacoes[$args->ofertaDeUnidadeTematicaId]').value = newObservacoes.value;
+                        mpopup.remove();";
+            }
+            else
+            {
+                $js = " //Seta valor no campo observacao
+                        var newEvaluation = document.getElementById('newObservacoes');
+                        document.getElementById('observacaoCurricular').value = newObservacoes.value;
+                        mpopup.remove();";
+            }
+
+            $btns[] = new MButton('btnFormOk', _M('Ok', $module), $js);
+            $btns[] = new MButton('btnFormCancel', _M('Cancelar', $module), "mpopup.remove();");
+            $controls[] = new MDiv('btns', $btns, $class, 'style="float:left;"');
+            $fields[] = $cnt = new MHContainer('CButtons', $controls);
+
+            $popup = new MPopup('addendum', $fields, _M('Observações', $module));
+            $popup->addBoxStyle('width', '320px');
+            $fields = array( $popup );
+        }
+        return $fields ? $fields : null;
+    }
+
+    /**
+     * Acao da grid para exibir as ocorrencias da oferta de unidate tematica
+     *
+     * @param <type> $args
+     * @return MPopup
+     */
+    public function showOccurencePopup($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        $filters = new stdClass();
+        $filters->residenteId = $args->residenteId;
+        $filters->ofertaDeUnidadeTematicaId = $args->ofertaDeUnidadeTematicaId;
+        $rows = ApsOfertaDoResidente::search($filters);
+        $ofertaDoResidente = $rows[0];
+
+        $filters = new stdClass();
+        $filters->ofertaDoResidenteId = $ofertaDoResidente->ofertaDoResidenteId;
+        $ocorrenciasDeOferta = ApsOcorrenciaDeOferta::searchGrid($filters);
+
+        $grid = $MIOLO->getUI()->getGrid($module, 'GrdOcorrenciaDeOfertaSearch');
+        $grid->setData($ocorrenciasDeOferta);
+        $fields[] = new MDiv('divGridOcorrencias', $grid);
+
+        $btns[] = new MButton('btnFormOk', _M('Ok', $module), "mpopup.remove();");
+        $controls[] = new MDiv('btns', $btns, $class, 'style="float:left;"');
+        $fields[] = $cnt = new MHContainer('CButtons', $controls);
+
+        $popup = new MPopup('addendum', $fields, _M('Ocorrências', $module));
+        $popup->addBoxStyle('width', '800px');
+
+        $fields = array( $popup );
+
+        return $fields;
+    }
+
+    public function showInformation($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $filters = new stdClass();
+        $filters->ofertaDeUnidadeTematicaId = $this->getRequestValue('ofertaDeUnidadeTematicaId');
+        $ut = current(ApsOfertaDeUnidadeTematica::searchGrid($filters));
+
+        // FIXME Obter dados via posicao de array nao e uma boa pratica
+        $periodos = ApsUnidadeTematica::listPeriodos();
+        $tipos = ApsUnidadeTematica::listTipos();
+        $options = array(
+            _M('Rodízio', $module) => $ut[2],
+            _M('Período', $module) => $periodos[$ut[3]],
+            _M('Tipo', $module) => $tipos[$ut[4]],
+            _M('Carga horária', $module) => $ut[5],
+            _M('Frequência mínima', $module) => $ut[6],
+            _M('Núcleos profissionais') => $ut[7],
+            _M('Ênfases') => $ut[8],
+            _M('Início', $module) => $ut[9],
+            _M('Fim', $module) => $ut[10]
+        );
+        $fields[] = new SInformationField(array(
+            'value' => $options,
+            'columns' => 1,
+        ));
+
+        // Get grid
+        $fields[] = new MSeparator();
+
+        $ofertaDeUnidadeTematica = new ApsOfertaDeUnidadeTematica($this->getRequestValue('ofertaDeUnidadeTematicaId'));
+
+        $grdData = new stdClass();
+        $grdData->readOnly = true;
+        $grid = $MIOLO->getUI()->getGrid($module, 'GrdTemaUnidadeTematica', $grdData);
+        $grid->setData($ofertaDeUnidadeTematica->retornaTemasDaOfertaEmArray());
+        $divGrid = new MDiv('divGridTemas', $grid);
+        $divGrid->addBoxStyle('width', '100%');
+        $fields[] = new MBaseGroup('baseGroupTemas', _M('Atividades do rodízio',$module), array($divGrid));
+
+        MPopup::show('divPopup', $fields, _M('Mais informações', $module));
+    }
+
+    /**
+     * Função que salva os dados
+     *
+     * @param $sender
+     */
+    public function tbBtnSave_click($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $function = MIOLO::_REQUEST('function');
+        $function = MIOLO::_REQUEST('function');
+        $action = MIOLO::getCurrentAction();
+        $msg = SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED');
+
+        try
+        {
+            SDatabase::beginTransaction();
+
+            // Obtém os dados do form
+            $dataForm = $this->getData();
+            $arrayStatus = MIOLO::_REQUEST('status');
+            $observacoes = MIOLO::_REQUEST('observacoes');
+
+            //Obtem os dados das grids dinamicamente
+            $medResidente = new ApsResidente($dataForm->residenteId);
+            $medTurma = new ApsTurma($medResidente->turmaId);
+            strlen($medResidente->turmaId) > 0 ? $quantGrids = $medTurma->quantidadePeriodo : $quantGrids = 2;
+
+            for ($i = 0; $i < $quantGrids;$i++)
+            {
+                //Na primeira nao da merge
+                if ( $i == 0 )
+                {
+                    $selectedGridCurricular = (array)MIOLO::_REQUEST('selectGrdOfertaDoResidenteTab' . ($i + 1));
+                }
+                else
+                {
+                    $selectedGridCurricularAux = (array)MIOLO::_REQUEST('selectGrdOfertaDoResidenteTab' . ($i + 1));
+                    $selectedGridCurricular = array_merge($selectedGridCurricularAux, $selectedGridCurricular);
+                }
+            }
+
+            if ( count($selectedGridCurricular)>0 )
+            {
+                if ( strlen($dataForm->statusCurricular)>0 )
+                {
+                    foreach ( $selectedGridCurricular as $ofertaDeUnidadeTematicaId )
+                    {
+                        $filters = new stdClass();
+                        $filters->residenteId = $dataForm->residenteId;
+                        $filters->ofertaDeUnidadeTematicaId = $ofertaDeUnidadeTematicaId;
+                        $ofertaResidente = ApsOfertaDoResidente::search($filters);
+
+                        //Oferta
+                        $ofertaDoResidente = new ApsOfertaDoResidente();
+                        $ofertaDoResidente->ofertaDoResidenteId = $ofertaResidente[0]->ofertaDoResidenteId;
+                        $ofertaDoResidente->residenteId = $dataForm->residenteId;
+                        $ofertaDoResidente->ofertaDeUnidadeTematicaId = $ofertaDeUnidadeTematicaId;
+
+                        //Ocorrencia
+                        $ocorrencia = new ApsOcorrenciaDeOferta();
+                        $ocorrencia->dataHora = SAGU::getDateNow(SAGU::getParameter('BASIC', 'MASK_DATE_PHP') . ' ' . SAGU::getParameter('BASIC', 'MASK_TIME_PHP'));
+                        $ocorrencia->status = $dataForm->statusCurricular;
+                        $ocorrencia->observacoes = $dataForm->observacaoCurricular;
+
+                        $ocorrencias[] = $ocorrencia;
+                        $ofertaDoResidente->ocorrenciasDeOferta = $ocorrencias;
+                        $ofertaDoResidente->save();
+                        unset($ocorrencias);
+                    }
+                }
+                else
+                {
+                    throw new Exception(_M('Deve ser selecionado um novo status para as ofertas de rodízio selecionadas',$module).'.');
+                }
+            }
+
+            $filters = new stdClass();
+            $filters->inicio = $dataForm->betweenInicio;
+            $filters->fim = $dataForm->betweenFim;
+            $data = ApsOfertaDeUnidadeTematica::search($filters);
+
+            foreach ( (array) $data as $unidadeTematica )
+            {
+                $ofertaDeUnidadeTematicaId = $unidadeTematica->ofertaDeUnidadeTematicaId;
+
+                if ( strlen($arrayStatus[$ofertaDeUnidadeTematicaId]) > 0 )
+                {
+                    $filters = new stdClass();
+                    $filters->residenteId = $dataForm->residenteId;
+                    $filters->ofertaDeUnidadeTematicaId = $ofertaDeUnidadeTematicaId;
+                    $ofertaResidente = ApsOfertaDoResidente::search($filters);
+
+                    //Oferta
+                    $ofertaDoResidente = new ApsOfertaDoResidente();
+                    $ofertaDoResidente->ofertaDoResidenteId = $ofertaResidente[0]->ofertaDoResidenteId;
+                    $ofertaDoResidente->residenteId = $dataForm->residenteId;
+                    $ofertaDoResidente->ofertaDeUnidadeTematicaId = $ofertaDeUnidadeTematicaId;
+
+                    //Ocorrencia
+                    $ocorrencia = new ApsOcorrenciaDeOferta();
+                    $ocorrencia->dataHora = SAGU::getDateNow(SAGU::getParameter('BASIC', 'MASK_DATE_PHP') . ' ' . SAGU::getParameter('BASIC', 'MASK_TIME_PHP'));
+                    $ocorrencia->status = $arrayStatus[$ofertaDeUnidadeTematicaId];
+                    $ocorrencia->observacoes = strlen($observacoes[$ofertaDeUnidadeTematicaId]) > 0 ? $observacoes[$ofertaDeUnidadeTematicaId] : '';
+
+                    $ocorrencias[] = $ocorrencia;
+                    $ofertaDoResidente->ocorrenciasDeOferta = $ocorrencias;
+
+                    $ofertaDoResidente->save();
+                }
+                unset($ocorrencias);
+            }
+
+            SDatabase::commit();
+
+            // Volta para a tela de busca de residente pesquisando pelo residente atual
+            $action = 'main:process:residente';
+            $opts = array('residenteId' => $this->getRequestValue('residenteId'));
+            $goto = $MIOLO->getActionURL($module, $action, null, $opts);
+            SAGU::information($msg, $goto);
+        }
+        catch ( Exception $e )
+        {
+            SDatabase::rollback();
+            $this->AddError($e->getMessage());
+        }
+    }
+}
+
+?>

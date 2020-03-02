@@ -1,0 +1,529 @@
+<?php
+
+/*
+ * To change this template, choose Tools | Templates
+ * and open the template in the editor.
+ */
+
+/**
+ * Description of AdmFluxoSolicitacao
+ *
+ * @author augusto
+ */
+class FinFluxoSolicitacao extends SType
+{
+    protected $gravarMaiusculo = false;
+    
+    /**
+     *
+     * @var int
+     */
+    public $fluxosolicitacaoid;
+    
+    /**
+     *
+     * @var int 
+     */
+    public $fluxoAprovacaoProcessoId;
+    
+    /**
+     *
+     * @var int 
+     */
+    public $fluxoAprovacaoStatusId;
+    
+    /**
+     *
+     * @var int 
+     */
+    public $idUser;
+    
+    /**
+     *
+     * @var String 
+     */
+    public $codigodoregistro;
+    
+    /**
+     *
+     * @var String
+     */
+    public $observacao;
+    
+    /**
+     *
+     * @var FinFluxoAprovacaoProcess
+     */
+    public $fluxoaprovacaoprocesso;
+    
+    /**
+     *
+     * @var FinFluxoAprovacaoStatus
+     */
+    public $fluxoaprovacaostatus;
+    
+    /**
+     *
+     * @var AdmUser
+     */
+    public $miolo_user;
+    
+    protected $_virtualColumns = array(
+        "_datadoregistro" => "TO_CHAR(finfluxosolicitacao.datetime, getParameter('BASIC', 'MASK_TIMESTAMP_DEFAULT'))"
+    );
+    
+    protected $_utilizaNovoPadrao = true;
+    
+    /**
+     * Associações
+     * 
+     * @var array
+     */
+    protected $_associations = array(
+        'fluxoaprovacaoprocesso' => array(
+            'mode' => 'one',
+            'typeClass' => 'FinFluxoAprovacaoProcesso',
+            'joinColumn' => 'fluxoAprovacaoProcessoId',
+        ),
+        'fluxoaprovacaostatus' => array(
+            'mode' => 'one',
+            'typeClass' => 'FinFluxoAprovacaoStatus',
+            'joinColumn' => 'fluxoAprovacaoStatusId',
+        ),
+        'miolo_user' => array(
+            'mode' => 'one',
+            'typeClass' => 'AdmUser',
+            'joinColumn' => 'idUser',
+        )
+    );
+    
+    /**
+     * Método de busca por solicitações.
+     * 
+     * @return array
+     */
+    public function busca()
+    {
+        $msql = new MSQl();
+        $msql->setColumns('fluxosolicitacaoid')
+             ->setTables('finfluxosolicitacao');
+        
+        $params = array();
+        
+        if ( strlen($this->fluxoAprovacaoProcessoId) > 0 )
+        {
+            $msql->setWhereAnd('fluxoaprovacaoprocessoid = ?');
+            $params[] = $this->fluxoAprovacaoProcessoId;
+        }
+        
+        if ( strlen($this->codigodoregistro) > 0 )
+        {
+            $msql->setWhereAnd('codigodoregistro = ?');
+            $params[] = $this->codigodoregistro;
+        }
+        
+        if ( strlen($this->idUser) > 0 )
+        {
+            $msql->setWhereAnd('iduser = ?');
+            $params[] = $this->idUser;
+        }
+        
+        if ( strlen($this->fluxoAprovacaoStatusId) > 0 )
+        {
+            $msql->setWhereAnd('fluxoaprovacaostatusid = ?');
+            $params[] = $this->fluxoAprovacaoStatusId;
+        }
+        
+        return SDatabase::query($msql->select(), $params);
+    }
+    
+    /**
+     * Reescrito método de dados para a grid contemplar as lógicas nescessárias.
+     * 
+     * @param SGrid $grid
+     * @return array
+     */
+    public function findForGrid(SGrid $grid)
+    {
+        $MIOLO     = MIOLO::getInstance();
+        $loginUser = $MIOLO->getLogin();
+        
+        $rows     = parent::findForGrid($grid);
+        $gridRows = array();
+        
+        // Percorre as solicitações.
+        foreach ( $rows as $row )
+        {              
+            // Se a solicitação foi feita pelo usuário logado
+            if ( $row['finfluxosolicitacao.iduser'] == $loginUser->idkey )
+            {
+                $row['eAvaliador'] = false;
+                $gridRows[]        = $row;
+            }
+            // Se o usuário logado é um avaliador.
+            else if ( $row['finfluxosolicitacao.iduser'] != $loginUser->idkey )
+            {    
+                $finFluxoSolicitacao = new FinFluxoSolicitacao($row['finfluxosolicitacao.fluxosolicitacaoid']);
+                $finFluxoAprovacao   = new FinFluxoAprovacao();
+                
+                $niveis = $finFluxoSolicitacao->obterNiveisDaSolicitacao(true, true);
+                
+                // Percorre os níveis da solicitação.
+                foreach ( $niveis as $nivel )
+                {   
+                    $finFluxoAprovacaoNivel = new FinFluxoAprovacaoNivel($nivel->fluxoAprovacaoNivelId);
+                    $eNivelDoAvaliadorLogado = $finFluxoAprovacaoNivel->verificaSeENivelDoAvaliadorLogado();
+                    
+                    $fluxoAprovacao = $finFluxoAprovacao->obterFluxoDeAprovacaoPeloCodigoDoNivelESolicitacao($nivel->fluxoAprovacaoNivelId, $finFluxoSolicitacao->fluxosolicitacaoid, true);
+                    $foiAvaliado    = (count($fluxoAprovacao) > 0);
+                    
+                    // Verifica se o nível já foi avaliado
+                    if ( $foiAvaliado )
+                    {
+                        // Verifica se o nível foi reprovado, caso sim o fluxo está encerrado.
+                        if ( $fluxoAprovacao[0]->fluxoaprovacaostatusid == FinFluxoAprovacaoStatus::REPROVADO )
+                        {
+                            // Verifica se quem reprovou o nível é o usuário logado, caso sim a solicitação deve continuar sendo exibida.
+                            if ( !$eNivelDoAvaliadorLogado )
+                            {
+                                break;
+                            }
+                        }
+                    }
+                            
+                    // Se o usuário logado é avaliador deste nível sem avaliação.
+                    if ( $eNivelDoAvaliadorLogado )
+                    {
+                        $row['eAvaliador'] = true;
+                        $row['jaAvaliou']  = $foiAvaliado ? true : false; // Se o avaliador logado já avaliou seu nível.
+                        $gridRows[]        = $row;
+
+                        break;
+                    }
+                    else 
+                    {
+                        // Se ainda não foi avaliado e não é o nível do usuário logado, então não deve ser exibido.
+                        if ( !$foiAvaliado )
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+            // Se o usuário for um administrador, pode vizualizar todos.
+            else if ( $loginUser->isAdmin )
+            {
+                $row['eAvaliador'] = false;
+                $gridRows[]        = $row;
+            }
+        }
+        
+        return $gridRows;
+    }
+    
+    /**
+     * Retorna os níveis de aprovação necessários conforme configuração, referentes a solicitação.
+     * 
+     * @param int $fluxoSolicitacaoId
+     * @param boolean $returnAsObject
+     * @param boolean $eVisualizacao
+     * @return array
+     */
+    public function obterNiveisDaSolicitacao($returnAsObject = false, $eVisualizacao = false)
+    {
+        $finFluxoAprovacaoConfiguracao = new FinFluxoAprovacaoConfiguracao();
+        $finFluxoAprovacaoNivel        = new FinFluxoAprovacaoNivel();
+
+        $configuracaoId = $finFluxoAprovacaoConfiguracao->obterConfiguracaoDoProcesso($this->fluxoAprovacaoProcessoId);
+        $niveis         = $finFluxoAprovacaoNivel->buscarNiveisPelaConfiguracao($configuracaoId, $returnAsObject, $eVisualizacao);
+        
+        return $niveis;
+    }
+    
+    /**
+     * Verifica se todos os níveis da solicitação já foram aprovados,
+     * caso sim, seta o status da solicitação como aprovada, se algum
+     * dos níveis foi reprovado, seta todos os níveis restantes e o
+     * status da solicitação como reprovado.
+     */
+    public function verificarSeASolicitacaoFoiAprovadaOuReprovada()
+    {
+        $MIOLO     = MIOLO::getInstance();
+        $loginUser = $MIOLO->getLogin();
+        
+        $finFluxoAprovacao    = new FinFluxoAprovacao();
+        $todosNiveisAvaliados = true;
+        $umNivelFoiReprovado  = false;
+        
+        $niveis = $this->obterNiveisDaSolicitacao(true, true);
+        
+        foreach ( $niveis as $nivel )
+        {
+            $fluxoAprovacao = $finFluxoAprovacao->obterFluxoDeAprovacaoPeloCodigoDoNivelESolicitacao($nivel->fluxoAprovacaoNivelId, $this->fluxosolicitacaoid, true);
+            $foiAvaliado    = (count($fluxoAprovacao) > 0);
+               
+            // Verifica se o nível foi avaliado.
+            if ( $foiAvaliado )
+            {
+                // Verifica se o nível foi reprovado.
+                if ( $fluxoAprovacao[0]->fluxoaprovacaostatusid == FinFluxoAprovacaoStatus::REPROVADO )
+                {
+                    $umNivelFoiReprovado = true;
+                }
+            }
+            else
+            {
+                $todosNiveisAvaliados = false;
+                
+                // Se o nível ainda não foi avaliado e um dos níveis foi reprovado.
+                if ( $umNivelFoiReprovado )
+                {
+                    // Seta a avaliação do nível como reprovado.
+                    $finFluxoAprovacao = new FinFluxoAprovacao();
+                    $finFluxoAprovacao->fluxoSolicitacaoId     = $this->fluxosolicitacaoid;
+                    $finFluxoAprovacao->fluxoAprovacaoNivelId  = $nivel->fluxoAprovacaoNivelId;
+                    $finFluxoAprovacao->fluxoAprovacaoStatusId = FinFluxoAprovacaoStatus::REPROVADO;
+                    $finFluxoAprovacao->idUser                 = $loginUser->idkey;
+                    $finFluxoAprovacao->observacao             = 'REPROVADO AUTOMATICAMENTE POR REPROVAÇÃO DO NÍVEL ANTECESSOR.';
+                    $finFluxoAprovacao->save();
+                    
+                    $todosNiveisAvaliados = true;
+                }
+            }
+        }
+        
+        $this->registraAvaliacaoFinalParaASolicitacao($todosNiveisAvaliados, $umNivelFoiReprovado);
+    }
+    
+    /**
+     * Registra a avaliação (status) final para a solicitação, caso todos os níveis
+     * tenham sido avaliados.
+     * 
+     * @param boolean $todosNiveisAvaliados
+     * @param boolean $umNivelFoiReprovado
+     */
+    public function registraAvaliacaoFinalParaASolicitacao($todosNiveisAvaliados, $umNivelFoiReprovado)
+    {
+        if ( $todosNiveisAvaliados )
+        {
+            $this->fluxoAprovacaoStatusId = ($umNivelFoiReprovado) ? FinFluxoAprovacaoStatus::REPROVADO : FinFluxoAprovacaoStatus::APROVADO;
+            
+            // Se a solicitação foi aprovada, executa o registro solicitado.
+            if ( $this->fluxoAprovacaoStatusId == FinFluxoAprovacaoStatus::APROVADO )
+            {
+                $finFluxoSolicitacaoRegistro = new FinFluxoSolicitacaoRegistro();
+                $finFluxoSolicitacaoRegistro->fluxosolicitacaoid = $this->fluxosolicitacaoid;
+                
+                if ( $finFluxoSolicitacaoRegistro->popularPeloCodigoDaSolicitacao() )
+                {
+                    $finFluxoSolicitacaoRegistro->executaRegistroDaSolicitacao();
+                    $finFluxoSolicitacaoRegistro->registroprocessado = DB_TRUE;
+                    $finFluxoSolicitacaoRegistro->save();
+                }
+            }
+            
+            $this->criaLembreteParaOSolicitanteAoFinalizarAvaliacao();
+            $this->save();
+        }
+    }
+    
+    /**
+     * Obtém os dados para serem registrados automáticos ao aprovar a solicitação, caso seja feita.
+     */
+    public function salvaOsDadosDoRegistroEfetuado()
+    {
+        $MIOLO         = MIOLO::getInstance();
+        $registroDados = $MIOLO->session->getValue('dadosDoRegistroEfetuado');
+        $MIOLO->session->setValue('dadosDoRegistroEfetuado', null);
+        
+        if ( strlen($registroDados) > 0 )
+        {
+            $objRegistroDados = json_decode($registroDados);
+            
+            $finFluxoSolicitacaoRegistro = new FinFluxoSolicitacaoRegistro();
+            $finFluxoSolicitacaoRegistro->fluxosolicitacaoid = $this->fluxosolicitacaoid;
+            $finFluxoSolicitacaoRegistro->registrodados      = $registroDados;
+            $finFluxoSolicitacaoRegistro->registromodule     = $objRegistroDados->registroModule;
+            $finFluxoSolicitacaoRegistro->registroaction     = $objRegistroDados->registroAction;
+            $finFluxoSolicitacaoRegistro->registroevent      = $objRegistroDados->registroEvent;
+            $finFluxoSolicitacaoRegistro->registrofunction   = $objRegistroDados->registroFunction;
+            
+            $finFluxoSolicitacaoRegistro->save();
+        }
+    }
+    
+    /**
+     * Caso o solicitante seja um avaliador de um dos níveis, registra o nível como aprovado.
+     */
+    public function aprovaNivelDoSolicitanteCasoSejaAvaliador()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $loginUser = $MIOLO->getLogin();
+        
+        foreach ( $this->obterNiveisDaSolicitacao(true) as $nivel )
+        {
+            $finFluxoAprovacaoNivel = new FinFluxoAprovacaoNivel($nivel->fluxoAprovacaoNivelId);
+            $eNivelDoAvaliadorLogado = $finFluxoAprovacaoNivel->verificaSeENivelDoAvaliadorLogado();
+            
+            if ( $eNivelDoAvaliadorLogado )
+            {                
+                $args = new stdClass();
+                $args->fluxoSolicitacaoId = $this->fluxosolicitacaoid;
+                $args->fluxoAprovacaoNivelId = $nivel->fluxoAprovacaoNivelId;
+                $args->fluxoAprovacaoStatusId = FinFluxoAprovacaoStatus::APROVADO;
+                $args->idUser = $loginUser->idkey;
+                $args->observacao = _M('APROVADO AUTOMATICAMENTE, AVALIADOR É O SOLICITANTE.');
+
+                FinFluxoAprovacao::registrarAvaliacao($args);
+            }
+        }
+    }
+    
+    /**
+     * Cria os lembretes para os avaliadores informando que possuem pendências de solicitação para aprovar.
+     * 
+     * @param int $fluxoAprovacaoProcessoId
+     */
+    public function criarLembretesParaOsAvaliadores()
+    {
+        $niveis = $this->obterNiveisDaSolicitacao(true);
+
+        // Varre os níveis e verifica quem são os avaliadores de cada solicitação.
+        foreach ( $niveis as $nivel )
+        {
+            if ( $nivel->quem == 'Grupo' ) 
+            {
+                $this->criaLembretesParaUsuarioOuGrupoAvaliador($nivel->code, true);
+            }
+            else
+            {   
+                $this->criaLembretesParaUsuarioOuGrupoAvaliador($nivel->code);
+            }
+        }
+    }
+    
+    /**
+     * Cria lembrete para os usuários ou grupos avaliadores.
+     * 
+     * @param int $idUser
+     */
+    private function criaLembretesParaUsuarioOuGrupoAvaliador($code, $isGroup = false)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $basStickyNote = new BasStickyNote();
+        $basStickyNote->isGroup = ($isGroup) ? DB_TRUE : DB_FALSE;
+        $basStickyNote->code = $code;
+        $basStickyNote->stickyNoteType = BasStickyNote::PENDENCIA_DE_FLUXO;
+        $buscaStickyNote = $basStickyNote->busca();
+
+        // Verifica se o avaliador possui um stickynote referente.
+        $count = (count($buscaStickyNote) > 0);                        
+
+        // Verifica se o avaliador possui pendências.
+        if ( $this->verificaSeUsuarioOuGrupoAvaliadorPossuiPendencias($code, $isGroup) )
+        {
+            // Se não possuir um stickynote referente, cria.
+            if ( !$count )
+            {
+                $description = 'Olá! Verificamos que você possui avaliações pendentes de solicitações de execução de processos. Clique no link abaixo para visualizar.';
+
+                $basStickyNote->description = $description;
+                $basStickyNote->positionX   = rand(100, 700);
+                $basStickyNote->positionY   = rand(50, 300);
+                $basStickyNote->link        = $MIOLO->getActionURL('finance', 'main:process:solicitacoesDeProcessos');
+                $basStickyNote->save();
+            }
+        }
+        else
+        {
+            // Se não possui pendências e possui um stickynote referente, exclui.
+            if ( $count )
+            {
+                $basStickyNote = new BasStickyNote($buscaStickyNote[0]->stickyNoteId);
+                $basStickyNote->delete();
+            }
+        }
+    }
+    
+    /**
+     * Cria um lembrete para o usuário solicitante quando as avaliações de uma solicitação forem concluídas.
+     */
+    public function criaLembreteParaOSolicitanteAoFinalizarAvaliacao()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $basStickyNote = new BasStickyNote();
+        $basStickyNote->isGroup = DB_FALSE;
+        $basStickyNote->code = $this->idUser;
+        $basStickyNote->stickyNoteType = BasStickyNote::SOLICITACAO_AVALIADA;
+        $basStickyNote->description = 'Olá! Foram finalizadas as avaliações de uma solicitação sua, referente a um processo de um registro. Clique no link abaixo para verificar.';
+        $basStickyNote->positionX   = rand(100, 700);
+        $basStickyNote->positionY   = rand(50, 300);
+        $basStickyNote->link        = $MIOLO->getActionURL('finance', 'main:process:solicitacoesDeProcessos');
+        $basStickyNote->save();   
+    }
+    
+    /**
+     * Verifica se o avaliador possui pendências de avaliação e se está na vez de avaliar.
+     * 
+     * @param int $code
+     * @param boolean $isGroup
+     * @return boolean
+     */
+    private function verificaSeUsuarioOuGrupoAvaliadorPossuiPendencias($code, $isGroup = false)
+    {
+        $msql = new MSQL();
+        $msql->setColumns("COUNT(*) > 0")
+             ->setTables("finFluxoSolicitacao A
+               INNER JOIN finFluxoAprovacaoConfiguracao B
+                       ON B.fluxoAprovacaoProcessoId = A.fluxoAprovacaoProcessoId
+               INNER JOIN finFluxoAprovacaoNivel C
+                       ON C.fluxoAprovacaoConfiguracaoId = B.fluxoAprovacaoconfiguracaoId
+                LEFT JOIN finFluxoAprovacao D
+                       ON D.fluxoSolicitacaoId = A.fluxoSolicitacaoId
+                      AND D.fluxoAprovacaoNivelId = C.fluxoAprovacaoNivelId");
+        
+        if ( $isGroup )
+        {
+            $msql->setWhereAnd("C.idGroup = ?");
+        }
+        else
+        {
+            $msql->setWhereAnd("C.idUser = ?");
+        }
+        
+        $msql->setWhereAnd("( ( C.nivel = 1 )
+                        OR ( ( SELECT FAS.fluxoAprovacaoStatusId
+                                 FROM finFluxoAprovacao FAS
+                           INNER JOIN finFluxoAprovacaoNivel FAN
+                                   ON FAN.fluxoAprovacaoNivelId = FAS.fluxoAprovacaoNivelId
+                                WHERE fluxoSolicitacaoId = A.fluxoSolicitacaoId
+                                  AND FAN.nivel = (C.nivel - 1) ) = 2 ) )")
+            ->setWhereAnd("D.fluxoAprovacaoStatusId IS NULL");
+        
+        $result = SDatabase::query($msql->select(), array($code));
+        
+        return ($result[0][0] == DB_TRUE) ? true : false;
+    }
+    
+    /**
+     * Verifica se já existe alguma solicitação para o registro no processo.
+     * 
+     * @param String $codigoDoRegistro
+     * @param int $fluxoAprovacaoProcessoId
+     * @return boolean
+     */
+    public static function verificaSeExisteSolicitacaoParaORegistroNoProcesso($codigoDoRegistro, $fluxoAprovacaoProcessoId)
+    {
+        $finFluxoSolicitacao = new FinFluxoSolicitacao();
+        $finFluxoSolicitacao->fluxoAprovacaoProcessoId = $fluxoAprovacaoProcessoId;
+        $finFluxoSolicitacao->codigodoregistro = $codigoDoRegistro;
+        $finFluxoSolicitacao->fluxoAprovacaoStatusId = FinFluxoAprovacaoStatus::AGUARDANDO_AVALIACAO;
+        $busca = $finFluxoSolicitacao->busca();
+        
+        return ( count($busca) > 0 );
+    }
+}
+
+?>

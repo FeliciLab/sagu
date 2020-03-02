@@ -1,0 +1,165 @@
+<?php
+
+/**
+ *
+ */
+class MInputGridColumn extends MInputControl
+{
+    public $colWidth;
+
+    /**
+     *
+     */
+    public function __construct( $name, $label='', $colWidth = 0, $value = array() )
+    {
+        parent::__construct( $name, $value, $label );
+
+        $this->colWidth = $colWidth;
+    }
+}
+
+
+/**
+ *
+ */
+class MInputGrid extends MInputControl
+{
+    public $cols; // array of column definitions
+    protected $numRows; // the number of rows
+    public $numCols; // the number of cols
+    public $aValue; // array com os valores dos campos
+    /**
+     *
+     */
+    public function __construct( $name, $label = '', $rows = 0 )
+    {
+        $this->numRows = $rows;
+        $this->numCols = 0;
+
+        parent::__construct( $name, array(), $label );
+    }
+
+    /**
+     *
+     */
+    public function getRowCount()
+    {
+        return $this->numRows;
+    }
+
+    /**
+     *
+     */
+    public function setRowCount( $rows )
+    {
+        $this->numRows = $rows;
+    }
+
+    /**
+     *
+     */
+    public function addColumn( $label, $name, $colWidth = 0, $value = '' )
+    {
+        for ( $i = 0; $i < $this->numRows; $i++ )
+        {
+            $this->setFieldValue( $i + 1, $this->numCols + 1, $value );
+        }
+
+        $this->cols[$this->numCols++] = new MInputGridColumn( $label, $name, $colWidth, $value );
+    }
+
+    /**
+     *
+     */
+    public function generateInner()
+    {
+        $t = array();
+
+        $t[0][0] = '';
+
+        for ( $i = 0; $i < $this->numRows; $i++ )
+        {
+            $t[$i + 1][0] = $this->painter->span( new Span( '', ($i + 1) . ":&nbsp;", 'mCaption' ) );
+        }
+
+        foreach ( $this->cols as $col => $column )
+        {
+            $t[0][$col + 1] = $this->painter->span( new Span('', $column->label, 'mCaption') );
+
+            for ( $i = 0; $i < $this->numRows; $i++ )
+            {
+                if ( is_object( $column->value ) )
+                {
+                    $text  = clone($column->value);
+                }
+                else
+                {
+                    $text = new MTextField( "{$this->name}[$i][$col]", $this->aValue[$i][$col], '', $column->colWidth );
+                }
+                $text->setAttribute('rowNumber', "$i");
+                $t[$i + 1][$col + 1] = $text->generate();
+            }
+        }
+
+        $table = new MTable( $t, array(), array(), array() );
+
+        $this->inner = $table->getRender( 'table' );
+    }
+
+    /**
+     *
+     */
+    public function setValue( $value )
+    {
+        if ( is_array( $value ) && ( count($this->cols) > 0 ) )
+        {
+            foreach ( $this->cols as $col => $column )
+            {
+                for ( $i = 0; $i < $this->numRows; $i++ )
+                {
+                    if ( $value[$i][$col] != NULL )
+                    {
+                        $this->setFieldValue( $i + 1, $col + 1, $value[$i][$col] );
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     *
+     */
+    public function getValue()
+    {
+        return $this->aValue;
+    }
+
+    /**
+     *
+     */
+    public function getFieldValue( $row, $col, $default = '' )
+    {
+        $value = $this->aValue[$row - 1][$col - 1];
+
+        return isset( $value ) ? $value : $default;
+    }
+
+    /**
+     *
+     */
+    public function setFieldValue( $row, $col, $value )
+    {
+        $this->aValue[$row - 1][$col - 1] = $value;
+    }
+
+    /**
+     *
+     */
+    public function getRow( $row )
+    {
+        return $this->aValue[$row - 1];
+    }
+
+}
+
+?>

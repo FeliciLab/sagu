@@ -1,0 +1,401 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class definition for database entities
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 24/03/2011
+ *
+ **/
+/**
+ * Unidades da instituição.
+ */
+class TraUnit extends SType
+{
+    protected $unitId;
+
+    /**
+     * Descrição da Unidade.
+     * Exemplo: pode ser cadastrada uma unidade com nome GHC, que representa um grupo, ou seja, várias pessoas jurídicas.
+     * 
+     * @var string
+     */
+    protected $description;
+
+    
+    protected $minimumDaysUntilTrainingStart;
+    
+    protected $maximumDaysUntilTrainingStart;
+    
+
+    /**
+     * Pessoas juridicas que fazem parte desta unidade
+     *
+     * @var array
+     */
+    protected $unitLegalPerson = array();
+
+    
+    public function __construct($unitId = null)
+    {
+        if ( strlen($unitId) > 0 )
+        {
+            $this->unitId = $unitId;
+            $this->populate();
+        }
+    }
+
+
+    /**
+     * Insere ou atualiza os registros na base
+     *
+     * @return boolean
+     */
+    public function save()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+
+        // se chave primária não está definida, assume que deva ser feito insert
+        if ( strlen($this->unitId) <= 0 )
+        {
+            $retVal = $this->insert();
+        }
+        else
+        {
+            $retVal = $this->update();
+        }
+
+        if ( strlen($this->unitId) > 0 )
+        {
+            foreach ( (array) $this->unitLegalPerson as $row )
+            {
+                $row->unitId = $this->unitId;
+                $row->save();
+            }
+        }
+
+        return $retVal;
+    }
+
+
+    /**
+     * Remove o registro na base, através de sua chave primaria
+     *
+     * @return boolean
+     */
+    public function delete()
+    {
+        if ( strlen($this->unitId) == 0 )
+        {
+            throw new Exception(_M('Não é possível excluir uma unidade que ainda não foi salva.', $module));
+        }
+
+        foreach ( $this->unitLegalPerson as $row )
+        {
+            $row->delete();
+        }
+
+        $sql = 'DELETE FROM tra.unit
+                  WHERE unitId = ?';
+
+        $args = array($this->unitId);
+
+        $result = SDatabase::execute($sql, $args);
+
+        if ( $result )
+        {
+            $this->unitId = null;
+        }
+
+        return $result;
+    }
+
+    
+    /**
+     * Duplica o registro atual.
+     *
+     * @return TRUE no caso de sucesso. Caso contrário, FALSE.
+     */
+    public function duplicate()
+    {
+        $row = clone($this);
+        $row->unitId = null;
+
+        $unitLegalPerson = array();
+        foreach ( (array) $this->unitLegalPerson as $o )
+        {
+            $unitLegalPerson[] = $o->duplicate();
+        }
+        $row->optionCourses = $unitLegalPerson;
+
+        return $row;
+    }
+
+    /**
+     * @param $filters->teamOrganizerId array|int Array com multiplos ou apenas um personId para verificar se sao preceptores
+     * 
+     * Retorna uma lista de unidades.
+     */
+    public static function listUnit($filters = null)
+    {
+         $sql = 'SELECT A.unitId,
+                        A.description
+                   FROM tra.unit A
+              LEFT JOIN tra.unitUser B
+                     ON (A.unitId = B.unitId)';
+
+        $where = array();
+        
+         //Filtra apenas por unidades que possuam alguma trainingTypeArea com a flag isActive = TRUE
+        if ( strlen($filters->trainingTypeId) > 0 )
+        {
+            $where[] = " EXISTS(SELECT 1
+                              FROM tra.trainingTypeArea TTA
+                        INNER JOIN tra.unitArea UA
+                                ON TTA.unitAreaId = UA.unitAreaId
+                             WHERE UA.unitId = A.unitId
+                               AND TTA.trainingTypeId = ?) ";
+            $params[] = $filters->trainingTypeId;
+        }
+
+        //Filtra por organizador(es) de equipe
+        if ( strlen($filters->teamOrganizerId)>0 )
+        {
+            $filters->teamOrganizerId = (array) $filters->teamOrganizerId;
+
+            $_where = array();
+            foreach ( $filters->teamOrganizerId as $personId )
+            {
+                // Verifica se personId é organizador (na tabela tra.teamorganizer ou tra.unitUser)
+                $_where[] = '( ? IN (SELECT _TO.personId
+                                FROM tra.teamOrganizer _TO
+                          INNER JOIN tra.unitArea _UA
+                                  ON (_UA.unitAreaId = _TO.unitAreaId)
+                               WHERE _UA.unitId = A.unitId)
+
+                          OR ( B.unitId = A.unitId AND B.idUser = (SELECT idUser
+                                      FROM miolo_user
+                                     WHERE login = (
+                                            SELECT PP.mioloUsername
+                                         FROM ONLY basPhysicalPerson PP
+                                             WHERE PP.personId = ? ) ) ) )';
+                $params[] = $personId;
+                $params[] = $personId;
+            }
+            $where[] = '(' . implode(' OR ', $_where) . ')';
+        }
+
+        if ( count($where) >  0 )
+        {
+            $sql .= ' WHERE ' . implode(' AND ', $where);
+        }
+
+        $sql .= ' GROUP BY A.unitid, A.description';
+        $sql .= ' ORDER BY A.description';
+
+        $result = SDatabase::query($sql, $params);
+        if( is_array($result) )
+        {
+            foreach( $result  as $r )
+            {
+                $retVal[$r[0]] = $r[1];
+            }
+        }
+
+        return $retVal;
+    }
+
+    
+    /**
+     * Retorna uma lista de objetos do tipo desta classe com os resultados da busca.
+     *
+     * @param (stdClass) $filters Objeto contendo todos os campos pesquisáveis do objeto atual
+     */
+    public function search($filters)
+    {
+        $sql = 'SELECT unitId,
+                   description
+              FROM tra.unit';
+
+        $where = '';
+        foreach ( (array)$filters as $key => $value )
+        {
+            $where .= ' AND ' . $key . ' = ' . $value;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5);
+        }
+
+        $result = SDatabase::query($sql);
+
+        $retVal = array();
+        for ( $i=0; $i<count($result); $i++ )
+        {
+            $retVal[] = new TraUnit($result[$i][0]);
+        }
+
+        return $retVal;
+    }
+
+
+    /**
+     * Retorna um array com os resultados da busca.
+     *
+     * @param (stdClass) $filters Objeto contendo todos os campos pesquisáveis do objeto atual
+     */
+    public function searchGrid($filters)
+    {
+        $sql = 'SELECT A.unitId,
+                   A.description
+              FROM tra.unit A';
+
+        $where = '';
+        if ( strlen($filters->unitId) > 0 )
+        {
+            $where .= ' AND A.unitId = ?';
+            $args[] = $filters->unitId;
+
+        }
+        if ( strlen($filters->description) > 0 )
+        {
+            $where .= ' AND A.description ILIKE UNACCENT(?)';
+            $args[] = $filters->description . '%';
+        }
+
+
+
+        $result = array();
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5);
+            $sql .= ' ORDER BY description';
+            $result = SDatabase::query($sql, $args);
+        }
+
+        return $result;
+    }
+
+    
+    /**
+     * Chamado pelo construtor, quando este recebe os dados de chave primária
+     */
+    private function populate()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+
+        $sql = 'SELECT unitId,
+                   username,
+                   TO_CHAR(datetime, \'' . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . '\'),
+                   ipaddress,
+                   description,
+                   minimumDaysUntilTrainingStart,
+                   maximumDaysUntilTrainingStart
+              FROM tra.unit
+             WHERE unitId = ?';
+
+        $result = SDatabase::query($sql, $this->unitId);
+
+        if ( strlen($result[0][0]) <= 0 )
+        {
+            throw new Exception(_M('Código @1 inexistente.', $module, $this->optionId));
+        }
+
+        list (
+            $this->unitId,
+            $this->userName,
+            $this->dateTime,
+            $this->ipAddress,
+            $this->description,
+            $this->minimumDaysUntilTrainingStart,
+            $this->maximumDaysUntilTrainingStart) = $result[0];
+
+        if ( strlen($this->unitId) > 0 )
+        {
+            $filters = new stdClass();
+            $filters->unitId = $this->unitId;
+            $this->unitLegalPerson = TraUnitLegalPerson::search($filters);
+        }
+    }
+
+    
+    /*
+     * Insere um novo registro com base nas informações da classe
+     */
+    private function insert()
+    {
+        $sql = 'SELECT nextval(\'tra.unit_unitid_seq\')';
+
+        $result = SDatabase::query($sql);
+        $newId = $result[0][0];
+
+        $sql = 'INSERT INTO tra.unit (unitId, description, minimumDaysUntilTrainingStart, maximumDaysUntilTrainingStart)
+                 VALUES (?, ?, ?, ?)';
+
+        $args = array(
+            $newId,
+            $this->description,
+            $this->minimumDaysUntilTrainingStart,
+            $this->maximumDaysUntilTrainingStart,
+        );
+
+        $result = SDatabase::execute($sql, $args);
+
+        if ( $result )
+        {
+            $this->unitId = $newId;
+        }
+
+        return $result;
+    }
+
+    
+    /*
+     * Atualiza um registro existente com base nas informações da classe
+     */
+    private function update()
+    {
+        $sql = 'UPDATE tra.unit
+               SET description = ?,
+                   minimumDaysUntilTrainingStart = ?,
+                   maximumDaysUntilTrainingStart = ?
+             WHERE unitId = ?';
+
+        $args = array(
+            $this->description,
+            $this->minimumDaysUntilTrainingStart,
+            $this->maximumDaysUntilTrainingStart,
+            $this->unitId
+        );
+
+        return SDatabase::execute($sql, $args);
+    }
+}
+
+?>

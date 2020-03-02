@@ -1,0 +1,164 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Passo responsavel pela selecao de contrato.
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ *
+ * @since
+ * Class created on 07/02/2011
+ *
+ **/
+
+class FrmFinalExaminationCurricularComponent extends FrmFinalExamination
+{
+    public function __construct($steps = null)
+    {
+        parent::__construct(null, $steps, __CLASS__);
+    }
+
+    
+    public function createFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+
+        //Load data
+        $stepData = $this->getStepDataByForm(__CLASS__);
+
+        if ( $this->isFirstAccess() && ( SAGU::getEventName() != 'nextStepButton:click' ) )
+        {
+            $this->cleanStepData();
+            unset($stepData);
+        }
+
+        $fields[] = $contractId = new SLookupContract('contractId', $stepData);
+        $validators[] = new MRequiredValidator('contractId', _M('Contrato', $module));
+
+        $fields[] = new MDiv('divEnrollChooser');
+
+        $this->setFields($fields);
+        $this->setValidators($validators);
+
+        if ( ! strlen($stepData->contractId) > 0 )
+        {
+            $stepData = $this->getData();
+        }
+
+        $contractId->setFilters( $stepData );
+    }
+
+
+    public function  nextStepButton_click($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $data = $this->getData();
+        $_args = array();
+
+        $busCurriculum = new BusinessAcademicBusCurriculum();
+        $busCurricularComponent = new BusinessAcademicBusCurricularComponent();
+        $busEnroll = new BusinessAcademicBusEnroll();
+
+        try
+        {
+            $filters = new stdClass();
+            $filters->courseId = MIOLO::_REQUEST('courseId');
+            $filters->turnId = MIOLO::_REQUEST('turnId');
+            $filters->unitId = MIOLO::_REQUEST('unitId');
+            $filters->curricularComponentTypeId = SAGU::getParameter('ACADEMIC', 'ACD_CURRICULUM_TYPE_FINAL_EXAMINATION');
+
+            $curriculums = array();
+            foreach ( (array)  $busCurriculum->searchCurriculum( $filters ) as $row )
+            {
+                $curriculums[] = $row[0]; //curriculumId
+            }
+
+            if ( ! (count($curriculums) > 0) )
+            {
+                throw new Exception( _M('Este aluno não está matriculado em nenhuma disciplina do tipo TCC.', $module) );
+            }
+
+            $filters = new stdClass();
+            $filters->curriculumId = $curriculums;
+            $filters->contractId = MIOLO::_REQUEST('contractId');
+            $rows = $busEnroll->searchEnroll($filters);
+
+            if ( count($rows) > 1 ) // Está matriculado em mais de uma disciplina
+            {
+                $enrolls = array();
+                foreach ( $rows as $row )
+                {
+                    $enrollId = $row[0];
+
+                    $enroll = $busEnroll->getEnroll($enrollId);
+                    $curriculum = $busCurriculum->getCurriculum($enroll->curriculumId);
+                    $curricularComponent = $busCurricularComponent->getCurricularComponent( $curriculum->curricularComponentId, $curriculum->curricularComponentVersion );
+
+                    $enrolls[] = array( $curricularComponent->curricularComponentId . ' - ' . $curricularComponent->name, $enrollId );
+                }
+
+                $enrollIdRequest = MIOLO::_REQUEST('_enrollId');
+                $enrollIdValue = strlen($enrollIdRequest) > 0 ? $enrollIdRequest : next(current($enrolls));
+                $enrollId = new MRadioButtonGroup('_enrollId', null, $enrolls, $enrollIdValue, null, 'vertical');
+                $enrollId->setShowLabel(false);
+                $fields[] = new MBaseGroup('enrollChooserBgr', _M('Selecione a disciplina', $module), array($enrollId));
+                
+                $this->GetField('divEnrollChooser')->setInner($fields); //Manda o conteudo dos fields para div
+
+                if ( strlen($enrollIdRequest) > 0 ) //Caso tenha sido selecionado algum enrollId, passa para proximo passo
+                {
+                    $_args['enrollId'] = $enrollIdRequest;
+                }
+                else
+                {
+                    return;
+                }
+            }
+            else if  ( count($rows) > 0 ) // Esta matriculado em uma disciplina, passa direto ao proximo passo
+            {
+                $_args['enrollId'] = $rows[0][0];
+            }
+            else // Nenhuma disciplina matriculada, nao passa para proximo passo
+            {
+                throw new Exception( _M('Nenhuma disciplina encontrada.', $module) );
+            }
+        }
+        catch (Exception $e)
+        {
+            $this->AddError($e->getMessage());
+            return;
+        }
+
+        $MIOLO->session->setValue('enrollId', $_args->enrollId);
+        
+        parent::nextStepButton_click($_args);
+    }
+}
+?>

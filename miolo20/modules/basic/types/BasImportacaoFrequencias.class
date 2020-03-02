@@ -1,0 +1,364 @@
+<?php
+/**
+ * <--- Copyright 2005-2013 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Realiza o processamento de um arquivo de ponto dentro do 
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.com.br]
+ *
+ * @since
+ * Class created on 07/08/2014
+ */
+class BasImportacaoFrequencias extends SType
+{
+    protected $_utilizaNovoPadrao = true;
+    
+    public $importacaofrequenciaid;
+    public $fileid;
+    public $modulodestino;
+    public $data;
+    
+    /**
+     * Data incial de registro
+     * @var date
+     */
+    public $datainicialregistros;
+    
+    /**
+     * Data final de registro
+     * @var type 
+     */
+    public $datafinalregistros;
+    
+    /**
+     * Data de geração do arquivo
+     * @var type 
+     */
+    public $datageracaoarquivo;
+    
+    /**
+     * Hora da geração do arquivo
+     * @var type 
+     */
+    public $horariogeracaoarquivo;
+        
+    const MODULO_DESTINO_PEDAGOGICO = 'pedagogico';
+    
+    const MODELO_PADRAO = 'padrao';
+    const MODELO_SIMPLIFICADO = 'simplificado';
+    
+    /**
+     * @return array
+     */
+    public static function listarModulosDeDestino()
+    {
+        return array(
+            self::MODULO_DESTINO_PEDAGOGICO => _M('Pedagógico')
+        );
+    }
+    
+    /**
+     * @return array
+     */
+    public static function listarModelos()
+    {
+        return array(
+            self::MODELO_PADRAO => _M('Padrão'),
+            self::MODELO_SIMPLIFICADO => _M('Simplificado')
+        );
+    }
+    
+    /**
+     * Processa Arquivo AFD (Arquivo de fonte de dados).
+     * Layoute com todas alterações introduzidas pela Portaria 2233 de 2009 do Ministério do trabalho
+     * @param type $fileId
+     * @param type $aplicarAlteracoes
+     */
+    public function processarArquivo($fileId)
+    {
+        $busFile = new BusinessBasicBusFile();
+        $arrayData = $busFile->getFileAsString($fileId, true);
+        
+        $ok = true;
+        
+        foreach( $arrayData as $cod => $linha)
+        {
+            $tipo_registro = substr($linha, 9, 1);
+            
+            if( $tipo_registro == '1' ) //Cabeçalho do arquivo
+            {
+                //Insere a importação do arquivo
+                $this->datainicialregistros = substr($linha, 204, 8);
+                $this->datafinalregistros = substr($linha, 212, 8);
+                $this->datageracaoarquivo = substr($linha, 220, 8);
+                $this->horariogeracaoarquivo = substr($linha, 228, 4);
+                
+                //Insere o registro BasImportacaoFrequencia
+                $this->importacaofrequenciaid = $this->inserirImportacaoFrequencia($fileId, $this->modulodestino, $this->datainicialregistros, $this->datafinalregistros, $this->datageracaoarquivo, $this->horariogeracaoarquivo);
+            }
+            elseif( $tipo_registro == '3' ) //Registro de marcação de ponto
+            {
+                $v_linha = $this->processarLinha($linha); //Obtém dados da linha
+                
+                if( $this->modulodestino == self::MODULO_DESTINO_PEDAGOGICO )
+                {
+                    //Processa informações de frequencia da movimentação
+                    $ok &= $this->processarFrequenciaPedagogico($v_linha);
+                }
+            }
+        }
+        
+        //Define falta para todos horários não registrados dentro do intervalo de datas do arquivo importado
+        if( $this->modulodestino == self::MODULO_DESTINO_PEDAGOGICO )
+        {
+            $ok &= $this->processarFaltasPedagogico();
+        }
+        
+        return $ok;
+    }
+    
+    protected function processarLinha($linha)
+    {
+        $vlinha["nsr"] = substr($linha, 0, 9);
+        $vlinha["data"] = substr($linha, 10, 8);
+        $vlinha["hora"] = substr($linha, 18, 4);
+        $vlinha["pis"] = substr($linha, 22, 12);
+        
+        //Obtém o código da pessoa
+        $pis = $vlinha["pis"];
+        $sql_pis = "SELECT personid FROM ONLY basphysicalperson WHERE lpad(pis, 12, '0') = ?";
+        $result_pis = SDatabase::query($sql_pis, array($pis));
+        $vlinha["personid"] = $result_pis[0][0];
+ 
+        
+        return $vlinha;
+    }
+    
+    protected function inserirImportacaoFrequencia($fileid, $modulodestino, $datainicialregistros, $datafinalregistros, $datageracaoarquivo, $horariogeracaoarquivo)
+    {
+        $pk = SDatabase::query("SELECT nextval('basimportacaofrequencias_importacaofrequenciaid_seq'::regclass);");
+        $importacaoFrequenciaId = $pk[0][0];
+        $sql = "INSERT INTO basImportacaoFrequencias (importacaoFrequenciaId, fileid, modulodestino, data, datainicialregistros, datafinalregistros, datageracaoarquivo, horariogeracaoarquivo) VALUES (?, ?, ?, now()::date, to_date(?, 'ddmmyyyy') , to_date(?, 'ddmmyyyy'), to_date(?, 'ddmmyyyy'), to_timestamp(?, 'hh24mi'));";
+        $insert = SDatabase::execute($sql, array($importacaoFrequenciaId, $fileid, $modulodestino, $datainicialregistros, $datafinalregistros, $datageracaoarquivo, $horariogeracaoarquivo));
+        
+        if( $insert )
+        {
+            return $importacaoFrequenciaId;
+        }
+    }
+       
+    /**
+     * Busca ocorrencia de aluno e horario no pedagógico e seta frequencia correspondente
+     * @param type $v_linha
+     */
+    protected function processarFrequenciaPedagogico($v_linha, $modelo = BasImportacaoFrequencias::MODELO_PADRAO)
+    {
+        //Obtém todas as aulas dentro do período de marcação da frequencia anterior e a frequencia atual, caso não tenha anterior busca somente proximo a atual
+        $ocorrencias_sql = "SELECT matricula.matriculaid, 
+                                   ocorrencia.ocorrenciahorarioofertaid, 
+                                   frequencia.frequenciaid,
+                                   frequencia.frequencia,
+                                   
+                                   -- logica complexa. descrita no ticket #32843
+                                   (CASE
+                                        WHEN perfilcurso.acaoregistroparcial = '" . AcpFrequencia::FREQUENCIA_MEIA . "' AND freq.permiteMeiaPresenca IS NOT TRUE THEN (
+                                            (CASE
+                                                WHEN perfilcurso.alternativaacaomeiapresenca = '" . AcpFrequencia::FREQUENCIA_JUSTIFICADA . "' AND freq.permiteJustificativa IS NOT TRUE THEN perfilcurso.alternativaacaofaltajustificada
+                                                ELSE perfilcurso.alternativaacaomeiapresenca
+                                             END)
+                                        )
+                                        WHEN perfilcurso.acaoregistroparcial = '" . AcpFrequencia::FREQUENCIA_JUSTIFICADA . "' AND freq.permiteJustificativa IS NOT TRUE THEN perfilcurso.alternativaacaofaltajustificada
+                                        ELSE perfilcurso.acaoregistroparcial
+                                    END) AS acaoMeiaPresenca,
+                                   
+                                   perfilcurso.justificativaregistroparcial
+                          FROM acpocorrenciahorariooferta ocorrencia
+                     LEFT JOIN acpmatricula matricula ON ocorrencia.ofertacomponentecurricularid = matricula.ofertacomponentecurricularid
+                     LEFT JOIN acphorario horario ON horario.horarioid = ocorrencia.horarioid
+                     LEFT JOIN acpfrequencia frequencia ON frequencia.matriculaid = matricula.matriculaid AND frequencia.ocorrenciahorarioofertaid = ocorrencia.ocorrenciahorarioofertaid
+                     LEFT JOIN acpinscricaoturmagrupo inscricaoturmagrupo ON inscricaoturmagrupo.inscricaoturmagrupoid = matricula.inscricaoturmagrupoid 
+                     LEFT JOIN acpofertaturma ofertaturma ON ofertaturma.ofertaturmaid = inscricaoturmagrupo.ofertaturmaid 
+                     LEFT JOIN acpofertacurso ofertacurso ON ofertacurso.ofertacursoid = ofertaturma.ofertacursoid 
+                     LEFT JOIN acpocorrenciacurso ocorrenciacurso ON ocorrenciacurso.ocorrenciacursoid = ofertacurso.ocorrenciacursoid 
+                     LEFT JOIN acpcurso curso ON curso.cursoid = ocorrenciacurso.cursoid 
+                     LEFT JOIN acpperfilcurso perfilcurso ON perfilcurso.perfilcursoid = curso.perfilcursoid
+                     LEFT JOIN acpmodelodeavaliacao modelo ON modelo.modelodeavaliacaoid = (select modelodeavaliacaoid from acp_obtermodelodaofertadecomponentecurricular(matricula.ofertacomponentecurricularid))
+                     LEFT JOIN acpControleDeFrequencia freq ON freq.modelodeavaliacaoid = modelo.modelodeavaliacaoid
+                         WHERE matricula.personid = ?
+                           AND ocorrencia.dataaula = to_date(?, 'ddmmyyyy')
+                           AND perfilcurso.permiteregistrarfrequenciabiometria IS TRUE ";
+
+        $horario = $v_linha['hora'];
+        
+        $args[] = $v_linha['personid'];
+        $args[] = $v_linha['data'];
+        
+        $ocorrencias_sql .= " AND ( ( horario.horainicio BETWEEN to_timestamp(?,'hh24mi')::time - (perfilcurso.limitetemporegistrobiometria || 'minute')::interval AND to_timestamp(?,'hh24mi')::time + (perfilcurso.limitetemporegistrobiometria || 'minute')::interval )";
+        $args[] = $horario;
+        $args[] = $horario;
+        $ocorrencias_sql .= " OR ( horario.horafim BETWEEN to_timestamp(?,'hh24mi')::time - (perfilcurso.limitetemporegistrobiometria || 'minute')::interval AND to_timestamp(?,'hh24mi')::time + (perfilcurso.limitetemporegistrobiometria || 'minute')::interval ) )";
+        $args[] = $horario;
+        $args[] = $horario;
+        $ocorrencias_sql .= ';';
+
+        $ocorrencias = SDatabase::query($ocorrencias_sql, $args);
+                
+        $ok = false;
+
+        //marca meia opção de frequencia nas sem frequencia e presença nas meias que tiverem neste periodo de tempo         
+        foreach( $ocorrencias as $cod =>$ocorrencia )
+        {
+            $ok = true;
+            
+            $matriculaid = $ocorrencia[0];
+            $ocorrenciahorarioofertaid = $ocorrencia[1];
+            $frequenciaid = $ocorrencia[2];
+            $frequencia = $ocorrencia[3];
+            $frequenciaparcial = $ocorrencia[4];
+            $justificativaparcial = $ocorrencia[5];
+
+            if ( $modelo == BasImportacaoFrequencias::MODELO_SIMPLIFICADO )
+            {
+                $v_linha['tipo'] = $v_linha['nsr'] == '010' ? 'E' : 'S';
+            }
+            else
+            {
+                $sql_tipo = "SELECT CASE WHEN tipo = 'E' THEN 'S' ELSE 'E' END FROM basImportacaoFrequenciasMovimentacao WHERE pis = ? AND data = to_date(?, 'ddmmyyyy') AND ocorrenciahorarioofertaid = ? ORDER BY hora DESC LIMIT 1;";
+                $result_tipo = SDatabase::query($sql_tipo, array($v_linha["pis"], $v_linha["data"], $ocorrenciahorarioofertaid));
+                $v_linha['tipo'] = SAGU::NVL($result_tipo[0][0], 'E');
+            }
+            
+            //Se não tiver frequencia seta parcial
+            if( strlen($frequenciaid) == 0 )
+            {
+                $frequencia_val = $frequenciaparcial;
+                $sql_frequencia = "INSERT INTO acpFrequencia (ocorrenciahorarioofertaid, matriculaid, frequencia, datalancamento, justificativa) VALUES (?, ?, ?, now()::date, ?);";
+                $insertFrequencia = SDatabase::execute($sql_frequencia, array($ocorrenciahorarioofertaid, $matriculaid, $frequencia_val, $justificativaparcial));
+                $frequencia = $frequencia_val;
+            }
+            //Se possuir frequencia parcial define como presente
+            elseif( $frequencia == $frequenciaparcial )
+            {
+                $frequencia_val = AcpFrequencia::FREQUENCIA_PRESENTE;
+                $sql_frequencia = "UPDATE acpFrequencia SET frequencia = ?, datalancamento = now()::date WHERE frequenciaid = ?";
+                $insertFrequencia = SDatabase::execute($sql_frequencia, array($frequencia_val, $frequenciaid));
+                $frequencia = AcpFrequencia::FREQUENCIA_PRESENTE;
+            }
+
+            $sql_insert = "INSERT INTO basImportacaoFrequenciasMovimentacao (personId, importacaoFrequenciaId, data, hora, pis, tipo, ocorrenciahorarioofertaid, frequencia) VALUES (?,?,to_date(?, 'ddmmyyyy'),?,?,?,?,?);";
+            $ok &= SDatabase::execute($sql_insert, array($v_linha['personid'], $this->importacaofrequenciaid, $v_linha["data"], $v_linha["hora"], $v_linha["pis"], $v_linha["tipo"], $ocorrenciahorarioofertaid, $frequencia));
+        }
+        
+        if( !$ok )
+        {
+            if ( $modelo == BasImportacaoFrequencias::MODELO_SIMPLIFICADO )
+            {
+                $v_linha['tipo'] = $v_linha['nsr'] == '010' ? 'E' : 'S';
+            }
+            else
+            {
+                $sql_tipo = "SELECT CASE WHEN tipo = 'E' THEN 'S' ELSE 'E' END FROM basImportacaoFrequenciasMovimentacao WHERE pis = ? AND data = to_date(?, 'ddmmyyyy') ORDER BY hora DESC LIMIT 1;";
+                $result_tipo = SDatabase::query($sql_tipo, array($v_linha["pis"], $v_linha["data"]));
+                $v_linha['tipo'] = SAGU::NVL($result_tipo[0][0], 'E');
+            }
+            
+            $sql_insert = "INSERT INTO basImportacaoFrequenciasMovimentacao (personId, importacaoFrequenciaId, data, hora, pis, tipo, ocorrenciahorarioofertaid, frequencia) VALUES (?,?,to_date(?, 'ddmmyyyy'),?,?,?,?,?);";
+            $ok &= SDatabase::execute($sql_insert, array($v_linha['personid'], $this->importacaofrequenciaid, $v_linha["data"], $v_linha["hora"], $v_linha["pis"], $v_linha["tipo"], $ocorrenciahorarioofertaid, $frequencia));
+        }
+        
+        return $ok;
+    }
+    
+    /**
+     * Processa todos as ocorrencias de aulas não registradas no intervalo de tempo do arquivo como falta.
+     */
+    public function processarFaltasPedagogico()
+    {
+        //Obtém todas as aulas dentro do intervalo de horário atual
+        $ocorrencias_sql = "SELECT matricula.matriculaid, 
+                                   ocorrencia.ocorrenciahorarioofertaid, 
+                                   frequencia.frequenciaid,
+                                   frequencia.frequencia,
+                                   perfilcurso.acaoregistroparcial,
+                                   perfilcurso.justificativaregistroparcial
+                          FROM acpocorrenciahorariooferta ocorrencia
+                     LEFT JOIN acpmatricula matricula ON ocorrencia.ofertacomponentecurricularid = matricula.ofertacomponentecurricularid
+                     LEFT JOIN acphorario horario ON horario.horarioid = ocorrencia.horarioid
+                     LEFT JOIN acpfrequencia frequencia ON frequencia.matriculaid = matricula.matriculaid AND frequencia.ocorrenciahorarioofertaid = ocorrencia.ocorrenciahorarioofertaid
+                     LEFT JOIN acpinscricaoturmagrupo inscricaoturmagrupo ON inscricaoturmagrupo.inscricaoturmagrupoid = matricula.inscricaoturmagrupoid 
+                     LEFT JOIN acpofertaturma ofertaturma ON ofertaturma.ofertaturmaid = inscricaoturmagrupo.ofertaturmaid 
+                     LEFT JOIN acpofertacurso ofertacurso ON ofertacurso.ofertacursoid = ofertaturma.ofertacursoid 
+                     LEFT JOIN acpocorrenciacurso ocorrenciacurso ON ocorrenciacurso.ocorrenciacursoid = ofertacurso.ocorrenciacursoid 
+                     LEFT JOIN acpcurso curso ON curso.cursoid = ocorrenciacurso.cursoid 
+                     LEFT JOIN acpperfilcurso perfilcurso ON perfilcurso.perfilcursoid = curso.perfilcursoid
+                         WHERE ocorrencia.dataaula BETWEEN to_date(?, 'ddmmyyyy') AND to_date(?, 'ddmmyyyy')
+                           AND perfilcurso.permiteregistrarfrequenciabiometria IS TRUE
+                           AND frequencia.frequenciaid IS NULL;";
+        
+        $args[] = $this->datainicialregistros;
+        $args[] = $this->datafinalregistros;
+        
+        $ok = true;
+        
+        $ocorrencias = SDatabase::query($ocorrencias_sql, $args);
+        foreach( $ocorrencias as $cod =>$ocorrencia )
+        {
+            $ocorrenciahorarioofertaid = $ocorrencia[1];
+            $matriculaid = $ocorrencia[0];
+            
+            //Define falta para os registro não recebidos no intervalo de tempo do arquivo
+            $sql_frequencia = "INSERT INTO acpFrequencia (ocorrenciahorarioofertaid, matriculaid, frequencia, datalancamento) VALUES (?, ?, ?, now()::date);";
+            $ok &= $insertFrequencia = SDatabase::execute($sql_frequencia, array($ocorrenciahorarioofertaid, $matriculaid, AcpFrequencia::FREQUENCIA_AUSENTE));
+        }
+        
+        return $ok;
+    }
+    
+    public function obterMovimentacoes()
+    {   
+         $sql = " SELECT frequenciasmovimentacao.importacaofrequenciamovimentacaoid,
+                         frequenciasmovimentacao.personid,
+                         frequenciasmovimentacao.pis,
+                         basphysicalperson.name,
+                         acpOcorrenciahorariooferta.ofertacomponentecurricularid || ' - ' || acp_obterNomeDaOfertaComponenteCurricular(acpOcorrenciahorariooferta.ofertacomponentecurricularid) || ' (' || acphorario.horainicio || ' - '  || acphorario.horafim || ')',
+                         TO_CHAR(frequenciasmovimentacao.data, 'dd/mm/yy'),
+                         frequenciasmovimentacao.hora,
+                         frequenciasmovimentacao.tipo,
+                         frequenciasmovimentacao.frequencia
+                    FROM BasImportacaoFrequenciasMovimentacao frequenciasmovimentacao
+          LEFT JOIN ONLY basphysicalperson 
+                      ON basphysicalperson.personid = frequenciasmovimentacao.personid
+               LEFT JOIN acpOcorrenciahorariooferta 
+                      ON acpOcorrenciahorariooferta.ocorrenciahorarioofertaid = frequenciasmovimentacao.ocorrenciahorarioofertaid
+               LEFT JOIN acphorario 
+                      ON acpOcorrenciahorariooferta.horarioid = acphorario.horarioid                      
+                   WHERE frequenciasmovimentacao.importacaofrequenciaid = ?
+                GROUP BY 1,2,3,4,5,6,7,8,9
+                ORDER BY frequenciasmovimentacao.importacaofrequenciamovimentacaoid;";
+        
+        return SDatabase::query($sql, array($this->importacaofrequenciaid));
+    }
+}
+?>

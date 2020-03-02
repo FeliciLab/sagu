@@ -1,0 +1,583 @@
+<?php
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class definition for database entities
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * \b Maintainers: \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 28/08/2011
+ */
+class MedPreceptoria extends SType
+{
+    const SITUACAO_ATIVO = 'A';
+    const SITUACAO_INATIVO = 'I';
+    const SITUACAO_INDIFERENTE = 'IN';
+
+    /**
+     * SQL que filtra o periodo de vigencia do preceptor
+     *
+     * Obs: Utilizado tambem em: MedResidente.class
+     */
+    const SQL_VIGENCIA = "NOW()::date BETWEEN P.inicio AND COALESCE(P.fim, NOW()::date)";
+
+    protected $preceptorId;
+    protected $personId;
+    /**
+     *
+     * @var BasPhysicalPerson
+     */
+    protected $physicalPerson;
+    protected $enfaseId;
+    protected $nucleoProfissionalId;
+    protected $inicio;
+    protected $fim;
+    protected $responsavel;
+    protected $titulacao;
+    protected $chSemanal;
+    protected $chMensal;
+    protected $referencia;
+    protected $arquivo1;
+    protected $arquivo2;
+    const CODIGO_GRUPO_PRECEPTOR_RESIDENCIA_MEDICA = 15;
+
+    public function __construct($preceptorId = NULL)
+    {
+        if ( (strlen($preceptorId)  >  0) )
+        {
+            $this->preceptorId = $preceptorId;
+            $this->populate();
+        }
+    }
+
+    public function  __get($name)
+    {
+        if ( $name == 'physicalPerson' && !$this->physicalPerson && ( strlen($this->personId) > 0 ) )
+        {
+            $MIOLO = MIOLO::getInstance();
+            $busPP = new BusinessBasicBusPhysicalPerson();
+            $this->physicalPerson = $busPP->getPhysicalPerson($this->personId);
+        }
+
+        return parent::__get($name);
+    }
+
+    public static function search($filters)
+    {
+        $sql = 'SELECT preceptorId
+                  FROM med.preceptoria';
+
+        $where = '';
+        foreach ( $filters  as  $key => $value )
+        {
+            if ( (is_scalar($value))  &&  (strlen($value)  >  0) )
+            {
+                $where .= " AND {$key} = '{$value}'";
+            }
+        }
+
+        if ( strlen($where)  >  0 )
+        {
+            $sql .= ' WHERE '.substr($where, 5);
+        }
+
+        $sql .= ' ORDER BY inicio ';
+        $result = SDatabase::query($sql);
+        $retVal = array();
+
+        for ( $i = 0;  $i  <  count($result);  $i++ )
+        {
+            $retVal[] = new MedPreceptoria($result[$i][0]);
+        }
+
+        return $retVal;
+    }
+    
+    public static function getSearchGridSQL($filters = null)
+    {
+        $sqlDataInicio = "(SELECT MIN(OUT.inicio) FROM med.ofertaDeUnidadeTematica OUT WHERE OUT.personId = PP.personId)";
+        $sqlDataFim = "(SELECT MAX(OUT.fim) FROM med.ofertaDeUnidadeTematica OUT WHERE OUT.personId = PP.personId)";
+        $sqlVigencia = self::SQL_VIGENCIA;
+
+        $sql = "SELECT P.preceptorId,
+                       PP.personId || ' - ' || PP.name AS nomeDoPreceptor,
+                       CP.content AS cartaoPonto,
+                       CPF.content AS CPF,
+                       PP.workFunction AS profissao,
+                       P.titulacao,
+                       P.chmensal,
+                       P.chsemanal,
+                       COALESCE(PP.residentialphone, ' - ') || ' / ' || COALESCE(PP.cellphone, ' - ') AS telefone,
+                       COALESCE(PP.email, PP.emailAlternative) AS email,
+                       TO_CHAR(P.inicio, GETPARAMETER('BASIC', 'MASK_DATE')) AS inicio,
+                       TO_CHAR(P.fim, GETPARAMETER('BASIC', 'MASK_DATE')) AS fim,
+                       CASE WHEN {$sqlVigencia} THEN 'Ativo' ELSE 'Inativo' END AS situacao,
+                       NP.descricao AS nucleoProfissional,
+                       E.descricao AS enfase,
+                       p.responsavel,
+                       P.referencia
+                  FROM med.preceptoria P
+       INNER JOIN ONLY basPhysicalPerson PP
+                    ON P.personId = PP.personId
+             LEFT JOIN med.enfase E
+                    ON P.enfaseid = E.enfaseid
+             LEFT JOIN med.nucleoProfissional NP
+                    ON NP.nucleoprofissionalid = P.nucleoprofissionalid
+             LEFT JOIN basDocument CP
+                    ON PP.personId = CP.personId
+                   AND CP.documentTypeId = " . SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CARTAO_PONTO') . "
+             LEFT JOIN basDocument CPF
+                    ON PP.personId = CPF.personId
+                   AND CPF.documentTypeId = " . SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF');
+
+        $where = '';
+        $params = array();
+
+        if ( strlen($filters->preceptorId)  >  0 )
+        {
+            $where .= ' AND P.preceptorId = ?';
+            $params[] = $filters->preceptorId;
+        }
+
+        if ( strlen($filters->personName)  >  0 )
+        {
+            $where .= ' AND UNACCENT(PP.name) ILIKE UNACCENT(?)';
+            $params[] = $filters->personName . '%';
+        }
+
+        if ( strlen($filters->personId)  >  0 )
+        {
+            $where .= ' AND P.personId = ?';
+            $params[] = $filters->personId;
+        }
+
+        if ( strlen($filters->enfaseId)  >  0 )
+        {
+            $where .= ' AND P.enfaseId = ?';
+            $params[] = $filters->enfaseId;
+        }
+
+        if ( strlen($filters->nucleoProfissionalId)  >  0 )
+        {
+            $where .= ' AND P.nucleoProfissionalId = ?';
+            $params[] = $filters->nucleoProfissionalId;
+        }
+
+        if ( strlen($filters->responsavel)  >  0 )
+        {
+            $where .= ' AND P.responsavel = ?';
+            $params[] = $filters->responsavel;
+        }
+
+        // Situacao do preceptor
+        if ( $filters->situacao == self::SITUACAO_ATIVO )
+        {
+            $where .=  ' AND ' . $sqlVigencia;
+        }
+        else if ( $filters->situacao == self::SITUACAO_INATIVO )
+        {
+            $where .= " AND NOT ({$sqlVigencia}) ";
+        }
+
+        // Datas
+        if ( (strlen($filters->inicio) > 0) && ( strlen($filters->fim) > 0 ) )
+        {
+            $passed = " TO_DATE(?, GETPARAMETER('BASIC', 'MASK_DATE')) ";
+            $where .= " AND ( ({$passed} <= P.inicio) AND (P.fim IS NULL OR ({$passed} >= P.fim)) ) ";
+            $params[] = $filters->inicio;
+            $params[] = $filters->fim;
+        }
+        else if ( strlen($filters->inicio)  >  0 )
+        {
+            $where .= " AND P.inicio = TO_DATE(?, GETPARAMETER('BASIC', 'MASK_DATE'))";
+            $params[] = $filters->inicio;
+        }
+        else if ( strlen($filters->fim)  >  0 )
+        {
+            $where .= " AND P.fim = TO_DATE(?, GETPARAMETER('BASIC', 'MASK_DATE'))";
+            $params[] = $filters->fim;
+        }
+
+        else if ( strlen($filters->referencia) > 0 )
+        {
+            $where .= " AND P.referencia = ? ";
+            $params[] = $filters->referencia;
+        }
+
+        $usuario = MedEnfase::retornaAdminDaEspecialidadeResidenciaMedica();
+        if ( $usuario )
+        {
+            $where .= " AND E.enfaseid in (SELECT AA.enfaseid FROM med.enfaseresponsavel AA WHERE AA.responsavel = ?)";
+            $params[] = $usuario;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5);
+        }
+
+        $sql .= ' ORDER BY P.inicio';
+
+        return SAGU::prepare($sql, $params);
+    }
+
+    /**
+     * Mantem codigo legado funcionando
+     * 
+     * @param stdClass $filters
+     * @return array
+     */
+    public static function searchGrid($filters = null)
+    {
+        $sql = self::getSearchGridSQL($filters);
+        
+        return preg_match('/ WHERE /', $sql) ? SDatabase::query($sql) : array();
+    }
+
+    private function populate()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $sql = "SELECT username,
+                       TO_CHAR(datetime, '" . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . "'),
+                       ipaddress,
+                       preceptorId,
+                       personId,
+                       enfaseId,
+                       nucleoProfissionalId,
+                       TO_CHAR(inicio, GETPARAMETER('BASIC', 'MASK_DATE')),
+                       TO_CHAR(fim, GETPARAMETER('BASIC', 'MASK_DATE')),
+                       responsavel,
+                       titulacao,
+                       chSemanal,
+                       chMensal,
+                       referencia,
+                       arquivo1,
+                       arquivo2
+                  FROM med.preceptoria
+                 WHERE preceptorId = ?";
+
+        $result = SDatabase::query($sql, array($this->preceptorId));
+
+        if ( !isset($result[0][1]) )
+        {
+            throw new Exception(_M('Registro inexistente. (@1)', $module, __CLASS__));
+        }
+
+        list( $this->userName,
+              $this->dateTime,
+              $this->ipAddress,
+              $this->preceptorId,
+              $this->personId,
+              $this->enfaseId,
+              $this->nucleoProfissionalId,
+              $this->inicio,
+              $this->fim,
+              $this->responsavel,
+              $this->titulacao,
+              $this->chSemanal,
+              $this->chMensal,
+              $this->referencia,
+              $this->arquivo1,
+              $this->arquivo2 ) = $result[0];
+    }
+
+    
+    public function save()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        if ( strlen($this->preceptorId)  ==  0 )
+        {
+            $retVal = $this->insert();
+            $this->insertGrupo($this->personId, self::CODIGO_GRUPO_PRECEPTOR_RESIDENCIA_MEDICA);
+        }
+        else
+        {
+            $retVal = $this->update();
+        }
+
+        return $retVal;
+    }
+
+    public function insertGrupo($personId, $groupId)
+    {
+        $busPerson = new BusinessBasicBusPerson();
+        $personData = $busPerson->getPerson($personId);
+        $busUser = new BusinessAdminUser();
+        $idUser = $busUser->getByLogin($personData->mioloLogin);
+
+        $dataUser = new BusinessAdminGroupUser();
+        $group = new BusinessAdminGroup();
+        $existGroup = $group->getGroup($groupId);
+
+        if($existGroup->idgroup)
+        {
+
+            $unit = sMultiUnidade::obterUnidadesDoUsuario($idUser);
+            $multiUnidadeAtiva = sMultiUnidade::estaHabilitada();
+
+            //Se tiver mais de uma unidade e multiunidade HABILITADO manda o codigo da unidade que esta logada
+            if ( $multiUnidadeAtiva && sizeof($unit) > 1 )
+            {
+                $unitId = sMultiUnidade::obterUnidadeLogada();
+            }
+            //se for apenas multiunidade ativa
+            elseif( $multiUnidadeAtiva )
+            {
+                foreach($unit as $cod => $descricao)
+                {
+                    $unitId = $cod;
+                }
+            }
+
+            $filter = new stdClass();
+            $filter->idUser = $idUser->idUser;
+            $filter->idGroup = $groupId;
+            $filter->unitId = $unitId;
+            $existUser = $dataUser->search($filter);
+
+            if ( count($existUser) == 0)
+            {
+                $dataUser->setIdUser($idUser->idUser);
+                $dataUser->setIdGroup($groupId);
+                $dataUser->setUnitId($unitId);
+
+                $dataUser->insertUserInGroups($dataUser);
+            }
+        }
+    }
+    
+
+    private function insert()
+    {
+        $sqlPK = "SELECT nextval('seq_medpreceptoria_preceptoriaid'::regclass)";
+        $result = SDatabase::query($sqlPK);
+        $preceptorId = $result[0][0];
+
+        $sql = "INSERT INTO med.preceptoria
+                            (preceptorId,
+                             personId,
+                             enfaseId,
+                             nucleoProfissionalId,
+                             inicio,
+                             fim,
+                             responsavel,
+                             titulacao,
+                             chSemanal,
+                             chMensal,
+                             referencia,
+                             arquivo1,
+                             arquivo2)
+                     VALUES (?,
+                             ?,
+                             ?,
+                             ?,
+                             TO_DATE(?, GETPARAMETER('BASIC', 'MASK_DATE')),
+                             TO_DATE(?, GETPARAMETER('BASIC', 'MASK_DATE')),
+                             ?,
+                             ?,
+                             ?,
+                             ?,
+                             COALESCE(?, false),
+                             ?,
+                             ?)";
+
+        $params = array();
+        $params[] = $preceptorId;
+        $params[] = $this->personId;
+        $params[] = $this->enfaseId;
+        $params[] = $this->nucleoProfissionalId;
+        $params[] = $this->inicio;
+        $params[] = $this->fim;
+        $params[] = $this->responsavel;
+        $params[] = $this->titulacao;
+        $params[] = $this->chSemanal;
+        $params[] = $this->chMensal;
+        $params[] = $this->referencia;
+        $params[] = $this->arquivo1;
+        $params[] = $this->arquivo2;
+
+        $result = SDatabase::execute($sql, $params,false);
+
+        if ( $result )
+        {
+            $this->preceptorId = $preceptorId;
+        }
+
+        return $result;
+    }
+    
+
+    private function update()
+    {
+        $sql = "UPDATE med.preceptoria
+                   SET personId = ?,
+                       enfaseId = ?,
+                       nucleoProfissionalId = ?,
+                       inicio = TO_DATE(?, GETPARAMETER('BASIC', 'MASK_DATE')),
+                       fim = TO_DATE(?, GETPARAMETER('BASIC', 'MASK_DATE')),
+                       responsavel = ?,
+                       titulacao = ?,
+                       chSemanal = ?,
+                       chMensal = ?,
+                       referencia = COALESCE(?, false),
+                       arquivo1 = ?,
+                       arquivo2 = ?
+                 WHERE preceptorId = ?";
+
+        $params = array();
+        $params[] = $this->personId;
+        $params[] = $this->enfaseId;
+        $params[] = $this->nucleoProfissionalId;
+        $params[] = $this->inicio;
+        $params[] = $this->fim;
+        $params[] = $this->responsavel;
+        $params[] = $this->titulacao;
+        $params[] = $this->chSemanal;
+        $params[] = $this->chMensal;
+        $params[] = $this->referencia;
+        $params[] = $this->arquivo1;
+        $params[] = $this->arquivo2;
+        $params[] = $this->preceptorId;
+
+        return SDatabase::execute($sql, $params,false);
+    }
+    
+
+    public function delete()
+    {
+        if ( strlen($this->preceptorId)  ==  0 )
+        {
+            throw new Exception(_M('Não é possível excluir um registro que ainda não foi salvo.', $module));
+        }
+
+        $sql = 'DELETE FROM med.preceptoria
+                      WHERE preceptorId = ?';
+
+        $params = array($this->preceptorId);
+        $result = SDatabase::execute($sql, $params);
+
+        if ( $result )
+        {
+            $this->preceptorId = null;
+        }
+
+        return $result;
+    }
+
+
+    /**
+     * Retorna se pessoa é responsavel por algum nucleo ou enfase
+     *
+     * @param int $personId
+     * @return boolean
+     */
+    public static function responsavelNucleoEnfase($personId)
+    {
+        $sqlVigencia = self::SQL_VIGENCIA;
+        $sql =   "SELECT COUNT(*) > 0
+                    FROM med.preceptoria P
+                   WHERE personId = ?
+                     AND {$sqlVigencia}
+                     AND nucleoProfissionalId IS NOT NULL
+                     AND enfaseId IS NOT NULL
+                     AND P.responsavel IS TRUE";
+
+        $result = SDatabase::query($sql, array($personId));
+
+        return $result[0][0] == DB_TRUE;
+    }
+    
+    /**
+     * Retorna se enfase e o nucleo que a pessoa é responsável e se referencia a esfase 
+     *
+     * @param int $personId
+     * @return array
+     */
+    public static function responsavelNucleoEnfaseReferencia($personId)
+    {
+        $sqlVigencia = self::SQL_VIGENCIA;
+        $sql =   "SELECT personid,
+                         enfaseid,
+                         nucleoprofissionalid,
+                         referencia,
+                         preceptorid
+                    FROM med.preceptoria P
+                   WHERE personId = ?
+                     AND {$sqlVigencia}
+                     AND nucleoProfissionalId IS NOT NULL
+                     AND enfaseId IS NOT NULL";
+
+        $result = SDatabase::query($sql, array($personId));
+
+        return $result[0];
+    }
+    
+    /**
+     * Verifica se a pessoa informada é responsável pelo nucleo e enfase da oferecida infoRmada
+     * 
+     * @param int $personId, $oferecimentoUnidadeTematidaId
+     * @return boolean
+     */
+    public static function responsavelNucleoEnfaseDaOferecida($personId, $oferecimentoUnidadeTematidaId)
+    {
+        $sql = "  SELECT count(AA.personid) >= 1 
+                    FROM med.preceptoria AA
+              INNER JOIN med.enfaseDaUnidadeTematica BB
+                      ON AA.enfaseid = BB.enfaseid
+              INNER JOIN med.nucleoDaUnidadeTematica CC
+                      ON AA.nucleoprofissionalid = CC.nucleoprofissionalid
+              INNER JOIN med.ofertadeunidadetematica DD
+                      ON CC.unidadeTematicaId = DD.unidadeTematicaId 
+                   WHERE AA.personid = ?
+                     AND (AA.responsavel IS TRUE 
+                     AND DD.ofertadeunidadetematicaid = ?)";
+        
+        $result = SDatabase::query($sql, array($personId, $oferecimentoUnidadeTematidaId));
+
+        return $result[0][0];
+    }
+
+    public static function retornaPreceptorLogado()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $mioloUserName = trim($MIOLO->getLogin()->id);
+        $busPerson = new BusinessBasicBusPerson();
+        $personData = $busPerson->getPersonByMioloUserName($mioloUserName);
+
+        $filters = new stdClass();
+        $filters->personId = $personData->personId;
+        $preceptor = MedPreceptoria::search($filters);
+        return $preceptor[0];
+    }
+
+}
+?>

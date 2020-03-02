@@ -1,0 +1,518 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulario responsavel pelas opcoes de curso
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 06/01/2011
+ *
+ **/
+
+class FrmSubscriptionOption extends SStepByStepForm
+{
+    public function __construct($steps = null)
+    {
+        if (!isset($steps->disableConstruct))
+        {
+            parent::__construct(null, $steps, __CLASS__);
+            $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+            
+        }
+    }
+
+
+    public function createFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        
+        //Load data
+        $allData = $this->getStepData();
+        $stepData = $this->getStepDataByForm(__CLASS__);
+        
+        $sprStep  = current(SprStep::search( (object) array('isCurrent' => DB_TRUE, 'selectiveProcessId' => $allData->selectiveProcessId) ));                
+        $stepInfo = new SprSubscriptionStepInfo($allData->subscriptionId, $sprStep->stepId);
+        
+        // Verifica se já existe uma inscrição para a pessoa em outra etapa
+        $inscricaoId = SprSubscription::getSubscriptionId($allData->selectiveProcessId, $allData->personId);
+        $readOnly = strlen($inscricaoId) > 0 && $function != SForm::FUNCTION_UPDATE;
+
+        try
+        {
+            $sprSP = new SprSelectiveProcess($allData->selectiveProcessId);
+
+            $mioloUserName = trim($MIOLO->getLogin()->id);
+            if( (!strlen($mioloUserName)>0) && ($sprSP->requireAuthentication == DB_TRUE) )
+            {
+                throw new Exception(_M('Usuário não logado ou sem permissão para acessar este passo.', $module));
+            }
+        }
+        catch (Exception $e)
+        {
+            $MIOLO->error($e->getMessage());
+        }
+
+        $fldOptions = array();
+        
+        if ( (strlen($allData->subscriptionId) > 0) && $this->isFirstAccess() )
+        {
+            $sprSubscription = new SprSubscription($allData->subscriptionId);
+
+            foreach ($sprSubscription->subscriptionOption as $i => $option)
+            {
+                $optionOld[$i] = $option->optionId;
+                $stepData->{"optionId{$i}"} = $option->optionId;
+            }
+
+            foreach ($sprSubscription->subscriptionEvaluationOption as $SEO)
+            {
+                $evaluationId = $SEO->evaluationOption->evaluationId;
+                $evaluationOptionId = $SEO->evaluationOptionId;
+                $stepData->{"evaluationOptionId{$evaluationId}_{$evaluationOptionId}"} = $SEO->evaluationOptionId;
+                $stepData->{"description{$evaluationId}_{$evaluationOptionId}"} = $SEO->description;
+                $stepData->{"desiredScore{$evaluationId}_{$evaluationOptionId}"} = $SEO->desiredScore;
+
+                foreach ($SEO->attachment as $i => $attachment)
+                {
+                    $stepData->{"evaluationFile{$evaluationId}_{$evaluationOptionId}_{$i}Id"} = $attachment->fileId;
+                    if (strlen($attachment->file->uploadFileName) > 0)
+                    {
+                        $stepData->{"evaluationFile{$evaluationId}_{$evaluationOptionId}_{$i}Filename"} = "({$attachment->file->uploadFileName})";
+                    }
+                }
+            }
+        }
+
+        $sprSP = new SprSelectiveProcess( $allData->selectiveProcessId );
+        $sprStep = current(SprStep::search( (object) array('selectiveProcessId' => $allData->selectiveProcessId) )); //busca o step atual
+
+        $filters = new stdClass();
+        $filters->selectiveProcessId = $allData->selectiveProcessId;
+        $options = SprOption::search($filters);
+
+        if (!($sprSP->numberOfOptions > 0))
+        {
+            $fields[] = new MLabel( _M('Não foi encontrada a configuração de número de opções.', $module) );
+        }
+
+        if (count($options) > 0)
+        {
+            $listOptions = array();
+            foreach ($options as $opt)
+            {
+                if ($opt->vacancies != 0 ||
+                        $opt->maximumSubstitutes != 0)
+                {
+                    $listOptions[] = array($opt->optionId, $opt->description);
+                }
+            }
+
+            for ($i=0; $i < $sprSP->numberOfOptions; $i++)
+            {
+                $optionIdLabel = new MText('optionIdLabel', _M('@1ª opção de curso',$module, $i + 1) . ':');
+                $optionIdLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+                $optionIdName = "optionId{$i}";
+                
+                // Traz pre-selecionado o curso quando tem apenas um disponivel     
+                if( count($listOptions) == 1 )
+                {
+                    $defaultValue = $listOptions[0][0];
+                }
+                else if ( $readOnly )
+                {
+                    $filters = new stdClass();
+                    $filters->subscriptionId = $inscricaoId;
+                    
+                    $sprSubscriptionOption = new SprSubscriptionOption();
+                    $opcoes = $sprSubscriptionOption->search($filters);
+                    
+                    $defaultValue = $opcoes[$i]->optionId;
+                }
+                else
+                {
+                    $defaultValue = null;
+                }
+                $value = $stepData->{"optionId{$i}"} ? $stepData->{"optionId{$i}"} : $defaultValue;
+                
+                $optionId = new MSelection($optionIdName, $value, null, $listOptions);
+                
+                $sprSubscriptionOption = new SprSubscriptionOption($sprSubscription->subscriptionId, $optionOld[$i]);
+                if($sprSubscriptionOption->subscriptionStatusId != SAGU::getParameter('SELECTIVEPROCESS', 'SPR_NEW_SUBSCRIPTION_STATUS_ID_INITIAL') && strlen($sprSubscriptionOption->subscriptionStatusId)>0 || $readOnly )
+                {
+                    $optionId->setReadOnly(true);
+                }
+                
+                $optionId->setJsHint( _M('Informe a opção', $module) );
+                
+                if ( $defaultValue )
+                {
+                    $optionId->setAllowNullValue(false);
+                }
+
+                // Quando etapa vigente atualmente nao for a primeira, deve setar como readOnly a opcao
+                // Regra descrita no ticket #10131
+                if ( $sprSP->steps[0]->isCurrent != DB_TRUE && SAGU::userIsFromServices() )
+                {
+                    $optionId->setReadOnly(true);
+                }
+
+                if ($i < $sprSP->minimumNumberOfOptions)
+                {
+                    $optionIdLabel->setClass('m-caption m-caption-required');
+                    $validators[] = new MRequiredValidator($optionIdName, _M('Opção @1', $module, $i + 1));
+                }
+
+                $fldOptions[] = new MHContainer('optionIdCnt', array($optionIdLabel, $optionId));
+                $fldOptions[] = new SHiddenField("optionId{$i}_old", $optionOld[$i]);
+            }
+            $fields[] = new MBaseGroup('bsgOptions', _M('Selecione o curso desejado', $module), $fldOptions);
+        }
+        else
+        {
+            $fields[] = new MLabel( _M('Não foi encontrada nenhuma opção para o processo seletivo selecionado.', $module) );
+        }
+
+        //spr.subscriptionevaluationoption
+        //spr.attachment
+        $baseGroups = array();
+        foreach ((array)$sprStep->evaluations as $i => $evaluation)
+        {
+            // Regra descrita no ticket #9927 ( Inscrição (opções de curso passo 5) )
+            // Quando as avaliações tem interação com o usuário e tem um dos campos listados acima abilitado deve ser populado dentro do base group de cada avaliação um base group para cada opção da avaliação conforme exemplo abaixo:
+            // Quando as avaliações tem interação com o usuário e não tem nenhum dos campos listados acima abilitado a tela deve ter o comportamento que tem atualmente, onde é inserida apenas uma opção de curso(selecionada em uma combo) para a inscrição.
+            $multipleBgr = ($evaluation->allowAttachment > 0) || (MUtil::getBooleanValue($evaluation->enableDescriptionField)) || (MUtil::getBooleanValue($evaluation->enableDesiredScoreField));
+
+            //Caso algum dos parametros estiver configurado para aparecer, cria o BaseGroup
+            if ($multipleBgr || ($evaluation->maxSelectableOptions > 0) || ( count($evaluation->evaluationOptions) > 0) )
+            {
+                $controls = array();
+
+                // Se deve criar multiplos baseGroups dentro de cada avaliacao (um baseGroup para cada opcao desta avaliacao)
+                if ( $multipleBgr )
+                {
+                    foreach ( (array) $evaluation->evaluationOptions as $evaluationOption )
+                    {
+                        $ec = $this->createEvaluationControls($evaluation, $stepData, $evaluationOption->evaluationOptionId);    
+                        $controls[] = $bgr = new MBaseGroup("bgrEvaluation{$i}{$evaluationOption->evaluationOptionId}", $evaluationOption->description, $ec->controls, 'vertical');
+                        $validators = array_merge($validators, $ec->validators);
+                    }
+                }
+                else // Se deve se comportar da forma padrao
+                {
+                    $ec = $this->createEvaluationControls($evaluation, $stepData);
+                    $controls = $ec->controls;
+                    $validators = array_merge($validators, $ec->validators);
+                }
+
+                $baseGroups[] = $bgr = new MBaseGroup("bgrEvaluation{$i}", $evaluation->description, $controls, 'vertical');
+                $bgr->width = '48%';
+            }
+        }
+        
+        // Caso esteja configurado para escolher o local da prova
+        if ( $sprStep->subscriberChoosesPlace == DB_TRUE )
+        {
+            $busPhysicalResources = new BusinessInstitutionalBusPhysicalResource();
+            $busUnit = new BusinessBasicBusUnit();
+            $busLocation = new BusinessBasicBusLocation();
+            
+            $sprStepPlace = new SprStepPlace();
+        
+            $filters = new stdClass();
+            if( strlen($evaluation->stepId) > 0 )
+            {
+                $filters->stepId = $evaluation->stepId;
+                $placeIds  = $sprStepPlace->search($filters);
+            }
+            
+            $locations = array();
+
+            foreach ( $placeIds as $place )
+            {
+                if ( strlen($place->physicalResourceId) > 0 )
+                {
+                    $physicalResource = $busPhysicalResources->getPhysicalResource($place->physicalResourceId, $place->physicalResourceVersion);
+                    $unit = $busUnit->getUnit($physicalResource->unitId);
+                                        
+                    if ( !in_array($unit->locationId, $locations) )
+                    {
+                        $locations[] = $unit->locationId;
+                    }
+                }
+                else
+                {
+                    $locations[] = $place->locationId;
+                }
+            }
+            
+            foreach ( $locations as $locationId )
+            {
+                $filters = new stdClass();
+                $filters->locationId = $locationId;
+
+                $location = $busLocation->searchLocation($filters);
+                
+                foreach ( $location as $loc )
+                {
+                    $descriptLocation[$loc[0]] = $loc[4] . ' - ' . $loc[2]; // Cria as opções de lugares com seus respectivos ids
+                }
+            }
+
+            $locationStepLabel = new MLabel(_M('Local da prova', $module) . ':');
+            $locationStepLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $locationStepLabel->setClass('m-caption m-caption-required');
+            $locationStepValue = strlen($this->getFormValue('locationStep', $stepInfo->locationId)) > 0 ? $this->getFormValue('locationStep', $stepInfo->locationId) : $allData->locationStep;
+            $locationStep = new MSelection('locationStep', $locationStepValue, null, $descriptLocation);
+            $locationHct = new MHContainer('locationHct', array($locationStepLabel, $locationStep));
+            $validators[] = new MRequiredValidator('locationStep', _M('Local da prova'));
+
+            $baseGroups[] = $locationBase = new MBaseGroup('locateBase', 'Local da prova', array($locationHct));
+            $locationBase->width = '51%';
+        }
+
+        if (count($baseGroups) > 0) //Cria os containers alinhados lado a lado
+        {
+            $hctFields = array();
+            foreach ($baseGroups as $i => $bgr)
+            {
+                if (count($hctFields) == 2)
+                {
+                    $fields[] = new MHContainer("hctEvaluation{$i}", $hctFields);
+                    $hctFields = array(); //zera o array
+                }
+
+                $hctFields[] = $bgr;
+            }
+
+            if (count($hctFields) > 0)
+            {
+                $fields[] = new MHContainer("hctEvaluation{$i}", $hctFields);
+            }
+        }
+
+        $fields[] = SAGU::getRequiredLegend();
+
+        $this->setFields($fields);
+        $this->setValidators($validators);
+    }
+
+    public function nextStepButton_click($args = null)
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        $allData = $this->getStepData();
+        $data = $this->getData();
+
+        $sprSP = new SprSelectiveProcess( $allData->selectiveProcessId );
+        $currentStep = $sprSP->getCurrentStep();
+
+        //Verifica se existe opcoes repetidas
+        $allOpts = array();
+        for ($i=0; $i < $sprSP->numberOfOptions; $i++)
+        {
+            $optionId = $data->{"optionId{$i}"};
+
+            if (strlen($optionId) > 0)
+            {
+                if (in_array($optionId, $allOpts))
+                {
+                    $this->addError( _M('Você não pode repetir uma opção.', $module) );
+                    return;
+                }
+
+                $allOpts[] = $optionId;
+            }
+        }
+        
+        // Valida avaliacoes
+        foreach ( (array) $currentStep->evaluations as $evaluation )
+        {
+            foreach ( (array) $evaluation->evaluationOptions as $eo )
+            {
+                $desiredScore = $data->{"desiredScore{$evaluation->evaluationId}_{$eo->evaluationOptionId}"};
+                if ( (strlen($desiredScore) > 0) && (strlen($eo->maximumScore) > 0) && ($desiredScore > $eo->maximumScore) )
+                {
+                    $this->addError( _M('A pontuação desejada para a opção "@1" não pode ultrapassar @2 pontos', $module, $eo->description, $eo->maximumScore) );
+                    return;
+                }
+            }
+        }
+        
+
+        //Trata os arquivos enviados
+        foreach ((array)$_FILES as $field => $file)
+        {
+            if (strlen($file['name']) > 0)
+            {
+                $newName = "{$file['tmp_name']}.tmp";
+                $this->$field->copyFile( $newName );
+
+                $file['tmp_name'] = $newName;
+                $this->SetFormValue($field . 'Info', $file);
+            }
+        }
+
+        parent::nextStepButton_click($args);
+    }
+
+
+    public function cancelButton()
+    {
+        return SAGU::getCancelButtonSubscription();
+    }
+
+
+    /**
+     * Retorna os controls que irao dentro do baseGroup avaliacao
+     *
+     * @param $evaluation SprEvaluation
+     * @param $stepData stdClass
+     * @param $evaluationOptionId int Se passado, indica que são baseGroups multiplos, senao, simples.
+     *
+     * @return stdClass
+     */
+    private function createEvaluationControls(&$evaluation, $stepData, $evaluationOptionId = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+        $allData = $this->getStepData();
+        $isMultiple = strlen($evaluationOptionId) > 0;
+
+        // Obtem o primeiro evaluationOptionId para fins de referencia
+        if (!$isMultiple)
+        {
+            $evaluationOptionId = $evaluation->evaluationOptions[0]->evaluationOptionId;
+        }
+        
+        // Cria lista indexada
+        $evaluationOptionsIndexed = array();
+        foreach ( (array) $evaluation->evaluationOptions as $row )
+        {
+            $evaluationOptionsIndexed[$row->evaluationOptionId] = $row;
+        }
+        
+        
+        $uniqueId = "{$evaluation->evaluationId}_{$evaluationOptionId}";
+        $controls = array();
+        $validators = array();
+
+        // Campo Opcao
+        $evaluationOptionIdLabel = new MText('evaluationOptionIdLabel', _M('Opção',$module) . ':');
+        $evaluationOptionIdLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE') );
+        $evaluationOptionIdLabel->setClass('m-caption m-caption-required');
+        $id = "evaluationOptionId{$uniqueId}";
+        
+        $value = null;
+        if ( $isMultiple )
+        {
+            $value = $evaluationOptionId;
+        }
+        else
+        {
+            // Percorre todos subscriptionEvaluationOption para encontrar o valor
+            foreach ( (array)$evaluation->evaluationOptions as $row )
+            {
+                $value = $stepData->{"evaluationOptionId{$evaluation->evaluationId}_{$row->evaluationOptionId}"};
+                if ( strlen($value) > 0 )
+                {
+                    break; // Se encontrou valor, para foreach
+                }
+            }
+        }
+        
+        $_evaluationOptionId = new MSelection($id, MUtil::NVL($stepData->$id, $value), null, SDatabase::convertSearchToList($evaluation->evaluationOptions));
+        $_evaluationOptionId->setJsHint( _M('Informe a opção', $module) );
+        $controls[] = $hctEvaluationOption = new MHContainer("evaluationOptionCnt{$uniqueId}", array($evaluationOptionIdLabel, $_evaluationOptionId));
+        $validators[] = new MRequiredValidator($id, _M('Opção', $module));
+        if ( $isMultiple )
+        {
+            $hctEvaluationOption->addBoxStyle('display', 'none');
+        }
+
+        //Descricao
+        if (MUtil::getBooleanValue($evaluation->enableDescriptionField))
+        {
+            $descriptionLabel = new MText('descriptionLabel', _M('Observações', $module) . ':');
+            $descriptionLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $id = "description{$uniqueId}";
+            $description = new MTextField($id, $stepData->$id, null, 30);
+            $controls[] = new MHContainer("hctDescription{$i}", array($descriptionLabel, $description));
+        }
+
+        //Pontuacao desejada
+        if (MUtil::getBooleanValue($evaluation->enableDesiredScoreField))
+        {
+            $desiredScoreLabel = new MText('desiredScoreLabel', _M('Pontuação desejada', $module) . ':');
+            $desiredScoreLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $id = "desiredScore{$uniqueId}";
+            
+            $desiredScore = new MTextField($id, $stepData->$id, null, 10);
+            $controls[] = new MHContainer("hctDesiredScore{$i}", array($desiredScoreLabel, $desiredScore));
+            
+            $scoringInfo = $evaluationOptionsIndexed[$evaluationOptionId]->scoringInfo;
+            $scoringInfo = str_replace("\n", '<br>', $scoringInfo);
+            $hint = new MLabel($scoringInfo);
+            $controls[] = $bgr = new MBaseGroup(rand(), _M('Forma de pontuação', $module), array($hint));
+            
+            $validators[] = new MIntegerValidator($id, _M('Pontuação desejada', $module));
+        }
+
+        //Upload de arquivos
+        //Cria N campos de upload de arquivo de acordo com numero configurado (allowAttachment)
+        for ($x=0; (($evaluation->allowAttachment > 0) && ($x < $evaluation->allowAttachment)); $x++)
+        {
+            $_uniqueId = "{$uniqueId}_{$x}";
+            $fnameId = "evaluationFile{$_uniqueId}Filename";
+            $evaluationFilename = new MDiv($fnameId, $stepData->$fnameId);
+
+            $label = (($evaluation->allowAttachment > 1) ? _M('Arquivo @1', $module, ($x+1)) : _M('Arquivo', $module)) . ':';
+            $evaluationFileLabel = new MText('evaluationFileLabel', $label);
+            $evaluationFileLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $evaluationFile = new MFileField("evaluationFile{$_uniqueId}", null, null, 20);
+            $evaluationFile->addAttribute('onchange', "document.getElementById('{$fnameId}').innerHTML = ''");
+            $controls[] = new MHiddenField("evaluationFile{$_uniqueId}Info");
+
+            $id = "evaluationFile{$_uniqueId}Id";
+            $controls[] = new MHiddenField($id, $stepData->$id);
+
+            $controls[] = new MHContainer("evaluationFileCnt{$_uniqueId}", array($evaluationFileLabel, $evaluationFile, $evaluationFilename));
+        }
+
+
+        // Return data
+        $ret = new stdClass();
+        $ret->controls = $controls;
+        $ret->validators = $validators;
+        
+        return $ret;
+    }
+}
+?>

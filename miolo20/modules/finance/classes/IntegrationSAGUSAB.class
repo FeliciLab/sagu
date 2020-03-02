@@ -1,0 +1,748 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class responsible for doing the integration between sago and SAB
+ *
+ * @author Samuel Koch [samuel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ *
+ * @since
+ * Class created on 12/02/2009
+ *
+ * */
+$MIOLO->uses( 'classes/sab/sab.php', 'finance' );
+
+class IntegrationSAGUSAB
+{
+    /**
+     * @var (boolean) Indicates wether some error occurred during the generation process
+     */
+    public $hasErrors;
+    /**
+     * @var (array) Contain an array of strings with all errors during execution.
+     */
+    public $errors;
+    public $invoiceId;
+    /**
+     * @var (boolean) Define wether the generation is of an online invoice or a PDF
+     */
+    public $online;
+    /**
+     * @var (string) URL to be accessed in order to generate the invoice.
+     * This is used only for online invoices ($this->online == true)
+     */
+    public $link;
+    /**
+     * @var (string) Path to the file containing the generated invoice (in PDF format)
+     * This is used only for non-online invoices ($this->online == false)
+     */
+    public $fileName;
+
+    /**
+     *
+     * @var String Tipo de titulo
+     */
+    public $invoiceTypeId;
+
+    public function __construct( $invoiceId )
+    {
+        $this->invoiceId = $invoiceId;
+        $this->errors = array ( );
+        $this->hasErrors = false;
+        $this->online = false;
+    }
+
+    public function generateInvoice($download = true)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'finance';
+
+        $busInvoice = new BusinessFinanceBusReceivableInvoice();
+        $busInvoiceMessage = new BusinessFinanceBusInvoiceMessage();
+        $busOperation = new BusinessFinanceBusOperation();
+        $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+        $busCompany = new BusinessBasicBusCompany();
+        $busBankAccount = new BusinessFinanceBusBankAccount();
+        $busPerson = new BusinessBasicBusPerson();
+        $busLegalPerson = new BusinessBasicBusLegalPerson();
+        $busDocument = new BusinessBasicBusDocument();
+        $busPolicy = new BusinessFinanceBusPolicy();
+
+        $companyInfo = $busCompany->getCompany( SAGU::getParameter( 'BASIC', 'DEFAULT_COMPANY_CONF' ) );
+        $invoiceInfo = $busInvoice->getReceivableInvoice( $this->invoiceId );
+        try
+        {
+            if ( strlen( $invoiceInfo->invoiceId ) == 0 )
+            {
+                $this->errors[] = _M('Título @1 não encontrado.', $module, $this->invoiceId );
+                throw new Exception( 'Error: file ' . __FILE__ . ', line ' . __LINE__ );
+            }
+            
+            if( $invoiceInfo->isCanceled == DB_TRUE )
+            {
+                $this->errors[] = _M('Título @1 cancelado.', $module, $this->invoiceId );
+                throw new Exception( 'Error: file ' . __FILE__ . ', line ' . __LINE__ );
+            }
+            $personInfo = $busPerson->getPerson( $invoiceInfo->personId );
+            $policyInfo = $busPolicy->getPolicy( $invoiceInfo->policyId );
+
+            if ( $busPerson->isPersonLegal($invoiceInfo->personId) )
+            {
+                $dataLegalPerson = $busLegalPerson->getLegalPerson($invoiceInfo->personId);
+                $documentInfo->content = $dataLegalPerson->cnpj;
+            }
+            else
+            {
+                $documentInfo = $busDocument->getDocument( $personInfo->personId, SAGU::getParameter( 'BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF' ) );
+            }
+            $bankAccountInfo = $busBankAccount->getInvoiceBankAccount( $this->invoiceId, $invoiceInfo->bankAccountId );
+            
+            //Obtém o business BusBankInvoiceInfo
+            $busBankInvoiceInfo = new BusinessFinanceBusBankInvoiceInfo();
+
+            // Se não tiver nosso número gera um
+            // 30/07/2013 - moises - esta logica agora tambem e feita na insercao de titulos, trigger trg_insere_nosso_numero da tabela fininvoice
+            if ( strlen($bankAccountInfo->ourNumber) == 0 )
+            {
+                $bankAccountInfo->invoiceId = $this->invoiceId;
+                $bankAccountInfo->bankAccountId = $invoiceInfo->bankAccountId;                
+                $bankAccountInfo->ourNumber = $busBankAccount->getNextOurNumber($invoiceInfo->bankAccountId);
+                //Insere as informações do boleto
+                $busBankInvoiceInfo->insertBankInvoiceInfo($bankAccountInfo);
+            }
+
+            $this->invoiceTypeId = $bankAccountInfo->invoiceTypeId;
+
+            if ( !(strlen($bankAccountInfo->invoiceTypeId) > 0) )
+            {
+                $this->errors[] = _M('Geração de boleto bancário desabilitado para a conta bancária @1.', $module, $invoiceInfo->bankAccountId );
+                throw new Exception( 'Error: file ' . __FILE__ . ', line ' . __LINE__ );
+            }
+
+            if ( $bankAccountInfo->invoiceTypeId == FinInvoiceType::TYPE_GRU )
+            {
+                try
+                {
+                    $parameters = array();
+                    $parameters['invoiceid'] = (int) $this->invoiceId;
+
+                    $options = array(
+                        'module' => $module,
+                        'reportName' => 'gru',
+                        'fileType' => SReport::FILETYPE_PDF,
+                        'parameters' => $parameters,
+                    );
+
+                    $report = new SReport($options);
+                    $report->generate();
+
+                    return;
+                }
+                catch (Exception $e)
+                {
+                    $this->errors[] = $e->getMessage();
+                    throw new Exception($e);
+                }
+            }
+
+            $this->online = ($bankAccountInfo->invoiceTypeId == FinInvoiceType::TYPE_BILLET_ONLINE); //indica que boleto é do Boleto online
+
+            $sabDirectory = $MIOLO->getConf("home.miolo");
+
+            $sab = new sab( $bankAccountInfo->bankId, $this->online, $sabDirectory.'/modules/finance/classes/sab/' );
+
+            if ( count( $sab->getErrors() ) )
+            {
+                $this->errors = array_merge( $this->errors, $sab->getErrors() );
+                throw new Exception( 'Error: file ' . __FILE__ . ', line ' . __LINE__ );
+            }
+
+            if ( !$this->online )
+            {
+                if ( $bankAccountInfo->bankId == "104" )
+                {
+                    //Defines whether it is registered or not (2 = Not register; 1 = register)
+                    $sab->sabStruct->setIsRegister( $policyInfo->collectionTypeId );
+                    //Defines if it is issued by the transferor (4 = transferor )
+                    $sab->sabStruct->setSentTransferor( $invoiceInfo->emissionTypeId );
+                }
+                
+                if ( ($bankAccountInfo->bankId == "104") && ((strlen($bankAccountInfo->ourNumber) == 8)) )
+                {
+                    //Defines the code operation
+                    $sab->sabStruct->setCodeOperation(SAGU::getParameter('FINANCE', 'DEFAULT_BANK_OPERATION') );
+                    //Define o código fornecio pela agência
+                    $sab->sabStruct->setCodeProvideAg($bankAccountInfo->transferorCode);
+                }
+
+                //INFORMATION COMPANY
+                //Nome da empesa que cedente
+                $sab->sabStruct->setTransferorName( $companyInfo->name );
+                //CNPJ do cedente
+                $sab->sabStruct->setTransferorCnpj( $companyInfo->cnpj );
+
+                //INFORMATION PERSON
+                //Nome da pessoa
+                $sab->sabStruct->setClientName( $personInfo->name . ' - CPF/CNPJ ' . $documentInfo->content );
+                //Endereço da pessoa
+                $sab->sabStruct->setClientAddress( $personInfo->locationType . ' ' . $personInfo->location . ', ' . $personInfo->number . ' ' . $personInfo->complement . ', ' . $personInfo->neighborhood );
+                $sab->sabStruct->setClientCityState( $personInfo->cityName . ' - ' . $personInfo->stateId . ' - ' . $personInfo->zipCode );
+
+                //INFORMATION INVOICE
+                //Data de vencimento
+                $sab->sabStruct->setInvoiceMaturityDate( $invoiceInfo->maturityDate );
+                //Número do documento ou título
+                $sab->sabStruct->setInvoiceNumber( $invoiceInfo->invoiceId );
+                // Valor do título (deve ser usado typecast para double pois o SAB valida como número e não como string,
+                // ou seja, 0.00 != '0.00'.
+                $sab->sabStruct->setInvoiceValue( (double)$busInvoice->getInvoiceBalance( $this->invoiceId ) );
+
+                //Agência do cedente
+                $sab->sabStruct->setTransferorBankAccount( $bankAccountInfo->branchNumber );
+                $sab->sabStruct->setTransferorBankAccountDV( $bankAccountInfo->branchNumberDigit );
+                $sab->sabStruct->setTransferorAccountNumber( $bankAccountInfo->accountNumber );
+                $sab->sabStruct->setTransferorAccountNumberDV( $bankAccountInfo->accountNumberDigit );
+                $sab->sabStruct->setInvoiceAccepted( $bankAccountInfo->accepted );
+                $sab->sabStruct->setInvoiceKind( $bankAccountInfo->invoiceSpecie );
+
+                if ( ($bankAccountInfo->bankId == "104") && (strlen( $bankAccountInfo->ourNumber ) == 15) )
+                {
+                    $sab->sabStruct->setInvoiceWallet( 'SR' );
+                }
+                else
+                {
+                    $sab->sabStruct->setInvoiceWallet( $bankAccountInfo->wallet );
+                    $sab->sabStruct->setInvoiceWalletModel( $bankAccountInfo->walletModel );
+                }
+
+                //Nosso número
+                $sab->sabStruct->setInvoiceOurNumber( $bankAccountInfo->ourNumber );
+                //Dígito verificador do nosso número
+                $sab->sabStruct->setInvoiceOurNumberDv( $bankAccountInfo->ourNumberDv );
+
+                if ( ($bankAccountInfo->bankId == "001") || ($bankAccountInfo->bankId == "320") )
+                {
+                    //Convênio do cedente (informação fornecida pelo banco)
+                    $sab->sabStruct->setTransferorAgreement( $bankAccountInfo->agreement );
+                    //Complemento do cedente (seqüencial atribuido pelo cliente)
+                    $sab->sabStruct->setTransferorComplement( $bankAccountInfo->ourNumber );
+                }
+
+                //INFORMATION BANK
+                //Número da conta bancária
+                $sab->sabStruct->setTransferorCode( $bankAccountInfo->transferorCode );
+                //Código da conta bancária (é calculado automaticamente.)
+                $sab->sabStruct->setTransferorCodeDv( $bankAccountInfo->transferorCodeDv );
+
+                $sab->sabStruct->setInvoiceMessage( $this->getInvoiceMessageForSAB( $bankAccountInfo->bankId, $this->invoiceId ) );
+
+                // Generate output to a file instead of spitting it on the screen
+                $sab->setOutputType( 'D' );
+                $sab->setFileName( SAGU::getParameter( 'BASIC', 'TEMP_DIR' ) . '/boleto_' . $this->invoiceId . '.pdf' );
+
+                //Obtém o registro da BankInvoiceInfo e atualiza o código de barras e o número digitável
+                $bankInvoiceInfo = $busBankInvoiceInfo->getBankInvoiceInfo($invoiceInfo->bankAccountId, $this->invoiceId);
+                $bankInvoiceInfo->digitableNumber = $sab->getDigitableNumber();
+                $bankInvoiceInfo->barCodeNumber = $sab->getBarCodeNumber();
+
+                //Atualiza código de barras e a linha digitável do boleto na tabela finbankInvoiceInfo
+                $busBankInvoiceInfo->updateBankInvoiceInfo($bankInvoiceInfo);
+
+            }
+            else
+            {
+                $operation = $busOperation->getOperation( $policyInfo->operationId );
+
+                //Passa o diretório para upload
+                // "/var/www/sagu2/modules/basic/upload/"
+                $directory = $MIOLO->getModulePath( 'basic', SAGU::getParameter( 'BASIC', 'UPLOAD_PATH' ) );
+                $sab->sabStruct->setUploadPath( $directory );
+
+                // Order ID
+                $orderId = $invoiceInfo->invoiceId;
+                $sab->sabStruct->setOrderId( $orderId );
+
+                $description[] = $operation->description;
+                $quantity[] = '1';
+                $unit[] = 'un';
+                $price[] = SAGU::returnOnlyNumbers( SAGU::formatNumber( $invoiceInfo->value, 2 ) );// valor total das unidades
+                $sab->sabStruct->addOrderDescriptionProduct( $description, $quantity, $unit, $price );
+
+                /**
+                 * Valores adicionais, se necessário, passa-se assim:
+                 * $aditional[] = '';
+                 * $aditionalValue[] = '';
+                 * $sab->sabStruct->addOrderDescriptionAditional($aditional, $aditionalValue);
+                 */
+                // Url (Ex.:http://mupteste.comercioeletronico.com.br/sepsBoletoRet/000/prepara_pagto.asp?MerchantId=000&OrderId=ORDER_ID) onde '000' é o ID da loja e 'ORDER_ID' será substituído pelo ID da ordem no layoutOnline.
+                $sab->sabStruct->setUrl( $bankAccountInfo->url );
+
+                // Cedente
+                $sab->sabStruct->setTransferor( $companyInfo->name );
+
+                // Banco (237->bradesco)
+                $sab->sabStruct->setBank( $bankAccountInfo->bankId );
+
+                // Número da Agência (sem dv)
+                $sab->sabStruct->setAgNumber( $bankAccountInfo->branchNumber );
+
+                // Número da conta (sem dv)
+                $sab->sabStruct->setAccNumber( $bankAccountInfo->accountNumber );
+
+                // Assinatura Digital (256 caracteres hexadecimais)
+                $sab->sabStruct->setSignature( $bankAccountInfo->signature );
+
+                // Data de Emissão (dd/mm/YYYY)
+                $sab->sabStruct->setEmissionDate( $invoiceInfo->emissionDate );
+
+                // Data de Processamento (dd/mm/YYYY)
+                $sab->sabStruct->setProcessingDate( $invoiceInfo->emissionDate );
+
+                // Data de Vencimento (dd/mm/YYYY)
+                $sab->sabStruct->setMaturityDate( $invoiceInfo->maturityDate );
+
+                // Nome do Sacado
+                $sab->sabStruct->setDraweeName( $personInfo->name );
+
+                // Endereço do Sacado
+                $sab->sabStruct->setDraweeAddress( $personInfo->location );
+
+                // Cidade do Sacado
+                $sab->sabStruct->setDraweeCity( $personInfo->cityName );
+
+                // UF do Sacado
+                $sab->sabStruct->setDraweeUf( $personInfo->stateId );
+
+                // CEP do Sacado (SEM TRAÇO)
+                //Remove ".", "/" e "-":
+                $sab->sabStruct->setDraweeZipCode( SAGU::returnOnlyNumbers( $personInfo->zipCode ) );
+
+                // CPF do Sacado (SEM PONTOS)
+                //Remove ".", "/" e "-":
+                $sab->sabStruct->setDraweeCpf( SAGU::convertInCPFWithoutDelimiters( $documentInfo->content ) );
+
+                // Número do Pedido (limitado a 9 caracteres)
+                $sab->sabStruct->setRequestNumber( $invoiceInfo->invoiceId );
+
+                // Valor do Documento Formatado valor total da compra com R$. Ex.: R$1.200,00
+                // Soma os valores
+                for ( $k = 0; $k < count( $price ); $k++ )
+                {
+                    $valueInCentavos = $valueInCentavos + $price[$k];
+                }
+                /**
+                 * Descomentar as linhas a seguir, se houver valores adicionais
+                 */
+                /*
+                  for ( $k=0; $k < count($aditionalValue); $k++ )
+                  {
+                  $valueInCentavos = $valueInCentavos + $aditionalValue[$k];
+                  }
+                 */
+                $sab->sabStruct->setValueDocumentFormated( SAGU::convertMoney( $valueInCentavos, "R$" ) );
+
+                // Código da Loja (Se a loja for participante do ShopFácil ponha 1, caso contrário 0)
+                $sab->sabStruct->setShoppingId( '0' );
+
+                // Número do Documento (Normalmente é o mesmo que o número do pedido(limitado a 9 caracteres))
+                $sab->sabStruct->setnumDoc( $invoiceInfo->invoiceId );
+
+                // Carteira (default 25)
+                $sab->sabStruct->setWallet( $bankAccountInfo->wallet );
+
+                /*
+                 * Ano Nosso Número (default 97)
+                 * $bankAccountInfo->ourNumber = 97;
+                 * $sab->sabStruct->setOurNumber($bankAccountInfo->ourNumber);
+                 */
+
+                // CIP (default 865)
+                $sab->sabStruct->setCip( $bankAccountInfo->cip );
+
+                // Id da Loja
+                $sab->sabStruct->setShopId( $bankAccountInfo->shop );
+
+                $invoiceMessages = $this->getInvoiceMessageForSAB( $bankAccountInfo->bankId, $invoiceInfo->invoiceId );
+
+                for ( $k = 0; $k < count( $invoiceMessages ); $k++ )
+                {
+                    $instructions[] = $invoiceMessages[$k];
+                }
+                // Instructions
+                $sab->sabStruct->setInstructions( $instructions );
+            }
+            
+            if ( !$sab->generate($download) )
+            {
+                $this->errors = array_merge( $this->errors, $sab->getErrors() );
+                throw new Exception( 'Error: file ' . __FILE__ . ', line ' . __LINE__ );
+            }
+
+            if ( $this->online )
+            {
+                $this->link = $sab->sabStruct->getLink();
+            }
+            else
+            {
+                $this->fileName = $sab->getFileName();
+            }
+        }
+        catch ( Exception $e )
+        {
+            $this->errors[] = $e->getMessage();
+            $this->hasErrors = true;
+        }
+    }
+
+    /**
+     * Function that returns the messages that will be added in invoice
+     *
+     * @param: $bankId (varchar): Is bank code
+     * @param: $invoiceId (integer): Is invoice code
+     *
+     * @returns $result (varchar): Returns the invoice message.
+     *
+     */
+    public function getInvoiceMessageForSAB( $bankId, $invoiceId )
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'finance';
+        $action = MIOLO::getCurrentAction();
+
+        $data = new stdClass();
+        $data->bankId = $bankId;
+        $data->invoiceId = $invoiceId;
+
+        $busEntry = new BusinessFinanceBusEntry();
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $busCurriculum = new BusinessAcademicBusCurriculum();
+        $busInvoiceMessage = new BusinessFinanceBusInvoiceMessage();
+        $busReceivableInvoice = new BusinessFinanceBusReceivableInvoice();
+        
+        $invoiceMessages = $busInvoiceMessage->searchInvoiceMessageAsObject( $data );
+        $invoice = $busReceivableInvoice->getReceivableInvoice( $invoiceId );
+        $invoiceContracts = $busReceivableInvoice->getInvoiceContracts($invoiceId);
+
+        //Obtem a descrição dos incentivos de uma pessoa
+        $busIncentive = new BusinessFinanceBusIncentive();
+        $incentive = $busIncentive->searchIncentive( $invoiceContracts[0] );
+        $patrocinadores = '';
+        
+        //Obtém o número de dias para aplicar multa
+        $daysToFine = $busReceivableInvoice->getDaysToFines($invoiceId);
+        
+        if ( count($incentive) > 0 )
+        {
+            $incentiveMessage = null;
+            for ( $count = 0; $count <= count($incentive); $count++ )
+            {
+                if ( strlen($incentive[$count][6]) > 0 )
+                {
+                    $incentiveDescription = $incentive[$count][6];
+                    $incentiveValue = $incentive[$count][10];
+                    $incentiveIsPercent = $incentive[$count][9];
+                    $incentives[] = array($incentiveDescription, $incentiveValue, $incentiveIsPercent);
+                    $patrocinadores .= $incentive[$count][4];
+                    $patrocinadores .= ' ';
+                }
+            }
+        }
+        
+        $busPolicy = new BusinessFinanceBusPolicy();
+        $policy = $busPolicy->getPolicy( $invoice->policyId );
+
+        $invoiceValue = $busReceivableInvoice->getInvoiceBalance($invoiceId);
+
+        $message = null;
+        if ( count( $invoiceMessages ) > 0 )
+        {
+            $index = 0;
+            foreach ( $invoiceMessages AS $invoiceMessage )
+            {
+                $valueFine = $invoice->value * ($policy->finePercent / 100);
+                $valueInterest = $invoice->value * ( $policy->monthlyInterestPercent / 100 );
+                $valueInterestDay = $valueInterest/30;
+                
+                $valueInterestDay = str_replace( ".", ",", SAGU::formatNumber( str_replace( ",", ".", $valueInterestDay ) ) );
+                $valueFine = str_replace( ".", ",", SAGU::formatNumber( str_replace( ",", ".", $valueFine ) ) );
+                
+                //
+                // Se tiver alguma operacao de origem que deve filtrar, verifica nas entradas deste titulo
+                //
+                $entry = new stdClass();                
+                if ( strlen($invoiceMessage->operationId) > 0 )
+                {
+                    $filters = new stdClass();
+                    $filters->operationId = $invoiceMessage->operationId;
+                    $filters->invoiceId = $invoice->invoiceId;
+                    $rows = $busEntry->searchEntry($filters);
+                    
+                    // Caso nao este titulo nao tenha nenhuma operacao que bate com a operacao de origem
+                    //  configurada na mensagem, passa para o proximo loop.
+                    if ( count($rows) <= 0 )
+                    {
+                        continue;
+                    }
+                    
+                    $entry = $busEntry->getEntry($rows[0][0]);
+                }
+
+                if( $invoiceMessage->invoiceMessageTypeId == SAGU::getParameter( 'FINANCE', 'MESSAGE_TYPE_DISCOUNT' ) )
+                {
+                    //Busca os descontos cadastrados para o título/pessoa
+                    $invoiceDiscounts = $busReceivableInvoice->getInvoiceDiscountMessageData($invoiceId);
+                    foreach ( (array) $invoiceDiscounts as $discountData )
+                    {
+                        list ( $discountLimitDate,
+                               $discountValue ) = $discountData;
+
+                        $invoiceValue = SAGU::NVL($invoiceValue, 0);
+                        $discountValue = SAGU::NVL($discountValue, 0);
+                        
+                        $messageInfo = str_replace( 'X_VAL_DISCO', $discountValue , $invoiceMessage->description);
+                        $messageInfo = str_replace( 'X_DATE_DISCOUNT', $discountLimitDate, $messageInfo );
+                        $messageInfo = str_replace( 'X_TOTAL_DISCOUNT', SAGU::calcNumber($invoiceValue.'-'.$discountValue), $messageInfo );
+                        
+                        $message[$index] = $messageInfo;
+
+                        $index++;
+                    }
+                }
+                
+                if ( $invoiceMessage->invoiceMessageTypeId == SAGU::getParameter( 'FINANCE', 'MESSAGE_TYPE_FINE' ) )
+                {
+                    $finePercent = SAGU::formatNumber( str_replace( ",", ".", $policy->finePercent));
+                    $messageInfo = str_replace( 'X_DAY_NEXT_FINE', $daysToFine, $invoiceMessage->description );
+                    $messageInfo = str_replace( 'X_PERCENT_FINE', $finePercent, $messageInfo );                    
+                    $messageInfo = str_replace( 'X_DATE_FINE', $this->addIntervalInDate($invoice->maturityDate, 'D', $policy->daysToFine), $messageInfo );                    
+                    $messageInfo = str_replace( 'X_VAL_FINE', $valueFine, $messageInfo );
+                    $messageInfo = str_replace( 'X_VAL_INTEREST_DAY', $valueInterestDay , $messageInfo );
+                    $messageInfo = str_replace( 'X_VAL_INTEREST', $valueInterest , $messageInfo );
+                    
+                    $message[$index] = $messageInfo;
+
+                    $index++;
+                }
+                
+                if ( $invoiceMessage->invoiceMessageTypeId == SAGU::getParameter( 'FINANCE', 'MESSAGE_TYPE_INTEREST' ) )
+                {
+                    $monthlyInterestPercent = SAGU::formatNumber( str_replace( ",", ".", $policy->monthlyInterestPercent));
+
+                    $messageInfo = str_replace( 'X_DAY_NEXT_INTEREST', $policy->daysToInterest, $invoiceMessage->description );
+                    $messageInfo = str_replace( 'X_PERCENT_INTEREST', $monthlyInterestPercent , $messageInfo );
+                    $messageInfo = str_replace( 'X_DATE_INTEREST', $this->addIntervalInDate($invoice->maturityDate, 'D', $policy->daysToInterest), $messageInfo );
+                    $messageInfo = str_replace( 'X_VAL_INTEREST_DAY', $valueInterestDay , $messageInfo );
+                    $messageInfo = str_replace( 'X_VAL_INTEREST', $valueInterest , $messageInfo );
+                    $message[$index] = $messageInfo;
+
+                    $index++;
+                }
+
+                if ( $invoiceMessage->invoiceMessageTypeId == SAGU::getParameter( 'FINANCE', 'MESSAGE_TYPE_INCENTIVE' ) )
+                {
+                    //Caso a mensagem for do tipo incentivo percorre e adiciona as mensagens para cada incentivo                	                
+                    if( count($incentives) > 0 ) //Se possuir incentivos
+                    {
+                        //Percorre e adiciona uma mensagem para cada incentivo existente
+                        foreach( $incentives as $i )
+                        {
+                            $messageInfo = str_replace('X_INCENTIVE_DESC', $i[0] , $invoiceMessage->description );
+                            $messageInfo = str_replace('X_INCENTIVE_VAL', ($i[2] == 't' ? $i[1].'%' : $i[1]) , $messageInfo );
+                            $message[$index] = $messageInfo;
+
+                            $index++;
+                        }
+                    }
+                }
+                
+                if ( $invoiceMessage->invoiceMessageTypeId == SAGU::getParameter( 'FINANCE', 'MESSAGE_TYPE_FREE' ) )
+                {
+                    //
+                    //
+                    //
+                    $parcelsNumber = null;
+                    $courses = null;
+                    
+                    if ( $entry )
+                    {  
+                        //
+                        // busca operação.
+                        //
+                        if ( strlen($entry->operationId) > 0 )
+                        {
+                            $busOperation = new BusinessFinanceBusOperation();
+                            $operation = $busOperation->getOperation($entry->operationId);
+                        }
+                        
+                        //
+                        // busca numero de parcelas
+                        //
+                        if ( ( strlen($entry->learningPeriodId) > 0 ) && ( strlen($entry->contractId) > 0 ) )
+                        {
+                            $parcelsNumber = $busEnroll->getParcelsNumber($entry->contractId, $entry->learningPeriodId);
+                        }
+
+                        //
+                        // busca matriculas
+                        //
+                        if ( strlen($entry->contractId) > 0 )
+                        {
+                            $busContract = new BusinessAcademicBusContract();
+                            $contract = $busContract->getContract($entry->contractId);
+                            
+                            $busCourse = new BusinessAcademicBusCourse();
+                            $course = $busCourse->getCourse($contract->courseId);
+                            
+                            $filters = new stdClass();
+                            $filters->contractId = $entry->contractId;
+                            $enrolls = (array) $busEnroll->searchEnroll($filters);
+                            $tmpCourses = array();
+                            foreach ( $enrolls as $enroll )
+                            {
+                                $enroll = $busEnroll->getEnroll($enroll[0]);
+                                if( strlen($enroll->curriculumId) > 0 )
+                                {
+                                    $curriculum = $busCurriculum->getCurriculum($enroll->curriculumId);                                
+                                    $tmpCourses[] = $curriculum->courseId;
+                                }
+                            }
+                            $courses = implode(', ', array_unique($tmpCourses));
+                        }
+                        else
+                        {
+                            $cursos = PrcTituloInscricao::buscarCursoDoTitulo($invoiceId);
+                            
+                            $tmpCursos = array();
+                            
+                            foreach ( $cursos as $curso )
+                            {
+                                $tmpCursos[] = $curso['codcurso'];
+                            }
+                            
+                            $cursosPedagogico = implode(', ', $tmpCursos);
+                            $cursoPedagogico = $cursos[0]['nomecurso'];
+                        }
+                    }
+                    
+                    $messageInfo = $invoiceMessage->description;
+                    
+                    // Se encontrar a variavel X_PARCEL_TOTAL na config. da mensagem mas nao tiver valor, nao exibir esta.
+                    // Quando um invoice nao possui associado um contrato/periodo letivo, nao e possivel obter o valor total de parcelas
+                    if ( stripos($messageInfo, 'X_PARCEL_TOTAL') && ( strlen($parcelsNumber) <= 0 ) )
+                    {
+                        continue;
+                    }
+                    
+                    $messageInfo = strtr($messageInfo, array(
+                        'X_DAY_NEXT_FINE' => $daysToFine,
+                        'X_PERCENT_FINE' => SAGU::formatNumber( str_replace( ",", ".", $policy->finePercent)),
+                        'X_DATE_FINE' => $this->addIntervalInDate($invoice->maturityDate, 'D',$daysToFine),
+                        'X_VAL_FINE' => $valueFine,
+                        'X_DAY_NEXT_INTEREST' => $policy->daysToInterest,
+                        'X_PERCENT_INTEREST' => SAGU::formatNumber( str_replace( ",", ".", $policy->monthlyInterestPercent)),
+                        'X_DATE_INTEREST' => $this->addIntervalInDate($invoice->maturityDate, 'D',$policy->daysToInterest),
+                        'X_PARCEL_NUMBER' => $invoice->parcelNumber,
+                        'X_PARCEL_TOTAL' => $parcelsNumber,
+                        'X_COURSE_ABBREV' => SAGU::NVL($courses, $cursosPedagogico),
+                        'X_VAL_INTEREST_DAY' => $valueInterestDay ,
+                        'X_VAL_INTEREST' => $valueInterest ,
+
+                        // readicionadas
+                        'X_VAL_TAX' => SAGU::calcNumber($policy->bankTaxValue, true),
+                        'X_DAY_PREV_DISCO' => $policy->daysToDiscount,
+                        'X_DAY_PROTEST' => $policy->daysToProtest,
+                        'X_PERCENT_DISCO' => $policy->discountPercent,
+                        
+                        // novas
+                        'X_CONTRACT_ID' => $entry->contractId,
+                        'X_COURSE_DESCRI' => SAGU::NVL($course->name, $cursoPedagogico),
+                        'X_MONTH_YEAR_REF' => $invoice->maturityDate,
+                        'X_TAX_TYPE_TEXT' => $operation->description,
+                        'X_SUPPORTER_NAME' => $patrocinadores
+                    ));
+                    
+                    //Busca os descontos cadastrados para o título/pessoa
+                    $invoiceDiscounts = $busReceivableInvoice->getInvoiceDiscountMessageData($invoiceId);
+
+                    foreach ( (array) $invoiceDiscounts as $discountData )
+                    {
+                        list ( $discountLimitDate,
+                               $discountValue ) = $discountData;
+
+                        $discountValue = SAGU::NVL($discountValue, 0);
+                        
+                        $messageInfo = str_replace( 'X_VAL_DISCO', SAGU::formatNumber( str_replace( ",", ".", $discountValue ) ), $messageInfo);
+                        $messageInfo = str_replace( 'X_DATE_DISCOUNT', $discountLimitDate, $messageInfo );
+                        $messageInfo = str_replace( 'X_TOTAL_DISCOUNT', SAGU::calcNumber($invoiceValue.'-'.$discountValue), $messageInfo );
+                    }
+                    
+                    $message[$index] = $messageInfo;
+
+                    $index++;
+                }
+            }
+        }
+
+        return $message;
+    }
+    
+    /**
+     * Adiciona um intervalo de dias em uma data
+     * considerando opções de DESCONSIDERAR_DIA_31
+     * e EXTENDER_DESCONTOS_NA_SEGUNDA quando habilitadas
+     */
+    public static function addIntervalInDate($date, $type = 'D', $days)
+    {
+        $return = SAGU::addIntervalInDate($date, $type, $days);
+        
+        if( SAGU::getParameter('FINANCE', 'DESCARTAR_DIA_31') == 'YES' )
+        {
+            $month = SAGU::getDatePart($date, 'MONTH'); //Mês de referencia
+            $year = SAGU::getDatePart($date, 'YEAR'); //Ano de referencia
+            $nowMonth = SAGU::getDatePart($return, 'MONTH'); //Mês                     
+            $to_date_month = SAGU::getDatePart('31/'.$month.'/'.$year, 'MONTH');
+            
+            if ( ( $nowMonth != $month ) && ( $month == $to_date_month ) )
+            {
+                $return = SAGU::addIntervalInDate($return, 'D', '1');   
+            }
+        }
+        
+        if( SAGU::getParameter('FINANCE', 'EXTENDER_DESCONTOS_NA_SEGUNDA') == 'YES' )
+        {
+            if( SAGU::getDatePart($return, 'DOW') == 0 )
+            {
+                $return = SAGU::addIntervalInDate($return, 'D', '1');
+            }
+            if( SAGU::getDatePart($return, 'DOW') == 6 )
+            {
+                $return = SAGU::addIntervalInDate($return, 'D', '2');
+            }
+        }
+        
+        return $return;
+    }
+}

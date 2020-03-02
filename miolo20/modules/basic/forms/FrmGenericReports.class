@@ -1,0 +1,1383 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Form to manipulate generic reports
+ *
+ * @author Leovan Tavares da Silva [daniel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Armando Taffarel Neto [armando@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Luís Felipe Wermann [luis_felipe@solis.com.br]
+ *
+ * @since
+ * Class created on 30/06/2008
+ *
+ * */
+MIOLO::Import('extensions::cpaint.inc.php', 'cpaint');
+
+/**
+ * Form to create or edit a generic report
+ * */
+class FrmGenericReports extends MForm {
+
+    public $fileIdField;
+    
+    const PREFIXO_CAMPOPERSONALIZADO = "cp_";
+
+    /**
+     * Class constructor
+     * */
+    public function __construct()
+    {
+        $module = MIOLO::getCurrentModule();
+
+        if (MIOLO::_request('function') == 'insert')
+        {
+            parent::__construct(_M('Inserir', $module));
+        }
+        else
+        {
+            parent::__construct(_M('Atualizar', $module));
+        }
+
+        $this->setHelp(get_class($this), MIOLO::getCurrentModule(), MIOLO::getCurrentAction());
+
+        if (($f = $this->page->request('cpaint_function')) != "")
+        {
+            $this->manager->getTheme()->clearContent();
+            $this->$f($this->page->request('cpaint_argument'));
+            $this->page->generateMethod = 'generateAJAX';
+        }
+        else
+        {
+            $this->defineFields();
+            $this->eventHandler();
+        }
+    }
+
+    /**
+     * Default method to define fields
+     * */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+
+        $toolBar = new MToolBar('toolBar', $MIOLO->getActionURL($module, $action));
+        $toolBar->disableButton('tbBtnPrint');
+        if ($function == 'insert')
+        {
+            $toolBar->disableButton('tbBtnDelete');
+        }
+        elseif ($function == 'delete')
+        {
+            $toolBar->disableButton('tbBtnSave');
+        }
+
+        $toolBar->hideButton('tbBtnReset');
+        $toolBar->hideButton('tbBtnBack');
+
+        $fields[] = $toolBar;
+
+        if (in_array($function, array(SForm::FUNCTION_UPDATE, SForm::FUNCTION_DELETE)))
+        {
+            $reportId = $MIOLO->_request('reportId');
+
+            $business = new BusinessBasicBusGenericReports();
+
+            try
+            {
+                $data = $business->getReport($reportId);
+                $data->modules = explode(',', str_replace('{', '', str_replace('}', '', $data->modules)));
+                $filters->reportId = $data->reportId;
+                $parametersData = $business->searchReportParameter($filters);
+            }
+            catch (Exception $e)
+            {
+                $this->addError(_M('Erro ao obter dados do relatório. ', $module) . $e->getMessage());
+            }
+
+            $fields[] = new MTextLabel('reportId', $reportId, _M('Código do relatório', $module));
+        }
+
+        $fields[] = new MHiddenField('reportId', $reportId);
+        $fields[] = new MHiddenField('currentUrl', str_replace('&amp;', '&', $MIOLO->getCurrentURL()));
+
+        $gridData = SAGU::NVL($this->getFormValue('gridData', base64_encode(serialize($parametersData))), base64_encode(serialize($parametersData)));
+
+        $fields[] = new MHiddenField('gridData', $gridData);
+
+        if (strlen($gridData) > 0)
+        {
+            $this->addJsCode('refreshGrid(\'' . $gridData . '\');');
+        }
+
+        //Criação dos campos
+        $modules = new MMultiSelection('modules', is_array($this->getFormValue('modules', $data->modules)) ? $this->getFormValue('modules', $data->modules) : array($this->getFormValue('modules', $data->modules)), _M('Módulos', $module), SAGU::listModules(0), true, null, 10);
+        $validators[] = new MRequiredValidator('modules', _M('Módulos', $module), 'required');
+        $fields[] = $modules;
+
+        $reportName = new MTextField('reportName', $this->getFormValue('reportName', $data->name), _M('Título', $module), SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $reportName->setJsHint(_M('Digite um pequenho resumo explicando o objetivo do relatório', $module));
+        $validators[] = new MRequiredValidator('reportName', _M('Título', $module), 'required');
+        $fields[] = $reportName;
+
+        $description = new MMultiLineField('description', $this->getFormValue('description', $data->description), _M('Descrição', $module), SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'), 5, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $description->setJsHint(_M('Digite uma explicação detalhada sobre o objetivo do relatório', $module));
+        $fields[] = $description;
+
+        $sql = new MMultiLineField('sql', $this->getFormValue('sql', $data->sql), _M('SQL', $module), 100, 10, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'), _M('Use \'?\' para representar os parâmetros. <br>Não utilize comentários no sql.', $module));
+        $sql->setJsHint(_M('Informe o comando SQL que gerará os dados do relatório, utilizando interrogações (\'?\') para representar posicionalmente os parâmetros da consulta.', $module));
+        $sql->addAttribute('onKeyUp', 'javascript:setParametersCount()');
+        $validators[] = new MRequiredValidator('sql', _M('SQL', $module), 'required');
+        $fields[] = $sql;
+
+        $gfields = new sGenericFields();
+
+        $sqlParametersNumber = $this->getFormValue('sqlParametersNumber', substr_count($this->getFormValue('sql', $data->sql), '?'));
+        $parametersCount = new MTextField('parametersCount', $sqlParametersNumber, _M('Número de parâmetros', $module), SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $parametersCount->setReadOnly(true);
+        $fields[] = $parametersCount;
+
+        $ordemParams = new MTextField('ordemParams', SAGU::NVL(MIOLO::_REQUEST('ordemParams'), $data->parameterorder), _M('Ordem dos parâmetros', $module), SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), _M("Use ponto e vírgula (';') para separar cada parâmetro, sem utilizar espaços, ex.: 1;2;3 sendo que 1, 2 e 3 são os números dos parâmetros cadastrados.", $module));
+        $ordemParams->setJsHint(_M("Informe a ordem dos parâmetros, pela ordem em que aparecem no SQL, sempre separando por (';') ponto e vírgula, sem espaços."));
+        $fields[] = $ordemParams;
+
+        $options = SAGU::listYesNo('1');
+
+        $enabledLabel = new MText('enabledLabel', _M('Habilitar', $module) . '?');
+        $enabledLabel->setClass('m-caption m-caption-required');
+        $enabledLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+
+        $enabledIt = $this->getFormValue('enabledIt', $data->enabled) ? $this->getFormValue('enabledIt', $data->enabled) : DB_FALSE;
+        $enabledIt = new MRadioButtonGroup('enabledIt', '', $options, $enabledIt, null, 'horizontal');
+        $enabledIt->setShowLabel(false);
+
+        $hctEnabled = new MHContainer('hctEnabled', array($enabledLabel, $enabledIt));
+        $fields[] = $hctEnabled;
+
+        $fields[] = new MSeparator();
+
+        $fields[] = $gfields->labelDica(_M('Para agrupar uma ou mais colunas, utilize o formato: <b>SELECT coluna_a AS "ColunaA@GROUP1" ...</b> // <b>SELECT coluna_b AS "ColunaB@GROUP2" ...</b><br> Quanto maior o número, maior é o nível de detalhe do agrupamento.'));
+        $fields[] = $gfields->labelDica(_M('Para exibir um somatório de uma função de cálculo para alguma coluna, utilize o formato: <b>SELECT coluna_a AS "Valor@SUM" ...</b><br> As funções de somatórios disponíveis são: <b>SUM, AVG, MIN, MAX, DISTINCTCOUNT</b>. <br>Lembre-se que estas funções só funcionarão para campos de tipo adequado (numérico).'));
+        $fields[] = $gfields->labelDica(_M('Não se esqueça de sempre que for utilizar uma função de cálculo ou agrupamento (com @) circundar o campo e função com aspas duplas (<b>"</b>).'));
+        $fields[] = $gfields->labelDica(_M('Nunca coloque um somatório (ex.: @SUM) no PRIMEIRO campo da consulta SQL. Isto fará com que o layout do relatório fique com problemas quando impresso em modo ANALÍTICO.'));
+        $fields[] = $gfields->labelDica( _M('Campos do tipo <b>DECIMAL</b>, <b>FLOAT</b>, <b>NUMERIC</b> serão automaticamente alinhados e formatados (ex.: <b>1.234,43</b>). Campos <b>DATE</b>, <b>TIMESTAMP</b>, <b>TIMESTAMPTZ</b> também serão convertidos automaticamente para o formato brasileiro (<b>dd/mm/yyyy</b>).') );
+
+        //Campos para manipulação de parâmetros
+        $divParametersForm = new MDiv('divParametersForm', null, null, 'align=center');
+
+        $divParametersGrid = new MDiv('divParametersGrid', null, null, 'align=center');
+
+        $addParameter = new MLink('addParameter', _M('Adicionar novo parâmetro', $module), 'javascript:addParameter()');
+        $addParameter->addAttribute('id', 'addParameter');
+
+        $bsgParameters = new MBaseGroup('bsgParameters', _M('Parâmetros', $module), array(new MSeparator(), $divParametersGrid, $addParameter, $divParametersForm), 'vertical', 'css');
+        $bsgParameters->setShowLabel(false);
+
+        $fields[] = $bsgParameters;
+
+        // Arquivo
+        $controls[] = $this->fileIdField = new SFileField('fileId', $this, array(
+            'fieldLabel' => _M('Arquivo de layout (JRXML)', $module),
+            'fileId' => $data->fileId,
+        ));
+
+        $href = MIOLO::getCurrentURL() . '&event=getLayout&layoutName=relatorio_generico_retrato';
+        $controls[] = new MLink('lnk1', _M('Obter arquivo de layout padrão RETRATO'), $href, null, '_new');
+
+        $href = MIOLO::getCurrentURL() . '&event=getLayout&layoutName=relatorio_generico_paisagem';
+        $controls[] = new MLink('lnk2', _M('Obter arquivo de layout padrão PAISAGEM'), $href, null, '_new');
+
+        $fields[] = new sBaseGroup('bsgModelo', _M('Sobrescrever arquivo de modelo de exportação PDF'), $controls);
+
+        if ($function == 'update')
+        {
+            $fields[] = new MTextLabel('lastModification', '[' . $data->userName . ' - ' . $data->dateTime . ']', _M('Última modificação', $module));
+        }
+
+        $fields[] = new Separator('');
+        
+        $this->addStyleFile('m_grids.css');
+        $this->setFields($fields);
+        $this->setValidators($validators);
+        $this->setLabelWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $this->setShowPostButton(false);
+        $this->setClose($MIOLO->getActionURL($module, substr($action, 0, strrpos($action, ':'))));
+        $this->page->onLoad('document.' . $this->name . '.modules.focus()');
+        $MIOLO->getRequiredJS4Ajax();
+        // Adiciona a URL corrente e o prefixo utilizado para identificar campos personalizados
+        $this->addJsCode('var currentUrl = "{$currentUrl}"; window.PREFIXO_CAMPO_PERSONALIZADO="' . self::PREFIXO_CAMPOPERSONALIZADO . '"');
+        $this->page->addScript('m_lookup_ajax.js');
+        $this->page->addScript(SAGU::ABSOLUTE_URL_JS_FILES . 'sagu.js');
+        $this->page->addScript('genericReports.js', $module);
+    }
+
+    //AJAX Functions
+     public function validarOrdemParamsValue($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        $ordem = str_split($args);
+        $erro = false;
+        
+        //Somente ponto e vírgula OU numérico
+        
+        if ($ordem[0] != '')
+        {
+            foreach ($ordem as $char)
+            {
+                if ($char == ';' || is_numeric($char))
+                {
+                   $ordemFinal .= $char;
+                }
+                else
+                {
+                   $erro = true;
+                }
+            }
+        }
+        
+        //Remove espaços em branco
+        if (is_string($ordemFinal))
+        {
+            $ordemFinal = explode(';', $ordemFinal);
+            foreach($ordemFinal as $pos => $char)
+            {
+                if (strlen($char) == 0)
+                {
+                    unset($ordemFinal[$pos]);
+                }
+            }
+        }
+        
+        $ordemFinal = implode(';', $ordemFinal);
+
+        //Joga erro no campo e trata depois
+        if ($erro)
+        {
+            return false;
+        }
+        else
+        {
+            return $ordemFinal;
+        }
+       
+    }
+    
+    public function setParametersCountValue($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $paramCounter = 0;
+
+        if (strlen($args[0]) > 0)
+        {
+            $paramCounter = substr_count($args[0], '?');
+        }
+        echo $paramCounter;
+
+        $this->manager->getTheme()->setContent(null);
+    }
+
+    public function parameterInfo($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        unset($flds);
+        unset($gridData);
+        unset($i);
+
+        $args = explode(',', $args[0]);
+        
+        //Buscando número de parâmetros e data da Grid
+        $parametersCount = $args[0];
+        $gridData = unserialize(base64_decode($args[1]));
+
+        
+        //Adiciona número do parâmetro automaticamente
+        if (is_null($gridData))
+        {
+            $numParam = 1;
+        }
+        else
+        {
+            $numParam = (count($gridData) + 1);
+        }
+        
+        //Inicia verificaçao de erros
+        if (strlen($args[2]) > 0)
+        {
+            $i = $args[2];
+
+            $data->parameterNumber = $gridData[$i][1];
+            $data->label = $gridData[$i][2];
+            $data->fieldType = $gridData[$i][3];
+
+            $flds[] = new MHiddenField('lineNumber', $i);
+        }
+        elseif (count($gridData) >= $parametersCount)
+        {
+            $msg = _M('Todos os parâmetros estão registrados. Para registrar outro você deve inserir mais um parâmetro no comando SQL ou excluir um parâmetro existente.', $module);
+        }
+        
+        if (isset($msg))
+        {
+            $caption = _M('Erro', $module);
+            $prompt = new MPrompt($caption, $msg);
+            $prompt->setType('error');
+            $prompt->addButton(_M('OK', $module), 'javascript:xGetElementById(\'divParametersForm\').innerHTML = \'\';');
+
+            $error = true;
+
+            $this->manager->getTheme()->setContent($prompt);
+        }
+
+        if (!$error)
+        {
+            $formTitle = new MText('formTitle', _M('Novo parâmetro', $module));
+            $formTitle->setBold();
+
+            $parameterNumberAutomatico = SAGU::NVL($data->parameterNumber, $numParam);
+            $parameterNumberLabel = new MTextLabel('parameterNumberLabel', _M('Número do parâmetro:', $module));
+            $parameterNumberLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $parameterNumberLabel->setClass('m-caption');
+            $parameterNumber = new MTextField('parameterNumber', $this->getFormValue('parameterNumber', $parameterNumberAutomatico), null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+            $parameterNumber->setJsHint(_M('Número do parâmetro ao qual este campo se refere',$module));            
+            $parameterNumber->setReadOnly(true);
+            $flds[] = new MHContainer('hctParameterLine1', array($parameterNumberLabel, $parameterNumber));
+
+            $parameterLabel = new MTextLabel('parameterLabelL', _M('Rótulo:', $module));
+            $parameterLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $parameterLabel->setClass('m-caption');
+            $label = new MTextField('parameterLabel', $this->getFormValue('parameterLabel', $data->label), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $label->setJsHint(_M('Informe a descrição do parâmetro', $module));
+            $flds[] = new MHContainer('hctParameterLine1', array($parameterLabel, $label));
+
+            $listaParametrosDisponiveis = $this->obterListaDeParametrosDisponiveis();
+            
+            $fieldTypeLabel = new MTextLabel('fieldTypeLabel', _M('Parâmetro:', $module));
+            $fieldTypeLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $fieldTypeLabel->setClass('m-caption');
+            
+            $fieldType = new MSelection('fieldType', $this->getFormValue('fieldType', $data->fieldType), null, $listaParametrosDisponiveis);
+            
+            
+            $fieldType->addAttribute('onChange', 'javascript:selectFieldType(\'' . base64_encode(serialize($gridData)) . '\'); autoPreencheRotuloSeCampoPersonalizado()');
+            $flds[] = new MHContainer('fieldTypeContainer', array( $fieldTypeLabel, $fieldType ));
+
+            $urlCamposPersonalizados = $MIOLO->GetActionURL("basic", "main:config:customField");
+            $link = new MLink("linkCamposPersonalzados", _M("AQUI"), $urlCamposPersonalizados, _M("AQUI"), "_blank");
+            $gfields = new sGenericFields();
+            $flds[] = $gfields->labelDica(_M("Parâmetros marcados com <span class='m-caption-required'></span> são pré-cadastrados e disponíveis para uso em qualquer Relatório Genérico. "
+                    . "Para alterar ou adicionar novos parâmetros pré-cadastrados, clique " . $link->generate()));
+            
+            $flds[] = new MDiv('divFieldTypeInfo', null, null, 'align=center');
+            
+            $bsgParametersInfo = new MBaseGroup('bsgParametersInfo', _M('Configuração de parâmetro', $module), $flds, 'vertical', 'css');
+            $bsgParametersInfo->addBoxStyle('width', '50%');
+            $bsgParametersInfo->addBoxStyle('text-align', 'left');
+                        
+            $this->manager->getTheme()->setContent($bsgParametersInfo);
+        }
+    }
+
+    private function obterListaDeParametrosDisponiveis()
+    {
+        $separador = array("separador" => "------------");
+        $parametrosNovos = $this->obterParametrosNovos();
+        $campoPersonalizados = $this->obterListagemDosCamposPersonalizados();
+        
+        return  array_merge($campoPersonalizados, $separador, $parametrosNovos);
+        
+    }
+    
+    private function obterParametrosNovos()
+    {
+        $parametros = SAGU::listFieldTypes();
+        
+        foreach ( $parametros as $chave => $parametro )
+        {
+            $parametros[$chave] = "NOVO - " . $parametro;
+        }
+        
+        return $parametros;
+        
+    }
+    
+    private function obterListagemDosCamposPersonalizados()
+    {
+        $camposPersonalizados = BasCustomField::listarCamposPersonalizadosDisponiveisParaRelatorio();
+        
+        $lista = array();
+        
+        foreach ( $camposPersonalizados as $campoPersonalizado )
+        {
+            // Adiciona um prefixo "cp_" para sabermos que é um parâmetro
+            $lista[self::PREFIXO_CAMPOPERSONALIZADO . $campoPersonalizado["name"]] = "* " . $campoPersonalizado["label"];
+        }
+        
+        return $lista;
+        
+    }
+    
+    public function fieldTypeInfo($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $args = explode(',', $args[0]);
+        $fieldType = $args[0];
+
+        unset($gridData);
+        unset($i);
+        if ($args[1] != 'NULL')
+        {
+            $gridData = unserialize(base64_decode($args[1]));
+            $i = $args[2];
+
+            $data->defaultValue = $gridData[$i][4];
+            $data->size = $gridData[$i][5];
+            $data->fieldValidator = $gridData[$i][6];
+            $data->hint = $gridData[$i][7];
+            $data->fieldColumns = $gridData[$i][8];
+            $data->fieldRows = $gridData[$i][9];
+            $data->fixedOptions = $gridData[$i][10];
+            $data->options = urldecode($gridData[$i][11]);
+            $data->help = $gridData[$i][12];
+        }
+
+        unset($flds);
+
+        $flds[] = $this->obterCampoValorPadrao($data->defaultValue);
+
+        switch ($fieldType)
+        {
+            case 'TEXTFIELD':
+                
+                $flds[] = $this->obterCampoTamanho($data->size);
+                $flds[] = $this->obterCampoValidador($data->fieldValidator);
+                $flds[] = $this->obterCampoHint($data->hint);
+                $flds[] = $this->obterCampoAjuda($data->help);
+                
+                break;
+            case 'MULTILINE':
+                
+                $flds[] = $this->obterCampoColunas($data->fieldColumns);
+                $flds[] = $this->obterCampoLinhas($data->fieldRows);
+                $flds[] = $this->obterCampoTamanho($data->size);
+                $flds[] = $this->obterCampoValidador($data->fieldValidator);
+                $flds[] = $this->obterCampoHint($data->hint);
+                $flds[] = $this->obterCampoAjuda($data->help);
+                
+                break;
+            case 'COMBOBOX':
+            case 'SELECTION':
+            case 'RADIOGROUP':
+                
+                $flds[] = $this->obterCampoValidador($data->fieldValidator);
+                $flds[] = $this->obterCampoTipoDeOpcoes($data->fixedOptions = $this->getFormValue('fixedOptions', $data->fixedOptions));
+                $flds[] = $this->obterCampoOpcoes($data->options);     
+                $flds[] = $this->obterCampoAjuda($data->help);
+                
+                break;
+            case 'CALENDAR':
+
+                $flds[] = $this->obterCampoHint($data->hint);
+                $flds[] = $this->obterCampoAjuda($data->help);
+                $flds[] = $this->obterCampoValidador($data->fieldValidator, false);
+                
+                break;
+            case 'HIDDEN':
+                break;
+            default:
+        }
+
+        if (strlen($i) > 0)
+        {
+            $btnSave = new MButton('btnAdd', _M('Atualizar parâmetro', $module), 'javascript:saveParameter(' . $i . ')');
+        }
+        else
+        {
+            $btnSave = new MButton('btnAdd', _M('Adicionar parâmetro', $module), 'javascript:saveParameter()');
+        }
+
+        $flds[] = $btnSave;
+        
+        $bsgFieldTypeInfo = new MBaseGroup('bsgFieldTypeInfo', _M('Configuração do campo', $module), array(new MVContainer('hvtFields', $flds)));
+        $bsgFieldTypeInfo->addBoxStyle('text-align', 'left');
+
+        $this->manager->getTheme()->setContent($bsgFieldTypeInfo);
+    }
+    
+    /**
+     * Obtém campo Colunas.
+     * 
+     * @param string $value
+     * @return \MHContainer
+     */
+    public function obterCampoColunas($value = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $fieldColumnsLabel = new MLabel(_M("Colunas", $module) . ':');
+        $fieldColumnsLabel->setClass('m-caption');
+        $fieldColumnsLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $fieldColumns = new MTextField('fieldColumns', $this->getFormValue('fieldColumns', $value), NULL, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $fieldColumns->setJsHint(_M('Informe o número de colunas aceitas para este campo', $module));
+        
+        return new MHContainer('hctFieldColumns', array($fieldColumnsLabel, $fieldColumns));
+    }
+    
+    /**
+     * Obtém campo Linhas.
+     * 
+     * @param string $value
+     * @return \MHContainer
+     */
+    public function obterCampoLinhas($value = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $fieldRowsLabel = new MLabel(_M("Linhas", $module) . ':');
+        $fieldRowsLabel->setClass('m-caption');
+        $fieldRowsLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $fieldRows = new MTextField('fieldRows', $this->getFormValue('fieldRows', $value), NULL, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $fieldRows->setJsHint(_M('Informe o número de linhas para este campo', $module));
+
+        return new MHContainer('hctFieldRows', array($fieldRowsLabel, $fieldRows));
+    }
+    
+    /**
+     * Obtém campo Opções.
+     * 
+     * @param string $value
+     * @return \MHContainer
+     */
+    public function obterCampoOpcoes($value = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $optionsLabel = new MText('fixedOptionsLabel', _M('Opções', $module) . ':');
+        $optionsLabel->setClass('m-caption');
+        $optionsLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $options = new MMultilineField('options', $this->getFormValue('options', $value), NULL, 100, 10, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $options->setJsHint(_M('Informe as opções do campo', $module));
+        
+        return new MHContainer('hctOptions', array($optionsLabel, $options));
+    }
+    
+    /**
+     * Obtém campo Tipo de opções.
+     * 
+     * @param string $value
+     * @return \MHContainer
+     */
+    public function obterCampoTipoDeOpcoes($value = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $optionsArray = array(array(_M('SQL', $module), DB_FALSE),
+                    array(_M('Fixo', $module), DB_TRUE));
+        
+        $fixedOptionsLabel = new MText('fixedOptionsLabel', _M('Tipo de opções', $module) . ':');
+        $fixedOptionsLabel->setClass('m-caption');
+        $fixedOptionsLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $fixedOptions = new MRadioButtonGroup('fixedOptions', '', $optionsArray, $value ? $value : DB_TRUE, null, 'horizontal');
+        $fixedOptions->setShowLabel(false);
+        
+        return new MHContainer('hctFixedOptions', array($fixedOptionsLabel, $fixedOptions));
+    }
+    
+    /**
+     * Obtém campo Ajuda.
+     * 
+     * @param string $value
+     * @return \MHContainer
+     */
+    public function obterCampoAjuda($value = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $helpLabel = new MLabel(_M("Ajuda", $module) . ':');
+        $helpLabel->setClass('m-caption');
+        $helpLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $help = new MTextField('help', $this->getFormValue('help', $value), NULL, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $help->setJsHint(_M('Digite uma breve explicação sobre este campo', $module));
+        
+        return new MHContainer('hctHelp', array($helpLabel, $help));
+    }
+    
+    /**
+     * Obtém campo Validador.
+     * 
+     * @param string $value
+     * @return \MHContainer
+     */
+    public function obterCampoValidador($value = null, $useInteger = true)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $fieldValidatorLabel = new MLabel(_M("Validador", $module) . ':');
+        $fieldValidatorLabel->setClass('m-caption');
+        $fieldValidatorLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        
+        $fieldValidator = new MSelection('fieldValidator', $this->getFormValue('fieldValidator', $value), NULL, BusinessBasicBusGenericReports::listarValidadores($useInteger));
+        $fieldValidator->setJsHint(_M('Informe o validador do campo', $module));
+        
+        return new MHContainer('hctFieldValidator', array($fieldValidatorLabel, $fieldValidator));
+    }
+
+    /**
+     * Obtém campo Tamanho.
+     * 
+     * @param string $value
+     * @return \MHContainer
+     */
+    public function obterCampoTamanho($value = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        //Tamanho padrao
+        $sizePadrao = SAGU::NVL($value, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $sizeLabel = new MLabel(_M("Tamanho", $module) . ':');
+        $sizeLabel->setClass('m-caption');
+        $sizeLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $size = new MTextField('size', $this->getFormValue('size', $sizePadrao), NULL, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $size->setJsHint(_M('Informe o tamanho do campo, tamanho padrão é de ' . $sizePadrao, $module));
+        
+        return new MHContainer('hctSize', array($sizeLabel, $size));
+    }
+    
+    /**
+     * Obtém campo Valor padrão.
+     * 
+     * @param string $value
+     * @return \MHContainer
+     */
+    public function obterCampoValorPadrao($value = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $defaultValueLabel = new MLabel(_M("Valor padrão", $module) . ':');
+        $defaultValueLabel->setClass('m-caption');
+        $defaultValueLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $defaultValue = new MTextField('defaultValue', $this->getFormValue('defaultValue', $value), NULL, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $defaultValue->setJsHint(_M('Informe o valor padrão para este campo', $module));
+        
+        return new MHContainer('hctDefaultValue', array($defaultValueLabel, $defaultValue));
+    }
+    
+    /**
+     * Obtém campo Ajuda.
+     * 
+     * @param string $value
+     * @return \MHContainer
+     */
+    public function obterCampoHint($value = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $hintLabel = new MLabel(_M("Dica", $module) . ':');
+        $hintLabel->setClass('m-caption');
+        $hintLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $hint = new MTextField('hint', $this->getFormValue('hint', $value), NULL, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $hint->setJsHint(_M('Informe uma dica para este campo', $module));
+        
+        return new MHContainer('hctHint', array($hintLabel, $hint));
+    }
+    
+    public function configurarCampoPersonalizado($ajaxArgs)
+    {
+        $module = MIOLO::getCurrentModule();
+        
+        $args = explode(',', $ajaxArgs[0]);
+        
+        if ($args[1] != 'NULL')
+        {
+            $i = $args[2];
+        }
+        
+        if (strlen($i) > 0)
+        {
+            $btnSave = new MButton('btnAdd', _M('Atualizar parâmetro', $module), 'javascript:saveParameter(' . $i . ')');
+        }
+        else
+        {
+            $btnSave = new MButton('btnAdd', _M('Adicionar parâmetro', $module), 'javascript:saveParameter()');
+        }
+        
+        $this->manager->getTheme()->setContent($btnSave);
+    }
+    
+    public function saveParameter($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $args = explode(',', $args[0]);
+
+        $gridData = unserialize(base64_decode($args[0]));
+
+        //(reportParameterId, parameterNumber, label, type, default value, size, validator, hint, columns, rows, fixed, options, help)
+        $gridLine = array(null, $args[1], $args[2], $args[3], $args[4], $args[5], $args[6], $args[7], $args[8], $args[9], $args[10], $args[11], $args[12]);
+
+        unset($i);
+        if (strlen($args[13]) > 0)
+        {
+            $i = $args[13];
+        }
+        else
+        {
+            $i = count($gridData);
+        }
+
+        if (count($gridData) > 0)
+        {
+            foreach ($gridData as $key => $gridParameter)
+            {
+                if ($gridParameter[1] == $gridLine[1])
+                {
+                    $i = $key;
+                }
+            }
+        }
+
+        foreach( $gridLine as $indice => $valor )
+        {
+            $gridLine[$indice] = utf8_decode($valor);
+            
+        }
+        
+        $gridData[$i] = $gridLine;
+
+        echo base64_encode(serialize($gridData));
+
+        $this->manager->getTheme()->setContent(null);
+    }
+
+    public function deleteParameterInfo($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $lineNumber = $args[0];
+
+        $msg = SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE');
+        $caption = _M('Questão', $module);
+        $prompt = new MPrompt($caption, $msg);
+        $prompt->setType('question');
+        $prompt->addButton(_M('Sim', $module), 'javascript:deleteConfirmed(' . $lineNumber . ');');
+        $prompt->addButton(_M('Não', $module), 'javascript:xGetElementById(\'divParametersForm\').innerHTML = \'\';');
+
+        $this->manager->getTheme()->setContent($prompt);
+    }
+
+    public function deleteConfirmed($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $args = explode(',', $args[0]);
+        $gridData = unserialize(base64_decode($args[0]));
+        $lineNumber = $args[1];
+
+        unset($gridData[$lineNumber]);
+
+        echo base64_encode(serialize(array_merge($gridData)));
+
+        $this->manager->getTheme()->setContent(null);
+    }
+
+    public function refreshGrid($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $gridData = unserialize(base64_decode($args[0]));
+
+        $gridParameters = $MIOLO->getUI()->getGrid($module, 'GrdParametersSearch', null);
+
+        $gridParameters->setTitle(_M('Parâmetros do relatório', $module));
+
+        $gridParameters->setData($gridData);
+
+        $cntGrid = new MHContainer('cntGrid', array($gridParameters));
+        $this->manager->getTheme()->clearContent();
+        $this->manager->getTheme()->setContent($gridParameters);
+    }
+
+    /**
+     * Event triggered when user chooses New from the toolbar
+     * */
+    public function tbBtnNew_click($sender = NULL)
+    {
+    }
+
+    /**
+     * Event triggered when user chooses Delete from the toolbar
+     **/
+    public function tbBtnDelete_click($sender=NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $data = $this->getTypesData();
+        $opts = array('event'=>'tbBtnDelete_confirm',
+                        'function'=>'delete',
+                        'reportId'=>MIOLO::_request('reportId'));
+
+        $gotoYes = $MIOLO->getActionURL( $module, $action, null, $opts );
+        $goto = SAGU::getStackBackUrl();
+        $gotoNo = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+        $msg = SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE');
+        $caption = _M('Questão',$module);
+        $MIOLO->question($msg, $gotoYes, $gotoNo);
+    }
+
+    /**
+     * Event triggered when user chooses Yes from the Delete prompt dialog
+     **/
+    public function tbBtnDelete_confirm($sender=NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $reportId = $MIOLO->_request('reportId');
+
+        try
+        {
+            $business = new BusinessBasicBusGenericReports();
+            $transaction = $business->getDatabase()->getTransaction();
+            $transaction->_beginTransaction();
+
+            // Despublica o relatório (se necessário)
+            $filtros = new stdClass();
+            $filtros->reportId = $reportId;
+            
+            $dados = $business->searchReportObject($filtros);
+            
+            // Transforma a string que representa um array em um array
+            $dados[0]->modules = explode(",", str_replace(array("{", "}"), "", $dados[0]->modules));
+            
+            $this->despublicaRelatorio($dados[0]);
+            
+            $business->deleteAllReportParameters($reportId);
+            $business->deleteReport($reportId);
+            
+            $transaction->_commit();
+
+            $msg = SAGU::getParameter('BASIC', 'MSG_RECORD_DELETED');
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Informação',$module);
+            $MIOLO->information($msg, $goto);
+        }
+        catch (Exception $e)
+        {
+            $msg = _M('Erro ao executar a operação solicitada. ',$module) . $e->getMessage();
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Erro',$module);
+            $MIOLO->error( $msg, $goto, $caption );
+        }
+    }
+
+    /**
+     * Event triggered when user chooses Save from the toolbar
+     **/
+    public function tbBtnSave_click($sender=NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        
+        $parametersCount =  MIOLO::_REQUEST('parametersCount');
+        $ordemParams = $this->validarOrdemParamsValue(MIOLO::_REQUEST('ordemParams'));
+        
+        $data = $this->getTypesData();
+        $business = new BusinessBasicBusGenericReports();
+        
+        is_string($ordemParams) ? $ordemParams = explode(';', $ordemParams) : null;
+        
+        //Verificaçoes relacionados com a ordem dos parametros
+        $erro = false;
+        if (!is_null($ordemParams))
+        {
+            if (!$ordemParams)
+            {
+                $erro = true;
+                $this->addError( _M('A ordem dos parâmetros que você está tentando cadastrar está incorreta. Favor verificar a mesma, lembre-se de utilizar apenas números inteiros e ponto e vírgulas (\';\'), sem espaços.', $module));
+            }
+            elseif ( count ($ordemParams) > $parametersCount)
+            {
+                $erro = true;
+                $this->addError( _M('Existem mais parâmetros na ordem que a quantidade de parâmetros no SQL. Favor verificar.', $module));
+            }
+            elseif ( count ($ordemParams) < $parametersCount)
+            {
+                $erro = true;
+                $this->addError ( _M ('Existem menos parâmetros na ordem que a quantidade de parâmetros no SQL. Caso deseje utilizar a repetição de parâmetros registre cada um deles na ordem.', $module) );
+            }
+            elseif (count($data->parameters) < count(array_unique($ordemParams)))
+            {
+                $erro = true;
+                $this->addError(_M('O número de parâmetros no comando SQL não é compatível com o número de parâmetros registrado.', $module));
+            }
+            elseif (count ($ordemParams) > 0 && strlen ($ordemParams[0]) > 0)
+            {
+                foreach ($ordemParams as $char)
+                {
+                    $char > $parametersCount ? $msg = _M('Existem números de parâmetros na ordem que são maiores que a quantidade de parâmetros em si. Por favor, adicione números de parâmetros na ordem que não ultrapassem a quantidade de parâmetros no SQL.') : null;
+                    $char < 1 ? $msg = _M('Existem números de parâmetros na ordem que são menores que a quanitdade de parâmetros em si. Por favor, adicione números de parâmetros na ordem que não sejam inferiores a quantidade de parâmetros no SQL.') : null;                
+                }
+
+                if (isset($msg))
+                {
+                    $this->addError($msg);
+                    $erro = true;
+                }
+            }
+        }
+        else
+        {
+            if (count($data->parameters) != substr_count($data->sql, '?') )
+            {
+                $erro = true;
+                $this->addError(_M('O número de parâmetros no comando SQL não é compatível com o número de parâmetros registrado.', $module));
+            }
+        }
+        
+        //Verificacoes gerais
+        if (!$erro)
+        {
+            if (( strlen($_FILES['fileId']['name']) > 0 ) && (substr($_FILES['fileId']['name'], -5) != 'jrxml'))
+            {
+                $this->addError(_M('O arquivo deve ser do tipo JRXML.', $this->module));
+            } 
+            elseif ($function == 'insert')
+            {
+                SDatabase::beginTransaction();
+                try
+                {
+                    $data->reportId = $business->getNextReportId();
+                    $data->parameterorder = implode(';', $ordemParams);
+                    
+                    $business->insertReport($data);
+                    
+                    // Publica/despublica o relatório
+                    $this->publicarNoMenu($data);
+                                        
+                    if (count($data->parameters) > 0)
+                    {
+                        foreach ($data->parameters as $pdata)
+                        {
+                            $pdata->reportId = $data->reportId;
+                            
+                            $business->insertReportParameter($pdata);
+                        }
+                    }
+
+                    SDatabase::commit();
+                    
+                    $msg  = SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED_INFO');
+                    $msg .= $data->enabled == DB_TRUE ? _M(" Para impressão do relatório, você deverá conceder as permissões aos grupos desejados em Administração::Grupos. A permissão localiza-se no MODULO DE DESTINO/RELATÓRIOS ou MODULO DE DESTINO/DOCUMENTOS") : "";
+                    $gotoYes = $MIOLO->getActionURL($module, $action, NULL, array( 'reportIdS' => $data->reportId ));
+                    $gotoXML = $MIOLO->getActionURL( $module, $action, null, array('reportId' => $data->reportId, 'function' => SForm::FUNCTION_UPDATE));
+                    
+                    $prompt = new Prompt(_M('Confirmation'), $msg, $MIOLO->url_home . '/images/question.gif');
+                    $prompt->SetType('question');
+                    $prompt->AddButton('   OK   ', $gotoYes);
+                    $prompt->AddButton(_M('   Baixar arquivo xml   '), $gotoXML, 'downloadXML_click');
+                    $MIOLO->getTheme()->setElement('toolbar', null);
+                    $MIOLO->prompt($prompt);
+                }
+                catch (Exception $e)
+                {
+                    SDatabase::rollback();
+                    $this->addError(_M('Erro ao inserir relatório. ', $module) . $e->getMessage());
+                }
+            }
+            elseif ($function == 'update')
+            {
+                SDatabase::beginTransaction();
+                try
+                {
+                    $data->parameterorder = implode(';', $ordemParams);
+                    
+                    $business->updateReport($data);
+                    
+                    // Publica/despublica o relatório
+                    $this->publicarNoMenu($data);
+                    
+                    $business->deleteAllReportParameters($data->reportId);
+                    
+                    if (count($data->parameters) > 0)
+                    {
+                        foreach ($data->parameters as $pdata)
+                        {
+                            $business->insertReportParameter($pdata);
+                        }
+                    }
+
+                    SDatabase::commit();
+                    
+                    $msg = SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED');
+                    $msg .= $data->enabled == DB_TRUE ? _M(" Para impressão do relatório, você deverá conceder as permissões aos grupos desejados em Administração::Grupos. A permissão localiza-se no MODULO DE DESTINO/RELATÓRIOS ou MODULO DE DESTINO/DOCUMENTOS") : "";
+                    
+                    $gotoYes = $MIOLO->getActionURL( $module, $action, null, array( 'reportIdS' => $data->reportId));
+                    $gotoXML = $MIOLO->getActionURL( $module, $action, null, array('reportId' => $data->reportId, 'function' => SForm::FUNCTION_UPDATE));
+                    
+                    $prompt = new Prompt(_M('Confirmation'), $msg, $MIOLO->url_home . '/images/question.gif');
+                    $prompt->SetType('question');
+                    $prompt->AddButton('   OK   ', $gotoYes);
+                    $prompt->AddButton(_M('   Baixar arquivo xml   '), $gotoXML, 'downloadXML_click');
+                    $MIOLO->getTheme()->setElement('toolbar', null);
+                    $MIOLO->prompt($prompt);
+                }
+                catch (Exception $e)
+                {
+                    SDatabase::rollback();
+                    $this->addError(_M('Erro ao atualizar relatório. ', $module) . $e->getMessage());
+                }
+            }
+        }
+    }
+    
+    public function downloadXML_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->uses('SExportacao.class', '/basic/classes/');
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $reportId = $MIOLO->_REQUEST('reportId');
+        
+        try
+        {
+            if ( !strlen($reportId) > 0 )
+            {
+                throw new Exception(_M('Não foi possível localizar o relatório para geração do arquivo xml. Por favor, contate a equipe de suporte do sistema.'));
+            }
+            $exportacaoXML = new SExportacaoXML('basReport', $reportId);
+            $exportacaoXML->setTabelaRelacionada('basReportParameter');
+            $exportacaoXML->setColunaIdentificador('reportId');
+            $exportacaoXML->setLocate(array('reportId', 'parameternumber'));
+            $exportacaoXML->geraXML();
+        }
+        catch ( Exception $e )
+        {
+            $MIOLO->error($e->getMessage());
+        }
+    }
+
+    /**
+     * A partir dos dados de um relatório, monta um objeto com as informações 
+     * necessárias para inserir uma transação
+     * 
+     * @param Object $dadosRelatorio
+     * 
+     * @return Mixed Objeto com as propriedades da transacao, FALSE caso não haja
+     * a transação pai
+     */
+    private function getTransacaoInfo($dadosRelatorio)
+    {
+        $paiTransaction = BasConstrutorDeRelatorios::getParentTransactionPeloModulo($dadosRelatorio->modulo);
+        
+        // Módulos
+        if ( $dadosRelatorio->modulo == 'SELECTIVEPROCESS' || $dadosRelatorio->modulo == 'HUMANRESOURCES' )
+        {
+            ($dadosRelatorio->modulo == 'SELECTIVEPROCESS') ? $modulo = 'selectiveProcess' : $modulo = 'humanResources';
+        }
+        else
+        {
+            $modulo = strtolower($dadosRelatorio->modulo);
+        }
+        
+        // Se o parent for uma transação de documento, muda o handler base para apontar para o handler do documento
+        $handler = "main:" . (stripos($paiTransaction, "DOCUMENT") !== false ? "document" : "report");
+        
+        if( !is_null($paiTransaction) )
+        {
+            $obj = new stdClass();
+
+            $obj->nome = "+ {$dadosRelatorio->name}";
+            $obj->id = "{$modulo}_genericReport{$dadosRelatorio->reportId}";
+            $obj->acao = "{$handler}:genericReports&reportid={$dadosRelatorio->reportId}";
+            $obj->parent = $paiTransaction;
+            $obj->modulo = $modulo;
+            
+            return $obj;
+        }
+                
+        return false;
+        
+    }
+    
+    /**
+     * Publica o relatório com as informações
+     * 
+     * @param Object $info Informações do relatório
+     */
+    private function publicaRelatorio($info)
+    {
+        $inseriu = array();
+        
+        // Vários modulos
+        foreach( $info->modules as $modulo )
+        {
+            $dados = $info;
+            $dados->modulo = $modulo;
+        
+            $reportInfo = $this->getTransacaoInfo($dados);
+        
+            if( $reportInfo )
+            {
+                $id = $this->relatorioEstaPublicado($reportInfo->id);
+
+                $transaction = $id ? new AdmMioloTransaction($id) : new AdmMioloTransaction();
+
+                $transaction->mTransaction = $reportInfo->id;
+                $transaction->nameTransaction = $reportInfo->nome;
+                $transaction->action = $reportInfo->acao;
+                $transaction->idModule = $reportInfo->modulo;
+                $transaction->parentTransaction = $reportInfo->parent;               
+
+                $inseriu[] = $transaction->save();
+                
+            }
+            
+        }
+        
+        return !in_array(false, $inseriu, true);
+            
+    }
+    
+    /**
+     * Despublica o relatório com as informações dadas
+     * 
+     * @param Object $info Informações do relatório
+     * 
+     * @return Boolean TRUE se a 'despublicação' foi um sucesso, FALSE caso contrário
+     */
+    private function despublicaRelatorio($info)
+    {
+        $despublicou = array();
+        
+        foreach( $info->modules as $modulo )
+        {
+            $dados = $info;
+            $dados->modulo = $modulo;
+        
+            $reportInfo = $this->getTransacaoInfo($info);
+
+            $this->relatorioEstaPublicado($reportInfo->id);
+            
+            if( !is_null($reportInfo) && $this->relatorioEstaPublicado($reportInfo->id) )
+            {
+                $id = $this->relatorioEstaPublicado($reportInfo->id);
+                
+                $transacao = new AdmMioloTransaction($id);
+                $despublicou[] = $transacao->delete();
+
+            }
+            
+        }
+        
+        return !in_array(false, $despublicou, true);
+        
+    }   
+    
+    /**
+     * Verifica se a transação do relatório está publicada
+     * 
+     * @param String $mtransaction Transacao do relatório "genericReport" . id deste
+     * 
+     * @return Boolean
+     */
+    private function relatorioEstaPublicado($mtransaction)
+    {
+        if( $mtransaction )
+        {
+            $filters = new stdClass();
+            $filters->m_transaction = $mtransaction;
+            $transaction = new AdmMioloTransaction();
+            $pesquisa = $transaction->search($filters); 
+
+            // Se a transação com o id existe
+            if( count($pesquisa) > 0 )
+            {
+                return $pesquisa[0]->idTransaction;
+                
+            }
+            
+            return false;
+            
+        }
+        
+        return false;
+        
+    }
+    
+    /**
+     * Publica/Despublica o relatório com as informações
+     * 
+     * @param Object $dados Informações do relatório
+     * 
+     */
+    private function publicarNoMenu($dados)
+    {
+        // Publica no menu caso esteja habilitado
+        if( $dados->enabled === DB_TRUE )
+        {
+            // Exclui o relatório de todos os módulos antes de cadastra-lo
+            $dadosClone = clone $dados;
+            $dadosClone->modules = array_keys(SAGU::listModules(0));
+            $this->despublicaRelatorio($dadosClone);
+            
+            if( $this->publicaRelatorio($dados) === false )
+            {
+                $this->addError(_M("Ocorreu um erro ao tentar habilitar o relatório. "
+                        . "Por favor, tente novamente e se o problema persistir, contate a equipe de suporte do SAGU."));
+                
+            }
+
+        }
+        else if( $dados->enabled === DB_FALSE ) // Despublica caso contrário
+        {
+            if( $this->despublicaRelatorio($dados) === false )
+            {
+                $this->addError(_M("Ocorreu um erro ao tentar desabilitar o relatório. "
+                        . "Por favor, tente novamente e se o problema persistir, contate a equipe de suporte do SAGU."));
+
+            }
+
+        }
+        
+    }
+    
+    /**
+     * Method to gather all information from the form fields
+     * and put them on a database compatible object
+     **/
+    public function getTypesData()
+    {
+        $data = new BasReport();
+
+        $data->reportId = $this->reportId->value;
+        $data->name = $this->reportName->value;
+        $data->description = $this->description->value;
+        $data->modules = $this->modules->value;
+        $data->enabled = $this->enabledIt->value;
+        $data->sql = $this->sql->value;
+
+        // FileId
+        $data->fileId = MIOLO::_REQUEST('fileIdOld');
+        if ( ( strlen($data->fileId) <= 0 ) && ($this->fileIdField) )
+        {
+            $data->fileId = $this->fileIdField->saveUploadedFile();
+        }
+
+        $gridData = unserialize(base64_decode($this->gridData->value));
+
+        if (count($gridData) > 0)
+        {
+            foreach ($gridData as $parameterData)
+            {
+                $pdata = new BasReportParameter();
+
+                list ($pdata->reportParameterId,
+                        $pdata->parameterNumber,
+                        $pdata->label,
+                        $pdata->fieldType,
+                        $pdata->defaultValue,
+                        $pdata->size,
+                        $pdata->fieldValidator,
+                        $pdata->hint,
+                        $pdata->fieldColumns,
+                        $pdata->fieldRows,
+                        $pdata->fixedOptions,
+                        $pdata->options,
+                        $pdata->help) = $parameterData;
+                
+                // Se for um parâmetro, relaciona o campo personalizado ao parâmetro
+                if( strpos($pdata->fieldType, self::PREFIXO_CAMPOPERSONALIZADO) === 0 )
+                {
+                    $pdata->nomecampopersonalizado = str_replace(self::PREFIXO_CAMPOPERSONALIZADO, "", $pdata->fieldType);
+                    
+                }
+                
+                $pdata->reportId = $data->reportId;
+                $pdata->options = urldecode($pdata->options);
+                $data->parameters[$pdata->parameterNumber] = clone($pdata);
+            }
+        }
+
+        return $data;
+    }
+
+    public function getLayout($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $layout = MIOLO::_REQUEST('layoutName');
+        $file = $MIOLO->GetModulePath('basic', $layout . '.jrxml');
+
+        SAGU::returnAsFile(basename($file), file_get_contents($file));
+
+        exit;
+    }
+
+}
+
+?>

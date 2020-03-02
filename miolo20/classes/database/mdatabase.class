@@ -1,0 +1,382 @@
+<?php
+class MDatabase
+{
+    var $conf;       // identifies db configuration in miolo.conf
+    var $system;     // what driver?
+    var $host;       // host configuration
+    var $db;         // db identifier in miolo.conf
+    var $user;       // user in miolo.conf
+    var $pass;       // password in miolo.conf
+
+    /**
+     * @var MConnection Connection manager
+     */
+    public $conn;
+
+    var $parameters; // parameters for connection
+    var $_miolo;     // MIOLO object
+
+    function __construct($conf, $system, $host, $db, $user, $pass, $parameters = NULL, $port=NULL)
+    {
+        $this->_miolo = MIOLO::GetInstance();
+ 
+        $this->_miolo->Assert($system, "Missing DB system!");
+        $this->_miolo->Assert($host, "Missing DB host!");
+        $this->_miolo->Assert($db, "Missing DB name!");
+
+        $this->_miolo->Uses('database/mconnection.class');
+        $this->_miolo->Uses('database/mdataset.class');
+        $this->_miolo->Uses('database/mquery.class');
+        $this->_miolo->Uses('database/midgenerator.class');
+        $this->_miolo->Uses('database/mtransaction.class');
+        $this->_miolo->Uses('database/msqljoin.class');
+        $this->_miolo->Uses('database/mschema.class');
+
+        $this->_miolo->Uses('database/' . $system . '/mconnection.class');
+
+        $this->conf       = $conf;
+        $this->system     = $system;
+        $this->host       = $host;
+        $this->port       = $port;
+        $this->db         = $db;
+        $this->user       = $user;
+        $this->pass       = $pass;
+        $this->parameters = $parameters;
+
+        if ( $system == 'postgres' )
+        {
+            $this->conn = new PostgresConnection($this);
+        }
+        else
+        {
+            $className = "{$system}Connection";
+            $this->conn = new $className($this);
+        }
+        
+        $this->conn->Open($host, $db, $user, $pass, $parameters, $port);
+        
+        if ($err = $this->GetError())
+        {
+            throw new EDatabaseException($conf, $err);
+        }
+    }
+
+    function Close()
+    {
+        $this->conn->Close();
+    }
+
+    function GetError()
+    {
+        $err = $this->GetErrors();
+        return $err ? $err[0] : false;
+    }
+
+    function GetErrors()
+    {
+        return $this->conn->GetErrors();
+    }
+
+    function GetTransaction()
+    {
+        $this->_miolo->Uses('database/' . $this->system . '/mtransaction.class');
+        $className = "{$this->system}Transaction";
+        $transaction = new $className($this->conn);
+        return $transaction;
+    }
+
+    function GetISR()
+    {
+        $this->_miolo->Uses('database/misr.class');
+        $isr = new MISR($this->conn);
+        return $isr;
+    }
+
+    /**
+     * Execute SQL instruction.
+     *
+     * @param mixed $sql SQL string or array.
+     * @return boolean Whether operation was successful.
+     * @throws EDatabaseExecException
+     * @throws EDatabaseException 
+     */
+    function Execute($sql)
+    {
+        $this->_miolo->ProfileEnter('Database::Execute');
+
+        if (is_array($sql))
+        {
+            $ok = $this->ExecuteBatch($sql);
+        }
+        else
+        {
+            try
+            {
+                $ok = @$this->conn->Execute($sql);
+            }
+            catch ( MDatabaseException $e )
+            {
+                $this->_miolo->logError($e, $this->conf);
+                throw new EDatabaseExecException($e->generateMessage());
+            }
+            catch( Exception $e )
+            {
+                $err = trim($this->GetError());
+                $this->_miolo->LogError($err . '; SQL:' . $sql, $this->conf);
+
+                $MIOLO = MIOLO::getInstance();
+                if ( MUtil::getBooleanValue($MIOLO->getConf('options.backtrace')) )
+                {
+                    $trace = $e->getTrace();
+                    $query = $trace[1]['args'][0];
+
+                    $err .= "<br /><br />$query<br /><br />";
+                    $err .= str_replace("\n", '<br />', $e->getTraceAsString());
+                }
+
+                throw new EDatabaseException($this->conf, $err);
+            }
+        }
+
+        $this->_miolo->ProfileExit('Database::Execute');
+        return $ok;
+    }
+
+    /**
+     * Execute SQL instruction.
+     *
+     * @param array $sql_array Array of SQL.
+     * @return boolean Whether the operation was successful.
+     * @throws EDatabaseException 
+     */
+    function ExecuteBatch($sql_array)
+    {
+        $transaction = $this->GetTransaction();
+
+        if (!is_array($sql_array))
+            $sql_array = array($sql_array);
+
+        foreach ($sql_array as $sql)
+        {
+            $transaction->addCommand($sql);
+        }
+
+        try
+        {
+            $ok = $transaction->process();
+        }
+        catch( Exception $e )
+        {
+            throw new EDatabaseException($this->conf, $e->GetMessage());
+        }
+
+        return $ok;
+    }
+
+    function Count($sql)
+    {
+        $query = $this->QueryChunk($sql, 0, 0, $total);
+        return $total;
+    }
+
+    function GetNewId($sequence = 'admin', $tableGenerator = 'miolo_sequence')
+    {
+        $this->_miolo->Uses('database/' . $this->system . '/midgenerator.class');
+        $className = "{$this->system}IdGenerator";
+        $idgenerator = new $className($this);
+        try
+        {
+            $value = $idgenerator->getNewId($sequence, $tableGenerator);
+        }
+        catch( Exception $e )
+        {
+            throw new EDatabaseException('DB::GetNewId: ' . trim($this->getError()), $this->conf);
+        }
+
+        return $value;
+    }
+    
+    function Query($sql, $maxrows = 0, $offset = 0) // backward compatibility
+    {
+        try
+        {
+            $MIOLO = MIOLO::getInstance();
+            
+            if ( $MIOLO->getCacheSQL() )
+            {
+                static $cache = array();
+                
+                if ( isset($cache[$sql]) )
+                {
+                    $result = $cache[$sql];
+                }
+                else
+                {
+                    $query = $this->conn->getQueryCommand($sql, $maxrows, $offset);
+                    $result = $query->result;     
+
+                    $cache[$sql] = $result;
+                }
+            }
+            else
+            {
+                $query = $this->conn->getQueryCommand($sql, $maxrows, $offset);
+                $result = $query->result;
+            }
+        }
+        catch ( MDatabaseException $e )
+        {
+            $this->_miolo->logError($e, $this->conf);
+            throw new EDatabaseQueryException($e->generateMessage());
+        }
+        catch ( EDatabaseQueryException $e )
+        {
+            $message = $e->getMessage();
+            $MIOLO = MIOLO::getInstance();
+            if ( MUtil::getBooleanValue($MIOLO->getConf('options.backtrace')) )
+            {
+                $trace = $e->getTrace();
+                $query = $trace[2]['args'][0];
+                $message .= "<br /><br />$query<br /><br />";
+                $message .= str_replace("\n", '<br />', $e->getTraceAsString());
+            }
+            throw new EDatabaseQueryException($message);
+        }
+        return $result;
+    }
+
+    function GetQuery($sql, $maxrows = 0)
+    {
+        if (isset($sql->range))
+        {
+            $query = $this->QueryChunk($sql, $sql->range->rows, $sql->range->offset, $sql->range->total);
+        }
+        else
+        {
+            $query = $this->QueryChunk($sql, $maxrows, 0, $total);
+        }
+
+        return $query;
+    }
+
+    /**
+     * @return MQuery
+     */
+    function objQuery($sql, $maxrows = 0) // backward compatibility
+    {     
+        if ( is_object($sql) )
+        {
+            if ( get_class($sql) == 'sql' )
+            {
+                return $this->GetQuery($sql, $maxrows);
+            }
+            else
+            {
+                return false;
+            }
+        }
+        else
+        {
+            $oSql = new sql();
+            $oSql->CreateFrom($sql);
+            $query = $this->QueryChunk($oSql, $maxrows, 0, $total);
+            return $query;
+        }
+    }
+
+    function GetTable($tablename)
+    {
+        $sql = new sql("*", $tablename);
+        $query = $this->GetQuery($sql);
+        return $query;
+    }
+
+    function GetTableInfo($tablename)
+    {
+        $this->_miolo->Uses('database/' . $this->system . '/mschema.class');
+        $className = "{$this->system}Schema";
+        $schema    = new $className($this->conn);
+        return $schema->getTableInfo($tablename);
+    }
+
+    function QueryRange($sql, &$range) // backward compatibility
+    {
+        $oSql = new sql();
+        $oSql->CreateFrom($sql);
+        $query = $this->QueryChunk($oSql, $range->rows, $range->offset, $range->total);
+        return $query->result;
+    }
+
+    function QueryChunk($sql, $maxrows, $offset, &$total)
+    {
+        $this->_miolo->ProfileEnter('Database::QueryChunk');
+        $sql->SetDb($this);
+
+        try
+        {
+            $query = @$this->conn->getQuery($sql, $maxrows, $offset);
+            $total = $query->GetRowCount();
+
+            if (!$sql->bind)
+                $query->Close();
+
+            $this->_miolo->ProfileExit('Database::QueryChunk');
+            return $query;
+        }
+        catch( Exception $e )
+        {
+            $err = trim($this->GetError());
+            $this->_miolo->LogError($err . '; SQL:' . $sql->command, $this->conf);
+
+            throw new EDatabaseException($this->conf, $err . ';' . $e->getMessage());
+        }
+    }
+
+    function ExecProc($sql, $aParams = null)
+    {
+        $this->_miolo->ProfileEnter('Database::ExecProc');
+        $result = @$this->conn->ExecProc($sql, $aParams);
+        $this->_miolo->ProfileExit('Database::ExecProc');
+        return $result;
+    }
+
+    //
+    // This function checks, if the last executed command caused a database
+    // error. If this is the case, an exception is raised, informing the
+    // reason(s).
+    //
+    function Assert($info = false)
+    {
+        $err = $this->conn->GetErrors();
+        if ($err)
+        {
+            throw new EDatabaseException($conf, $info . $err);
+        }
+    }
+
+    function GetAffectedRows()
+    {
+        return $this->conn->affectedrows;
+    }
+
+    function CharToTimestamp($timestamp, $format='DD/MM/YYYY HH24:MI:SS')
+    {
+        return $this->conn->_chartotimestamp($timestamp, $format);
+    }
+
+    function CharToDate($date, $format='DD/MM/YYYY')
+    {
+        return $this->conn->_chartodate($date, $format);
+    }
+
+    function TimestampToChar($timestamp, $format='DD/MM/YYYY HH24:MI:SS')
+    {
+        return $this->conn->_timestamptochar($timestamp, $format);
+    }
+
+    function DateToChar($date, $format='DD/MM/YYYY')
+    {
+        return $this->conn->_datetochar($date, $format);
+    }
+}
+?>

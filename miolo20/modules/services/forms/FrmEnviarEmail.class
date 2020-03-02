@@ -1,0 +1,192 @@
+<?php
+
+/**
+ * <--- Copyright 2003-2015 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Personal data form
+ *
+ * @author Joao Francisco Padilha Souza [joao@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * 
+ *
+ * @since
+ * Class created on 03/02/2015
+ */
+
+/**
+ * Form to type the group academic data
+ */
+class FrmEnviarEmail extends SForm
+{
+
+    /**
+     * Class constructor
+     */
+    public function __construct($data = null)
+    {
+        $module = SAGU::getFileModule(__FILE__);
+
+        parent::__construct(_M('Envio de e-mail', $module), null, null);
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+
+
+        //Titulo do email
+        $fields[] = $tituloEmail = new MTextField('tituloEmail', NULL, _M('Título'), SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $tituloEmail->setJsHint(_M('Informe o título do e-mail'));
+        $validators[] = new MRequiredValidator('tituloEmail');
+
+        //Nucleo profissional
+        $fields[] = $nucleoProfissional = new MSelection('nucleoProfissionalId', $this->getRequestValue('nucleoProfissionalId', $data->nucleoProfissionalId), _M('Núcleo profissional'), MedNucleoProfissional::listRecords());
+        $nucleoProfissional->setJsHint(_M('Informe o núcleo profissional'));
+
+
+        // Enfase
+        $fields[] = $enfase = new MSelection('enfaseId', $this->getRequestValue('enfaseId', $data->enfaseId), _M('Especialidade'), MedEnfase::listRecords());
+        $enfase->setJsHint(_M('Informe a especialidade'));
+
+
+        //Edicao da mensagem
+        $mensagemLabel = new MText('lbl', _M('Mensagem') . ':');
+        $mensagemLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $mensagemLabel->setClass('m-caption m-caption-required');
+        $mensagem = new MEditor('mensagem', $this->getFormValue('mensagem', $data->mensagem));
+        $mensagem->disableElementsPath();
+        $mensagem->setWidth(SAGU::getParameter('BASIC', 'FIELD_EDITOR_SIZE'));
+        $mensagem->setJsHint(_M('Informe a mensagem que será enviada.'));
+        $fields[] = new MHContainer('hctMensagem', array($mensagemLabel, $mensagem));
+
+
+        // Anexador de arquivos (ate 3 arquivos)
+        for ($i = 0; $i < 3; $i++) {
+            $bgrFields[] = new MSeparator('<br/>');
+
+            $bgrFields[] = $file = new SFileField("arquivo_{$i}", $this, array(
+                'fieldLabel' => _M('Arquivo @1', null, ($i + 1)),
+            ));
+        }
+
+        $fields[] = new MBaseGroup('bgrGrupo', _M('Anexos'), $bgrFields);
+
+
+        //Botao Voltar
+        $hct = array();
+        $hct[] = new MButton('btnVoltar', _M('<< Voltar'), $MIOLO->getActionURL('services', 'main:resmedica:unidadesTematicasDoPreceptor'));
+        $hct[] = new MButton('btnEnviar', _M('Enviar'));
+        $fields[] = new MHContainer('hct', $hct);
+
+
+        $fields[] = new MSeparator();
+
+        $this->setFields($fields);
+        $this->setValidators($validators);
+
+        parent::defineFields();
+    }
+
+    //BOTAO enviar e-mail
+    public function btnEnviar_click($sender = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        $titulo = MIOLO::_REQUEST('tituloEmail');
+        $mensagem = MIOLO::_REQUEST('mensagem');
+
+        //OBTEM o usuario da pessoa logada e obtem os dados dela
+        $mioloUserName = trim($MIOLO->getLogin()->id);
+        $busPerson = new BusinessBasicBusPerson();
+        if ($mioloUserName)
+        {
+            $personData = $busPerson->getPersonByMioloUserName($mioloUserName);
+        }
+
+        $filters = new stdClass();
+        $filters->ofertaDeUnidadeTematicaId = MIOLO::_REQUEST('ofertaDeUnidadeTematicaId');
+        $filters->enfaseId = MIOLO::_REQUEST('enfaseId');
+        $filters->nucleoProfissionalId = MIOLO::_REQUEST('nucleoProfissionalId');
+
+        $recipients = array();
+
+        $searchOfertaDoResidente = MedOfertaDoResidente::search($filters);
+
+        if (count($searchOfertaDoResidente) > 0)
+        {
+            foreach ($searchOfertaDoResidente as $posicao => $ofertaDoResidente) {
+                $residente = $ofertaDoResidente->residente;
+                $personid = $residente->personId;
+
+                $person = $busPerson->getPerson($personid);
+
+                $recipients[$person->name] = $person->email;
+            }
+        }
+
+        // Buscar os emails do nucleo profissional + enfase selecionados na tela        
+        try
+        {
+            if (strlen($mensagem) == 0)
+            {
+                $this->AddAlert(_M('Especifique uma mensagem'));
+            }
+            else if (count($recipients) > 0)
+            {
+                $mail = new sendEmail($personData->email, $personData->name, $recipients, $titulo, $mensagem, array());
+
+                for ($i = 0; $i < 3; $i++) {
+                    $id = "arquivo_{$i}";
+
+                    if (strlen($_FILES[$id]['tmp_name']) > 0)
+                    {
+                        $mail->AddAttachment($_FILES[$id]['tmp_name'], $_FILES[$id]['name']);
+                    }
+                }
+
+                $ok = $mail->sendEmail();
+                $MIOLO->information(_M('Mensagem enviada com sucesso.', $module), $MIOLO->getActionURL('services', 'main:resmedica:unidadesTematicasDoPreceptor'));
+            }
+            else
+            {
+                $msg = _M("Nenhum residente encontrado!<br> Verifique a &Ecirc;nfase e o Núcleo profissional.<br><br>");
+                $this->addAlert($msg);
+            }
+        }
+        catch (Exception $e)
+        {
+            $msg = _M("Não foi possível enviar email!<br><br>");
+            $msg .= $e->getMessage();
+            $this->addError($msg);
+        }
+    }
+
+}

@@ -1,0 +1,268 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulário de inscrição
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.com.br]
+ *
+ * @since
+ * Class Created on 20/11/2013
+ *
+ **/
+class FrmInscricaoPai extends sLinkedForm
+{
+    public function __construct()
+    {
+        if ( $this->isUpdateFunction() )
+        {
+            $this->setBloquearNavegacao(true);
+        }
+        
+        parent::__construct(new AcpInscricao(), array('inscricaoid'));
+        
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+    }
+    
+    public function getLinkedDefs()
+    {
+        if ( !$this->defs )
+        {
+            $ofertacursoid = MIOLO::_REQUEST('ofertacursoid');
+            $defs = $this->newDef()
+                    ->setChave('inscricaoid')
+                    ->addForm( $this->newFormDef()->setLabel('Dados da inscrição')->setModule('pedagogico')->setAction('main:process:inscricao')->setTipo(self::TIPO_UM_PARA_UM) )
+                    ->addForm( $this->newFormDef()->setLabel('Turma')->setModule('pedagogico')->setAction('main:process:inscricaoturma')->setTipo(self::TIPO_UM_PARA_UM) );
+            
+                    //Verifica se o curso não é gratuito ou possui taxa de inscrição
+                    if( strlen($ofertacursoid) > 0 )
+                    {
+                        $ofertacurso = $this->obterOferta($ofertacursoid);
+                        if( $ofertacurso->ocorrenciacurso->curso->gratuito == DB_FALSE || $ofertacurso->taxainscricao == DB_TRUE )
+                        {
+                            $defs->addForm( $this->newFormDef()->setLabel('Condições de pagamento')->setModule('pedagogico')->setAction('main:process:inscricaopagamento')->setTipo(self::TIPO_UM_PARA_UM) );
+                        }
+                    }
+            $this->defs = $defs;
+        }
+        
+        return $this->defs;
+    }
+    
+    
+    /**
+     * Obtém o objeto de regras de perfil de curso
+     * a partir da oferta do curso
+     */
+    public function obterRegrasDaOfertaDeCurso($ofertacursoid)
+    {
+        $ofertaDeCurso = new AcpOfertaCurso($ofertacursoid);
+        $ocorrenciaDeCurso = new AcpOcorrenciaCurso($ofertaDeCurso->ocorrenciacursoid);
+        $curso = new AcpCurso($ocorrenciaDeCurso->cursoid);                
+        $regras = AcpRegrasMatriculaPerfilCurso::obterRegrasDoPerfilDeCurso($curso->perfilcursoid);
+        return $regras;
+    }
+    
+    /**
+     * Obtém o botão para impressão do boleto
+     * @param int $inscricaoid - Código da inscrição
+     * @return \MButton
+     */
+    public function linkImprimirBoleto($inscricaoid)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $_args = array();
+        $_args['_invoiceId'] = PrcTituloInscricao::obterPrimeiraParcelaDaInscricao($inscricaoid);        
+        $_args['event'] = 'submit_button_click';
+        
+        return $MIOLO->getActionURL('finance', 'main:process:printInvoice', null, $_args);        
+    }
+    
+    public function obterLabelSalvarEContinuar()
+    {
+        return _M('Continuar');
+    }
+    
+    /**
+     * Envia e-mail de confirmação da inscrição
+     */
+    public function enviarEmail($inscricaoid, $ofertaturmaid)
+    {
+        //Não está habilitado, corta processo
+        if ( SAGU::getParameter('PEDAGOGICO', 'EMAIL_CONFIRMACAO_INSCRICAO') != DB_TRUE )
+        {
+            return;
+        }
+        
+        //Business
+        $busCompany = new BusinessBasicBusCompany();
+        $busPessoa = new BusinessBasicBusPhysicalPerson();
+        
+        //Informações pedagógicas
+        $inscricao = new AcpInscricao($inscricaoid);
+        $situacoes = $inscricao->listarSituacao();
+        $ofertaTurma = new AcpOfertaTurma($ofertaturmaid);
+        $inscricaoTurma = new AcpInscricaoTurmaGrupo(AcpInscricaoTurmaGrupo::obterInscricaoTurmaGrupo($inscricaoid, $ofertaturmaid));
+
+        //Pessoa
+        $pessoa = $busPessoa->getPhysicalPerson($inscricao->personid);
+        $dataCompany = $busCompany->getCompany(SAGU::getParameter('BASIC', 'DEFAULT_COMPANY_CONF'));
+        
+        //Adiciona informações das condições de pagamento
+        if ( strlen($inscricao->precocondicaoinscricaoid) > 0 ||
+             strlen($inscricaoTurma->precocondicaomatriculaid) > 0 )
+        {
+            $condicoes = '<B>Condições de pagamento:</B><BR>';
+            
+            //Taxa de inscrição
+            if ( strlen($inscricao->precocondicaoinscricaoid) > 0 )
+            {
+                $precoInscricao = new PrcPrecoCondicao($inscricao->precocondicaoinscricaoid);
+                $quantParcelas = ($precoInscricao->valortotal/$precoInscricao->valorparcela);
+
+                $condicoes .= '<B>TAXA DE INSCRIÇÃO: </B>' . $quantParcelas .' vezes de ' . $precoInscricao->valorparcela . '. Total de: ' . $precoInscricao->valortotal . '<BR>';
+            }
+            
+            //Mensalidades
+            if ( strlen($inscricaoTurma->precocondicaomatriculaid) > 0 )
+            {
+                $mensalidade = new PrcPrecoCondicao($inscricaoTurma->precocondicaomatriculaid);
+                $quantParcelas = ($mensalidade->valortotal/$mensalidade->valorparcela);
+                
+                $condicoes .= '<B>MENSALIDADES: </B>' . $quantParcelas .' vezes de ' . $mensalidade->valorparcela . '. Total de: ' . $mensalidade->valortotal . '<BR>';
+            }
+        }
+        
+        $tags = array(
+            '$CURSO' => $ofertaTurma->ofertacurso->descricao,
+            '$UNIVERSIDADE' => $dataCompany->name,
+            '$PERSONNAME' => $pessoa->name,
+            '$PERSONID' => $pessoa->personId,
+            '$SITUACAO' => $situacoes[$inscricao->situacao],
+            '$TURMA' => $ofertaTurma->descricao,
+            '$DATAINICIAL' => SAGU::dateToUser($ofertaTurma->datainicialaulas),
+            '$DATAFINAL' => SAGU::dateToUser($ofertaTurma->datafinalaulas),
+            '$CONDICOESDEPAGAMENTO' => $condicoes
+        );
+        
+        //Parâmetros
+        $from = SAGU::getParameter('PEDAGOGICO', 'EMAIL_FROM_DEFAULT');
+        $fromName = $dataCompany->acronym;
+        $recipient[$pessoa->name] = strtolower($pessoa->email);
+        $subject = _M('Confirmação de inscrição');
+        
+        //Corpo
+        $body = SAGU::getParameter('PEDAGOGICO', 'EMAIL_INSCRICAO_MENSAGEM');
+        $body = strtr($body, $tags);
+
+        //Enviar
+        $mail = new sendEmail($from, $fromName, $recipient, $subject, $body, array());
+        $emailSent = $mail->sendEmail();
+
+        //Caso não for enviado, avisa
+        if ( !$emailSent )
+        {
+            $MIOLO = MIOLO::getInstance();
+            $module = $MIOLO->getCurrentModule();
+            $MIOLO->information(_M("Inscrição realizada com sucesso! Não foi possível enviar o e-mail de confirmação.<br>" . $mail->getErrors(), $module));
+        }
+    }
+    
+    /**
+     * @return AcpOfertaCurso
+     */
+    public function obterOferta($ofertacursoid)
+    {
+        static $cache = array();
+        
+        if ( !isset($cache[$ofertacursoid]) )
+        {
+            $cache[$ofertacursoid] = new AcpOfertaCurso($ofertacursoid);
+        }
+        
+        return $cache[$ofertacursoid];
+    }
+    
+    public function exibeTelaFinal($inscricaoid, $msg = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        $acpInscricao = new AcpInscricao($inscricaoid);
+        
+        $args['inscricaoid'] = $inscricaoid;
+        $args['event'] = 'resumoInscricao';
+        $args['function'] = 'insert';
+        $args['ofertacursoid'] = $acpInscricao->ofertacursoid;
+        $args['ofertaturmaid'] = MIOLO::_REQUEST('ofertaturmaid');
+                
+        $url = $MIOLO->GetActionURL('pedagogico', $action, null, $args);
+        $MIOLO->page->Redirect($url);
+    }
+    
+    public function resumoInscricao($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $inscricaoid = MIOLO::_REQUEST('inscricaoid');
+
+        $resumo = new AcpResumoDeInscricao($inscricaoid);
+        $resumo->tipoFonte = AcpResumoDeInscricao::TIPO_INSCRICAO;
+        
+        $this->ClearFields();
+
+        $msg = _M('Inscrição salva com sucesso!.' . $msg);
+        
+        $action = MIOLO::getCurrentAction();
+        
+        if ( $action == 'main:process:inscricaoturmaexterna' || $action == 'main:process:inscricaopagamentoexterna' )
+        {
+            $action = 'main:process:inscricaoautenticacao';    
+        }
+        else
+        {
+            $action = 'main:process:inscricao';
+        }
+                
+        $goto = $MIOLO->GetActionURL($module, $action);
+        $info = MPrompt::Information($msg, $goto);
+        $this->AddField($info);
+        
+        $this->AddField($resumo->renderizar());
+    }
+    
+    public function obterPrecoCondicaoId($ofertaturmaid, $matrizcurriculargrupoid = null)
+    {
+        // Obtem o preco do curso
+        $condicaodepagamentoid = MIOLO::_REQUEST('condicaodepagamentoid');
+        $precocurso = PrcPrecoCurso::obterPrecoDaOfertaDaTurma($ofertaturmaid, PrcPrecoCurso::TIPO_MATRICULA);
+        $precocondicao = PrcPrecoCondicao::obterValoresDaCondicao($precocurso->precocursoid, $condicaodepagamentoid, $matrizcurriculargrupoid);
+        $precocondicaoid = $precocondicao[0]->precocondicaoid;
+                
+        return $precocondicaoid;
+    }
+}
+?>

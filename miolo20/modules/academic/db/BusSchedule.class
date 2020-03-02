@@ -1,0 +1,2164 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ *
+ * This file handles the connection and actions for acdSchedule table
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Cristian Edson Göhl [cristian@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.cop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ *
+ * @since
+ * Class created on 23/09/2005
+ *
+ **/
+
+/**
+ * Class to manipulate the acdSchedule table
+ **/
+class BusinessAcademicBusSchedule extends sBusiness
+{
+    public $krono;
+    /**
+     * Make a connection to the database
+     *
+     * @param $module (string): The module whose database we should connect. If null, the actual module database is connected.
+     *
+     * @return (object): A MIOLO Database connection
+     **/
+
+    public function __construct()
+    {
+        $this->krono = new MKrono();
+        
+        parent::__construct();
+    }
+
+    /**
+     * List all records from the table handled by the class
+     *
+     * @param: None
+     *
+     * @returns (array): Return an array with the entire table
+     *
+     **/
+    public function listSchedule()
+    {
+        $sql = 'SELECT DISTINCT A.professorresponsible,
+		       C.name
+	          FROM acdgroup A
+            INNER JOIN acdscheduleprofessor B
+	            ON A.professorresponsible = B.scheduleid
+       INNER JOIN ONLY basphysicalpersonprofessor C 
+	            ON B.scheduleid = C.personid
+                    ORDER BY 2';
+        
+        
+       $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+       return $result;
+    }
+
+    /**
+     * Return a specific record from the database
+     *
+     * @param $scheduleId (integer): Primary key of the record to be retrieved
+     *
+     * @return (object): Return an object of the type handled by the class
+     *
+     **/
+    public function getSchedule($scheduleId)
+    {
+        $db  = $this->getDatabase();
+        $sql = 'SELECT A.scheduleId,
+                       A.groupId,
+                       A.unitId,
+                       C.description AS unitDescription,
+                       A.physicalResourceId,
+                       A.physicalResourceVersion,
+                       D.description AS physicalResourceDescription,
+                       A.occurrenceDates,
+                       A.timeIds,
+                       A.userName,
+                       TO_CHAR(A.dateTime,\'' . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . '\'),
+                       A.ipAddress,
+                       G.shortName as shortName
+                  FROM acdSchedule A
+            INNER JOIN unit_acdGroup B
+                    ON (B.groupId = A.groupId)
+             LEFT JOIN basUnit C
+                    ON (C.unitId = A.unitId)
+             LEFT JOIN insPhysicalResource D
+                    ON (    D.physicalResourceId      = A.physicalResourceId
+                        AND D.physicalResourceVersion = A.physicalResourceVersion)
+            INNER JOIN unit_acdcurriculum F
+                    ON (F.curriculumId = B.curriculumId)
+            INNER JOIN acdCurricularComponent G
+                    ON (G.curricularComponentId = F.curricularComponentId AND
+                        G.curricularComponentVersion = F.curricularComponentVersion)
+                 WHERE A.scheduleId = ? ';
+
+        $args = array( $scheduleId );
+
+        $result   = $db->query(SAGU::prepare($sql, $args));
+        $schedule = new AcdSchedule();
+
+        list ( $schedule->scheduleId,
+               $schedule->groupId,
+               $schedule->unitId,
+               $schedule->unitDescription,
+               $schedule->physicalResourceId,
+               $schedule->physicalResourceVersion,
+               $schedule->physicalResourceDescription,
+               $schedule->occurrenceDates,
+               $schedule->timeIds,
+               $schedule->userName,
+               $schedule->dateTime,
+               $schedule->ipAddress,
+               $schedule->turnDescription ) = $result[0];
+        
+        if ( !is_null($schedule->timeIds) )
+        {
+            $schedule->timeIds = explode(',',str_replace('{','',str_replace('}','',$schedule->timeIds)));
+        }
+        
+        $schedule->occurrenceDates = $this->getOccurrenceDates($scheduleId);
+        
+        return $schedule;
+    }
+    
+    /**
+     * @return array
+     */
+    private function getOccurrenceDates($scheduleId)
+    {
+        $db  = $this->getDatabase();
+        $sql = "SELECT EXTRACT(day FROM x.date) || '/' || EXTRACT(month FROM x.date) || '/' || EXTRACT(year FROM x.date)
+                 FROM ( SELECT UNNEST(occurrenceDates) AS date
+                          FROM acdSchedule
+                         WHERE scheduleId = ? ) x
+            ";
+
+        $args = array( $scheduleId );
+        $result = $db->query(SAGU::prepare($sql, $args));
+        $dates = array();
+        
+        foreach ( (array) $result as $row )
+        {
+            $dates[] = $row[0];
+        }
+        
+        return $dates;
+    }
+
+    /**
+     * Do a search on the database table handled by the class
+     *
+     * @param $filters (object): Search filters
+     * <br><b>occurrenceDates</b> (array) Array contendo datas de ocorrencia a filtrar
+     * <br><b>timeIds</b> (array) Array contendo horarios a filtrar
+     *
+     * @return (array): An array containing the search results
+     **/
+    public function searchSchedule($filters, $showProfessors=false)
+    {
+        $sql = "SELECT A.scheduleId,
+                       A.groupId,
+                       A.unitId,
+                       C.description AS unitDescription,
+                       J.periodId,
+                       TO_CHAR(J.beginDate, getParameter('BASIC', 'MASK_DATE')),
+                       TO_CHAR(J.endDate, getParameter('BASIC', 'MASK_DATE')),
+                       '' AS professors,
+                       
+                       ARRAY_TO_STRING(ARRAY(
+                            SELECT '- ' || timetouser(T.beginHour) || '&nbsp;-&nbsp;' || timetouser(T.endHour)
+                                FROM acdTime T
+                            WHERE T.timeId = ANY(A.timeIds)
+                            ORDER BY 1
+                       ), '<br>') AS horarios,
+                       
+                       ARRAY_TO_STRING(ARRAY(
+                            SELECT '- ' || obterDiaExtenso(dia::int)
+                              FROM (SELECT DISTINCT ( EXTRACT(DOW FROM UNNEST(A.occurrenceDates)) ) AS dia) X
+                          --GROUP BY 1
+                          ORDER BY dia
+                       ), '<br>') AS dias_da_semana,
+                       NULL, 
+                        (SELECT TO_CHAR(MIN(X.occurrenceDate), '" . SAGU::getParameter('BASIC', 'MASK_DATE') . "') AS startDate
+                            FROM (SELECT UNNEST(Z.occurrenceDates) AS occurrenceDate
+                                    FROM acdSchedule Z
+                                    WHERE Z.scheduleId = A.scheduleId) X) AS startDate,
+                        (SELECT TO_CHAR(MAX(X.occurrenceDate), '" . SAGU::getParameter('BASIC', 'MASK_DATE') . "') AS endDate
+                            FROM (SELECT UNNEST(Z.occurrenceDates) AS occurrenceDate
+                                    FROM acdSchedule Z
+                                    WHERE Z.scheduleId = A.scheduleId) X) AS endDate,
+                        A.occurrenceDates AS datas,
+                        ROUND((random() * 99999 + 1)::numeric, 0) AS randomId
+                  FROM acdSchedule A
+            INNER JOIN unit_acdGroup B
+                    ON (B.groupId = A.groupId)
+             LEFT JOIN basUnit C
+                    ON (C.unitId = A.unitId)
+             LEFT JOIN insPhysicalResource F
+                    ON (    F.physicalResourceId      = A.physicalResourceId
+                        AND F.physicalResourceVersion = A.physicalResourceVersion)
+            INNER JOIN unit_acdlearningperiod J
+                    ON (B.learningPeriodId = J.learningPeriodId)
+            INNER JOIN acdPeriod K
+                    ON (J.periodId = K.periodId)
+            INNER JOIN unit_acdcurriculum L
+                    ON (L.curriculumId = B.curriculumId)
+            INNER JOIN acdCurricularComponent M
+                    ON (M.curricularComponentId = L.curricularComponentId AND
+                        M.curricularComponentVersion = L.curricularComponentVersion)";
+
+        if ( strlen($filters->professorId) > 0 )
+        {
+            $sql .= 'INNER JOIN acdScheduleProfessor N
+                     ON (A.scheduleId = N.scheduleId AND N.professorId = ?)';
+            $args[] = $filters->professorId;
+        }
+        if ( strlen($filters->scheduleId) > 0 )
+        {
+            $where .= ' AND A.scheduleId = ?';
+            $args[] = $filters->scheduleId;
+        }
+        if ( strlen($filters->groupId) > 0 )
+        {
+            $where .= ' AND A.groupId = ?';
+            $args[] = $filters->groupId;
+        }
+        if ( strlen($filters->unitDescription) > 0 )
+        {
+            $where .= ' AND UNACCENT(C.description) ILIKE UNACCENT(?)';
+            $args[] = $filters->unitDescription . '%';
+        }
+        if ( strlen($filters->physicalResourceId) > 0 )
+        {
+            $where .= ' AND A.physicalResourceId = ?';
+            $args[] = $filters->physicalResourceId;
+        }
+        if ( strlen($filters->physicalResourceVersion) > 0 )
+        {
+            $where .= ' AND A.physicalResourceVersion = ?';
+            $args[] = $filters->physicalResourceVersion . '%';
+        }
+        if ( strlen($filters->physicalResourceDescription) > 0 )
+        {
+            $where .= ' AND UNACCENT(F.description) ILIKE UNACCENT(?)';
+            $args[] = $filters->physicalResourceDescription;
+        }
+        if ( strlen($filters->numberHoursLessons) > 0 )
+        {
+            $where .= ' AND A.numberHoursLessons = ?';
+            $args[] = $filters->numberHoursLessons;
+        }
+        if ( strlen($filters->learningPeriodId) > 0 )
+        {
+            $where .= ' AND J.learningPeriodId = ?';
+            $args[] = $filters->learningPeriodId;
+        }
+        if ( strlen($filters->periodId) > 0 )
+        {
+            $where .= ' AND K.periodId = ?';
+            $args[] = $filters->periodId;
+        }
+        if ( strlen($filters->courseId) > 0 )
+        {
+            $where .= ' AND J.courseId = ?';
+            $args[] = $filters->courseId;
+        }
+        if ( strlen($filters->courseUnitId) > 0 )
+        {
+            $where .= ' AND J.unitId = ?';
+            $args[] = $filters->courseUnitId;
+        }
+        if ( strlen($filters->courseVersion) > 0 )
+        {
+            $where .= ' AND J.courseVersion = ?';
+            $args[] = $filters->courseVersion;
+        }
+        if ( strlen($filters->courseTurnId) > 0 )
+        {
+            $where .= ' AND J.turnId = ?';
+            $args[] = $filters->courseTurnId;
+        }
+        if ( count($filters->timeIds) > 0 )
+        {
+            foreach ( $filters->timeIds as $timeId )
+            {
+                $where .=  ' AND ? IN (SELECT UNNEST(timeIds)) ';
+                $args[] = $timeId;
+            }
+        }
+        if ( count($filters->occurrenceDates) > 0 )
+        {
+            foreach ( $filters->occurrenceDates as $date )
+            {
+                $where .=  ' AND ? IN (SELECT UNNEST(occurrenceDates)) ';
+                $args[] = SAGU::convertDateToDb($date);
+            }
+        }
+
+        $result = null;
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 4) . ' ORDER BY A.scheduleId';
+
+            $db     = $this->getDatabase();
+            $result = $db->query(SAGU::prepare($sql, $args));
+        }
+                
+        if ( $showProfessors && (count($result) > 0) )
+        {
+            $return = null;
+
+            $sql = 'SELECT A.scheduleProfessorId,
+                           A.professorId,
+                           B.name
+                      FROM acdScheduleProfessor A
+                INNER JOIN basPhysicalPersonProfessor B
+                        ON (B.personId = A.professorId)
+                     WHERE A.scheduleId = ?
+                  ORDER BY B.name';
+
+            for ($i = 0; $i < count($result); $i++)
+            {
+                $scheduleId = $result[$i][0];
+
+                $professorsData = $this->getDatabase()->query(SAGU::prepare($sql, $scheduleId));
+
+                if (count($professorsData) > 0)
+                {
+                    $professorsArray = null;
+                    for ($j = 0; $j < count($professorsData); $j++)
+                    {
+                        $professorsArray[] = implode('<2>', array($professorsData[$j][0], $professorsData[$j][2]));
+                        $arrayProfessors = array($professorsData[$j][0], $professorsData[$j][2]);
+                    }
+
+                    $result[$i][10] = implode('<1>', $professorsArray);
+                }
+
+                $return[] = $result[$i];
+            }
+
+            return $return;
+        }
+        else
+        {
+            return $result;
+        }
+    }
+
+    /**
+     * Insert a new record
+     *
+     * @param $data (object): An object of the type handled by the class
+     *
+     * @return True if succed, otherwise False
+     *
+     **/
+    public function insertSchedule($data)
+    {
+        $db = $this->getDatabase();
+
+        $sql = 'SELECT nextVal(\'seq_ScheduleId\')';
+
+        $query = $db->query($sql);
+
+        $scheduleId = $query[0][0];
+
+        $args = array( $scheduleId,
+                       $data->groupId,
+                       $data->unitId,
+                       $data->physicalResourceId,
+                       $data->physicalResourceVersion );
+
+        if ( is_array($data->occurrenceDates) )
+        {
+            if ( sizeof($data->occurrenceDates)>0 )
+            {
+                foreach ( $data->occurrenceDates as $od )
+                {
+                    $occurrenceDates[] = 'TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')';
+                }
+                $occurrenceDates = implode($occurrenceDates, ',');
+                $args            = array_merge($args, $data->occurrenceDates);
+            }
+        }
+        elseif ( strlen($data->occurrenceDates) > 0 )
+        {
+            $occurrenceDates = "'{$data->occurrenceDates}'::DATE";
+        }
+
+        if ( is_array($data->timeIds) )
+        {
+            if ( sizeof($data->timeIds)>0 )
+            {
+                foreach ( $data->timeIds as $ti )
+                {
+                    $timeIds[] = '?::INT';
+                }
+                $timeIds = implode($timeIds, ',');
+                $args    = array_merge($args, $data->timeIds);
+            }
+        }
+        elseif ( strlen($data->timeIds) > 0 )
+        {
+            $timeIds = $data->timeIds;
+        }
+
+        $sql = 'INSERT INTO acdSchedule
+                    ( scheduleId,
+                      groupId,
+                      unitId,
+                      physicalResourceId,
+                      physicalResourceVersion,
+                      occurrenceDates,
+                      timeIds )
+             VALUES ( ?,
+                      ?,
+                      ?,
+                      ?,
+                      ?,
+                      ARRAY[' . $occurrenceDates . '],
+                      ARRAY[' . $timeIds . '] ) ';
+
+        $result = $db->execute(SAGU::prepare($sql, $args));
+
+        return $scheduleId;
+    }
+
+    /**
+     * Update data from a specific record
+     *
+     * @param $data (object): Data which will replace the old record data
+     *
+     * @return (boolean): True if succeed, otherwise False
+     *
+     **/
+    public function updateSchedule($data)
+    {
+        $db = $this->getDatabase();
+
+        $args = array(
+            $data->groupId,
+            $data->unitId,
+            $data->physicalResourceId,
+            $data->physicalResourceVersion
+        );
+
+        if ( sizeof($data->occurrenceDates)>0 )
+        {
+            foreach ( $data->occurrenceDates as $od )
+            {
+                $occurrenceDates[] = 'TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')';
+            }
+            $occurrenceDates = implode($occurrenceDates, ',');
+            $args            = array_merge($args, $data->occurrenceDates);
+        }
+
+        if ( sizeof($data->timeIds)>0 )
+        {
+            foreach ( $data->timeIds as $ti )
+            {
+                $timeIds[] = '?::INT';
+            }
+            $timeIds = implode($timeIds, ',');
+            $args    = array_merge($args, $data->timeIds);
+        }
+
+        $args[] = $data->scheduleId;
+
+        $sql = 'UPDATE acdSchedule
+                   SET groupId                 = ?,
+                       unitId                  = ?,
+                       physicalResourceId      = ?,
+                       physicalResourceVersion = ?,
+                       occurrenceDates         = ARRAY[' . $occurrenceDates . '],
+                       timeIds                 = ARRAY[' . $timeIds . ']
+                 WHERE scheduleId = ?';
+
+        $sqls = SAGU::prepare($sql, $args);
+   
+        $antesUp = $this->getSchedule($data->scheduleId);
+        for ( $i=0; $i<count($sqls); $i++ )
+        {
+            if(count($data->timeIds) == count($antesUp->timeIds))
+            {
+                 $result = $db->execute($sqls[$i]);
+            }
+            else
+            {
+                try
+                {
+                    $result = $db->execute($sqls[$i]); 
+                } catch (Exception $ex) {
+                    throw new Exception( _M('Não é possível alterar o horário, já existe conteúdo de aula registrado. Caso queira remover as 
+frequências/conteúdo ministrado acesse: Acadêmico::Processo::Geração em lote::Registro de 
+frequências em lote e remova todas as ocorrências de frequência disciplina na data desejada.'));
+                }
+            }
+        }
+
+        return $data->scheduleId;
+    }
+
+    /**
+     * Delete a record
+     *
+     * @param $scheduleId (string): Primary key for deletion
+     *
+     * @return (boolean): True if succeed, otherwise False
+     *
+     **/
+    public function deleteSchedule($scheduleId)
+    {
+        $sql = 'DELETE FROM acdSchedule
+                      WHERE scheduleId = ?';
+
+        $args = array(
+                      $scheduleId
+                     );
+
+        $db     = $this->getDatabase();
+        $result = $db->execute(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+
+    /**
+     * Get schedule of group
+     *
+     * @param $groupId (string): The groupId
+     *
+     * @return (array) schedule of group
+     **/
+    public function getScheduleOfGroup($groupId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $db = $this->getDatabase();
+
+    	$sql = "SELECT A.groupId,
+                       A.scheduleId,
+                UNNEST (A.occurrenceDates),
+                       B.timeId,
+                       B.beginHour,
+                       B.endHour
+                       
+                  FROM acdSchedule A
+            INNER JOIN acdTime B
+                    ON B.timeId = ANY(A.timeIds)
+                 WHERE A.groupId = ?
+              ORDER BY 3, 4, 5";
+
+    	$args = array($groupId);
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+
+
+
+    public function getScheduleByGroup($scheduleId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $db     = $this->getDatabase();
+
+        //Function that returns the dates and times already registered
+        $sql = 'SELECT A.groupId,
+                       A.unitId,
+                       ARRAY_TO_STRING(B.occurrenceDates, \',\'),
+                       ARRAY_TO_STRING(A.timeIds, \',\')
+                  FROM acdSchedule A,
+                       (SELECT array_agg(TO_CHAR(B.occurrenceDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')) AS occurrenceDates
+                          FROM (SELECT UNNEST(occurrenceDates) AS occurrenceDate
+                                  FROM acdSchedule
+                                 WHERE scheduleId = ?
+                              ORDER BY 1) B ) B
+                 WHERE A.scheduleId = ?';
+
+        $args = array(
+            $scheduleId,
+            $scheduleId
+        );
+
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        $schedule = new stdClass();
+
+        $schedule->groupId = $result[0][0];
+        $schedule->unitId = $result[0][1];
+        $schedule->occurrenceDates = explode(',', $result[0][2]);
+        $schedule->timeIds = explode(',', $result[0][3]);
+
+        return $schedule;
+    }
+    
+    /**
+     * Normaliza datas, que por padrao vem em formato ptBR e sem zeros do formulario de horarios.
+     * 
+     * @return array
+     */
+    public function converterDatasDb($datas = array())
+    {
+        $norm = array();
+        
+        foreach ( $datas as $data )
+        {
+            $norm[] = SAGU::dateToDb($data);
+        }
+        
+        return $norm;
+    }
+    
+    /**
+     * Verifica se ja existe um horario em conflito para esta disciplina oferecida.
+     * 
+     * @return boolean Retorna TRUE caso exista conflito, FALSE caso nao exista.
+     */
+    public function existeConflitoDeHorario($groupId, $unitId, $occurrenceDates, $timeIds, $scheduleId=null)
+    {
+        $msql = new MSQL();
+        $msql->setDb(SDatabase::getInstance());
+        $msql->setTables('rptHorarios H');
+        $msql->setColumns('H.scheduleId');
+        $msql->addEqualCondition('H.groupId', $groupId);
+        $msql->addEqualCondition('H.unitId', $unitId);
+        $msql->addWhereIn('H.occurrenceDate', $this->converterDatasDb($occurrenceDates));
+        $msql->addWhereIn('H.timeId', $timeIds);
+        
+        if ( strlen($scheduleId) > 0 )
+        {
+            $msql->addNotEqualCondition('H.scheduleId', $scheduleId);
+        }
+        
+        $query = SDatabase::query($msql->select());
+
+        return strlen($query[0][0]) > 0;
+    }
+    
+    /**
+     * Verifica se ja existe um horario em conflito definido para a disciplina,
+     *  professor e horario passados.
+     *
+     * @param int $scheduleId
+     * @param int $professorId 
+     * @param int $groupId
+     * 
+     * @return boolean
+     */
+    public function scheduleAlreadyExistsForProfessor($scheduleId, $professorId, $groupId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $errors = array();
+        
+        $sql = "
+                     SELECT dateToUser(SUB.date) || ' (' || timeToUser(SUB.beginHour) || ' - ' || timeToUser(SUB.endHour) || ')' AS date,
+                            SUB.professorId || ' - ' || SUB.name AS professorName,
+                            G.groupId || ' (' || CC.name || ')' AS groupCC,
+                            G.groupId
+              FROM (
+                     SELECT UNNEST(occurrencedates) AS date,
+                            timeid,
+                            S.groupid,
+                            t.beginHour,
+                            t.endHour,
+                            PP.personid,
+                            PP.name,
+                            S.scheduleId,
+                            SP.scheduleProfessorId,
+                            SP.professorId
+                       FROM acdscheduleprofessor SP
+                 INNER JOIN acdschedule S
+                         ON S.scheduleId = SP.scheduleId
+                 INNER JOIN acdtime T
+                         ON (T.timeid = ANY(S.timeids))
+            INNER JOIN ONLY basPhysicalPersonProfessor PP
+                         ON SP.professorId = PP.personId                 
+                      WHERE SP.professorid = ?
+                        AND S.scheduleid = ? ) SUB
+
+                 INNER JOIN acdScheduleProfessor _SP
+                         ON _SP.professorId = SUB.professorId
+                        AND _SP.scheduleId <> SUB.scheduleId
+                 INNER JOIN acdSchedule _S
+                         ON _SP.scheduleId = _S.scheduleId
+                        AND SUB.date = ANY(_S.occurrenceDates)
+                 INNER JOIN acdTime _T
+                         ON _T.timeId = ANY(_S.timeids)
+                        AND (_T.beginHour, _T.endHour) OVERLAPS (SUB.beginHour, SUB.endHour)
+                 INNER JOIN unit_acdGroup G
+                         ON _S.groupId = G.groupId
+                 INNER JOIN unit_acdcurriculum C
+                         ON G.curriculumId = C.curriculumId
+                 INNER JOIN acdCurricularComponent CC
+                         ON CC.curricularComponentId = C.curricularComponentId
+                        AND CC.curricularComponentVersion = C.curricularComponentVersion
+                   ORDER BY SUB.date, SUB.beginHour";
+
+        $args = array($professorId, $scheduleId);
+        $result = SDatabase::query($sql, $args);
+        
+        if ( $result )
+        {
+            foreach ( $result as $row )
+            {
+                list($date, $professorName, $group, $groupIdSQL) = $row;
+                $errors[] = _M('Já existe um horário em conflito para o dia @1 para o professor "@2", disciplina oferecida de código @3.', $module, $date, $professorName, $group);
+            }
+        }
+        
+        if ( $errors )
+        {
+            throw new Exception( implode('<br/><br/>', $errors) );
+        }
+        
+        return true;
+    }
+
+    /**
+     * Função para verificar se existe conflito de data/hora(alocação) com um determinado recurso físico.
+     *
+     * @param $physicalResourceId (integer): Recebe código do recurso físico.
+     * @param $physicalResourceVersion (integer): Recebe código da versão do recurso físico.
+     * @param $unitId (integer): Recebe o código da unidade.
+     * @param $occurrenceDates (array): Recebe a(s) data(s) de ocorrência.
+     * @param $timeIds (array): Recebe o(s) código(s) do(s) horário(s) de ocorrência.
+     * @param $scheduleId (int): Caso seja update informar o código do horário.
+     *
+     * @return (boolean): True = Existe conflito, False = Não existe conflito.
+     *
+     **/
+    public function scheduleAlreadyExistsForPhysicalResource($physicalResourceId, $physicalResourceVersion, $unitId, $occurrenceDates, $timeIds, $scheduleId = null)
+    {
+        $module = MIOLO::getCurrentModule();
+        $db = $this->getDatabase();
+
+        $args = array($physicalResourceId, $physicalResourceVersion);
+        
+        $occSql = "";
+        $countOccDate = count($occurrenceDates);
+        
+        // Verifica se tem data(s) de ocorrência.
+        if ( $countOccDate > 0 )
+        {
+            foreach ( $occurrenceDates as $key => $occDate )
+            {
+                // Adiciona a data para fazer prepare.
+                $args[] = $occDate;
+                
+                // Se for a primeira ocorrência.
+                if ( $key == 0 )
+                {
+                    // Verifica se tem mais de uma ocorrência para adição de virgula.
+                    $occSql .= $countOccDate == 1 ? 'TO_DATE(?, \'dd/mm/yyyy\')' : 'TO_DATE(?, \'dd/mm/yyyy\'),';
+                }
+                // Ocorrências que não são a primeira nem a ultima.
+                elseif ( $key+1 != $countOccDate )
+                {
+                    $occSql .= 'TO_DATE(?, \'dd/mm/yyyy\'),';
+                }
+                // Ultima ocorrência, não adiciona virgula.
+                else
+                {
+                    $occSql .= 'TO_DATE(?, \'dd/mm/yyyy\')';
+                }
+            }
+        }
+        else
+        {
+            throw new Exception( _M('Data(s) de ocorrência não informada(s).', $module) );
+        }
+        
+        $args[] = $unitId;
+        
+        $sql = "SELECT A.timeId, A.beginHour, A.endHour,
+                       B.timeId, B.beginHour, B.endHour
+                  FROM acdTime A,
+                       acdTime B
+                 WHERE A.timeId IN (SELECT UNNEST(timeIds) AS timeId
+                                      FROM acdSchedule A
+                                     WHERE A.physicalResourceId = ?
+                                       AND A.physicalResourceVersion = ?
+                                       AND A.occurrencedates && ARRAY[$occSql]
+                                       AND A.unitId = ?";
+        
+        // Se foi informado código do horário.
+        if ( $scheduleId != null )
+        {
+            $sql .= "AND A.scheduleId != ?";
+            $args[] = $scheduleId;
+        }
+        
+        $timeSql = "";
+        $countTimeIds = count($timeIds);
+        if ( $countTimeIds > 0 )
+        {
+            foreach ( $timeIds as $key => $timeId )
+            {
+                // Adiciona para fazer prepare.
+                $args[] = $timeId;
+                
+                // Se for o primeiro.
+                if ( $key == 0 )
+                {
+                    // Verifica se tem mais de um, para adição de virgula.
+                    $timeSql .= $countTimeIds == 1 ? '?' : '?,';
+                }
+                // Não são o primeiro nem o ultimo, adiciona virgula.
+                elseif ( $key+1 != $countTimeIds )
+                {
+                    $timeSql .= '?,';
+                }
+                // Ultimo, não adiciona virgula.
+                else
+                {
+                    $timeSql .= '?';
+                }
+            }
+        }
+        else
+        {
+            throw new Exception( _M('Horário(s) de ocorrência não informado(s).', $module) );
+        }
+        
+        $sql .=")
+                   AND B.timeId IN ($timeSql)
+                   AND ((A.beginHour >= B.beginHour AND A.beginHour < B.endHour)
+                    OR (A.endHour > B.beginHour AND A.endHour <= B.endHour))";
+        
+        $result = $db->query( SAGU::prepare($sql, $args) );
+        
+        // Se já existe.
+        if ( count($result) > 0 )
+        {
+            return true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+
+    /**
+     * Get schedule allocate for curricular component
+     *
+     * @param $filters (opbject): Data which will replace the old record data
+     *
+     * @return $return (integer): Return the number of the hours allocate for curricular component
+     *
+     **/
+    public function getScheduleAllocate($groupId, $inHours = false)
+    {
+        $module = MIOLO::getCurrentModule();
+
+        $db  = $this->getDatabase();
+        $sql = "SELECT occurrenceDates,
+                       timeIds
+                  FROM acdSchedule
+                 WHERE groupId = ?";
+
+        $args   = array( $groupId );
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        if ( count($result)>0 )
+        {
+            $multiplier = 0;
+            $totalMinutes = 0;
+            
+            // foreach em todas as schedules.
+            foreach ( $result AS $info )
+            {
+                $info[0] = str_replace('-0', '-', $info[0]);
+
+                // Soma a quantidade total de datas da schedule
+                $dates = explode(',',str_replace('{','',str_replace('}','',$info[0])));
+                $multiplier = count($dates);
+
+                // Obtém todos os timeids da schedule
+                $time = explode(',',str_replace('{','',str_replace('}', '', $info[1])));
+                
+                // foreach em todos os timeids da schedule.
+                for ( $counter = 0; $counter < count($time); $counter++ )
+                {
+                    //Function that returns the dates and times already registered
+                    $sql = "SELECT EXTRACT(EPOCH FROM numberMinutes) * INTERVAL '1 minute'
+                               FROM acdTime
+                              WHERE timeId = ? ";
+
+                    $args = array(
+                        $time[$counter]
+                    );
+
+                    $arrayTime = $db->query(SAGU::prepare($sql, $args));
+
+                    //clearing the contents of variables
+                    unset($sql);
+                    unset($args);
+
+                    // Soma os minutos de todos os timesids da schedule
+                    $limbo = explode(':', $arrayTime[0][0]);
+                    $totalMinutes += $limbo[0];
+                }
+
+                // Multiplica a quantidade total de datas da schedule pela soma dos minutos de todos os timeIds da schedule. Soma o resultado ao resultado final.
+                $finalTime = $finalTime + ($multiplier*$totalMinutes);
+                unset($totalMinutes);
+            }
+        }        
+
+        if ( $inHours )
+        {
+            $hour   = floor($finalTime/60);
+            $minute = $finalTime%60;
+
+            if ( strlen($minute) == 1 )
+            {
+                $minute = '0'.$minute;
+            }
+
+            return $hour . ':' . $minute;
+        }
+        else
+        {
+            return $finalTime;
+        }
+    }
+
+    /**
+     * Function that returns the day of the week
+     *
+     * @param $date (date): Date to get the weekday
+     * @param $abbr (boolean): TRUE to get abbreviated description of weekday and FALSE to get complete one
+     *
+     * @return (string): Return week day
+     *
+     **/
+    public function getWeekday($date)
+    {
+        $sql = 'SELECT EXTRACT(DAY FROM TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')),
+                       EXTRACT(MONTH FROM TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')),
+                       EXTRACT(YEAR FROM TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'))';
+
+        $args = array($date, $date, $date);
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        $mkTime = $this->krono->kMkTime(array($result[0][0], $result[0][1], $result[0][2]));
+
+        $weekdayId  = $this->krono->kDate('%w', $mkTime);
+        $weekday = new stdClass();
+        $weekday->id          = $weekdayId;
+        $weekday->description = $this->krono->nToDay( $weekdayId );
+
+        $this->krono->abbr = true;
+
+        $weekday->shortDescription = $this->krono->nToDay( $weekdayId );
+
+        $this->krono->abbr = false;
+
+        return $weekday;
+    }
+
+     
+     /**
+     * Obtém dados sobre horários de uma oferecida agrupados/ordenados por data de ocorrência
+     *
+     * @param $groupId (int): código da disciplina da qual se deseja obter os horários
+     *
+     * @return (array): matriz de objetos com os dados dos horários.
+     *
+     * A matriz tem a estrutura abaixo
+     *         Datas
+     *           |_ Dia da semana
+     *           |_ Unidades
+     *                 |_ Turnos
+     *                       |_ Horários
+     */
+    public function getGroupScheduleDataByDate($groupId, $beginDate = null, $endDate = null)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = 'academic';
+
+        $filters = new stdClass();
+        $filters->beginDate = $beginDate;
+        $filters->endDate = $endDate;
+        
+        $occurrenceDates = $this->getGroupOccurrenceDates($groupId, $filters);
+        
+        $returnObject = null;
+        if (count($occurrenceDates) > 0 )
+        {
+            $busTime = new BusinessAcademicBusTimeSheet();
+            $busUnit = new BusinessBasicBusUnit();
+            $busTurn = new BusinessBasicBusTurn();
+
+            $unitDesc = $busUnit->listUnitAssoc();
+            $turnDesc = $busTurn->listDescAndShortDesc();
+
+            foreach ($occurrenceDates as $occurrenceDate)
+            {
+                $dateData = null;
+                $dateData->weekday = $this->getWeekday($occurrenceDate, false);
+                
+                $filters = new stdClass();
+                $filters->occurrenceDate = $occurrenceDate;
+
+                $units = $this->getGroupUnits($groupId, $filters);
+
+                if (count($units) > 0)
+                {
+                    foreach ($units as $unitId)
+                    {
+                        $unitData = new stdClass();
+                        $unitData->description = $unitDesc[$unitId];
+
+                        $filters->unitId = $unitId;
+
+                        $turns = $this->getGroupTurns($groupId, $filters);
+
+                        if (count($turns) > 0)
+                        {
+                            foreach ($turns as $turnId)
+                            {
+                                $turn = explode('---', $turnDesc[$turnId]);
+
+                                $turnData = new stdClass();
+                                $turnData->description      = $turn[0];
+                                $turnData->shortDescription = $turn[1];
+
+                                $filters->turnId = $turnId;
+
+                                $times = $this->getGroupTimes($groupId, $filters);
+
+                                if (count($times) > 0)
+                                {
+                                    foreach ($times as $timeId)
+                                    {
+                                        $tmpTimeData = $busTime->getTime($timeId);
+
+                                        $timeData = new stdClass();
+                                        $timeData->beginHour = $tmpTimeData->beginHour;
+                                        $timeData->endHour   = $tmpTimeData->endHour;
+
+                                        $filters->timeId = $timeId;
+
+                                        $timeData->professors = $this->getGroupProfessors($groupId, $filters);
+
+                                        $turnData->times[$timeId] = $timeData;
+                                    }
+
+                                    $unitData->turns[$turnId] = $turnData;
+                                }
+
+                                unset($turnData);
+                            }
+                            ksort($unitData->turns);
+                            $dateData->units[$unitId] = $unitData;
+                        }
+
+                        unset($unitData);
+                    }
+                    if ( is_array($dateData->units) )
+                    {
+                        ksort($dateData->units);
+                    }
+                    $returnObject[$occurrenceDate] = $dateData;
+                }
+                unset($dateData);
+            }
+        }
+        
+        return $returnObject;
+    }
+
+    /**
+     * Obtém dados dos horários da oferecida agrupados/ordenados por unidade
+     *
+     * @param groupId (int): código da disciplina oferecida da qual deseja-se obter os horários
+     *
+     * @return (array): matriz de objetos com os dados dos horários
+     *
+     * A matriz tem a seguinte estrutura
+     *
+     *     Unidades
+     *        |_ Datas
+     *        |_ Horários
+     */
+    public function getGroupScheduleDataByUnit($groupId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = 'academic';
+
+        $busTime = new BusinessAcademicBusTimeSheet();
+        $busUnit = new BusinessBasicBusUnit();
+
+        $sql = 'SELECT scheduleId,
+                       unitId,
+                       occurrenceDates,
+                       timeIds
+                  FROM acdSchedule
+                 WHERE groupId = ?
+              ORDER BY unitId';
+
+        $args = array($groupId);
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        $returnObject = null;
+
+        if (count($result) > 0)
+        {
+            foreach ($result as $res)
+            {
+                list($scheduleId,
+                     $unitId,
+                     $occurrenceDates,
+                     $timeIds) = $res;
+
+                $sql = 'SELECT A.professorId,
+                               B.name
+                          FROM acdScheduleProfessor A
+                    INNER JOIN basPhysicalPersonProfessor B
+                            ON (B.personId = A.professorId)
+                         WHERE A.scheduleId = ?';
+
+                $resProfs = $this->getDatabase()->query(SAGU::prepare($sql, $scheduleId));
+
+                $professors = null;
+                if (count($resProfs) > 0)
+                {
+                    foreach ($resProfs as $professor)
+                    {
+                        $professors[$professor[0]] = $professor[1];
+                    }
+
+                    $returnObject[$scheduleId]->professors = $professors;
+                }
+
+                $dates = explode(',', str_replace('{', '', str_replace('}', '', $occurrenceDates)));
+
+                $scheduleDates = null;
+                if (count($dates) > 0)
+                {
+                    foreach ($dates as $date)
+                    {
+                        $sql = 'SELECT TO_CHAR(DATE ?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+
+                        $resDate = $this->getDatabase()->query(SAGU::prepare($sql, $date));
+
+                        $scheduleDates[] = $resDate[0][0];
+                    }
+
+                    $returnObject[$scheduleId]->dates = $scheduleDates;
+                }
+
+                $times = explode(',', str_replace('{', '', str_replace('}', '', $timeIds)));
+
+                $scheduleTimes = null;
+                if (count($times) > 0)
+                {
+                    foreach ($times as $timeId)
+                    {
+                        $timeData = $busTime->getTime($timeId);
+
+                        $returnObject[$scheduleId]->times[$timeId] = $timeData;
+                    }
+                }
+
+                $unitData = $busUnit->getUnit($unitId);
+
+                $returnObject[$scheduleId]->description = $unitData->description;
+            }
+        }
+        return $returnObject;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $groupId
+     * @return unknown
+     */
+    public function getGroupScheduleDataWithRooms($groupId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'academic';
+
+        $scheduleData = $this->getGroupScheduleDataByDate($groupId);
+
+        $sql = 'SELECT DISTINCT (SELECT AA.room
+                                     FROM insPhysicalResource AA
+                                   WHERE AA.physicalResourceId = A.physicalResourceId
+                                       AND AA.physicalResourceVersion = A.physicalResourceVersion),
+                                   (SELECT AA.building
+                                     FROM insPhysicalResource AA
+                                   WHERE AA.physicalResourceId = A.physicalResourceId
+                                       AND AA.physicalResourceVersion = A.physicalResourceVersion)
+                  FROM acdSchedule A
+            INNER JOIN acdTime B
+                    ON (B.timeId = ANY (A.timeIds))
+                 WHERE B.turnId = ?
+                   AND TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') = ANY(A.occurrenceDates)';
+
+        $result = null;
+        if (count($scheduleData) > 0)
+        {
+            foreach ($scheduleData as $scheduleDate => $dateData)
+            {
+                $result[$dateData->weekday->id]->description = $dateData->weekday->shortDescription;
+                $result[$dateData->weekday->id]->turns = array();
+
+                if (count($dateData->units) > 0)
+                {
+                    foreach ($dateData->units as $unitData)
+                    {
+                        if (count($unitData->turns) > 0)
+                        {
+                            foreach ($unitData->turns as $turnId => $turnData)
+                            {
+                                if (!array_key_exists($turnId, $result[$dateData->weekday->id]->turns))
+                                {
+                                    $result[$dateData->weekday->id]->turns[$turnId]->description = $turnData->shortDescription;
+                                    $result[$dateData->weekday->id]->turns[$turnId]->rooms = array();
+
+                                    $resRooms = $this->getDatabase()->query(SAGU::prepare($sql, array($turnId, $scheduleDate)));
+
+                                    if (count($resRooms) > 0)
+                                    {
+                                        foreach ($resRooms as $room)
+                                        {
+                                            if (is_array($result[$dateData->weekday->id]->turns[$turnId]->rooms))
+                                            {
+                                                $roomData = $room[0] . '/' . $room[1];
+
+                                                if (!in_array($roomData, $result[$dateData->weekday->id]->turns[$turnId]->rooms))
+                                                {
+                                                    $result[$dateData->weekday->id]->turns[$turnId]->rooms[] = $roomData;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        $return = null;
+        if (count($result) > 0)
+        {
+            ksort($result);
+
+            foreach ($result as $weekdayId => $weekdayData)
+            {
+                $weekdayData->description = strtoupper($weekdayData->description);
+
+                if (count($weekdayData->turns) > 0)
+                {
+                    ksort($weekdayData->turns);
+
+                    foreach ($weekdayData->turns as $turnId => $turnData)
+                    {
+                        if (count($turnData->rooms) > 0)
+                        {
+                            foreach ($turnData->rooms as $roomData)
+                            {
+                                $roomData = explode('/', $roomData);
+
+                                $row = array($weekdayData->description, $turnData->description, $roomData[0], $roomData[1]);
+                            }
+                        }
+                        else
+                        {
+                            $row = array($weekdayData->description, $turnData->description, null, null);
+                        }
+                    }
+                }
+                else
+                {
+                    $row = array($weekdayData->description, null, null, null);
+                }
+
+                if (is_array($row))
+                {
+                    $return[] = $row;
+                }
+            }
+        }
+
+        return $return;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $groupId
+     * @param unknown_type $filters
+     * @return unknown
+     */
+    public function getGroupUnits($groupId, $filters = null)
+    {
+        $sql = ' SELECT DISTINCT unitId
+                   FROM acdSchedule
+                  WHERE groupId = ? ';
+
+        $args[] = $groupId;
+
+        if (strlen($filters->occurrenceDate) > 0)
+        {
+            $sql .= ' AND TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') = ANY(occurrenceDates) ';
+            $args[] = $filters->occurrenceDate;
+        }
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        if (count($result) > 0)
+        {
+            $return = null;
+
+            foreach ($result as $res)
+            {
+                $return[] = $res[0];
+            }
+
+            return $return;
+        }
+        else
+        {
+            return null;
+        }
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $groupId
+     * @param unknown_type $filters
+     * @return unknown
+     */
+    public function getGroupTurns($groupId, $filters = null)
+    {
+        $sql = ' SELECT timeIds
+                   FROM acdSchedule
+                  WHERE groupId = ? ';
+
+        $args = array($groupId);
+
+        if (strlen($filters->unitId) > 0)
+        {
+            $sql   .= ' AND unitId = ? ';
+            $args[] = $filters->unitId;
+        }
+
+        if (strlen($filters->occurrenceDate) > 0)
+        {
+            $sql   .= ' AND TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') = ANY(occurrenceDates) ';
+            $args[] = $filters->occurrenceDate;
+        }
+
+        $sql .= ' AND length(trim(timeIds::text)) > 0';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        if (count($result) > 0)
+        {
+            $sql = 'SELECT DISTINCT turnId
+                      FROM acdTime
+                     WHERE timeId IN (?) ';
+
+            $return = null;
+            foreach ($result as $res)
+            {
+                $timeIds = str_replace('{', '', str_replace('}', '', $res[0]));
+
+                $turnResults = $this->getDatabase()->query(str_replace('?', $timeIds, $sql));
+
+                if (count($turnResults) > 0)
+                {
+                    foreach ($turnResults as $turn)
+                    {
+                        if (is_array($return))
+                        {
+                            if (!in_array($turn[0], $return))
+                            {
+                                $return[] = $turn[0];
+                            }
+                        }
+                        else
+                        {
+                            $return[] = $turn[0];
+                        }
+                    }
+                }
+            }
+
+            return $return;
+        }
+        else
+        {
+            return null;
+        }
+    }
+
+     /**
+     * Function that returns the group of day of the week for a determined discipline.
+     *
+     * @param $groupId (int): Code of discipline offered from which you want to be more the schedules
+     * @param $filters (object): Contains information to filter the search for information
+     * @param $inString (boolean): If true returns an array of string containing the day of the week, if false returns an array of integer
+     */
+    public function getGroupWeekDays($groupId, $filters = null, $inString = true)
+    {
+        $sql = 'SELECT A.occurrenceDates
+                  FROM acdSchedule A ';
+
+        $args[] = $groupId;
+
+        if (strlen($filters->professorId) > 0)
+        {
+            $sql   .= ' INNER JOIN acdScheduleProfessor B
+                                ON (A.scheduleId = B.scheduleId)
+                             WHERE A.groupId = ?
+                               AND B.professorId = ? ';
+
+            $args[] = $filters->professorId;
+        }
+        else
+        {
+            $sql .= ' WHERE A.groupId = ? ';
+        }
+
+        if (strlen($filters->scheduleId) > 0)
+        {
+            $sql   .= ' AND A.scheduleId = ? ';
+            $args[] = $filters->scheduleId;
+        }
+
+        $sql .= ' AND length(trim(A.occurrenceDates::text)) > 0';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        $sql = 'SELECT EXTRACT(DAY FROM DATE ?),
+                       EXTRACT(MONTH FROM DATE ?),
+                       EXTRACT(YEAR FROM DATE ?)';
+
+        $mkTimes = null;
+        if (count($result) > 0)
+        {
+            foreach ($result as $res)
+            {
+                $occurrenceDate = explode(',', str_replace('{', '', str_replace('}', '', $res[0])));
+
+                if (count($occurrenceDate) > 0)
+                {
+                    foreach ($occurrenceDate as $date)
+                    {
+                        $args = array($date, $date, $date);
+
+                        $convertResult = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+                        $mkTime = $this->krono->kMkTime(array($convertResult[0][0], $convertResult[0][1], $convertResult[0][2]));
+
+                        if (is_array($mkTimes))
+                        {
+                            if (!in_array($mkTime, $mkTimes))
+                            {
+                                $mkTimes[] = $mkTime;
+                            }
+                        }
+                        else
+                        {
+                            $mkTimes[] = $mkTime;
+                        }
+                    }
+                }
+            }
+        }
+
+        $weekdays = null;
+
+        if (count($mkTimes) > 0)
+        {
+            foreach ($mkTimes as $mkTime)
+            {
+                $weekday    = $this->krono->kDate('%w', $mkTime);
+
+                if ( $inString )
+                {
+                    $weekdays[$weekday] = $this->krono->nToDay( $weekday );
+                }
+                else
+                {
+                    $weekdays[$weekday] = $weekday;
+                }
+            }
+        }
+
+        return $weekdays;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $groupId
+     * @param unknown_type $filters
+     * @return unknown
+     */
+    public function getGroupProfessors($groupId, $filters = null)
+    {
+        $sql = 'SELECT scheduleId
+                  FROM acdSchedule
+                 WHERE groupId = ? ';
+
+        $args[] = $groupId;
+
+        if (strlen($filters->scheduleId) > 0)
+        {
+            $sql   .= ' AND scheduleId = ? ';
+            $args[] = $filters->scheduleId;
+        }
+
+        if (strlen($filters->timeId) > 0)
+        {
+            $sql   .= ' AND ? = ANY (timeIds) ';
+            $args[] = $filters->timeId;
+        }
+
+        if (strlen($filters->unitId) > 0)
+        {
+            $sql   .= ' AND unitId = ? ';
+            $args[] = $filters->unitId;
+        }
+
+        if (strlen($filters->turnId) > 0)
+        {
+            $sql .= ' AND ? IN (SELECT turnId
+                                  FROM acdTime ';
+
+            $args[] = $filters->turnId;
+
+            if (strlen($filters->timeId) > 0)
+            {
+                $sql   .= ' WHERE timeId = ?) ';
+                $args[] = $filters->timeId;
+            }
+            else
+            {
+                $sql .= ' WHERE timeId = ANY(timeIds)) ';
+            }
+        }
+
+        if (strlen($filters->occurrenceDate) > 0)
+        {
+            $sql .= ' AND TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') = ANY(occurrenceDates) ';
+            $args[] = $filters->occurrenceDate;
+        }
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        $professors = null;
+        if (count($result) > 0)
+        {
+            $schedules = null;
+
+            foreach ($result as $res)
+            {
+                $schedules[] = $res[0];
+            }
+
+            $schedules = implode(',', $schedules);
+
+            $sql = 'SELECT A.professorId,
+                             B.name
+                      FROM acdScheduleProfessor A
+                INNER JOIN basPhysicalPersonProfessor B
+                        ON (B.personId = A.professorId)
+                     WHERE A.scheduleId IN (' . $schedules . ')
+                  ORDER BY B.name';
+
+            $resProf = $this->getDatabase()->query($sql);
+
+            if (count($resProf) > 0)
+            {
+                foreach ($resProf as $prof)
+                {
+                    $professors[$prof[0]] = $prof[1];
+                }
+            }
+        }
+
+        return $professors;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $groupId
+     * @param unknown_type $filters
+     * @return unknown
+     */
+    public function getGroupTimes($groupId, $filters = null)
+    {
+        $sql = 'SELECT timeIds
+                  FROM acdSchedule
+                   WHERE groupId = ? AND length(array_to_string(timeIds,\',\')) > 0 ';
+
+        $args[] = $groupId;
+
+        if (strlen($filters->unitId) > 0)
+        {
+            $sql   .= ' AND unitId = ? ';
+            $args[] = $filters->unitId;
+        }
+
+        if (strlen($filters->occurrenceDate) > 0)
+        {
+            $sql   .= ' AND TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') = ANY(occurrenceDates) ';
+            $args[] = $filters->occurrenceDate;
+        }
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        $times = null;
+        if (count($result) > 0)
+        {
+            $timeIds = null;
+            foreach ($result as $res)
+            {
+                $temp = explode(',', str_replace('{', '', str_replace('}', '', $res[0])));
+
+                if (count($temp) > 0)
+                {
+                    foreach ($temp as $tp)
+                    {
+                        $timeIds[$tp] = $tp;
+                    }
+                }
+            }
+
+            $sql = ' SELECT timeId
+                       FROM acdTime
+                      WHERE timeId IN (' . implode(',', $timeIds) . ') ';
+
+
+            if (strlen($filters->turnId) > 0)
+            {
+                $sql   .= ' AND turnId = ? ';
+                $argsT  = array($filters->turnId);
+            }
+
+            $sql .= ' ORDER BY beginHour ';
+
+            if (count($argsT) > 0)
+            {
+                $resTime = $this->getDatabase()->query(SAGU::prepare($sql, $argsT));
+            }
+            else
+            {
+                $resTime = $this->getDatabase()->query($sql);
+            }
+
+            if (count($resTime) > 0)
+            {
+                foreach ($resTime as $time)
+                {
+                    $times[$time[0]] = $time[0];
+                }
+            }
+        }
+
+        return $times;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $groupId
+     * @param unknown_type $filters
+     * @return unknown
+     */
+    public function getGroupOccurrenceDates($groupId, $filters = null)
+    {
+           $args = array();
+	
+        $args[] = $groupId;
+
+        if (strlen($filters->unitId) > 0)
+        {
+             $where .= ' AND unitId = ? ';
+            $args[] = $filters->unitId;
+        }
+
+          $sql = "SELECT TO_CHAR(x.date, 'yyyy-mm-dd'),	
+                       TO_CHAR(x.date, 'dd/mm/yyyy')	
+                  FROM (SELECT unnest(occurrencedates) AS date	
+                          FROM acdschedule	
+                         WHERE groupId = ?	
+                               {$where}) x";
+                               
+        if ( (strlen($filters->beginDate) > 0) && (strlen($filters->endDate) > 0) )
+        {
+            $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+            $sql .= " WHERE x.date BETWEEN TO_DATE(?, 'dd/mm/yyyy') AND TO_DATE(?, 'dd/mm/yyyy') ";
+            $args[] = $filters->beginDate;	
+            $args[] = $filters->endDate;
+        }
+
+         $sql .= " ORDER BY x.date";
+ 
+          $result = SDatabase::query($sql, $args);	
+          $occurrenceDates = array();
+           
+
+        foreach ( (array)$result as $res )
+        {
+           $occurrenceDates[$res[0]] = $res[1];
+        }
+
+        return $occurrenceDates;
+    }
+
+    /**
+     * Function which returns information as part of a curricular component, unit, schedule and week day.
+     *
+     * @param groupId (int): Code of discipline offered from which you want to be more the schedule
+     * @param curricularComponentId (int): Is id of curricular component
+     * @param curricularComponentName (string): Is name of curricular component
+     * @param $inString (boolean): If true returns an array of string containing the day of the week, if false returns an array of integer
+     *
+     * @return (object): Return an array containing information of the curricular component.
+     */
+    public function getScheduleForReport($groupId, $curricularComponentId = null, $curricularComponentName = null, $inString = false )
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $busTurn = new BusinessBasicBusTurn();
+        $busUnit = new BusinessBasicBusUnit();
+        $busTimeSheet = new BusinessAcademicBusTimeSheet();
+
+        $timeIds = $this->getGroupTimes($groupId, $filters);
+
+        //Verifies that the discipline has offered schedules
+        $scheduleReport = null;
+        if ( isset($timeIds) )
+        {
+            foreach ( $timeIds AS $time )
+            {
+                $times = $busTimeSheet->getTime($time);
+                $allTime[] = $times->beginHour . ' - ' . $times->endHour;
+
+                //There is the discipline has offered a turn, if you have the same is stored in an array
+                if ( strlen($times->turnId) > 0 )
+                {
+                    if ( (sizeof($allTurn) == 0) || ( ! in_array($times->turnId, $allTurn)) )
+                    {
+                        $allTurn[] = $times->turnId;
+                    }
+                }
+            }
+
+            //Get the day of the week that the discipline occurs
+            $weekDay = $this->getGroupWeekDays($groupId, null, $inString);
+            ksort($weekDay);
+
+            //Get the unit that the discipline occurs
+            $units = $this->getGroupUnits($groupId);
+
+            //There is the discipline has offered a unit, if you have the same is stored in an array
+            if ( (is_array($units)) && (isset($units)) )
+            {
+                foreach ( $units AS $unit )
+                {
+                    $units = $busUnit->getUnit($unit);
+                    $allUnit[] = $units->description;
+                }
+            }
+
+            //Get the professor that the discipline occurs
+            $professors = $this->getGroupProfessors($groupId);
+
+            //There is the discipline has offered a professor, if you have the same is stored in an array
+            if ( (is_array($professors)) && (isset($professors)) )
+            {
+                foreach ( $professors AS $professor )
+                {
+                    $allProfessor[] = $professor;
+                }
+            }
+
+            $occurrenceDates = $this->getGroupOccurrenceDates($groupId);
+
+            //Mount the array for return
+            $scheduleReport->turns = $allTurn;
+            $scheduleReport->times = $allTime;
+            $scheduleReport->occurrenceDates = $occurrenceDates;
+            $scheduleReport->weekDays = $weekDay;
+
+            if ( (isset($curricularComponentId)) && (isset($curricularComponentName)) )
+            {
+                $scheduleReport->curricularComponent = $curricularComponentId . ' - ' . $curricularComponentName;
+            }
+
+            $scheduleReport->professors = $allProfessor;
+            $scheduleReport->units = $allUnit;
+        }
+
+        return $scheduleReport;
+    }
+
+    /**
+     * Function which returns information of a turn and week day.
+     *
+     * @param groupId (int): Code of discipline offered from which you want to be more the schedule
+     * @param curricularComponentId (int): Is id of curricular component
+     * @param curricularComponentName (string): Is name of curricular component
+     * @param $inString (boolean): If true returns an array of string containing the day of the week, if false returns an array of integer
+     *
+     * @return (object): Return an array containing information of the curricular component.
+     */
+    public function getScheduleForReport1($groupId, $inString = false )
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $busTurn = new BusinessBasicBusTurn();
+        $busTimeSheet = new BusinessAcademicBusTimeSheet();
+
+        $timeIds = $this->getGroupTimes($groupId, $filters);
+
+        //Verifies that the discipline has offered schedules
+        $scheduleReport = null;
+        if ( isset($timeIds) )
+        {
+            foreach ( $timeIds AS $time )
+            {
+                $times = $busTimeSheet->getTime($time);
+                $allTime[] = $times->beginHour . ' - ' . $times->endHour;
+
+                //There is the discipline has offered a turn, if you have the same is stored in an array
+                if ( strlen($times->turnId) > 0 )
+                {
+                    if ( (sizeof($allTurn) == 0) || ( ! in_array($times->turnId, $allTurn)) )
+                    {
+                        $allTurn[] = $times->turnId;
+                    }
+                }
+            }
+
+            //Get the day of the week that the discipline occurs
+            $weekDay = $this->getGroupWeekDays($groupId, null, $inString);
+            ksort($weekDay);
+
+            //Mount the array for return
+            $scheduleReport->turns = $allTurn;
+            $scheduleReport->weekDays = $weekDay;
+        }
+
+        return $scheduleReport;
+    }
+
+    /**
+     * Function that mount a schedule guides
+     *
+     * @param $gradesSchedule (array): Is a array multi-dimensional containing a grid of schedule
+     * @param $data (object): Is an object that contains information from one curricular component to be added to the schedule grid.
+     * @param $key (string): Is key of array.
+     * @param $curricularcomponent (string): Is name of curricular component
+     *
+     * @return $resul (array): Is a array multi-dimensional containing a grid of schedule
+     */
+    public function getGradesSchedule($gradesSchedule, $data, $key, $curricularcomponent)
+    {
+        $module = MIOLO::getCurrentModule();
+
+        if ( (is_array($gradesSchedule)) && (count($gradesSchedule) > 0) )
+        {
+            if ( (is_array($data->professors)) && (count($data->professors) > 0) )
+            {
+                $allProfessor = str_replace(',', "\<text:line-break/\>", implode(',', $data->professors));
+            }
+            else
+            {
+                $allProfessor = _M('Indef.', $module);
+            }
+
+            foreach ( $gradesSchedule AS $index => $grades )
+            {
+                foreach ( $grades AS $index1 => $grade )
+                {
+                    foreach ( $data->times AS $time )
+                    {
+                        foreach ( $data->weekDays AS $index2 => $weekDay )
+                        {
+                            $lenCurricularComponent = strlen($curricularcomponent);
+                            $gradeCurricularComponent = str_replace("\<text:line-break/\>", '', $gradesSchedule[$key][$time][$weekDay]);
+                            $gradeCurricularComponent = substr($gradeCurricularComponent, 0, $lenCurricularComponent);
+
+                            if ( ($index1 == $time) && ($index2 != $weekDay) )
+                            {
+                                $gradesSchedule[$key][$time][$weekDay] = $curricularcomponent . "\<text:line-break/\>\<text:line-break/\>" . $allProfessor;
+                            }
+                            elseif ( ($index1 == $time) && ($index2 == $weekDay) && ($gradeCurricularComponent != $curricularcomponent) )
+                            {
+                                $gradesSchedule[$key][$time][$weekDay] .= "\<text:line-break/\>\<text:line-break/\>" . $curricularcomponent . "\<text:line-break/\>\<text:line-break/\>" . $allProfessor;
+                            }
+                            elseif ( ($index1 != $time) && (strlen($gradesSchedule[$key][$time][$weekDay]) == 0) )
+                            {
+                                $gradesSchedule[$key][$time][$weekDay] = $curricularcomponent . "\<text:line-break/\>\<text:line-break/\>" . $allProfessor;
+                            }
+                        }
+                    }
+                }
+            }
+
+            ksort($gradesSchedule);
+
+            return $gradesSchedule;
+        }
+        elseif ( (count($data->times) > 0) && (count($data->weekDays) > 0) )
+        {
+            foreach ( $data->times AS $time )
+            {
+                foreach ( $data->weekDays AS $weekDay )
+                {
+                    $gradesSchedule[$key][$time][$weekDay] .= $curricularcomponent . "\<text:line-break/\>" . $allProfessor;
+                }
+            }
+
+            ksort($gradesSchedule);
+
+            return $gradesSchedule;
+        }
+    }
+
+    /**
+     * Função para obter um horário semanal das disciplinas de um período letivo
+     *
+     * @author Leovan Tavares da Silva
+     *
+     * @param $learningPeriodId (int): código do período letivo
+     * @param $classId (string): código da turma para servir de filtro
+     *
+     * @return (array): Vetor de objetos representando os dados
+     *                     no formato
+     *                     TimeIds
+     *                        |_ Weekdays
+     *                             |_ Groups
+     */
+    public function getLearningPeriodWeeklySchedule($learningPeriodId, $classId = null)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = 'academic';
+
+        $sql = 'SELECT A.groupId,
+                       B.curricularComponentId,
+                       B.curricularComponentVersion,
+                       C.name
+                  FROM unit_acdGroup A
+            INNER JOIN unit_acdcurriculum B
+                    ON (B.curriculumId = A.curriculumId)
+            INNER JOIN acdCurricularComponent C
+                    ON (C.curricularComponentId = B.curricularComponentId AND
+                        C.curricularComponentVersion = B.curricularComponentVersion)
+                 WHERE A.learningPeriodId = ? ';
+
+        $args = array($learningPeriodId);
+
+        if (strlen($classId) > 0)
+        {
+            $sql .= ' AND A.classId = ? ';
+
+            $args[] = $classId;
+        }
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        $return = null;
+
+        if (count($result) > 0)
+        {
+            $sql = ' SELECT A.scheduleId,
+                            B.timeId,
+                            B.beginHour,
+                            B.endHour
+                       FROM acdSchedule A
+                 INNER JOIN acdTime B
+                          ON (B.timeId = ANY(A.timeIds))
+                      WHERE A.groupId = ?
+                   ORDER BY B.beginHour ';
+
+            foreach ($result as $res)
+            {
+                list($groupId,
+                     $curricularComponentId,
+                     $curricularComponentVersion,
+                     $curricularComponentName) = $res;
+
+                $resSchedules = $this->getDatabase()->query(SAGU::prepare($sql, $groupId));
+
+                if (count($resSchedules) > 0)
+                {
+                    foreach ($resSchedules as $resSch)
+                    {
+                        list ($scheduleId,
+                              $timeId,
+                              $beginHour,
+                              $endHour) = $resSch;
+
+                        $filters = new stdClass();
+                        $filters->scheduleId = $scheduleId;
+
+                        $professors = $this->getGroupProfessors($groupId, $filters);
+
+                        $weekdays = $this->getGroupWeekDays($groupId, $filters);
+
+                        if (count($weekdays) > 0)
+                        {
+                            foreach ($weekdays as $weekdayId => $description)
+                            {
+                                $return[$timeId]->beginHour = $beginHour;
+                                $return[$timeId]->endHour   = $endHour;
+
+                                $return[$timeId]->weekdays[$weekdayId]->description = $description;
+
+                                $return[$timeId]->weekdays[$weekdayId]->groups[$groupId]->curricularComponentId = $curricularComponentId;
+                                $return[$timeId]->weekdays[$weekdayId]->groups[$groupId]->curricularComponentVersion = $curricularComponentVersion;
+                                $return[$timeId]->weekdays[$weekdayId]->groups[$groupId]->curricularComponentName = $curricularComponentName;
+                                $return[$timeId]->weekdays[$weekdayId]->groups[$groupId]->professors = $professors;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        return $return;
+    }
+
+
+    public function workLoadProfessorCheck($groupId)
+    {
+        $query = $this->getDatabase()->query( SAGU::prepare("SELECT workLoadProfessorCheck(?)", array($groupId)) );
+        return $query[0][0];
+    }
+
+    /**
+     * Retorna a data mais proxima da atual em que houve aula (ultima data em que houve aula)
+     *
+     * @param int $groupId
+     * @return string Data da proxima aula
+     */
+    public function getNextClassDate($groupId)
+    {
+        $sql = '
+            SELECT DATETOUSER(MAX(A.occurrenceDate))
+                FROM (SELECT UNNEST(occurrenceDates) AS occurrenceDate
+                        FROM acdSchedule
+                        WHERE groupId = ?) A
+               WHERE A.occurrenceDate <= NOW()::date';
+        $query = $this->getDatabase()->query( SAGU::prepare($sql, array($groupId) ) );
+        $date = $query[0][0];
+        
+        // Caso nao encontrar, pega a data da  primeira aula futura
+        if ( strlen($date) <= 0 )
+        {
+            $sql = '
+                SELECT DATETOUSER(MIN(A.occurrenceDate))
+                    FROM (SELECT UNNEST(occurrenceDates) AS occurrenceDate
+                            FROM acdSchedule
+                            WHERE groupId = ?) A
+                WHERE A.occurrenceDate > NOW()::date';
+            $query = $this->getDatabase()->query( SAGU::prepare($sql, array($groupId) ) );
+            $date = $query[0][0];
+        }
+        
+        return $date;
+    }
+    
+    /**
+     * Retorna a primeira data em que houve aula desta disciplina
+     *
+     * @param int $groupId
+     * @return string Data da aula
+     */
+    public function getFirstClassDate($groupId)
+    {
+        $sql = '
+            SELECT TO_CHAR( MIN(A.occurrenceDate) , \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')
+              FROM (SELECT UNNEST(occurrenceDates) AS occurrenceDate
+                      FROM acdSchedule
+                     WHERE groupId = ?) A
+             WHERE A.occurrenceDate <= now()::date';
+        $query = $this->getDatabase()->query( SAGU::prepare($sql, array($groupId)) );
+        return $query[0][0];
+    }
+    
+    /**
+     * Retorna a hora inicial e final.
+     * 
+     * @param type $timeId
+     * @return type
+     */
+    public function getBeginEndHourTime($timeId)
+    {
+        $sql = "SELECT TO_CHAR(beginhour, 'hh24:mi') || ' - ' || TO_CHAR(endhour, 'hh24:mi') AS beginEndHour 
+                  FROM acdtime 
+                 WHERE timeid = ?";
+        
+        $query = $this->getDatabase()->query( SAGU::prepare($sql, array($timeId)) );
+        
+        return $query[0][0];
+    }
+    
+    public function existeHorarioParaOferecida($groupId)
+    {
+        $sql = "SELECT count(*) FROM acdschedule WHERE groupid  = ? ";
+        
+        $query = $this->getDatabase()->query( SAGU::prepare($sql, array($groupId)) );
+        
+        return $query[0][0] > 0;
+    }
+  
+}
+?>

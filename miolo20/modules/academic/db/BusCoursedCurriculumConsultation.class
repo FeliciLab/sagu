@@ -1,0 +1,297 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ *
+ * @author Leovan Tavares da Silva [leovan@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 05/07/2006
+ *
+ **/
+
+/**
+ * Class to manipulate the basCountry table
+ **/
+class BusinessAcademicBusCoursedCurriculumConsultation extends sBusiness
+{
+    /**
+     * List the coursed curricular components filtered by course, course version, turn, unit and period
+     *
+     * @param $data (object):
+     **/
+    public function listCoursedCurriculum($data)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+                        
+        $sql = 'SELECT A.curriculumId,
+                       A.curricularComponentId, 
+                       A.curricularComponentVersion,
+                       B.name,
+                       A.semester
+                  FROM unit_acdcurriculum A
+            INNER JOIN acdCurricularComponent B
+                    ON (B.curricularComponentId = A.curricularComponentId AND
+                        B.curricularComponentVersion = A.curricularComponentVersion)
+                 WHERE A.curriculumtypeid in (' . SAGU::getParameter('ACADEMIC', 'CURRICULUM_TYPE_NON_OPTIONAL') . ') 
+                   AND A.courseid = ? 
+                   AND A.courseversion = ? 
+                   AND A.unitid = ? 
+                   AND A.turnid = ?
+              ORDER BY A.semester, A.curriculumId';
+
+        $db = $this->getDatabase();
+        $args = array ( 
+                $data->courseId,
+                $data->courseVersion,
+                $data->unitId,
+                $data->turnId
+        );
+                        
+        $curriculums = $db->query(SAGU::prepare($sql, $args));
+        
+        if ( count($curriculums) > 0 )
+        {
+            foreach ( $curriculums as $curriculum )
+            {
+                list (  $curriculumId,
+                        $curricularComponentId,
+                        $curricularComponentVersion,
+                        $curricularComponentName,
+                        $semester   ) = $curriculum;
+                
+                if ( $data->currCompStatus == 1 )
+                {
+                    $acceptedStatus = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPR_OR_EXC') . ',' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED');
+                }
+                else
+                {
+                    $acceptedStatus = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPR_OR_EXC');
+                }
+                
+                $sql = 'SELECT count(*) 
+                          FROM unit_acdEnroll A
+                    INNER JOIN unit_acdContract B
+                            ON (B.contractId = A.contractId)
+                         WHERE A.curriculumId = ?
+                           AND A.statusId IN (' . $acceptedStatus . ')
+                           AND B.courseId = ?
+                           AND B.courseVersion = ?
+                           AND B.unitId = ?
+                           AND B.turnId = ? ';
+                
+                unset($args);
+                $args[] = $curriculumId;
+                $args[] = $data->courseId;
+                $args[] = $data->courseVersion;
+                $args[] = $data->unitId;
+                $args[] = $data->turnId;
+                           
+                if ($data->pupilStatus == 0)
+                {
+                    $args[] = $data->periodId;
+                    $args[] = $data->courseId;
+                    $args[] = $data->courseVersion;
+                    $args[] = $data->turnId;
+                    $args[] = $data->unitId;
+                    
+                    $sql .= ' AND B.contractId IN (SELECT A.contractId
+                                                     FROM unit_acdEnroll A
+                                               INNER JOIN unit_acdGroup B
+                                                       ON (B.groupId = A.groupId)
+                                               INNER JOIN unit_acdlearningperiod C
+                                                       ON (C.learningPeriodId = B.learningPeriodId)
+                                               INNER JOIN unit_acdContract D
+                                                       ON (D.contractId = A.contractId)
+                                                    WHERE C.periodId = ?
+                                                      AND D.courseId = ?
+                                                      AND D.courseVersion = ?
+                                                      AND D.turnId = ?
+                                                      AND D.unitId = ?) ';
+                }
+                                           
+                $totalPupils = $db->query(SAGU::prepare($sql, $args));
+                $totalPupils = $totalPupils[0][0];
+                
+                $return[] = array(
+                        $curriculumId, 
+                        $curricularComponentId . '(' . $curricularComponentVersion . ')',
+                        $curricularComponentName, 
+                        $semester, 
+                        $totalPupils
+                );
+            }
+        }
+                   
+        return $return;
+    } 
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $data
+     * @return unknown
+     */
+    function listCoursedCurriculumPupils($data)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        if ( $data->currCompStatus == 1 )
+        {
+            $acceptedStatus = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPR_OR_EXC') . ',' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED');
+        }
+        else
+        {
+            $acceptedStatus = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPR_OR_EXC');
+        }
+        
+        $sql = 'SELECT A.enrollId,
+                       B.personId,
+                       C.name,
+                       C.residentialPhone,
+                       C.workPhone,
+                       C.cellPhone,
+                       A.groupId,
+                       D.curriculumId,
+                       E.periodId
+                  FROM unit_acdEnroll A
+            INNER JOIN unit_acdContract B
+                    ON (B.contractId = A.contractId)
+            INNER JOIN ONLY basPhysicalPersonStudent C
+                    ON (C.personId = B.personId)
+            INNER JOIN unit_acdGroup D
+                    ON (D.groupId = A.groupId)
+            INNER JOIN unit_acdlearningperiod E
+                    ON (E.learningPeriodId = D.learningPeriodId)
+                 WHERE A.curriculumId = ?
+                   AND A.statusId IN (' . $acceptedStatus . ')
+                   AND B.courseId = ?
+                   AND B.courseVersion = ?
+                   AND B.unitId = ?
+                   AND B.turnId = ? ';
+        
+        unset($args);
+        $args[] = $data->curriculumId;
+        $args[] = $data->courseId;
+        $args[] = $data->courseVersion;
+        $args[] = $data->unitId;
+        $args[] = $data->turnId;
+                    
+        if ( $data->pupilStatus == 0 )
+        {
+            $args[] = $data->periodId;
+            $args[] = $data->courseId;
+            $args[] = $data->courseVersion;
+            $args[] = $data->turnId;
+            $args[] = $data->unitId;
+            
+            $sql .= '        AND B.contractId IN (SELECT A.contractId
+                                                    FROM unit_acdEnroll A
+                                            INNER JOIN unit_acdGroup B
+                                                    ON (B.groupId = A.groupId)
+                                            INNER JOIN unit_acdlearningperiod C
+                                                    ON (C.learningPeriodId = B.learningPeriodId)
+                                            INNER JOIN unit_acdContract D
+                                                    ON (D.contractId = A.contractId)
+                                                    WHERE C.periodId = ?
+                                                    AND D.courseId = ?
+                                                    AND D.courseVersion = ?
+                                                    AND D.turnId = ?
+                                                    AND D.unitId = ?) ';
+        }
+        
+        $sql .= ' ORDER BY 3';
+
+        $db = $this->getDatabase();
+        $pupilsList = $db->query(SAGU::prepare($sql, $args));
+        
+        if ( count($pupilsList) > 0 )
+        {
+            foreach ( $pupilsList as $pupil )
+            {
+                list (  $enrollId,
+                        $personId,
+                        $personName,
+                        $residentialPhone,
+                        $workPhone,
+                        $cellPhone,
+                        $groupId,
+                        $groupCurriculumId,
+                        $periodId   ) = $pupil;
+                        
+                $business       = new BusinessAcademicBusCurriculum();                
+                $curriculumData = $business->getCurriculum($groupCurriculumId);
+                
+                $curricularComponentId      = $curriculumData->curricularComponentId;
+                $curricularComponentVersion = $curriculumData->curricularComponentVersion;
+                $curricularComponentName    = $curriculumData->curricularComponentName;
+                
+                $sql = 'SELECT DISTINCT C.name
+                          FROM acdSchedule A
+                    INNER JOIN acdScheduleProfessor B
+                            ON (B.scheduleId = A.scheduleId)
+                    INNER JOIN ONLY basPhysicalPersonProfessor C
+                            ON (C.personId = B.professorId)
+                         WHERE A.groupId = ?';
+                         
+                $professors = $db->query(SAGU::prepare($sql, $groupId));
+                
+                unset($strProfs);
+                if ( count($professors) > 0 )
+                {
+                    foreach ( $professors as $prof )
+                    {
+                        $strProfs[] = $prof[0];
+                    }
+                }
+                
+                if ( count($strProfs) > 0 )
+                {
+                    $strProfs = implode('/', $strProfs);
+                }
+                
+                $rowData = array(
+                        $personId . '<br>' . $curricularComponentId . '(' . $curricularComponentVersion . ')',
+                        $personName . '<br>' . $curricularComponentName,
+                        _M('Fone resid.', $module) . ' ' . $residentialPhone . ' ' . _M('Trabalho', $module) . ' ' . $workPhone . ' ' . _M('Fone celular', $module) . ' ' . $cellPhone . '<br>' . $strProfs,
+                        $data->courseId . '<br>' . $periodId
+                );
+                                 
+                $return[] = $rowData;
+            }
+        }        
+
+        return $return;
+    }
+}
+?>

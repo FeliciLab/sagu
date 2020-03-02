@@ -1,0 +1,453 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class definition for database entities
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 2011/03/30
+ *
+ */
+class TraAgreement extends SType
+{
+    /**
+     * @AttributeType character varying
+     *
+     */
+    protected $agreementId;
+
+
+    /**
+     * @AttributeType integer
+     *
+     */
+    protected $legalPersonId;
+
+
+    /**
+     * @AttributeType date
+     *
+     */
+    protected $beginDate;
+
+
+    /**
+     * @AttributeType date
+     *
+     */
+    protected $endDate;
+
+
+    /**
+     * @AttributeType date
+     *
+     */
+    protected $suspensionDate;
+
+
+    /**
+     * @AttributeType text
+     *
+     */
+    protected $object;
+
+    /**
+     * Array de atributos do tipo TraAgreementFile
+     *
+     * @var <type>
+     */
+    protected $agreementFile = array( );
+
+
+    /**
+     * Object legalPerson
+     * @param <object>
+     */
+    protected $legalPerson;
+
+
+    /**
+     * Object course
+     * @param <object>
+     */
+    protected $course;
+    
+    /**
+     * Objetos do tipo TraAddendum
+     * 
+     * @var array
+     */
+    protected $addendum = array();
+    
+    public function __construct($agreementId = null)
+    {
+        if ( strlen($agreementId) > 0 )
+        {
+            $this->agreementId = $agreementId;
+            $this->populate();
+        }
+    }
+    
+    public function __get($name)
+    {
+        if ( $name == 'addendum' && ( strlen($this->agreementId) > 0 ) && $this->needCheckPopulate('addendum') )
+        {
+            $filters = new stdClass();
+            $filters->agreementId = $this->agreementId;
+            $this->addendum = TraAddendum::search($filters);
+        }
+        
+        return parent::__get($name);
+    }
+
+    
+    public static function search($filters = null)
+    {
+        $sql = 'SELECT A.agreementid
+                  FROM tra.agreement A
+       INNER JOIN ONLY basLegalPerson LP
+                    ON LP.personId = A.legalPersonId';
+        $where = '';
+
+        $args = array( );
+        foreach ( $filters as $key => $value )
+        {
+            if ( ($key == 'overdue') && ($value == true) ) //Filtrar apenas por convenios vencidos e a vencer
+            {
+                $where .= ' AND (A.endDate < NOW() OR A.endDate < (NOW() + ?) )';
+                $args[] = SAGU::getParameter('TRAINING', 'DAYS_TO_AGREEMENT_EXPIRATION');
+            }
+            else if ( ($key == 'active') && ($value == true) ) //Filtrar apenas convenio não vencidos ou com termo aditivo ja encerrado
+            {                
+                $where .= ' AND (now() BETWEEN A.beginDate AND A.endDate) 
+                            AND COALESCE(A.suspensiondate, NOW()) <= NOW()';
+            }
+            else if ( (is_scalar($value)) && (strlen($value) > 0) )
+            {
+                $where.=" AND A.{$key} = '{$value}'";
+            }
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql.=' WHERE ' . substr($where, 5);
+        }
+
+        $sql .=' ORDER BY LP.name';
+
+        $result = SDatabase::query($sql, $args);
+        $retVal = array( );
+
+        for ( $i = 0; $i < count($result); $i++ )
+        {
+            $retVal[] = new TraAgreement($result[$i][0]);
+        }
+
+        return $retVal;
+    }
+
+    /**
+     *
+     * @param array $filters
+     * @return array
+     */
+    public function searchGrid($filters = null)
+    {
+        $sql = "SELECT A.agreementid,
+                       B.personId,
+                       B.name,
+                       TO_CHAR(A.begindate, GETPARAMETER('BASIC', 'MASK_DATE')),
+                       TO_CHAR(A.enddate, GETPARAMETER('BASIC', 'MASK_DATE')),
+                       TO_CHAR(A.suspensionDate, GETPARAMETER('BASIC', 'MASK_DATE')),
+                       A.object
+                  FROM tra.agreement A
+       INNER JOIN ONLY basLegalperson B
+                    ON (A.legalPersonId = B.personId)";
+        
+        $args = array( );
+
+        if ( strlen($filters->agreementId) > 0 )
+        {
+            $where.=' AND A.agreementid = ? ';
+            $args[] = $filters->agreementId;
+        }
+
+        if ( strlen($filters->legalPersonId) > 0 )
+        {
+            $where.=' AND A.legalpersonid = ?';
+            $args[] = $filters->legalPersonId;
+        }
+
+        if ( strlen($filters->legalPersonName) > 0 )
+        {
+            $where.=' AND UNACCENT(B.name) ILIKE UNACCENT(?)';
+            $args[] = $filters->legalPersonName . '%';
+        }
+
+        if ( (strlen($filters->beginDate) > 0) && (strlen($filters->endDate) > 0) )
+        {
+            $where.=" AND TO_DATE(?, GETPARAMETER('BASIC', 'MASK_DATE')) <= A.begindate";
+            $where.=" AND TO_DATE(?, GETPARAMETER('BASIC', 'MASK_DATE')) >= A.enddate";
+            $args[] = $filters->beginDate;
+            $args[] = $filters->endDate;
+        }
+
+        if ( strlen($filters->suspensionDate) > 0 )
+        {
+            $where.=' AND A.suspensiondate = TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $args[] = $filters->suspensionDate;
+        }
+
+        if ( (strlen($filters->suspensionDateStart) > 0) && (strlen($filters->suspensionDateEnd) > 0) )
+        {
+            $toDate = "TO_DATE(?, GETPARAMETER('BASIC', 'MASK_DATE'))";
+            $where .= " AND A.suspensiondate BETWEEN {$toDate} AND {$toDate} ";
+            $args[] = $filters->suspensionDateStart;
+            $args[] = $filters->suspensionDateEnd;
+        }
+
+        if ( strlen($filters->object) > 0 )
+        {
+            $where.=' AND UNACCENT(A.object) ILIKE UNACCENT(?) ';
+            $args[] = $filters->object . '%';
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql.=' WHERE ' . substr($where, 4) . '
+                   ORDER BY A.agreementid';
+            $result = SDatabase::query(SAGU::prepare($sql, $args));
+        }
+
+        return $result;
+    }
+
+    private function populate()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $sql = 'SELECT agreementid,
+                       legalpersonid,
+                       TO_CHAR(begindate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       TO_CHAR(enddate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       TO_CHAR(suspensiondate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       object,
+                        username,
+                       TO_CHAR(datetime, \'' . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . '\'),
+                       ipaddress
+                  FROM tra.agreement
+                 WHERE agreementid = ?';
+
+        $result = SDatabase::query($sql, array( $this->agreementId ));
+
+        if ( !strlen($result[0][0]) )
+        {
+            throw new Exception(_M('Registro inexistente. (@1)', $module, __CLASS__));
+        }
+
+        list( $this->agreementId,
+              $this->legalPersonId,
+              $this->beginDate,
+              $this->endDate,
+              $this->suspensionDate,
+              $this->object,
+              $this->userName,
+              $this->dateTime,
+              $this->ipAddress ) = $result[0];
+
+        if ( strlen($this->agreementId) > 0 )
+        {
+            //Filtro para popular objetos de outras tabelas
+            $filters = new stdClass();
+            $filters->agreementId = $this->agreementId;
+            
+            //File
+            $this->agreementFile = TraAgreementFile::search($filters);
+
+            //Pessoa
+            $busLegalPerson = new BusinessBasicBusLegalPerson();
+            $this->legalPerson = $busLegalPerson->getLegalPerson($this->legalPersonId);
+        }
+    }
+
+    public function save()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $filters = new stdClass();
+        $filters->agreementId = $this->agreementId;
+        $rows = TraAgreement::search($filters);
+
+        if ( ( strlen($this->agreementId) == 0 ) || ( count($rows) <= 0 ) )
+        {
+            $retVal = $this->insert();
+        }
+        else
+        {
+            $retVal = $this->update();
+        }
+
+
+        foreach ( (array) $this->agreementFile as $row )
+        {
+            $row->agreementId = $this->agreementId;
+            $row->save();
+        }
+
+        return $retVal;
+    }
+
+    private function insert()
+    {
+        $sql = 'INSERT INTO tra.agreement (
+                            agreementid,
+                            legalpersonid,
+                            begindate,
+                            enddate,
+                            suspensiondate,
+                            object)
+                    VALUES (?, ?,
+                            TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                            TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                            TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                            ?)';
+
+        $args = array( $this->agreementId,
+            $this->legalPersonId,
+            $this->beginDate,
+            $this->endDate,
+            $this->suspensionDate,
+            $this->object);
+
+        $result = SDatabase::execute($sql, $args);
+
+        return $result;
+    }
+
+    private function update()
+    {
+        $sql = 'UPDATE tra.agreement
+                   SET username = ?,
+                       datetime = TO_TIMESTAMP(?, \'' . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . '\'),
+                       ipaddress = ?,
+                       legalpersonid = ?,
+                       begindate = TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       enddate = TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       suspensiondate = TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       object = ?
+                 WHERE agreementid = ?';
+
+        $args = array( $this->userName,
+            $this->dateTime,
+            $this->ipAddress,
+            $this->legalPersonId,
+            $this->beginDate,
+            $this->endDate,
+            $this->suspensionDate,
+            $this->object,
+            $this->agreementId );
+
+        return SDatabase::execute($sql, $args);
+    }
+
+    public function delete()
+    {
+        if ( strlen($this->agreementId) == 0 )
+        {
+            throw new Exception(_M('Não é possível excluir um registro que ainda não foi salvo.', $module));
+        }
+
+        foreach ( (array) $this->agreementFile as $row )
+        {
+            $row->delete();
+        }
+        
+        $this->__get('addendum');
+        foreach ( (array) $this->addendum as $row )
+        {
+            $row->delete();
+        }
+
+        $sql = 'DELETE FROM tra.agreement
+                      WHERE agreementid = ?';
+        $args = array( $this->agreementId );
+
+        $result = SDatabase::execute($sql, $args);
+
+        if ( $result )
+        {
+            $this->agreementId = null;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Verifica e notifica convênios vencidos e a vencer
+     * Chamado automaticamente pelo BasSystemTask
+     */
+    public static function notifyOverdue(BasSystemTask $bst)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $ok = true;
+
+        //Busca por convenios vencidos ou à vencer
+        $filters = new stdClass();
+        $filters->overdue = true;
+        $rows = self::search($filters);
+
+        //Caso tenha algum, envia notificacao
+        if ( count($rows) > 0 )
+        {
+            //Cria conteudo de email
+            $body = "Os seguintes convênios estão vencidos ou irão vencer:\n\n";
+            foreach ( $rows as $row )
+            {
+                $body .= sprintf("<b>%s</b> - %s (vencimento: <b>%s</b>)\n",
+                                $row->agreementId,
+                                $row->legalPerson->name,
+                                $row->endDate);
+            }
+            $body .= "\nFim da lista.";
+
+            $ok = $bst->addNotification(array(
+                'title' => _M('Convênios a vencer', $module),
+                'description' => $body
+            ));
+        }
+
+        return $ok;
+    }
+}
+
+?>

@@ -1,0 +1,251 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * This class contains methods to get, search, list, insert,
+ * update and delete register into acdContractLock table.
+ *
+ * @author Armando Taffarel Neto [taffarel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Andre Chagas Dias [andre@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ *
+ * @since
+ * This class was created 25/01/2005
+ *
+ **/
+
+class BusinessAcademicBusContractLock extends sBusiness
+{
+    /**
+     * Run de proccess that cancell de enrolls
+     *
+     * @author Jamiel Spezia [jamiel@solis.coop.br]
+     *
+     * @param $data (object): Object (curricular) containing the data to be inserted.
+     *
+     * @return On success, the cancelled enrolls number. Otherwise, returns null.
+     *
+     */
+    function runContractLock($contractId, $learningPeriodId, $reasonCancellationId, $lookInvoices = false, $reasonId = null)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule(); 
+        
+        $busLearningPeriod  = new BusinessAcademicBusLearningPeriod();
+        $learningPeriodData = $busLearningPeriod->getLearningPeriod($learningPeriodId);    
+
+        $sql = '    SELECT A.enrollId
+                      FROM acdEnroll A
+                INNER JOIN acdGroup B
+                        ON (A.groupId = B.groupId)
+                INNER JOIN acdlearningperiod C
+                        ON (B.learningPeriodId = C.learningPeriodId)
+                     WHERE A.contractId = ? 
+                       AND C.periodId IN (SELECT x.periodid FROM acdlearningperiod x where x.learningperiodid = ?) 
+                       AND A.statusId IN (' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') . ', ' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_PRE_ENROLLED') . ')';
+
+        $args = array (
+            $contractId,
+            $learningPeriodId
+        );        
+        
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        $cnt = 0;        
+        
+        for ($i=0; $i<count($result); $i++)
+        {
+            if ( $this->curricularComponentCancellation($result[$i][0], $reasonCancellationId))
+            {
+                $cnt++;
+            }
+        }
+        
+        //Remove os títulos da pessoa
+        if ( ( SAGU::getParameter('BASIC', 'MODULE_FINANCE_INSTALLED') == 'YES' ) && ( $lookInvoices ) )
+        {            
+            $busContract = $MIOLO->getBusiness($module, 'BusContract');        
+            $busContract->db = $this->db;
+            $busReceivableInvoice = $MIOLO->getBusiness('finance', 'BusReceivableInvoice');
+            $busReceivableInvoice->db = $this->db;
+
+            $dataContract = $busContract->getContract($contractId);
+            $dataEntry = $busReceivableInvoice->selectOpenEntryByPerson($dataContract->personId, $contractId);
+
+            //Percorre e remove os titulos em aberto
+            if( count($dataEntry) > 0 )
+            {
+                foreach ( $dataEntry as $key1 => $value1 )
+                {
+                    $busReceivableInvoice->deleteReceivableInvoice($value1[0]);
+                }
+            }
+        }
+
+        if( SAGU::getParameter('ACADEMIC', 'EXECUTE_AUTOMATIC_CLASS_CHANGES') == DB_TRUE )
+        { 
+            $canceledClasses = $this->classCancellation($contractId, $reasonId);
+        }
+
+        if ( (SAGU::getParameter('BASIC', 'MODULE_FINANCE_INSTALLED') == 'YES') && ($learningPeriodData->isFinanceGenerate == DB_TRUE) )
+        {
+            $sql = 'SELECT incomeForecastId 
+                      FROM finincomeforecast 
+                     WHERE contractid = ? 
+                       AND isprocessed = false
+                       AND isaccounted = false';
+
+            $args = array($contractId);
+
+            $incomeForecasts = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+            $learningData  = $busLearningPeriod->getLearningPeriod($learningPeriodId);
+
+            $parcels       = $this->getRemainParcels($contractId);
+
+            if ( $parcels > 0 )
+            {
+                $parcelsNumber = $parcels;
+            }
+            elseif ($learningData->parcelsNumber > 0)
+            {
+                $parcelsNumber = $learningData->parcelsNumber;
+            }
+            else
+            {
+                $parcelsNumber = 1;
+            }
+
+
+            $sql = 'SELECT cancelCurricularComponentOperation 
+                      FROM finDefaultOperations';
+
+            $cancel = $this->getDatabase()->query($sql);
+
+            if ( count($incomeForecasts) > 0 )
+            {
+                $busIncomeF     = new BusinessFinanceBusIncomeForecast();
+
+                foreach ($incomeForecasts as $incomeForecast)
+                {
+                    $incomeForecastData = $busIncomeF->getIncomeForecast($incomeForecast[0]);
+                    $incomeForecastData->value = number_format(((-1) * $incomeForecastData->value), 8, '.', '');
+                    $incomeForecastData->comments = _M('Contrato trancado em', $module) . ' ' . date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+                    
+                    $busIncomeF->insertIncomeForecast($incomeForecastData);
+                }
+            }
+        }
+
+        return $cnt;
+    }
+
+    function classCancellation($contractId, $reasonId = null)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule(); 
+
+        $businessClassPupil = new BusinessAcademicBusClassPupil();
+
+        $closeClass->endDate  = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+
+        $contractInThePeriod = $businessClassPupil->getFreeDateFromChanges($contractId, $closeClass->endDate, ' - ', '');
+        
+        if( strlen($contractInThePeriod->date) > 0 )
+        {
+            $closeClass->endDate = $contractInThePeriod->date;
+            // There was a class that has already happened at this time
+        }
+
+        $existsOpenClassContract = $businessClassPupil->getContractCurrentClass($contractId);
+                
+        // Exists open class for contract
+        if( strlen($existsOpenClassContract->classId) > 0 )
+        {
+            if( SAGU::dateDiff($existsOpenClassContract->beginDate,$closeClass->endDate) >= 0 )
+            {
+                $existsOpenClassContract->endDate = $existsOpenClassContract->beginDate;
+                //It was found open with a class start date at or higher than today. She ended with the final date "$existsOpenClassContract->endDate".
+            }
+            else
+            {
+                $freeDate = $businessClassPupil->getFreeDateFromChanges($contractId, date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')), ' - ', $existsOpenClassContract->beginDate );
+
+                $existsOpenClassContract->endDate = $freeDate->date;
+            }
+            
+            $existsOpenClassContract->reasonId =  $reasonId;                
+            
+            $ok = $businessClassPupil->updateClassPupil($existsOpenClassContract);            
+        }
+
+        return $ok;
+    }
+
+    function getRemainParcels($contractId)
+    {
+        $sql = 'SELECT count(months) 
+                  FROM (SELECT DISTINCT EXTRACT(MONTH FROM maturitydate) as months 
+                          FROM finincomeforecast 
+                         WHERE contractid = ? 
+                           AND isprocessed = \'' . DB_FALSE . '\') 
+                        AS sel'; 
+
+        $args   = array( $contractId );  
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        return $result[0][0];
+    }
+
+    function curricularComponentCancellation($enrollId, $reasonCancellationId)
+    {
+        $sql = 'UPDATE acdenroll
+                   SET statusId                = ' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_CANCELLED') . ', 
+                       dateCancellation        = TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       hourCancellation        = (CURRENT_TIME),
+                       reasonCancellationId    = ?
+                 WHERE enrollId                = ?';
+
+        $args = array( 
+                       date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')),
+                       $reasonCancellationId,
+                       $enrollId
+                       );
+
+        $result = $this->execute(SAGU::prepare($sql, $args));
+
+        if (count($this->getErrors) > 0)
+        {
+            return false;
+        }
+
+        return true;
+    }
+}
+
+?>

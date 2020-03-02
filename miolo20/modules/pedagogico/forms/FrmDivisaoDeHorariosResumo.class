@@ -1,0 +1,289 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Unit form
+ *
+ * @author Augusto Alves da Silva [augusto@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Augusto Alves da Silva [augusto@solis.coop.br]
+ *
+ * @since
+ * Class Created on 27/11/2014
+ *
+ **/
+ini_set('max_execution_time', '0');
+
+class FrmDivisaoDeHorariosResumo extends FrmDivisaoDeHorariosDaGradeDeHorariosPai
+{
+    /**
+     * Class constructor
+     **/
+    public function __construct()
+    {
+        parent::__construct(new AcpHorario(), array('horarioid') );
+    }
+
+    /**
+     * Default method to define fields
+     **/
+    public function defineFields($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        $event = $MIOLO->_REQUEST('__EVENTTARGETVALUE');
+        $ok = $MIOLO->_REQUEST('OK');
+        
+        $fields[] = SProgressBar::getCurrent()->setup();
+        $fields[] = new MDiv('divLimbo');
+        
+        if ( $event != 'btnSaveAndFinish:click' && !(strlen($ok) > 0) )
+        {
+            $dadosGrid = $this->executaProcessoDeDivisaoDoHorario(true);
+            $grid = $MIOLO->getUI()->getGrid($module, 'GrdDivisaoDeHorariosDaGradeDeHorarios');
+            $grid->setData($dadosGrid);
+            $fields[] = $grid;
+        }
+        
+        parent::defineFields($fields);
+    }
+    
+    public function obterDados()
+    {        
+        $MIOLO = MIOLO::getInstance();
+        $dados = $MIOLO->session->getValue(parent::VAR_DADOS_SESSAO);
+        
+        return $dados;
+    }   
+    
+    public function popupVizualisarAlunosAfetados($args = null)
+    {
+        $colunas = array(
+            _M('Código da matrícula'),
+            _M('Aluno'),
+            _M('Frequência antes da mudança'),
+            _M('Frequência após mudança'),
+            _M('Situação antes mudança'),
+            _M('Situação após mudança')
+        );
+        
+        // Simula novamente a divisão do horário para somente a oferta do componente curricular selecionado.
+        $dadosOfertaComponenteCurricular = $this->executaProcessoDeDivisaoDoHorario(true, $args->ofertacomponentecurricularid);
+        $linhas = array();
+        
+        foreach ( $dadosOfertaComponenteCurricular[0]['matriculasquemudaramdesituacao'] as $matricula )
+        {
+            $acpMatricula = new AcpMatricula($matricula['matriculaid']);
+            $acpFrequencia = new AcpFrequencia();
+            $situacoes = $acpMatricula->listarSituacao();
+            
+            $linhas[] = array(
+                $acpMatricula->matriculaid,
+                $acpMatricula->aluno->name,
+                $acpFrequencia->obterPercentualDePresenca($acpMatricula->matriculaid) . '%',
+                $matricula['frequenciaAposDivisao'] . '%',
+                $situacoes[$acpMatricula->situacao],
+                $situacoes[$matricula['situacaoAposDivisao']]
+            );
+        }
+        
+        $fields[] = new MTableRaw(_M('Detalhes dos alunos'), $linhas, $colunas);
+        $this->setFields($fields);
+        
+        MPopup::show('popupVizualisarAlunosAfetados', $fields, "Detalhes dos alunos");
+    }
+    
+    public function btnSaveAndFinish_click($sender = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $this->executaProcessoDeDivisaoDoHorario();
+    }
+    
+    /**
+     * Executa o processo de divisão do horário, conforme registros
+     * informados no passo de configuração.
+     * 
+     * @param type $simulacao
+     */
+    public function executaProcessoDeDivisaoDoHorario($simulacao = false, $ofertaComponenteCurricularId = null)
+    {        
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        $dados = $this->obterDados();
+        $goto = $MIOLO->GetActionURL($module, 'main:config:horario', null, array('gradehorarioid' => $dados->gradehorarioid));
+        
+        $acpOcorrenciaHorarioOferta = new AcpOcorrenciaHorarioOferta();
+        $acpMatricula = new AcpMatricula();
+        $acpFrequencia = new AcpFrequencia();
+        
+        if ( is_null($ofertaComponenteCurricularId) )
+        {
+            $barraDeProgresso = SProgressBar::getCurrent();
+            $barraDeProgresso->show();
+        }
+        
+        try
+        {
+            SDatabase::beginTransaction();
+            
+            if ( is_null($dados->horarioid) )
+            {
+                throw new Exception(_M("Ops! Ocorreu algum prblema ao processar a divisão, não foi encontrado o código do horário a dividir. Talvez você já tenha processado a divisão, clique em 'Ok' e retorne para a grade de horários para checar."));
+            }
+            
+            // Obtém todos as ofertas de componentes curriculares que serão afetados com a divisão.
+            $ofertasComponentesCurriculares = $acpOcorrenciaHorarioOferta->obterOfertasDeComponentesCurricularesPeloHorario($dados->horarioid, $ofertaComponenteCurricularId);
+            $ofertasComponentesCurricularesProcessados = array();
+            
+            // Atualiza o acphorario as novas informações do horóario 1
+            $acpHorario1 = new AcpHorario($dados->horarioid);
+            $acpHorario1->horafim = $dados->horarioFinal1;
+            $acpHorario1->minutosfrequencia = $dados->tempoFrequencia1;
+            $acpHorario1->save();
+            
+            // Registra um novo acphorario com as informações do horário 2
+            $acpHorario2 = new AcpHorario();
+            $acpHorario2->gradehorarioid = $acpHorario1->gradehorarioid;
+            $acpHorario2->horainicio = $dados->horarioInicial2;
+            $acpHorario2->horafim = $dados->horarioFinal2;
+            $acpHorario2->minutosfrequencia = $dados->tempoFrequencia2;
+            $acpHorario2->diasemana = $acpHorario1->diasemana;
+            $acpHorario2->save();
+            
+            // Cálculo para a barra de progreço.
+            $aCadaQuantosPorcento = 2;
+            $quantidadeParaCincoPorcento = ceil((count($ofertasComponentesCurriculares) * $aCadaQuantosPorcento) / 100);
+            $contadorPercentual = $quantidadeParaCincoPorcento;
+            $percentual = 0;
+            
+            if ( $simulacao )
+            {
+                $msgProgresso = _M("Processando simulação: O processo precisa identificar as ofertas de componentes curriculares em que o horário dividido é utilizado, e verificar os alunos que serão afetados com esta divisão. Isto pode levar algum tempo, aguarde...");
+            }
+            else
+            {
+                $msgProgresso = _M("Aplicando alterações, isto pode levar algum tempo, aguarde...");
+            }            
+            
+            // Percorre todas acpocorrenciahorariooferas para atualização do novo horário.
+            foreach ( $ofertasComponentesCurriculares as $ofertaComponenteCurricular )
+            {   
+                if ( is_null($ofertaComponenteCurricularId) )
+                {
+                    if ( $contadorPercentual == $quantidadeParaCincoPorcento )
+                    {
+                        $barraDeProgresso->updateProgress($msgProgresso, $percentual);
+                        $contadorPercentual = 0;
+                        $percentual += $aCadaQuantosPorcento;
+                    }
+                }
+                
+                // Criar novos acpocorrenciahorariooferta identicos, porém referenciando o novo acphorario.
+                $acpOcorrenciaHorarioOferta1 = new AcpOcorrenciaHorarioOferta($ofertaComponenteCurricular->ocorrenciahorarioofertaid);
+                $acpOcorrenciaHorarioOferta2 = new AcpOcorrenciaHorarioOferta();
+                $acpOcorrenciaHorarioOferta2->dataaula = $acpOcorrenciaHorarioOferta1->dataaula;
+                $acpOcorrenciaHorarioOferta2->possuifrequencia = $acpOcorrenciaHorarioOferta1->possuifrequencia;
+                $acpOcorrenciaHorarioOferta2->cancelada = $acpOcorrenciaHorarioOferta1->cancelada;
+                $acpOcorrenciaHorarioOferta2->motivo_cancelamento = $acpOcorrenciaHorarioOferta1->motivo_cancelamento;
+                $acpOcorrenciaHorarioOferta2->horarioid = $acpHorario2->horarioid;
+                $acpOcorrenciaHorarioOferta2->conteudo = $acpOcorrenciaHorarioOferta1->conteudo;
+                $acpOcorrenciaHorarioOferta2->unitid = $acpOcorrenciaHorarioOferta1->unitid;
+                $acpOcorrenciaHorarioOferta2->ofertacomponentecurricularid = $acpOcorrenciaHorarioOferta1->ofertacomponentecurricularid;
+                $acpOcorrenciaHorarioOferta2->professorid = $acpOcorrenciaHorarioOferta1->professorid;
+                $acpOcorrenciaHorarioOferta2->physicalresourceid = $acpOcorrenciaHorarioOferta1->physicalresourceid;
+                $acpOcorrenciaHorarioOferta2->physicalresourceversion = $acpOcorrenciaHorarioOferta1->physicalresourceversion;
+                $acpOcorrenciaHorarioOferta2->repete = $acpOcorrenciaHorarioOferta1->repete;
+                $acpOcorrenciaHorarioOferta2->ocorrenciaid = $acpOcorrenciaHorarioOferta1->ocorrenciaid;
+                $acpOcorrenciaHorarioOferta2->centerid = $acpOcorrenciaHorarioOferta1->centerid;
+                $acpOcorrenciaHorarioOferta2->save();
+                
+                // Registrar novas acpfrequencias identicas as antigas, porém referenciando a acpocorrenciahorariooferta nova.
+                $ok = $acpOcorrenciaHorarioOferta->registraNovasFrequenciasParaAOcorrenciaHorarioOfertaNova($acpOcorrenciaHorarioOferta1->ocorrenciahorarioofertaid, $acpOcorrenciaHorarioOferta2->ocorrenciahorarioofertaid);
+                
+                if ( !$ok )
+                {
+                    throw new Exception(_M("Erro ao registrar novas frequências para o novo horário da divisão."));
+                }
+                
+                // Reabrir as matrículas encerradas, reprocessa-las e fecha-las novamente.
+                $matriculasQueMudaramDeSituacao = $acpMatricula->rebrirMatriculasEncerradasNaOfertaDoComponenteCurricular($ofertaComponenteCurricular->ofertacomponentecurricularid);
+                $ofertaComponenteCurricular->numerodealunoscomsituacaoalterada = count($matriculasQueMudaramDeSituacao);
+                $ofertaComponenteCurricular->cargahorariaaposdivisao = $acpOcorrenciaHorarioOferta->obterCargaHorariaOferecida($ofertaComponenteCurricular->ofertacomponentecurricularid);
+                
+                // Para a visualização dos detalhes dos alunos afetados pela divisão.
+                if ( !is_null($ofertaComponenteCurricularId) )
+                {
+                    foreach ( $matriculasQueMudaramDeSituacao as $key => $matriculaId )
+                    {
+                        $matriculasQueMudaramDeSituacao[$key] = array(
+                            'matriculaid' => $matriculaId,
+                            'frequenciaAposDivisao' => $acpFrequencia->obterPercentualDePresenca($matriculaId),
+                            'situacaoAposDivisao' => $acpMatricula->obterSituacaoDaMatricula($matriculaId)
+                        );
+                    }
+                    
+                    $ofertaComponenteCurricular->matriculasquemudaramdesituacao = $matriculasQueMudaramDeSituacao;
+                }
+                
+                $ofertasComponentesCurricularesProcessados[] = (array)$ofertaComponenteCurricular;
+                $contadorPercentual++;
+            }
+            
+            if ( is_null($ofertaComponenteCurricularId) )
+            {
+                $barraDeProgresso->updateProgress("Carregado.", 100);
+            }
+            
+            if ( $simulacao )
+            {
+                SDatabase::rollback();
+            }
+            else
+            {
+                SDatabase::commit();
+                $MIOLO->session->set(parent::VAR_DADOS_SESSAO, null);
+                
+                $promptMsg = new MPrompt(_M("Sucesso!"), _M("Divisão do horário efetuada com sucesso."));
+                $promptMsg->SetType('information');
+                $promptMsg->AddButton(_M('Voltar para a grade de horários'), $goto, 'voltarGrade');
+                $MIOLO->prompt($promptMsg);
+            }
+            
+            return $ofertasComponentesCurricularesProcessados;
+        }
+        catch (Exception $err)
+        {
+            SDatabase::rollback();
+            
+            if ( is_null($ofertaComponenteCurricularId) )
+            {
+                $barraDeProgresso->updateProgress("Erro.", 100);
+            }
+            
+            $MIOLO->error($err->getMessage(), $goto);
+        }
+    }
+}
+?>

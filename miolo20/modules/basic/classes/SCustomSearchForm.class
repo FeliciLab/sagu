@@ -1,0 +1,366 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2012 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulário que gerencia a busca dinâmica.
+ *
+ * @author Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * \b Maintainers \n
+ * Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * @since
+ * Class created on 09/02/2012
+ *
+ */
+
+class SCustomSearchForm extends SForm
+{
+    /**
+     * @var string Identificador.
+     */
+    private $identificador;
+
+    /**
+     * @var SGrid Grid de busca.
+     */
+    private $grid;
+
+    /**
+     * @var array Vetor de objetos SInfoColuna.
+     */
+    private $colunas;
+
+    /**
+     * Construtor do formulário de busca dinâmica.
+     *
+     * @param string $titulo Título.
+     * @param string $identificador Identificador.
+     */
+    public function __construct($titulo, $modulo, $identificador)
+    {
+        $this->identificador = $identificador;
+        $this->colunas = BasBuscaDinamica::buscarDadosDasColunas($modulo, $identificador);
+        
+        // Verifica filtros de sessao
+        $sessionFilters = $this->obterFiltrosDaSessao();
+        if ( count($sessionFilters) > 0 )
+        {
+            foreach ( $sessionFilters as $key => $val )
+            {
+                $value = MIOLO::_REQUEST($key);
+
+                if (!isset($value))
+                {
+                    $_REQUEST[$key] = $val;
+                }
+            }
+        }
+
+        parent::__construct($titulo, NULL, NULL);
+
+        $this->toolbar->disableButton('tbBtnSave');
+        $this->toolbar->disableButton('tbBtnDelete');
+        $this->toolbar->disableButton('tbBtnPrint');
+    }
+
+    /**
+     * Constrói os campos do formulário. Chamado pelo construtor do form. 
+     */
+    public function defineFields()
+    {
+        $fields = array();
+        $options = array();
+        $module = MIOLO::getCurrentModule();
+        
+        list($fields, $colunas, $chaves) = $this->gerarFiltrosEColunas();
+
+        // Botão localizar
+        $fields[] = new MButton('btnSearch', _M('Localizar', $module));
+
+
+        // Filtros da grid
+        $dadosDosFiltros = $this->obterDadosDasColunas();
+
+        // Salva os filtros na sessão
+        $this->salvarFiltrosNaSessao($dadosDosFiltros);
+        $filtrosDaSessao = $this->obterFiltrosDaSessao();
+
+        if ( count($filtrosDaSessao) > 0 )
+        {
+            if ( MIOLO::_REQUEST('event') == 'tbBtnSearch:click' )
+            {
+                $this->limparFiltrosDaSessao();
+            }
+
+            foreach ( $filtrosDaSessao as $key => $val )
+            {
+                if ( is_null($dadosDosFiltros->$key) )
+                {
+                    $dadosDosFiltros->$key = $val;
+                }
+            }
+        }
+
+        $dados = BasBuscaDinamica::buscarNaReferencia($this->colunas, $dadosDosFiltros);
+
+        $fields[] = $this->grid = new SGrid(NULL, $colunas, $this->identificador, $chaves, NULL, NULL, $dados);
+
+        $options['fields'] = $fields;
+
+        parent::defineFields($options);
+    }
+
+    /**
+     * Obtém dados da requisição de acordo com o vetor de colunas.
+     *
+     * @return stdClass Dados da requisição.
+     */
+    public function obterDadosDasColunas()
+    {
+        $dados = new stdClass();
+
+        foreach ( $this->colunas as $coluna )
+        {
+            $value = MIOLO::_REQUEST($coluna->campo);
+
+            if ( isset($value) )
+            {
+                $dados->{$coluna->campo} = $value;
+            }
+        }
+
+        return $dados;
+    }
+
+    /**
+     * Gera os filtros e as colunas.
+     *
+     * @return array Vetor com os filtros, a coluna da grid e as chaves a serem passadas ao form de edição.
+     */
+    public function gerarFiltrosEColunas()
+    {
+        $filtros = array();
+        $colunasGrid = array();
+        $chaves = array();
+        $i = 0;
+
+        foreach ( $this->colunas as $coluna )
+        {
+            list($filtro, $colunaGrid) = $this->gerarFiltroEColuna($coluna);
+
+            if ( $filtro )
+            {
+                $filtros[] = $filtro;
+            }
+
+            $colunasGrid[] = $colunaGrid;
+
+            // Se for chave primária, valor da coluna deve ser passado ao formulário de edição
+            if ( $coluna->restricao == 'p' || $coluna->chave == DB_TRUE )
+            {
+                $chaves[$coluna->nome] = "%$i%";
+            }
+
+            $i++;
+        }
+
+        return array( $filtros, $colunasGrid, $chaves );
+    }
+
+    /**
+     * Gera objetos de filtro do formulário e coluna da grid.
+     *
+     * @param SInfoColuna $coluna Objeto com os dados da coluna.
+     * @return array Vetor com o componente de filtro criado de acordo com o tipo da coluna e uma instância de MGridColumn.
+     */
+    public function gerarFiltroEColuna(SInfoColuna $coluna)
+    {
+        $filtro = NULL;
+
+        $value = $coluna->valorPadrao;
+        $label = _M($coluna->titulo, MIOLO::getCurrentModule());
+
+        if ( $coluna->filtravel == DB_TRUE )
+        {
+            switch ( $coluna->tipo )
+            {
+                case SInfoColuna::TIPO_BOOLEAN:
+                    $filtro = new MSelection($coluna->campo, $value, $label, SAGU::listYesNo());
+                    break;
+
+                case SInfoColuna::TIPO_DATA:
+                    $filtro = new MCalendarField($coluna->campo, $value, $label, SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+                    break;
+
+                case SInfoColuna::TIPO_DECIMAL:
+                    $filtro = new MFloatField($coluna->campo, $value, $label, SAGU::getParameter('BASIC', 'FIELD_MONETARY_SIZE'));
+                    break;
+
+                case SInfoColuna::TIPO_INTEIRO:
+                    $filtro = new MTextField($coluna->campo, $value, $label, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+                    $validator = new MIntegerValidator($coluna->campo, $label);
+                    break;
+
+                case SInfoColuna::TIPO_LISTA:
+                    $possibleValues = explode("\n", trim($coluna->valoresPossiveis));
+
+                    // Usa os valores como chaves
+                    $possibleValues = array_combine($possibleValues, $possibleValues);
+
+                    $filtro = new MSelection($coluna->campo, $value, $label, $possibleValues);
+                    break;
+
+                case SInfoColuna::TIPO_TEXTO_LONGO:
+                case SInfoColuna::TIPO_TEXTO:
+                    $filtro = new MTextField($coluna->campo, $value, $label, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+                    break;
+
+                case SInfoColuna::TIPO_LOOKUP:
+                    // Adicionado o stripslashes por causa do postgres 9
+                    $parametros = unserialize(stripslashes($coluna->parametros));
+
+                    // Apenas o campo de descrição é usado como related para manter a compatibilidade com lookups antigos
+                    $filtro = new MLookupContainer($coluna->campo, $coluna->campo.'Description', $value, $label, $coluna->campo.'Description', $parametros['modulo'], $parametros['item']);
+                    break;
+            }
+
+            if ( $filtro )
+            {
+                if ( !$coluna->editavel == DB_TRUE )
+                {
+                    $filtro->setReadOnly(true);
+                    $validator = NULL;
+                }
+
+                if ( !$coluna->visivel == DB_TRUE )
+                {
+                    $filtro->addBoxStyle('display', 'none');
+                    $validator = NULL;
+                }
+            }
+
+            if ( $validator != NULL )
+            {
+                $this->addValidator($validator);
+            }
+        }
+
+        if ( $coluna->tipo == SInfoColuna::TIPO_BOOLEAN )
+        {
+            $colunaGrid = new MGridColumn($label, 'center', true, NULL, $coluna->exibirNaGrid == DB_TRUE, SAGU::listYesNo(), true);
+        }
+        else
+        {
+            $colunaGrid = new MGridColumn($label, 'left', true, NULL, $coluna->exibirNaGrid == DB_TRUE, NULL, true);
+        }
+
+        return array( $filtro, $colunaGrid );
+    }
+
+    /**
+     * Salva os filtros na sessão.
+     *
+     * @param stdClass $dadosDosFiltros Dados dos filtros do formulário.
+     */
+    private function salvarFiltrosNaSessao($dadosDosFiltros)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $uniqueId = null;
+        if ( $dadosDosFiltros )
+        {
+            $uniqueId = rand();
+            $new = new stdClass();
+
+            foreach ( $dadosDosFiltros as $key => $val )
+            {
+                $new->$key = $val;
+            }
+
+            $new->urlModule = MIOLO::getCurrentModule();
+            $new->urlAction = MIOLO::getCurrentAction();
+
+            $MIOLO->session->set("searchFilters_{$uniqueId}", $new);
+        }
+
+        $MIOLO->setConf('uniqueSearchId', $uniqueId);
+    }
+    
+    
+    /**
+     * Obtém da sessão os filtros de busca.
+     * 
+     * @return array Filtros do formulário.
+     */
+    public static function obterFiltrosDaSessao()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $uniqueId = MIOLO::_REQUEST('uniqueSearchId');
+        $data = array();
+        
+        if ( strlen($uniqueId) > 0 )
+        {
+            $id = "searchFilters_{$uniqueId}";
+            $data = $MIOLO->session->get($id);
+        }
+        
+        return $data;
+    }
+    
+    
+    /**
+     * Limpa os filtros de busca da sessão.
+     */
+    private function limparFiltrosDaSessao()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $uniqueId = $this->getRequestValue('uniqueSearchId');
+        $MIOLO->session->set("searchFilters_{$uniqueId}", null);
+    }
+
+    /**
+     * Event triggered when user chooses Delete from the toolbar
+     */
+    public function tbBtnDelete_click($sender=NULL, $opts)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $opts['event'] = 'tbBtnDelete_confirm';
+        $opts['function'] = 'delete';
+
+        foreach ( (array)$this->pkey as $field )
+        {
+            $opts[$field] = MIOLO::_REQUEST($field);
+        }
+
+        $gotoYes = $MIOLO->getActionURL( $module, $action, null, $opts );
+        $goto = SAGU::getStackBackUrl();
+        $gotoNo = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+        $msg = SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE');
+        $caption = _M('Questão',$module);
+        SAGU::question($msg, $gotoYes, $gotoNo);
+    }
+}
+
+?>

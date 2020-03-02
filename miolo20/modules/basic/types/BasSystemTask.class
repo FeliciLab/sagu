@@ -1,0 +1,733 @@
+<?php
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class definition for database entities
+ *
+ * @author Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 12/05/2011
+ *
+ */
+class BasSystemTask extends SType
+{
+    /**
+     * Constantes para o tipo da notificação
+     */
+    const NOTIFICATION_BY_EMAIL = 'M';
+    const NOTIFICATION_BY_TASK = 'T';
+    const NOTIFICATION_BY_EMAIL_AND_TASK = 'A';
+
+    /**
+     * @AttributeType integer
+     *
+     */
+    public $systemTaskId;
+    /**
+     * @AttributeType integer
+     *
+     */
+    public $taskConfigId;
+    /**
+     * @AttributeType character varying
+     *
+     */
+    public $moduleName;
+    /**
+     * @AttributeType character varying
+     *
+     */
+    public $description;
+    
+    /**
+     * Intervalo (em dias) que a tarefa deve ser executada.
+     * Caso seja 0 (zero), executar toda vez que a crontab for rodada.
+     * 
+     * @var integer
+     */
+    public $notificationInterval;
+    
+    
+    /**
+     * @AttributeType boolean
+     *
+     */
+    public $enabledTask;
+    /**
+     * @AttributeType character
+     *
+     */
+    public $notificationMethod;
+
+    /**
+     * Nome da classe::metodo que deve ser chamado para executar tarefa
+     * 
+     * @AttributeType string
+     */
+    public $callMethod;
+
+    /**
+     * @AttributeType int
+     */
+    public $emailId;
+
+
+    /**
+     * @AttributeType stdClass
+     */
+    public $email;
+
+
+    /**
+     * @AttributeType BasTaskConfig
+     */
+    public $taskConfig;
+    
+    /**
+     * Indica quando esta tarefa foi executada pela ultima vez
+     *
+     * @var string
+     */
+    public $lastRun;
+    
+    /**
+     * Observação sobre o agendamento
+     * 
+     * @var string
+     */
+    public $observation;
+    
+    
+    /**
+     * Campo "virtual" que indica se deve executar tarefa
+     * Cálculo:
+     *  ( (AGORA - ULTIMA EXECUCAO) > (notificationInterval) )
+     * OU:
+     *  ( notificationInterval = 0 )
+     *
+     * @var boolean
+     */
+    public $isNeedExecute;
+    
+    public function __construct($systemTaskId = NULL)
+    {
+        if ((strlen($systemTaskId) > 0))
+        {
+            $this->systemTaskId = $systemTaskId;
+            $this->populate();
+        }
+    }
+
+    public static function search($filters = array())
+    {
+        $sql = 'SELECT systemtaskid
+                  FROM bas.systemtask';
+        $where = '';
+
+        foreach ($filters as $key=>$value)
+        {
+            if ((is_scalar($value)) && (strlen($value) > 0))
+            {
+                $where.=" AND {$key} = '{$value}'";
+            }
+        }
+
+        if (strlen($where) > 0)
+        {
+            $sql.=' WHERE '.substr($where, 5);
+        }
+
+        $sql.=' ORDER BY systemtaskid ';
+
+        $result = SDatabase::query($sql);
+        $retVal = array();
+
+        for ($i = 0; $i < count($result); $i++)
+        {
+            $retVal[] = new BasSystemTask($result[$i][0]);
+        }
+
+        return $retVal;
+    }
+
+    public static function searchGrid($filters = null)
+    {
+        $sql = 'SELECT username,
+                       TO_CHAR(datetime, \''.SAGU::getParameter('BASIC', 'MASK_TIMESTAMP').'\'),
+                       ipaddress,
+                       systemtaskid,
+                       taskconfigid,
+                       modulename,
+                       description,
+                       notificationinterval,
+                       enabled,
+                       notificationmethod
+                  FROM bas.systemtask';
+        $args = array();
+
+        if (strlen($filters->username) > 0)
+        {
+            $where.=' AND UNACCENT(username) ILIKE UNACCENT(?) ';
+            $args[] = $filters->username.'%';
+        }
+
+        if (strlen($filters->dateTime) > 0)
+        {
+            $where.=' AND datetime = TO_TIMESTAMP(?, \''.SAGU::getParameter('BASIC', 'MASK_TIMESTAMP').'\')';
+            $args[] = $filters->dateTime;
+        }
+
+        if (strlen($filters->ipAddress) > 0)
+        {
+            $where.=' AND ipaddress = ?';
+            $args[] = $filters->ipAddress;
+        }
+
+        if (strlen($filters->systemTaskId) > 0)
+        {
+            $where.=' AND systemtaskid = ?';
+            $args[] = $filters->systemTaskId;
+        }
+
+        if (strlen($filters->taskConfigId) > 0)
+        {
+            $where.=' AND taskconfigid = ?';
+            $args[] = $filters->taskConfigId;
+        }
+
+        if (strlen($filters->moduleName) > 0)
+        {
+            $where.=' AND UNACCENT(modulename) ILIKE UNACCENT(?) ';
+            $args[] = $filters->moduleName.'%';
+        }
+
+        if (strlen($filters->description) > 0)
+        {
+            $where.=' AND UNACCENT(description) ILIKE UNACCENT(?) ';
+            $args[] = $filters->description.'%';
+        }
+
+        if (strlen($filters->notificationInterval) > 0)
+        {
+            $where.=' AND notificationinterval = ?';
+            $args[] = $filters->notificationInterval;
+        }
+
+        if (strlen($filters->enabledTask) > 0)
+        {
+            $where.=' AND enabled = ?';
+            $args[] = $filters->enabledTask;
+        }
+
+        if (strlen($filters->notificationMethod) > 0)
+        {
+            $where.=' AND notificationmethod = ?';
+            $args[] = $filters->notificationMethod;
+        }
+
+        if (strlen($filters->callMethod) > 0)
+        {
+            $where.=' AND callmethod = ?';
+            $args[] = $filters->callMethod;
+        }
+
+        if (strlen($filters->emailId) > 0)
+        {
+            $where.=' AND emailId = ?';
+            $args[] = $filters->emailId;
+        }
+
+        if (strlen($where) > 0)
+        {
+            $sql.=' WHERE '.substr($where, 4).'
+                   ORDER BY systemtaskid';
+            $result = SDatabase::query(SAGU::prepare($sql, $args));
+        }
+
+        return $result;
+    }
+
+    private function populate()
+    {
+       try
+       {
+            $MIOLO = MIOLO::getInstance();
+            $module = SAGU::getFileModule(__FILE__);
+
+            $sql = 'SELECT username,
+                        TO_CHAR(datetime, \''.SAGU::getParameter('BASIC', 'MASK_TIMESTAMP').'\'),
+                        ipaddress,
+                        systemtaskid,
+                        taskconfigid,
+                        modulename,
+                        description,
+                        notificationinterval,
+                        enabled,
+                        notificationmethod,
+                        callMethod,
+                        emailId,
+                        lastRun,
+                        
+                        -- Verifica se tarefa deve ser executada
+                        (CASE WHEN ( notificationInterval = 0 OR lastRun IS NULL )
+                            THEN
+                                TRUE
+                            ELSE (
+                                EXTRACT(days FROM (NOW() - lastRun)) >= notificationInterval
+                        ) END) AS isNeedExecute,
+                        observation
+
+                    FROM bas.systemtask
+                    WHERE systemtaskid = ?';
+
+            $result = SDatabase::query($sql, array($this->systemTaskId));
+
+            if (!strlen($result[0][0]))
+            {
+                throw new Exception(_M('Registro inexistente.', $module));
+            }
+
+            list( $this->username,
+                $this->dateTime,
+                $this->ipAddress,
+                $this->systemTaskId,
+                $this->taskConfigId,
+                $this->moduleName,
+                $this->description,
+                $this->notificationInterval,
+                $this->enabledTask,
+                $this->notificationMethod,
+                $this->callMethod,
+                $this->emailId,
+                $this->lastRun,
+                $this->isNeedExecute,
+                $this->observation) = $result[0];
+
+            $this->taskConfig = new BasTaskConfig($this->taskConfigId);
+
+            if ( strlen($this->emailId) > 0 )
+            {
+                $busEmail = new BusinessBasicBusEmail();
+                $this->email = $busEmail->getEmail($this->emailId);
+            }
+       }
+       catch ( Exception $e )
+       {
+           //$this->error($e->getMessage());
+       }
+    }
+
+    public function save()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        if ( strlen($this->systemTaskId) == 0 )
+        {
+            $retVal = $this->insert();
+        }
+        else
+        {
+            $retVal = $this->update();
+        }
+
+        return $retVal;
+    }
+
+    private function insert()
+    {
+        // Não implementado pois o sistema não está preparado para inserir tarefas
+        // a serem agendadas, apenas manipular as defaulf cadastradas na base de dados.
+    }
+
+    private function update()
+    {
+        $sql = 'UPDATE Bas.systemtask
+                   SET taskconfigid = ?,
+                       modulename = ?,
+                       description = ?,
+                       notificationinterval = ?,
+                       enabled = ?,
+                       notificationmethod = ?,
+                       callmethod = ?,
+                       emailId = ?,
+                       lastRun = ?
+                 WHERE systemtaskid = ?';
+
+        $args[] = $this->taskConfigId;
+        $args[] = $this->moduleName;
+        $args[] = $this->description;
+        $args[] = $this->notificationInterval;
+        $args[] = $this->enabledTask;
+        $args[] = $this->notificationMethod;
+        $args[] = $this->callMethod;
+        $args[] = $this->emailId;
+        $args[] = $this->lastRun;
+        $args[] = $this->systemTaskId;
+
+        return SDatabase::execute($sql, $args, false);
+    }
+
+    public function delete()
+    {
+        // Não implementado pois o sistema não está preparado para deletar tarefas
+        // a serem agendadas, apenas manipular as tarefas defaulf cadastradas na base de dados.
+    }
+
+    /**
+     * Lista os módulos das tarefas
+     *
+     * @return <array> lista de módulos
+     */
+    public static function listModules()
+    {
+        $sql = 'SELECT DISTINCT modulename
+                           FROM bas.systemtask
+                       ORDER BY modulename';
+
+        $result = SDatabase::query($sql);
+
+        $retVal = array();
+        if ( is_array($result) )
+        {
+            foreach ( $result as $key=>$line )
+            {
+                $retVal[$key] = $line[0];
+            }
+        }
+
+        return $retVal;
+
+    }
+
+    /**
+     * Lista de tipos de notificações
+     */
+    public static function listNotificationType()
+    {
+        $data[self::NOTIFICATION_BY_EMAIL] = _M('EMAIL', 'basic');
+        $data[self::NOTIFICATION_BY_TASK] = _M('PENDÊNCIA', 'basic');
+        $data[self::NOTIFICATION_BY_EMAIL_AND_TASK] = _M('EMAIL E PENDÊNCIA', 'basic');
+
+        return $data;
+    }
+
+    /**
+     * Retorna se metodo de notificacao está incluído no tipo Task (por tarefa)
+     *
+     * @return (boolean)
+     */
+    public function notifyByTask()
+    {
+        return in_array($this->notificationMethod, array( BasSystemTask::NOTIFICATION_BY_TASK, BasSystemTask::NOTIFICATION_BY_EMAIL_AND_TASK ));
+    }
+
+    /**
+     * Retorna se deve notificar pendencia
+     *
+     * @return (boolean)
+     */
+    public function notifyByEmail()
+    {
+        return in_array($this->notificationMethod, array( BasSystemTask::NOTIFICATION_BY_EMAIL, BasSystemTask::NOTIFICATION_BY_EMAIL_AND_TASK ));
+    }
+
+    /**
+     * Executa todas tarefas ativas e que possuem metodo
+     * 
+     */
+    public static function generateTasks($systemTaskId = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        SAGU::output('--- ' . _M('Buscando lista de tarefas...', $module) . ' ---');
+                
+        if ( strlen($systemTaskId) > 0 )
+        {
+            $filters = new stdClass();
+            $filters->systemTaskId = $systemTaskId;
+        }
+        else
+        {
+            $filters = null;
+        }
+        
+        $result = false;
+        $failCount = 0;
+        $okCount = 0;
+        foreach ( self::search($filters) as $row )
+        {
+            $row instanceof BasSystemTask;
+                                    
+            //Se tarefa estiver ativa e deve executar
+//            if ( $row->systemTaskId == '10007' )
+            if ( ($row->enabledTask == DB_TRUE) && ($row->isNeedExecute == DB_TRUE) || !SAGU::isConsoleMode() )
+            {
+                SAGU::output(_M('Executando tarefas "@1" (@2)', $module, $row->description, $row->callMethod));
+
+                //
+                list($obj, $method) = explode('::', $row->callMethod);
+
+                try
+                {
+                    if ( ! method_exists($obj, $method) )
+                    {
+                        throw new Exception( _M('O método "@1" não existe!', $module, $row->callMethod) );
+                    }
+
+                    //Executa metodo configurado na base (callMethod)
+                    //Envia por parametro o objeto BasSystemTask atual populado
+                    $ok = call_user_func($row->callMethod, $row);
+
+                    if ( $ok )
+                    {
+                        // Se tarefa executou com sucesso, marca NOW() como data de ultima execucao
+                        $row->lastRun = SAGU::getDateNow( SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP') );
+                        $row->save();
+                        
+                        $okCount ++;
+                        SAGU::output( _M('Tarefa "@1" executada com sucesso.', $module, $row->description) );
+                        
+                        $result = true;
+                    }
+                    else
+                    {
+                        $failCount ++;
+                        SAGU::output( _M('Houve algum erro ao executar tarefa "@1"', $module, $row->description) );
+                    }
+                }
+                catch ( Exception $e )
+                {
+                    SAGU::output( _M('Erro na tarefa "@1":', $module, $row->description) . ' ' . $e->getMessage() );
+                }
+            }
+        }
+
+        SAGU::output('--- ' . _M('Fim. Foi executado um total de @1 tarefas, @2 com sucesso, @3 falhas.', $module, ($okCount + $failCount), $okCount, $failCount) . ' ---');
+        
+        if ( !SAGU::isConsoleMode() )
+        {
+            return $result;
+        }
+    }
+
+
+    /**
+     * Adiciona uma pendencia na tabela de pendencias para os usuarios ou envia a notificação por e-mail,
+     *  de acordo com tipo de notificação configurado na bas.systemTask (notificationMethod)
+     *
+     * @param array $options
+     * <b>title</b> (string) Título da mensagem (utilizado apenas para e-mail)
+     * <br><b>description</b> (string) Descrição da pendência (mensagem), aceita tags HTML para tipo de notificação "E-MAIL". Quebras de linhas deverao ser feitas com \n
+     * <br><b>mail</b> (array) Suporta os parametros da funcao ->sendMail()
+     *
+     * @return boolean
+     */
+    public function addNotification(array $options)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $options = array_merge(array(
+            'title'  => null,
+            'description' => null,
+            'mail' => array(),
+        ), $options);
+
+        //Notificacao por tarefa
+        if ( $this->notifyByTask() )
+        {
+            $this->addTask($options);
+        }
+
+        //Notificacao por email
+        if ( $this->notifyByEmail() )
+        {
+            $options['mail'] = array_merge(array(
+                'subject' => array('$SUBJECT' => $options['title']),
+                'body' => array('$BODY' => $options['description']),
+            ), $options['mail']);
+
+            $this->sendMail($options['mail']);
+        }
+
+        return true;
+    }
+
+    /**
+     * Adiciona uma pendencia para os usuarios desta bas.systemTask na tabela
+     *
+     * @param array $options
+     * <br><b>description</b> (string) Conteudo do campo details
+     */
+    public function addTask(array $options)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $options['description'] = strip_tags($options['description']);
+
+        $task = new BasTask();
+        $task->taskStatusId = BasTaskStatus::STATUS_ASSIGNED;
+        $task->taskConfigId = $this->taskConfigId;
+        $task->details = $options['description'];
+        $task->save();
+        
+        if ( $options['stickynote'] )
+        {
+            $stickyNote = new BasStickyNote();
+            
+            if ( strlen($this->taskConfig->idGroup) > 0 )
+            {
+                $stickyNote->isGroup = DB_TRUE;
+                $stickyNote->code = $this->taskConfig->idGroup;
+            }
+            else
+            {
+                $stickyNote->code = $this->taskConfig->idUser;
+            }
+            
+            $stickyNote->description = $options['description'];
+            $stickyNote->stickyNoteType = $options['stickyType'];
+            $stickyNote->link = $options['link'];
+            $stickyNote->pendencyType = $options['pendencyType'];
+            $stickyNote->positionX = rand(50, 200);
+            $stickyNote->positionY = rand(50, 200);
+            
+            $stickyNote->save();
+        }
+    }
+
+    /**
+     * Envia e-mail de notificacao para grupos ou usuario, dependendo de como está configurado na bas.taskConfig
+     *
+     * @param array $options
+     * <br><b>subject</b> (array) Assunto do e-mail (tags de substituicao)
+     * <br><b>body</b> (array) Conteudo do e-mail (tags de substituicao)
+     * <br><b>recipient</b> (array) Recipientes (caso nao seja passado, sao obtidos os recipientes da BasSystemTask
+     */
+    public function sendMail(array $options)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        if ( ! $this->email )
+        {
+            throw new Exception( _M('Não existe um e-mail configurado para esta tarefa. O e-mail pode ser configurado na tela de Tarefas agendadas, do módulo básico.', $module) );
+        }
+
+        //Defaults
+        $defaults = array(
+            'subject' => array(),
+            'body' => array(),
+            'recipient' => array(),
+            'bcc' => $this->email->bcc,
+        );
+        $options = array_merge($defaults, $options);
+
+        $options['body'] = str_replace("\n", '<br />', $options['body']);
+
+        if (!$options['recipient'])
+        {
+            $options['recipient'] = $this->getRecipients();
+        }
+
+        $options['subject'] = strtr($this->email->subject, $options['subject']);
+        $options['body'] = strtr($this->email->body, $options['body']);
+
+        $busCompany = new BusinessBasicBusCompany();
+        $dataCompany = $busCompany->getCompany(SAGU::getParameter('BASIC', 'DEFAULT_COMPANY_CONF'));
+
+        //Se tiver recipientes, envia email
+        if ( count($options['recipient']) > 0 )
+        {
+            $mail = new sendEmail($this->email->from, $dataCompany->acronym, $options['recipient'], $options['subject'], $options['body'], $options['bcc']);
+            $ok = $mail->sendEmail();
+            $displayRec = implode(", ", $options['recipient']);
+            if ( $ok )
+            {
+                SAGU::output( _M('Enviado e-mail para: @1', $module, $displayRec) );
+            }
+            else
+            {
+                SAGU::output( _M('Erro ao enviar e-mail para: @1', $module, $displayRec) );
+            }
+        }
+        
+        return $ok;
+    }
+
+    /**
+     * Obtem os destinatários padrao desta taskConfig
+     */
+    public function getRecipients()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $busPerson = new BusinessBasicBusPerson();
+
+        //Percorre os usuarios que devem receber a notificacao
+        $recipient = array();
+        foreach (  (array) $this->taskConfig->users as $userId )
+        {
+            //Obtem as pessoas
+            $filters = new stdClass();
+            $filters->idUser = $userId;
+            $persons = (array) $busPerson->searchPerson($filters);
+
+            foreach ( $persons as $person )
+            {
+                $person = $busPerson->getPerson($person[0]);
+                $recipient[$person->name] = $person->email;
+            }
+        }
+
+        return $recipient;
+    }
+    
+    
+    /**
+     * Obtem nome da classe que deve ser chamada
+     *
+     * @return string
+     */
+    public function getCallClass()
+    {
+        return @current(explode('::', $this->callMethod));
+    }
+    
+    
+    /**
+     * Obtem metodo que deve ser chamado
+     *
+     * @return string
+     */
+    public function getCallMethod()
+    {
+        return @end(explode('::', $this->callMethod));
+    }
+}
+?>

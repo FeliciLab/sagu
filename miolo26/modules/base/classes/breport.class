@@ -1,0 +1,568 @@
+<?php
+ /**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda. e
+ * Univates - Centro Universitário.
+ * 
+ * Este arquivo é parte do programa Gnuteca.
+ * 
+ * O Gnuteca é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class
+ *
+ * @author Jonas Guilherme Dahmer [jonas@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Guilherme Dahmer [jonas@solis.coop.br]
+ *
+ * @since
+ * Class created on 22/12/2011
+ *
+ */
+
+class BReport
+{
+
+    const TYPE_ALL = 0;
+    const TYPE_REPORT = 1;
+    const TYPE_DOCUMENT = 2;
+    
+    private $MIOLO,
+            $module,
+            $reportName,
+            $reportFile,
+            $validators,
+            $fields,
+            $parameters,
+            $access,
+            $title,
+            $help,
+            $type,
+            $fieldsBlackList,
+            $absoluteFileOut;
+
+    /**
+     * Constructor
+     *
+     * @param $reportName string Name of the report
+     * @param $module string Module to verify if exists the report
+     * @return void.
+     *
+     */
+    public function __construct($reportName=null, $module=null)
+    {
+        $this->MIOLO = MIOLO::getInstance();
+        $this->module = $module?$module:MIOLO::getCurrentModule();
+        $this->reportName = $reportName;
+        
+        if ( file_exists($reportName) )
+        {
+            $this->reportFile = $reportName;
+        }
+
+        // busca relatorio nos diretorios
+        foreach ( $this->getReportPaths($this->module) as $path )
+        {
+            if ( substr_count($this->reportName, 'jrxml') > 0 )
+            {
+                $fileName = $path . '/' . $this->reportName;
+            }
+            else
+            {
+                $fileName = $path . '/' . $this->reportName . '.jrxml';
+            }
+            
+            if ( file_exists($fileName) )
+            {
+                $this->reportFile = $fileName;
+                break;
+            }
+        }
+
+        // ????
+        list($this->parameters, $this->fields, $this->validators) = MJasperReport::getParameters($this->module, $this->reportFile);
+        
+        $this->parameters = MJasperReport::getParameters($this->module, $this->reportFile);
+        
+        $info = $this->getReportInfo($this->reportFile);
+
+        if ( $info )
+        {
+            $this->title = $info['title'];
+            $this->help = $info['help'];
+            $this->access = $info['access'];
+            $this->type = $info['type'];
+
+            $this->addFieldBlackList('REPORT_INFO');
+            $this->addFieldBlackList('SUBREPORT_DIR');
+
+            foreach(MJasperReport::getParameters($this->reportFile) as $k=>$p)
+            {
+                if($p['hidden'])
+                {
+                    $this->addFieldBlackList($k);
+                }
+            }
+        }
+    }
+    
+    /**
+     * Get informations of report file
+     *
+     * @param $reportFile string path of the report
+     * @return Array with informations of report file.
+     *
+     */
+    public function getReportInfo($reportFile)
+    {
+        if (!file_exists($reportFile))
+        {
+            return NULL;
+        }
+        
+        $extraData = simplexml_load_file($reportFile);
+        
+        if (count($extraData) > 0)
+        {
+            foreach($extraData->parameter as $params)
+            {
+                if($params['name']=='REPORT_INFO')
+                {
+                    foreach($params->property as $prop)
+                    {
+                        if($prop['name']=='title')
+                            $info['title'] = BString::construct( (string)$prop['value'], null)->__toString();
+                        if($prop['name']=='help')
+                            $info['help'] = BString::construct( (string)$prop['value'], null)->__toString();
+                        if($prop['name']=='access')
+                            $info['access'] = (string)$prop['value'];
+                        if($prop['name']=='type')
+                            $info['type'] = (string)$prop['value'];
+                        $info['filename'] = basename($reportFile);
+                        $info['filepath'] = $reportFile;
+                    }
+                }
+            }
+        }
+        
+        
+        return $info;
+    }
+    
+    /**
+     * Genereta a report
+     *
+     * @param $reportFile string path of the report
+     * @param $parameters array
+     * @param $format string
+     * @return output generated file.
+     *
+     */
+    public function generateJRXML($reportFile,$parameters=null,$format='PDF')
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $saguPath = $MIOLO->getConf('home.modules'). '/basic/reports/';
+        $saguPath = str_replace('/miolo26/', '/miolo20/', $saguPath);
+        
+        $clientPath = $MIOLO->getConf('home.modules') . '/'; // se der erro, sabemos onde esta o problema
+        $database = $MIOLO->getConf('mad.module');
+        
+        // SAGU
+            if ( class_exists('SAGU', FALSE) && method_exists('SAGU', 'getClientReportPath') )
+            {
+                if ( SAGU::isClientReportPathExists() )
+                {
+                    $clientPath = SAGU::getClientReportPath();
+                }
+            }
+
+        $parameters = array_merge( (array) $parameters, array(
+            'str_CLIENT_PATH' => $clientPath,
+            'str_SAGU_PATH' => $saguPath,
+        ) );
+        
+        $jasperReport = new MJasperReport($database);
+        if ( MIOLO::getVersion() <= 2.0 )
+        {
+            $result = $jasperReport->executeJRXML($reportFile,$parameters,$format);
+        }
+        else
+        {
+            $result = $jasperReport->executeJRXML($this->module,$reportFile,$parameters,$format);
+        }
+        
+        $this->setAbsoluteFileOut($jasperReport->getAbsoluteFileOut());
+        
+        $this->afterGenerateReport();
+        
+        return $result;
+    }
+    
+    /**
+     * Genereta a report
+     *
+     * @param $data array getData from form
+     * @param $format string
+     * @return output generated file.
+     *
+     */
+    public function generateReport($data=null,$format='PDF')
+    {
+        $parameters = MJasperReport::getParameters($this->parameters, $data);
+        $this->generateJRXML($this->reportFile,$parameters,$format);
+    }
+    
+    /**
+     * Save report
+     * 
+     * @return boolean.
+     *
+     */
+    public function saveReport()
+    {
+        $xml = simplexml_load_file($this->reportFile);
+        
+        foreach($xml->parameter as $params)
+        {
+            if($params['name']=='REPORT_INFO')
+            {
+                foreach($params->property as $prop)
+                {
+                    if($prop['name']=='title')
+                        $prop['value'] = BString::construct( $this->title, 'UTF-8')->__toString();
+                    if($prop['name']=='help')
+                        $prop['value'] = BString::construct( $this->help, 'UTF-8')->__toString();
+                    if($prop['name']=='access')
+                        $prop['value'] = $this->access;
+                    if($prop['name']=='type')
+                        $prop['value'] = $this->type;
+                }
+            }
+        }
+        
+        return $xml->asXML($this->reportFile);
+    }
+    
+    /**
+     * Delete file report
+     * 
+     * @return boolean.
+     *
+     */
+    public function deleteReport()
+    {
+        return unlink($this->reportFile);
+    }
+    
+    /**
+     *
+     * @param string $module 
+     * @return array
+     */
+    public function getReportPaths($module = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MUtil::NVL($module, $this->module);
+        
+        $reportPath = array();
+        
+        // prioriza os relatorios no diretorio do cliente
+        // no futuro pode ser expandido para mais modulos. nao o fiz porque nao sabia os impactos que iria causar
+        if ( MIOLO::getCurrentModule() == 'portal' )
+        {
+            $reportPath[] = str_replace('modules', 'cliente/iReport', $this->MIOLO->getConf('options.miolo2modules')) . '/' . $module . '/reports/';
+        }
+        
+        $reportPath[] = $this->MIOLO->getConf('options.reportsdir') . '/' . $module . '/reports'; //utilizados para desenvolvimento
+        $reportPath[] = $this->MIOLO->getConf('options.reportsdir') . '/' . $module . '/html/files/reports'; //utilizados para desenvolvimento
+        $reportPath[] = $this->MIOLO->getConf('home.modules') . '/' . $module.'/reports/';
+        $reportPath[] = $this->MIOLO->getConf('home.modules') . '/' . $module.'/html/files/reports'; //especificos do cliente para upload
+        
+        if ( $module == 'portal' )
+        {
+            $reportPath[] = str_replace('modules', 'cliente/iReport', $this->MIOLO->getConf('options.miolo2modules') . '/' . $module . '/reports/aluno/');
+            $reportPath[] = str_replace('modules', 'cliente/iReport', $this->MIOLO->getConf('options.miolo2modules') . '/portal-pupil/reports/');
+            $reportPath[] = str_replace('modules', 'cliente/iReport', $this->MIOLO->getConf('options.miolo2modules') . '/' . $module . '/reports/professor/');
+            $reportPath[] = str_replace('modules', 'cliente/iReport', $this->MIOLO->getConf('options.miolo2modules') . '/portal-professor/reports/');
+            $reportPath[] = str_replace('modules', 'cliente/iReport', $this->MIOLO->getConf('options.miolo2modules') . '/' . $module . '/reports/coordenador/');
+            $reportPath[] = str_replace('modules', 'cliente/iReport', $this->MIOLO->getConf('options.miolo2modules') . '/portal-coordinator/reports/');
+            $reportPath[] = $MIOLO->getAbsolutePath('reports/aluno', $module);
+            $reportPath[] = $MIOLO->getAbsolutePath('reports/professor', $module);
+            $reportPath[] = $MIOLO->getAbsolutePath('reports/coordenador', $module);
+        }
+        
+        foreach ( $reportPath as $key => $path )
+        {
+            if ( !preg_match('/miolo26\/modules\/portal/', $path) )
+            {
+                $reportPath[$key] = str_replace('/miolo26/', '/miolo20/', $path);
+            }
+        }
+        
+        return $reportPath;
+    }
+
+    /**
+     * List Reports
+     *
+     * @param $reportFile string path of the report
+     * @param $type int
+     * @param $module string
+     * @return Array with reports.
+     *
+     */
+    public function listReports($type=TYPE_REPORT,$module=null, $includeAll=true)
+    {
+        $module = $module?$module:$this->module;
+	if ( $includeAll )
+	{
+		$reportPath[] = $this->MIOLO->getConf('home.modules') . '/' . $module.'/reports'; //especificos do cliente para upload
+	}        
+
+        foreach($this->getReportPaths($module) as $path)
+        {
+            if ( is_dir($path) )
+            {
+                foreach ( (array) glob($path.'/*.jrxml') as $report)
+                {
+                    $info = $this->getReportInfo($report);
+                    if($info)
+                    {
+                        if($info['type']==$type || $type==self::TYPE_ALL)
+                        {
+                            $reportName = str_replace(dirname($report).'/','',$report);
+                            $reportName = str_replace('.jrxml', '', $reportName);
+                            $reports[$report]['name'] = $reportName;
+                            $reports[$report]['title'] = $info['title'];
+                            $reports[$report]['help'] = $info['help'];
+                            $reports[$report]['access'] = $info['access'];
+                            $reports[$report]['type'] = $info['type'];
+                            $reports[$report]['filename'] = $info['filename'];
+                            $reports[$report]['filepath'] = $info['filepath'];
+                            $reports[$report]['module'] = $module;
+                        }
+                    }
+                }
+            }
+        }
+        
+        return $reports;
+    }
+    
+    /**
+     * Get list types
+     *
+     * @return Array with types.
+     *
+     */
+    public function listTypes()
+    {
+        $types = array( self::TYPE_REPORT => BString::construct( _M('Relatório',$this->module), null)->__toString(),
+                        self::TYPE_DOCUMENT => BString::construct( _M('Documento',$this->module), null)->__toString());
+        
+        return $types;
+    }
+    
+    /**
+     * Get parameters
+     *
+     * @return Array with parameters.
+     *
+     */
+    public function getParametersReport()
+    {
+        return $this->parameters;
+    }
+    
+    /**
+     * Get fields report
+     *
+     * @return Array with fields.
+     *
+     */
+    public function getFieldsReport()
+    {
+        $extraParameters = MJasperReport::getParameters($this->reportFile);
+        
+        //faz a verificacao das fields que nao devem ser exibidas
+        foreach ($this->fields as $f)
+        {
+            $fieldId = explode('_', $f->id);
+            $fieldType = $fieldId[0];
+            $fieldId = $fieldId[1];
+            
+            if($extraParameters[$fieldId]['readonly'])
+            {
+                $f->setReadOnly(true);
+            }
+                    
+            $blacklist = false;
+            foreach($this->fieldsBlackList as $bl)
+            {
+                if(substr($f->id,'-'.strlen($bl))==$bl)
+                {
+                    $blacklist = true;
+                }
+            }
+            
+            if($blacklist)
+            {
+                $fieldsblk[] = $f;
+            }
+            else
+            {
+                $fields[] = $f;
+            }
+        }
+        
+        $blackListDiv = new MDiv('blackListFields',$fieldsblk);
+        $blackListDiv->addBoxStyle('display', 'none');
+        $fields[] = $blackListDiv;
+        
+        return $fields;
+    }
+    
+    /**
+     * Get validators
+     *
+     * @return Array with validators.
+     *
+     */
+    public function getValidatorsReport()
+    {
+        return $this->validators;
+    }
+    
+    /**
+     * Get fields black list
+     *
+     * @return Array with names of fields in blacklist.
+     *
+     */
+    public function addFieldBlackList($label)
+    {
+        $this->fieldsBlackList[$label] = $label;
+    }
+    
+    /**
+     * Remove field from blacklist
+     *
+     * @return void.
+     *
+     */
+    public function removeFieldBlackList($label)
+    {
+        unset($this->fieldsBlackList[$label]);
+    }
+    
+    /**
+     * Get title
+     *
+     * @return String.
+     *
+     */
+    public function getTitle()
+    {
+        return BString::construct( $this->title, null)->__toString();
+    }
+    
+    /**
+     * Set title
+     */
+    public function setTitle($title)
+    {
+        $this->title = BString::construct( $title, 'UTF-8' )->__toString();
+    }
+    
+    /**
+     * Get help
+     *
+     * @return String.
+     *
+     */
+    public function getHelp()
+    {
+        return BString::construct( $this->help, null)->__toString();
+    }
+    
+    /**
+     * set help
+     */
+    public function setHelp($help)
+    {
+        $this->help = BString::construct( $help, 'UTF-8' )->__toString();
+    }
+    
+    /**
+     * Get access permission
+     *
+     * @return String.
+     *
+     */
+    public function getAccess()
+    {
+        return $this->access;
+    }
+    
+    /**
+     * set access permission
+     */
+    public function setAccess($access)
+    {
+        $this->access = $access;
+    }
+    
+    /**
+     * Get type of report
+     *
+     * @return String.
+     *
+     */
+    public function getType()
+    {
+        return $this->type;
+    }
+    
+    /**
+     * Set type of report
+     */
+    public function setType($type)
+    {
+        $this->type = $type;
+    }
+    
+    public function getReportFile() {
+        return $this->reportFile;
+    }
+    
+    public function afterGenerateReport()
+    {
+    }
+    
+    public function getAbsoluteFileOut()
+    {
+        return $this->absoluteFileOut;
+    }
+    
+    public function setAbsoluteFileOut($absoluteFileOut)
+    {
+        $this->absoluteFileOut = $absoluteFileOut;
+    }
+}
+ 
+?>

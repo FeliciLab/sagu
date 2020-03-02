@@ -1,0 +1,573 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ *
+ * @author Fabiano Tomasini [fabiano@solis.coop.br]
+ * @author Vinícius Becker [vinicius@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ * Vinícius Becker [vinicius@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 21/07/2010
+ */
+class SGrid extends MGrid
+{
+    public $action;
+    public $module;
+    
+    /**
+     * Relaciona a chave primária da tabela com uma coluna da grid
+     * 
+     * @var array
+     */
+    private $primaryKey;
+    
+    /**
+     *
+     * @var SType
+     */
+    private $typeObject;
+    
+    /**
+     * @var boolean
+     */
+    private $disablePagination;
+
+    private $isContextualGrid = false;
+    
+    /**
+     * Objetos tipo sAcaoEmMassa
+     *
+     * @var array
+     */
+    private $acoesEmMassa = array();
+    
+    /**
+     * Nome da tabela que a grid está acessando, obtido através do stype/sbusiness
+     * 
+     * @var type String
+     */
+    public $tableName;
+    
+    /**
+     * Nome do schema que a grid está acessando, obtido através do $tableName
+     * 
+     * @var type String
+     */
+    public $schemaName;
+        
+    public function __construct($filters, $columns, $gridName = null, $primaryKey = array(), $url = null, $pageLength = null, $data = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $this->action = MIOLO::getCurrentAction();
+        $this->module = MIOLO::getCurrentModule();
+        
+        $MIOLO->Uses( 'classes/auditoria.class', 'basic' );
+
+        if ( !$gridName )
+        {
+            $gridName = __CLASS__;
+        }
+
+        // this foreach is necessary until the getActionURL function is
+        // able to handle an object parameter
+        if ( !$url )
+        {
+            $opts = $this->arrayFilters($filters);
+            $opts[] = array('function' => 'search');
+            $url = $MIOLO->getActionURL($this->module, "$this->action", null, $opts);
+        }
+
+        if ( !$pageLength )
+        {
+            $pageLength = SAGU::getParameter('BASIC', 'LISTING_NREGS');
+        }
+
+        parent::__construct($data, $columns, $url, $pageLength, 0, $gridName, true, true, true);
+        $this->setLinkType('hyperlink');
+        if ( $primaryKey )
+        {
+            $this->primaryKey = $primaryKey;
+            $this->setDefaultGridActions($primaryKey);
+        }
+        $this->setIsScrollable();
+        $this->eventHandler();
+
+        $this->disableExports();
+    }
+    
+    /**
+     * SSearchForm passa objeto do type
+     *
+     * @param SType $object 
+     */
+    public function setTypeObject(SType $object)
+    {
+//        $this->setDefaultGridActions(array($object->getPrimaryKey() => '%' . $object->getPrimaryKey() . '%'));
+        
+        $this->typeObject = $object;
+    }
+
+    public function arrayFilters($filters)
+    {
+        if ( !$filters )
+        {
+            return false;
+        }
+
+        foreach ( $filters as $k => $v )
+        {
+            if ( ! is_array($v) )
+            {
+                $opts[$k] = $v;
+            }
+        }
+
+        return $opts;
+    }
+
+    /**
+     * Define a relação chave primária / coluna da grid
+     * 
+     * @param array $primaryKey 
+     */
+    public function setPrimaryKey( $primaryKey )
+    {
+        $this->primaryKey = $primaryKey;
+    }
+    
+    /**
+     * Retorna a relação chave primária / coluna da grid
+     * 
+     * @return array 
+     */
+    public function getPrimaryKey()
+    {
+        return $this->primaryKey;
+    }
+    
+    /**
+     * São dadas na grid as opções de deletar e editar.
+     * 
+     * @param array $primaryKey 
+     */
+    public function setDefaultGridActions($primaryKey = array())
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        if ( is_array($primaryKey) )
+        {
+            $optsEdit = $this->createOptsUpdate($primaryKey);
+            
+            $optsDelete = $this->createOptsDelete($primaryKey);
+        }
+        
+        $this->displayActionUpdate($optsEdit);
+        $this->displayActionDelete($optsDelete);
+    }
+    
+    /**
+     * Cria as opts da opção deletar da grid.
+     * 
+     * @param type $pkey
+     * @return type 
+     */
+    public function createOptsDelete($pkey = array())
+    {
+        $this->primaryKey = $pkey;
+        $optsDeleteFunction['function'] = SForm::FUNCTION_DELETE;
+        $optsDeleteEvent['event'] = 'tbBtnDelete_click';
+        $optsDelete = array_merge($optsDeleteFunction, $pkey, $optsDeleteEvent);
+        
+        if ( $this->isContextualGrid )
+        {
+            $optsDelete[SForm::getReturnToKey()] = SForm::createReturnToCurrentURL();
+        }
+        
+        return $optsDelete;
+    }
+    
+    /**
+     * Cria as opts da opção editar da grid.
+     * 
+     * @param type $pkey
+     * @return type 
+     */
+    public function createOptsUpdate($pkey = array())
+    {
+        $this->primaryKey = $pkey;
+        $optsEditFunction['function'] = SForm::FUNCTION_UPDATE;
+        $optsEdit = array_merge($optsEditFunction, $pkey);
+        
+        if ( $this->isContextualGrid )
+        {
+            $optsEdit[SForm::getReturnToKey()] = SForm::createReturnToCurrentURL();
+        }
+        
+        return $optsEdit;
+    }
+    
+    /**
+     * Mostra a opção de deletar na grid, recebendo 
+     * por parâmetro opts.
+     * 
+     * @param type $opts 
+     */
+    public function displayActionDelete($opts = null, $action=null)
+    {
+        $opts = ($opts) ? $opts : $this->createOptsDelete();
+        $action = ($action) ? $action : $this->action;
+        
+        $MIOLO = MIOLO::getInstance();
+        $hrefDelete = $MIOLO->getActionURL($this->module, $action, null, $opts);
+        $this->addActionDelete($hrefDelete);
+    }
+    
+    /**
+     * Mostra a opção de editar na grid, recebendo 
+     * por parâmetro opts.
+     * 
+     * @param type $opts 
+     */
+    public function displayActionUpdate($opts = null, $action=null )
+    {
+        $opts   = ($opts) ? $opts : $this->createOptsUpdate();
+        $action = ($action) ? $action : $this->action;
+        
+        $MIOLO = MIOLO::getInstance();
+        $hrefUpdate = $MIOLO->getActionURL($this->module, $action, null, $opts);
+        $this->addActionUpdate($hrefUpdate);
+    }
+
+    /**
+     * Deleta todas opções da grid.
+     * 
+     */
+    public function clearActions()
+    {
+        $this->actions = array();
+    }
+
+    /**
+     * Função myRowMethod para fins de autocomplete na IDE
+     *
+     * @param type $i
+     * @param type $row
+     * @param type $actions
+     * @param type $columns
+     */
+    public function myRowMethod($i, $row, $actions, $columns)
+    {
+        // Nothing
+    }
+    
+    /**
+     * Desabilita link de ordenacao de todas colunas da grid
+     */
+    public function disableColumnSorting()
+    {
+        foreach ( $this->columns as $col )
+        {
+            $col->order = false;
+        }
+    }
+    
+    /**
+     * Desabilita navegacao e paginacao da grid 
+     */
+    public function disablePagination()
+    {
+        $this->setPageLength(99999);
+        $this->disablePagination = true;
+    }
+    
+    public function disableExports()
+    {
+        $this->showExport = false;
+    }
+
+    public function simpleMode()
+    {
+        $this->disableExports();
+        $this->disablePagination();
+        $this->disableColumnSorting();
+    }
+
+    /**
+     * @return SGrid
+     */
+    public static function simpleGrid()
+    {
+        $grid = new static();
+        $grid->simpleMode();
+
+        return $grid;
+    }
+    
+    public function generate()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        if ( count($this->acoesEmMassa) > 0 && count($this->data) > 0 )
+        {
+            $this->criaAcoesEmMassa();
+        }
+        
+        if ( $this->tableName )
+        {
+            //Verifica se a tabela está recebendo auditoria(trigger)
+            $ok = auditoria::verificaAuditoria($this->schemaName, $this->tableName);
+            
+            //Verifica se a auditoria está habilitada
+            $auditoria = SAGU::getParameter('BASIC', 'MIOLO_AUDIT_DATABASE');
+            
+            //Verifica se a pessoa logada tem permissão na tela de auditoria
+            $permissao = $MIOLO->checkAccess('FrmAuditoria', A_ACCESS);
+            
+            if ( ($ok == DB_TRUE) && (strlen($auditoria) > 0) && ($permissao == DB_TRUE) )
+            {
+                $this->createOptsAuditoria($this->primaryKey);
+            }
+        }
+        
+        return parent::generate();
+    }
+    
+    function generateNavigationHeader()
+    {
+        return $this->disablePagination ? null : parent::generateNavigationHeader();
+    }
+    
+    function generateNavigationFooter()
+    {
+        return $this->disablePagination ? null : parent::generateNavigationFooter();
+    }
+    
+    /**
+     * Aplica paginacao de grids via banco de dados / type
+     * OBS: Utiliza o padrao de array associativo nas grids (exemplo GrdUnitConfigSearch)
+     * 
+     */
+    public function setGridDataType(SType $type, array $filters)
+    {
+        $MIOLO = MIOLO::getInstance();
+        global $state;
+        
+        $type->setValuesFromArray($filters);
+        
+        // Calculate the current offset
+        $this->setOffset( ($this->pageNumber - 1) * $this->pageLength );
+        
+        $rows = $type->findForGrid($this);
+        $this->setData( $rows );
+
+        $this->rowCount = $state->get('rowCount', $this->name);
+
+        if ( MIOLO::_REQUEST('__EVENTTARGETVALUE') || !$this->rowCount )
+        {            
+            $this->rowCount = $type->findCount();
+
+            // Store the rowCount to make the query count only once
+            $state->set('rowCount', $this->rowCount, $this->name);
+        }
+    }
+    
+    public function setIsContextualGrid()
+    {
+        $this->isContextualGrid = true;
+        
+        $this->clearActions();
+        $this->setDefaultGridActions($this->primaryKey);
+    }
+    
+    /**
+     * @return array
+     */
+    public function getSelecteds()
+    {
+        return $this->selecteds;
+    }
+    
+    /**
+     * Facilitador do acesso a classe nas grids.
+     * 
+     * @return sAcaoEmMassa
+     */
+    public function acaoEmMassa()
+    {
+        return new sAcaoEmMassa();
+    }
+    
+    /**
+     * Cria um botao de acao para ser executado sobre os icones selecionados na grid.
+     * Ex.:
+     *      $this->adicionarAcaoEmMassa( $this->acaoEmMassa()->setLabel('Renovar convenio')->setMetodo('acaoRenovar') );
+     * 
+     * @param sAcaoEmMassa $acao 
+     */
+    public function adicionarAcaoEmMassa(sAcaoEmMassa $acao)
+    {
+        if ( !$this->select )
+        {
+            $this->addActionSelect();
+        }
+        
+        $this->acoesEmMassa[] = $acao;
+    }
+    
+    /**
+     * Cria no footer da grid os botoes de acao em massa e controls necessarios para o mesmo funcionar corretamente. 
+     */
+    public function criaAcoesEmMassa()
+    {
+        //Cria select com formato dos documentos
+        $acaoLabel = new MLabel( _M('Executar com selecionados', $module) . ':');
+        $acaoLabel->addBoxStyle('padding-top', '5px');
+        $acaoLabel->setBold(true);
+        $fields[] = $acaoLabel;
+        
+        // Field utilizado para identificar qual acao em massa esta sendo chamada (no SForm)
+        $fields[] = new SHiddenField('acaoEmMassa');
+        
+        foreach ( $this->acoesEmMassa as $acao )
+        {
+            $acao instanceof sAcaoEmMassa;
+            
+            $btn = new MButton('btnAct_' . $acao->getMetodo(), $acao->getLabel());
+            $btn->setOnClick("document.getElementById('acaoEmMassa').value = '{$acao->getMetodo()}'");
+            
+            if ( $acao->getPedirConfirmacao() )
+            {
+                $btn->setOnClick( "if (!confirm('Tem certeza que deseja executar esta ação?')) { return false; }; " . $btn->onclick );
+            }
+            
+            $fields[] = $btn;
+        }
+        
+        $container = new MHContainer(rand(), $fields);
+        $container->setFormMode(MControl::FORM_MODE_SHOW_SIDE);
+
+        $this->setControls(array($container));
+    }
+    
+    /**
+     * Seta o nome da tabela
+     * 
+     * @param type $tableName
+     */
+    public function setTableName($tableName, $schemaName = true)
+    {
+        if ( $schemaName )
+        {
+            $this->setSchemaName($tableName);
+        }
+        
+        $this->tableName = $tableName;
+    }
+  
+    /**
+     * Obtem o nome do schema da tabela
+     * 
+     * @param type $tableName
+     */
+    public function setSchemaName($tableName, $schemaName = null)
+    {
+        if ( strlen($schemaName) > 0 )
+        {
+            $this->schemaName = $schemaName;
+        }
+        else
+        {
+            $this->schemaName = auditoria::obtemSchemaDaTabela($tableName);
+        }
+        
+    }
+    
+    /**
+     * Gera as opções para a ação de auditar da grid
+     * 
+     * @param type $pkey
+     */
+    public function createOptsAuditoria($pkey = array())
+    {
+        $this->primaryKey = $pkey;
+        $optsAuditFunction['function'] = SForm::FUNCTION_SEARCH;
+        $optsAuditEvent['event'] = 'localizar_click';
+        $optsEdit = array_merge($optsAuditFunction, $pkey, $optsAuditEvent);
+        
+        if ( $this->isContextualGrid )
+        {
+            $optsEdit[SForm::getReturnToKey()] = SForm::createReturnToCurrentURL();
+        }
+        
+        $optsEdit['table_name'] = strtolower($this->tableName);
+        $optsEdit['schema_name'] = strtolower($this->schemaName);
+               
+        $this->displayActionAuditoria($optsEdit);
+    }
+    
+    /**
+     * Cria o link e redireciona para a tela de consulta de auditorias
+     * 
+     * @param type $opts
+     * @param string $action
+     */
+    public function displayActionAuditoria($opts = null, $action=null)
+    {
+        $opts   = ($opts) ? $opts : $this->createOptsAuditoria();
+        $action = "main:config:auditoria";
+        
+        //Passa para minusculas as chaves primárias
+        foreach ( $opts as $key => $value )
+        {
+            $chave = strtolower($key);            
+            $options[$chave] = $value;
+        }                
+        
+        $MIOLO = MIOLO::getInstance();
+        $hrefUpdate = $MIOLO->getActionURL('basic', $action, null, $options);        
+        $this->addActionAuditoria($hrefUpdate);
+    }
+    
+    /**
+     * Adiciona icone de auditoria 
+     * 
+     * @param type $href
+     */
+    public function addActionAuditoria($href)
+    {
+        $this->addActionIcon( _M('Auditorias'), 'icone-auditoria.png', $href);
+        
+        // Abre a ação em nova janela
+        $action = array_pop($this->actions);
+        $action->setTarget('_new');
+        array_push($this->actions, $action);
+        
+    }    
+}
+?>

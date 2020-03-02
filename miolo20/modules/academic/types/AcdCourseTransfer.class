@@ -1,0 +1,1259 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Types do processo de transferência de curso
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @since
+ * Class created on 24/08/2011
+ */
+class AcdCourseTransfer extends SType
+{
+    /**
+     * @AttributeType BasPhysicalPerson
+     */
+
+    public $module;
+    
+    public $db;
+    
+    private $contractId; //Código do contrato a ser transferido
+    
+    private $newClassId; //Código da nova turma
+    
+    private $newCourseOccurrence; //Objeto AcdCourseOccurrence do novo curso
+    
+    private $newContractId; //Código do novo contrato gerado
+    
+    private $newLearningPeriod; //Novo período letivo
+    
+    private $learningPeriod; //Antigo período letivo
+    
+    private $options; // (array) Define as opções para transferencia, $options['takeCurriculum'] (Aproveitar disciplinas comuns entre os cursos), $options['takeCurriculumLinks'] (Aproveitar vínculos de disciplinas (equivalências))
+    
+    private $reasonId; //Código do motivo da transferencia
+    
+    /**
+     * Construtor da classe
+     *
+     * @param (integer) $teamId Chave primária da tabela
+     */
+    public function __construct($contractId, AcdCourseOccurrence $newCourseOccurrence , $newClassId, $periodId, $reasonId, $options)
+    {
+        $this->module = MIOLO::getCurrentModule();
+        
+        $this->contractId = $contractId;
+        $this->newCourseOccurrence = $newCourseOccurrence;
+        $this->newClassId = $newClassId;
+        $this->reasonId = $reasonId;
+        $this->options = $options;
+
+        //Instancia o novo período
+        if( strlen($periodId) > 0 && !is_null($newCourseOccurrence) )
+        {
+            $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+            $busLearningPeriod->db = $this->db;
+            $busContract = new BusinessAcademicBusContract();
+            $busContract->db = $this->db;
+            
+            $filtersNew = new stdClass();
+            $filtersNew->courseId = $newCourseOccurrence->courseId;
+            $filtersNew->courseVersion = $newCourseOccurrence->courseVersion;
+            $filtersNew->turnId = $newCourseOccurrence->turnId;
+            $filtersNew->unitId = $newCourseOccurrence->unitId;
+            $filtersNew->periodId = $periodId;
+            
+            //Busca e define o novo período letivo
+            $searchLearningPeriodNew = $busLearningPeriod->searchLearningPeriod($filtersNew, false);
+            if( count($searchLearningPeriodNew) > 0 )
+            {
+                $this->newLearningPeriod = $busLearningPeriod->getLearningPeriod($searchLearningPeriodNew[0][0]);
+            }
+            
+            //Dados do contrato antigo
+            $contract = $busContract->getContract($contractId);
+            
+            $filtersOld = new stdClass();
+            $filtersOld->courseId = $contract->courseId;
+            $filtersOld->courseVersion = $contract->courseVersion;
+            $filtersOld->turnId = $contract->turnId;
+            $filtersOld->unitId = $contract->unitId;
+            $filtersOld->periodId = $periodId;
+            
+            //Busca e define o período letivo antigo
+            $searchLearningPeriodOld = $busLearningPeriod->searchLearningPeriod($filtersOld, false);
+            if( count($searchLearningPeriodOld) > 0 )
+            {
+                $this->learningPeriod = $busLearningPeriod->getLearningPeriod($searchLearningPeriodOld[0][0]);
+            }
+        }
+    }
+    
+    public function search()
+    {
+        return array();
+    }
+    
+            
+    /**
+     * Obtém as disciplinas disponíveis para o aproveitamento
+     *
+     * @author Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+     *
+     * @param $contractId (integer): Código do contrato
+     *
+     * @return (array): array com as disciplinas disponíveis para o aproveitamento
+     *
+     */
+    public static function getExploitableEnrollIds($contractId)
+    {
+        $sql = 'SELECT * FROM ( (SELECT A.enrollId,
+                        A.groupId,
+                        F.periodId,
+                        C.curricularComponentId || \'/\' || C.curricularComponentVersion || \' \'||
+                        (CASE WHEN D.name <> I.name
+                            THEN D.name || \' (\' || I.name || \')\'
+                            ELSE D.name
+                        END),
+                        CASE WHEN D.academicCredits <> I.academicCredits OR D.academicNumberHours <> I.academicNumberHours
+                            THEN I.academicNumberHours
+                            ELSE D.academicNumberHours
+                            END,
+                        CASE WHEN B.useConcept
+                             THEN ( SELECT COALESCE( O.concept, \'\')::TEXT FROM acdDegreeEnroll O INNER JOIN acdDegree P ON( O.degreeId = P.degreeId AND P.parentDegreeId IS NULL AND O.enrollId = A.enrollId) ORDER BY O.degreeEnrollId DESC LIMIT 1 )
+                             ELSE ( SELECT ROUND( O.note::NUMERIC, \'' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '\')::TEXT FROM acdDegreeEnroll O INNER JOIN acdDegree P ON( O.degreeId = P.degreeId AND P.parentDegreeId IS NULL AND O.enrollId = A.enrollId) ORDER BY O.degreeEnrollId DESC LIMIT 1 )
+                             END                        
+                   FROM unit_acdEnroll A
+              INNER JOIN unit_acdGroup B
+                        ON (B.groupId = A.groupId)
+              INNER JOIN unit_acdcurriculum C
+                       ON (C.curriculumId = A.curriculumId)
+              INNER JOIN acdCurricularComponent D
+                       ON (D.curricularComponentId = C.curricularComponentId AND
+                            D.curricularComponentVersion = C.curricularComponentVersion)
+              INNER JOIN acdEnrollStatus E
+                       ON (E.statusId = A.statusId)
+              INNER JOIN unit_acdlearningperiod F
+                       ON (F.learningPeriodId = B.learningPeriodId)
+              INNER JOIN unit_acdcurriculum H
+                       ON (H.curriculumId = B.curriculumId)
+              INNER JOIN acdCurricularComponent I
+                       ON (I.curricularComponentId = H.curricularComponentId AND
+                            I.curricularComponentVersion = H.curricularComponentVersion)
+               LEFT JOIN unit_acdclass G
+                        ON (G.classId = B.classId)
+                   WHERE A.contractId = ?
+                   AND A.statusId IN (' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPR_OR_EXC') . ')
+                   AND C.curriculumTypeId NOT IN (' . SAGU::getParameter('ACADEMIC', 'ACD_CURRICULUM_TYPE_COMPLEMENTARY_ACTIVITY') . ')
+                   ORDER BY F.periodId DESC,
+                            A.statusId,
+                            D.name ) 
+                   UNION (SELECT A.enrollId,
+                   NULL,
+                   E.periodId,
+                   C.curricularComponentId || \'/\' || C.curricularComponentVersion || \' \'|| C.name as curricularComponentName,
+                   C.academicNumberHours,
+                   NULL
+              FROM unit_acdEnroll A
+        INNER JOIN unit_acdcurriculum B
+                ON (B.curriculumId = A.curriculumId)
+        INNER JOIN acdCurricularComponent C
+                ON (C.curricularComponentId      = B.curricularComponentId AND
+                    C.curricularComponentVersion = B.curricularComponentVersion)
+        INNER JOIN unit_acdContract D
+                ON (D.contractId = A.contractId)
+        INNER JOIN unit_acdlearningperiod E
+                ON (E.learningPeriodId = A.learningPeriodId)
+        INNER JOIN acdEnrollStatus F
+                ON (F.statusId = A.statusId)
+        INNER JOIN acdCourse G
+                ON (G.courseId = D.courseId)
+             WHERE A.enrollId IN (SELECT enrollId FROM unit_acdExploitation) 
+             AND A.contractId = ? 
+             AND A.statusId IN(' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPR_OR_EXC') . ')
+                 ) ) AS sel ORDER BY 3, 1, 5';
+
+        $args[] = $contractId;
+        $args[] = $contractId;
+                
+        $result = SDatabase::query(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+    
+    /**
+     * Obtém as disciplinas que serão canceladas na transferência de curso
+     *
+     * @author Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+     *
+     * @param $contractId (integer): Código do contrato
+     *
+     * @return (array): array com as disciplinas disponíveis para o aproveitamento
+     *
+     */
+    public static function getCanceledEnrollIds($contractId, $periodId)
+    {
+        
+        $sql = 'SELECT * FROM ( (SELECT A.enrollId,
+                        A.groupId,
+                        F.periodId,
+                        C.curricularComponentId || \'/\' || C.curricularComponentVersion || \' \'||
+                        (CASE WHEN D.name <> I.name
+                            THEN D.name || \' (\' || I.name || \')\'
+                            ELSE D.name
+                        END),
+                        CASE WHEN D.academicCredits <> I.academicCredits OR D.academicNumberHours <> I.academicNumberHours
+                            THEN I.academicNumberHours
+                            ELSE D.academicNumberHours
+                            END,
+                        J.description                        
+                   FROM unit_acdEnroll A
+              INNER JOIN unit_acdGroup B
+                        ON (B.groupId = A.groupId)
+              INNER JOIN unit_acdcurriculum C
+                       ON (C.curriculumId = A.curriculumId)
+              INNER JOIN acdCurricularComponent D
+                       ON (D.curricularComponentId = C.curricularComponentId AND
+                            D.curricularComponentVersion = C.curricularComponentVersion)
+              INNER JOIN acdEnrollStatus E
+                       ON (E.statusId = A.statusId)
+              INNER JOIN unit_acdlearningperiod F
+                       ON (F.learningPeriodId = B.learningPeriodId)
+              INNER JOIN unit_acdcurriculum H
+                       ON (H.curriculumId = B.curriculumId)
+              INNER JOIN acdCurricularComponent I
+                       ON (I.curricularComponentId = H.curricularComponentId AND
+                            I.curricularComponentVersion = H.curricularComponentVersion)
+               LEFT JOIN unit_acdclass G
+                        ON (G.classId = B.classId)
+               INNER JOIN acdenrollstatus J
+                        ON J.statusid=A.statusid
+                   WHERE A.contractId = ?
+                   AND A.statusId IN (' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') . ','. SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_PRE_ENROLLED') . ')
+                   AND C.curriculumTypeId NOT IN (' . SAGU::getParameter('ACADEMIC', 'ACD_CURRICULUM_TYPE_COMPLEMENTARY_ACTIVITY') . ')
+                   AND F.periodId = ?
+                   ORDER BY F.periodId DESC,
+                            A.statusId,
+                            D.name )                             
+                   UNION (SELECT A.enrollId,
+                   NULL,
+                   E.periodId,
+                   C.curricularComponentId || \'/\' || C.curricularComponentVersion || \' \'|| C.name as curricularComponentName,
+                   C.academicNumberHours,
+                   H.description
+              FROM unit_acdEnroll A
+        INNER JOIN unit_acdcurriculum B
+                ON (B.curriculumId = A.curriculumId)
+        INNER JOIN acdCurricularComponent C
+                ON (C.curricularComponentId      = B.curricularComponentId AND
+                    C.curricularComponentVersion = B.curricularComponentVersion)
+        INNER JOIN unit_acdContract D
+                ON (D.contractId = A.contractId)
+        INNER JOIN unit_acdlearningperiod E
+                ON (E.learningPeriodId = A.learningPeriodId)
+        INNER JOIN acdEnrollStatus F
+                ON (F.statusId = A.statusId)
+        INNER JOIN acdCourse G
+                ON (G.courseId = D.courseId)
+        INNER JOIN acdenrollstatus H
+                ON H.statusid=A.statusid
+             WHERE A.enrollId IN (SELECT enrollId FROM unit_acdExploitation) 
+             AND A.contractId = ? 
+             AND E.periodId = ?
+             AND A.statusId IN(' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') . ','. SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_PRE_ENROLLED') .')                 
+                 ) ) AS sel ORDER BY 3, 1, 5';
+        
+        $args[] = $contractId;
+        $args[] = $periodId;
+        $args[] = $contractId;
+        $args[] = $periodId;
+
+        $result = SDatabase::query(SAGU::prepare($sql, $args));
+        
+        return $result;
+    }
+    
+    
+    /**
+     * Remove determinado contrato de uma turma
+     * @param type $contractId
+     * @return type 
+     */
+    function classCancellation($contractId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule(); 
+
+        $businessClassPupil = new BusinessAcademicBusClassPupil();
+        $closeClass->endDate  = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+        $contractInThePeriod = $businessClassPupil->getFreeDateFromChanges($contractId, $closeClass->endDate, ' - ', '');
+
+        if( strlen($contractInThePeriod->date) > 0 )
+        {
+            $closeClass->endDate = $contractInThePeriod->date;
+            // There was a class that has already happened at this time
+        }
+
+        $existsOpenClassContract = $businessClassPupil->getContractCurrentClass($contractId);
+
+        // Exists open class for contract
+        if( strlen($existsOpenClassContract->classId) > 0 )
+        {
+            if( SAGU::dateDiff($existsOpenClassContract->beginDate,$closeClass->endDate) >= 0 )
+            {
+                $existsOpenClassContract->endDate = $existsOpenClassContract->beginDate;
+                //It was found open with a class start date at or higher than today. She ended with the final date "$existsOpenClassContract->endDate".
+            }
+            else
+            {
+                $freeDate = $businessClassPupil->getFreeDateFromChanges($contractId, date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')), ' - ', $existsOpenClassContract->beginDate );
+
+                $existsOpenClassContract->endDate = $freeDate->date;
+            }
+            $ok = $businessClassPupil->updateClassPupil($existsOpenClassContract);
+            return $ok;
+        }
+        return true;
+    }
+    
+    
+    /**
+     * Deve buscar os lançamentos do contrato e período letivo 
+     * antigos e atualizar para os novos contrato e período letivo.
+     */
+    protected function migrarLancamentos()
+    {
+        $busEntry = new BusinessFinanceBusEntry();
+        $busEntry->db = $this->db;
+        
+        // Busca pelos titulos deste invoice
+        $filters = new stdClass();
+        $filters->contractId = $this->contractId;
+        $filters->learningPeriodId = $this->learningPeriod->learningPeriodId;
+        $entries = $busEntry->searchEntry($filters);
+        if( count($entries) > 0 )
+        {
+            //Percorre e atualiza o contrato e lançamento do título
+            foreach( $entries as $c=>$l )
+            {
+                $entry = $busEntry->getEntry($l[0]);
+                $entry->contractId = $this->newContractId;
+                $entry->learningPeriodId = $this->newLearningPeriod->learningPeriodId;
+                $busEntry->updateEntry($entry);
+
+                $return[] = $entry;
+            }
+        }
+        
+        return $return;
+    }
+    
+    /**
+     * Atualiza os incentivos do contrato velho cuja data de vigência 
+     * sobreponha o período letivo para o contrato novo.
+     */
+    protected function migrarIncentivos()
+    {
+        $busIncentive = new BusinessFinanceBusIncentive();
+        $busIncentive->db = $this->db;
+        
+        $filters = new stdClass();
+        $filters->contractId = $this->contractId;
+        $searchIncentives = $busIncentive->searchIncentive($filters);
+        
+        $return = array();
+        
+        if( count($searchIncentives) > 0 )
+        {
+            foreach ( $searchIncentives as $cod=>$linha )
+            {
+                $incentive = $busIncentive->getIncentive($linha[0]);
+                //Verifica se as datas do novo período letivo e do incentivo antigo se sobrepõe
+                if( SAGU::dateOverlaps($incentive->startDate, $incentive->endDate, $this->newLearningPeriod->beginDate, $this->newLearningPeriod->endDate) )
+                {
+                    //Atualiza o incentivo para o novo contrato
+                    $incentive->contractId = $this->newContractId;            
+                    $busIncentive->updateIncentive($incentive);
+                    $return[] = $incentive;
+                }
+            }
+        }
+        
+        return $return;
+    }
+    
+    /**
+     * Atualiza os convênios do contrato velho 
+     * cuja data de vigência sobreponha o período letivo para o contrato novo.
+     */
+    protected function migrarConvenios()
+    {
+        $busConvenantPerson = new BusinessFinanceBusConvenantPerson();        
+                
+        $return = array();
+        
+        $filters = new stdClass();
+        $filters->contractId = $this->contractId;
+        $searchConvenantPerson = $busConvenantPerson->searchConvenantPerson($filters);
+        if( count($searchConvenantPerson) > 0 )
+        {
+            foreach ($searchConvenantPerson as $cod=>$linha)
+            {
+                $convenantPerson = $busConvenantPerson->getConvenantPerson($linha[0]);                
+                //Somente altera o contrato do convenio caso a o período seja vigente
+                if( is_null($convenantPerson->endDate) || SAGU::dateOverlaps($convenantPerson->beginDate, $convenantPerson->endDate, $this->newLearningPeriod->beginDate, $this->newLearningPeriod->endDate) )
+                {
+                    $convenantPerson->contractId = $this->newContractId;
+                    $busConvenantPerson->updateConvenantPerson($convenantPerson);
+                    $return[] = $convenantPerson;
+                }
+            }
+        }
+        
+        return $return;        
+    }
+    
+    /**
+     * Encerra o vínculo (definir data de fim) para a(s) turma(s) vigentes do contrato velho 
+     * e cria um novo vínculo para o contrato novo na nova turma.
+     */
+    protected function migrarTurma()
+    {
+        $busClassPupil = new BusinessAcademicBusClassPupil();        
+        $busClassPupil->db = $this->db;
+        
+        $contractCurrentClass = $busClassPupil->getContractCurrentClass($this->contractId);
+               
+        $return = true;
+        
+        if( count($contractCurrentClass) > 0 )
+        {
+            $oldClass = $busClassPupil->getClassPupil($contractCurrentClass->classId, $contractCurrentClass->contractId, $contractCurrentClass->beginDate);
+            $oldClass->endDate = SAGU::addIntervalInDate(SAGU::getDateNow(), 'd', 1, '-'); //Define a data da turma como ontem
+            $oldClass->reasonId = $this->reasonId;
+            $return &= $busClassPupil->updateClassPupil($oldClass);
+        }
+        
+        //Insere a nova turma
+        $newClassPupil = new AcdClassPupil();
+        $newClassPupil->classId = $this->newClassId;
+        $newClassPupil->contractId = $this->newContractId;
+        $newClassPupil->beginDate = SAGU::getDateNow();
+        
+        $return &= $busClassPupil->insertClassPupil($newClassPupil);
+        
+        if( $return )
+        {
+            $newClassPupil->unitId = $this->newCourseOccurrence->unitId;
+            $return &= $busClassPupil->updateUnitIdClassUpil($newClassPupil);
+        }
+
+        return $return;        
+    }
+    
+    /**
+     * Atualiza os registros de matrícula (acdenroll) com o curriculumid do 
+     * curso novo para o código/versão da disciplina, caso exista.
+     */
+    protected function migrarDisciplinas()
+    {
+
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $busEnroll->db = $this->db;
+        $busCurriculum = new BusinessAcademicBusCurriculum();
+        $busCurriculum->db = $this->db;
+        $busGroup = new BusinessAcademicBusGroup();
+        $busGroup->db = $this->db;
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $busLearningPeriod->db = $this->db;
+        $busContractLock = new BusinessAcademicBusContractLock();
+        $busContractLock->db = $this->db;
+        
+        $return = new stdClass();
+        
+        $filters = new stdClass();
+        $filters->contractId = $this->contractId;      
+        $searchEnroll = $busEnroll->searchEnroll($filters);
+        
+        if( count($searchEnroll) > 0 )
+        {
+            //Percorre todas as matrículas do contrato no período
+            foreach( $searchEnroll as $cod=>$linha )
+            {
+                $enroll = $busEnroll->getEnroll($linha[0]); 
+                
+                if( strlen($enroll->groupId) > 0 )
+                {
+                    $group = $busGroup->getGroup($enroll->groupId);
+                    $learningPeriod = $busLearningPeriod->getLearningPeriod($group->learningPeriodId);
+
+                    if( $learningPeriod->periodId != $this->learningPeriod->periodId )
+                    {
+                        //Cancelar disciplinas matriculadas no período atual                                
+                        $curriculum = $busCurriculum->getCurriculum($enroll->curriculumId);
+
+                        $filtersCurriculum = new stdClass();
+                        $filtersCurriculum->curricularComponentId = $curriculum->curricularComponentId;
+                        $filtersCurriculum->curricularComponentVersion = $curriculum->curricularComponentVersion;
+                        $filtersCurriculum->courseId = $this->newCourseOccurrence->courseId;
+                        $filtersCurriculum->courseVersion = $this->newCourseOccurrence->courseVersion;
+                        $filtersCurriculum->turnId = $this->newCourseOccurrence->turnId;
+                        $filtersCurriculum->unitId = $this->newCourseOccurrence->unitId;
+
+                        $newCurriculumId = $busCurriculum->searchCurriculum($filtersCurriculum);
+                                                
+                        //Se aproveitar disciplinas comuns entre os cursos
+                        if( count($newCurriculumId) > 0 && $this->options['takeCurriculum'] == DB_TRUE )
+                        {
+                            //Atualiza o curriculum
+                            $enroll->curriculumId = $newCurriculumId[0][0];                            
+                            //Fixme Alterar o contrato da matrícula para o novo contrato?
+                            //O update nao troca contrato, assim o historico não é movido
+                            $enroll->contractId = $this->newContractId;
+                            $busEnroll->updateEnroll($enroll);
+                            
+                            $data = array();
+                            //Grid data
+                            $data[0] = $newCurriculumId[0][0];
+                            $data[1] = $group->groupId;
+                            $data[2] = $learningPeriod->periodId;
+                            $data[3] = $newCurriculumId[0][10];
+                            $data[4] = $newCurriculumId[0][25];
+                            $data[5] = $enroll->statusDescription;
+                            
+                            $return->disciplinas[] = $data;
+                        }
+
+                        //Se aproveitar vínculos de disciplinas (equivalências)
+                        if( $this->options['takeCurriculumLinks'] == DB_TRUE && ( count($newCurriculumId) == 0  || $this->options['takeCurriculum'] == DB_FALSE ) )
+                        {                            
+                            if( $enroll->statusId == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPROVED') || $enroll->statusId == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_EXCUSED') 
+                            || $enroll->statusId == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') )
+                            {
+                                $busCurriculumLink = new BusinessAcademicBusCurriculumLink();
+
+                                $filtersCurriculumLink = new stdClass();
+                                $filtersCurriculumLink->curriculumId = $curriculum->curriculumId;
+                                $filtersCurriculumLink->courseLinkId = $this->newCourseOccurrence->courseId;
+                                $filtersCurriculumLink->courseLinkVersion = $this->newCourseOccurrence->courseVersion;
+                                $filtersCurriculumLink->courseLinkUnitId = $this->newCourseOccurrence->unitId;
+                                $filtersCurriculumLink->courseLinkTurnId = $this->newCourseOccurrence->turnId;
+
+                                $searchCurriculumLink = $busCurriculumLink->searchCurriculumLink($filtersCurriculumLink);
+                                
+                                //Caso existir apenas 1 vinculo de curriculo insere automaticamente, caso contrário deve ser feito manualmente
+                                if( count($searchCurriculumLink) == 1 )
+                                {
+                                    $busInternalExploitation = new BusinessAcademicBusInternalExploitation();
+                                    $busCurricularComponent = new BusinessAcademicBusCurricularComponent();
+
+                                    $curricularComponent = $busCurricularComponent->getCurricularComponent($curriculum->curricularComponentId, $curriculum->curricularComponentVersion);
+
+                                    $data = new stdClass();
+                                    $data->contractId = $this->newContractId;
+                                    $data->curriculumId = $searchCurriculumLink[0][5];
+                                    $data->learningPeriodId = $this->newLearningPeriod->learningPeriodId;
+                                    $data->exploitationEnrollId = $enroll->enrollId;
+                                    $data->exploitationNumberHours = $curricularComponent->academicNumberHours;
+                                    $data->exploitationCredits = $curricularComponent->academicCredits;                 
+
+                                    //Insere o aproveitamento
+                                    $busInternalExploitation->insertInternalExploitation($data);
+
+                                    $dataExp = array();
+                                    //Grid data
+                                    $dataExp[0] = $searchCurriculumLink[0][0];
+                                    $dataExp[1] = $group->groupId;
+                                    $dataExp[2] = $learningPeriod->periodId;
+                                    $dataExp[3] = $searchCurriculumLink[0][3] .' - '. $searchCurriculumLink[0][4]. ' <br><b>('.$searchCurriculumLink[0][8] .' - '. $searchCurriculumLink[0][9].')</b>';
+                                    $dataExp[4] = $curricularComponent->academicNumberHours;
+                                    $dataExp[5] = $enroll->statusDescription;
+                                    
+                                    $return->vinculos[] = $dataExp;                                       
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            //Cancelar as disciplinas matriculadas no período
+            $enrolls = self::getCanceledEnrollIds($this->contractId, $this->learningPeriod->periodId);
+            if( count($enrolls) > 0 )
+            {
+                foreach( $enrolls as $cod=>$linha )
+                {
+                    $reasonCancellationId = SAGU::getParameter('BASIC', 'ENROLL_CANCELATION_COURSE_CHANGE');
+                    $cancelEnroll = $busContractLock->curricularComponentCancellation($linha[0], $reasonCancellationId);
+
+                    if( !$cancelEnroll )
+                    {
+                        throw new Exception(_M('Não foi possível cancelar as disciplinas matriculadas.', $module));
+                    }
+                }
+            }
+        }
+        
+        return $return;        
+    }
+    
+    /**
+     * Insere as movimentações contratuais no courso novo e antigo
+     */
+    protected function migrarMovimentacoesContratuais()
+    {
+        $businessMovementContract = new BusinessAcademicBusMovementContract();
+        $businessMovementContract->db = $this->db;
+        $busStateContractField = new BusinessAcademicBusStateContractField();
+        $busStateContractField->db = $this->db;
+        $businessMovementContractComplement = new BusinessAcademicBusMovementContractComplement();
+        $businessMovementContractComplement->db = $this->db;
+        $busCourse = new BusinessAcademicBusCourse();
+        $busCourse->db = $this->db;
+                        
+        $timeStamp = date(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP'));
+        
+        //Insere a movimentacao contratual de transferência interna para o novo curso
+        $dataMovementFrom = new stdClass();
+        $dataMovementFrom->contractId = $this->newContractId;
+        $dataMovementFrom->stateContractId =SAGU::getParameter('ACADEMIC', 'STATE_CONTRACT_ID_INTERNAL_TRANSFER_FROM');
+        $dataMovementFrom->stateTime = SAGU::addIntervalInTimestamp($timeStamp, 'mi', '1');
+        $dataMovementFrom->reasonId = $this->reasonId;
+        $dataMovementFrom->learningPeriodId = $this->newLearningPeriod->learningPeriodId; //Periodo letivo do novo curso
+        $movementContractFrom = $businessMovementContract->insertMovementContract($dataMovementFrom);
+        if ( ! $movementContractFrom )
+        {
+            throw new Exception(_M('Não foi possível inserir uma movimentacao contratual de transferência interna para o novo curso.', $module));
+        }
+
+        //Insere a movimentacao de fechamento do contrato antigo
+        $dataMovementTo = new stdClass();
+        $dataMovementTo->contractId = $this->contractId;
+        $dataMovementTo->stateContractId =SAGU::getParameter('ACADEMIC', 'STATE_CONTRACT_ID_INTERNAL_TRANSFER_TO');
+        $dataMovementTo->stateTime = $timeStamp;
+        $dataMovementTo->reasonId = $this->reasonId;
+        $dataMovementTo->learningPeriodId = $this->learningPeriod->learningPeriodId;  //Periodo letivo do antigo curso
+        $movementContractTo = $businessMovementContract->insertMovementContract($dataMovementTo);
+        if ( ! $movementContractTo )
+        {
+            throw new Exception(_M('Não foi possível inserir uma movimentação de fechamento do contrato antigo.', $module));
+        }
+
+        if ( (count($busStateContractField->getStateContractField(SAGU::getParameter('ACADEMIC', 'INTERNAL_TRANSFER_TO_COURSE_FIELD_ID'))) > 0) && (count($busStateContractField->getStateContractField(SAGU::getParameter('ACADEMIC', 'INTERNAL_TRANSFER_FROM_COURSE_FIELD_ID'))) > 0) )
+        {
+            //Obtém o nome do novo curso
+            $newCourse = $busCourse->getCourse($this->newCourseOccurrence->courseId);
+            $oldCourse = $busCourse->getCourse($this->learningPeriod->courseId);
+
+            //Insere o complemento de movimentação para o contrato antigo
+            $dataMovementContractComplementOld = new stdClass();
+            $dataMovementContractComplementOld->contractId = $this->contractId;
+            $dataMovementContractComplementOld->stateContractId = SAGU::getParameter('ACADEMIC', 'STATE_CONTRACT_ID_INTERNAL_TRANSFER_TO');
+            $dataMovementContractComplementOld->stateTime = $timeStamp;
+            $dataMovementContractComplementOld->stateContractFieldId = SAGU::getParameter('ACADEMIC', 'INTERNAL_TRANSFER_TO_COURSE_FIELD_ID');            
+            $dataMovementContractComplementOld->value = $newCourse->name;
+            $movementContractComplementOld = $businessMovementContractComplement->insertMovementContractComplement($dataMovementContractComplementOld);
+            
+            if( !$movementContractComplementOld )
+            {
+                throw new Exception(_M('Não foi possível inserir o complemento da movimentação para o contrato antigo', $module));
+            }
+            
+            //Insere o complemento de movimentação para o novo contrato
+            $dataMovementContractComplementNew = new stdClass();
+            $dataMovementContractComplementNew->contractId = $this->newContractId;            
+            $dataMovementContractComplementNew->stateContractId = SAGU::getParameter('ACADEMIC', 'STATE_CONTRACT_ID_INTERNAL_TRANSFER_FROM');
+            $dataMovementContractComplementNew->stateTime = SAGU::addIntervalInTimestamp($timeStamp, 'mi', '1');
+            $dataMovementContractComplementNew->stateContractFieldId = SAGU::getParameter('ACADEMIC', 'INTERNAL_TRANSFER_FROM_COURSE_FIELD_ID');
+            $dataMovementContractComplementNew->value = $oldCourse->name;
+            $movementContractComplementNew = $businessMovementContractComplement->insertMovementContractComplement($dataMovementContractComplementNew);
+            
+            if ( ! $movementContractComplementNew )
+            {
+                throw new Exception(_M('Não foi possível inserir o complemento da movimentação para o novo contrato', $module));
+            }
+        }
+
+        return true;
+    }
+    
+    /**
+     * Inserir movimentação de transferência no contrato velho, criar um novo contrato 
+     * para o aluno no curso novo, chamar migrar_turma, chamar o migrar_disciplinas, 
+     * chamar o processar_vínculos, se estiver habilitado o parâmetro de migração dos dados financeiros: 
+     * chamar o migrar_lançamentos, chamar o migrar_incentivos, chamar o migrar_convênios; e para cada aproveitamento 
+     * informado inserir um aproveitamento interno, caso não tenha sido contemplado pela migração de disciplinas 
+     * e pelo processamento de vínculos.
+     */
+    public function courseTransfer()
+    {
+        $module = MIOLO::getCurrentModule();
+        $businessContract = new BusinessAcademicBusContract();
+        $businessContract->db = $this->db;
+                
+        //Define variável do contrato antigo
+        $this->contractId = $this->contractId; 
+        $contract = $businessContract->getContract($this->contractId);
+                
+        if ( $this->options ['aproveitarContratoAntigo'] == DB_TRUE )
+        {
+            $filters = new stdClass();
+            $filters->personId = $contract->personId;
+            $filters->courseId = $this->newCourseOccurrence->courseId;
+            $filters->courseVersion = $this->newCourseOccurrence->courseVersion;
+            $filters->turnId = $this->newCourseOccurrence->turnId;
+            $filters->unitId = $this->newCourseOccurrence->unitId;
+            $filters->isClosed = DB_TRUE;
+
+            $busContract = new BusinessAcademicBusContract();
+            $searchContract = $busContract->searchContract($filters);
+            
+            if ( $searchContract[0][0] )
+            {
+                $this->newContractId = $searchContract[0][0];
+            }
+            else
+            {
+                throw new Exception(_M('Não há um contrato inativo deste aluno para este curso que possa ser aproveitado.', $module));
+            }
+        }
+        else
+        {
+            //Criar novo contrato
+            $dataContract = new AcdContract();
+            $dataContract->personId = $contract->personId;
+            $dataContract->courseId = $this->newCourseOccurrence->courseId;
+            $dataContract->courseVersion = $this->newCourseOccurrence->courseVersion;
+            $dataContract->turnId = $this->newCourseOccurrence->turnId;
+            $dataContract->unitId = $this->newCourseOccurrence->unitId;
+            $dataContract->formationDate = $contract->formationDate;
+            $dataContract->formationPeriodId = $contract->formationPeriodId;
+            $dataContract->conclusionDate = $contract->conclusionDate;
+            $dataContract->emendsDate = $contract->emendsDate;
+            $dataContract->diplomaDate = $contract->diplomaDate;
+            $dataContract->inscriptionSelectiveProcId = $contract->inscriptionSelectiveProcId;
+            $dataContract->maturityDay = $contract->maturityDay;
+            $dataContract->isListener = $contract->isListener;
+            $dataContract->isRequestAcademicDegree = $contract->isRequestAcademicDegree;
+            $dataContract->globalAverage = $contract->globalAverage;
+            $dataContract->obs = $contract->obs;
+            $dataContract->parcelsNumber = $contract->parcelsNumber;
+            $dataContract->exploitEnrollsInTransfer = $contract->exploitEnrollsInTransfer;
+
+            $this->newContractId = $this->obterContratoDestino($dataContract);
+        }
+
+        if ( !$this->newContractId )
+        {
+            throw new Exception(_M('Ocorreu um erro ao inserir o novo contrato.', $module));
+        }
+
+        //Migra para a nova turma
+        $this->newClassId = $this->newClassId;
+        if( !$this->migrarTurma() )
+        {
+            throw new Exception(_M('Ocorreu um erro ao migrar o aluno para a nova turma.', $module));
+        }
+
+        //Atualiza movimentações contratuais
+        $this->migrarMovimentacoesContratuais();
+
+        //Migra as disciplinas
+        $disciplinas = $this->migrarDisciplinas();
+
+        //Migra os lançamentos
+        if (SAGU::getParameter('BASIC', 'MODULE_FINANCE_INSTALLED') == 'YES')
+        {            
+            //Migra os títulos e lançamentos para o novo contrato
+            $lancamentos = $this->migrarLancamentos();
+            
+            //Altera os incentivos para o novo contrato
+            $incentivos = $this->migrarIncentivos();
+            
+            //Migra os convênios para o novo contrato
+            $convenios = $this->migrarConvenios();
+        }
+
+        $return = new stdClass();
+        $return->newContractId = $this->newContractId;
+        $return->lancamentos = $lancamentos;
+        $return->disciplinas = $disciplinas->disciplinas;
+        $return->vinculos = $disciplinas->vinculos;
+        $return->incentivos = $incentivos;
+        $return->convenios = $convenios;
+        
+        return $return;
+    }
+    
+    /**
+     * Retorna o código do contrato de destino da transferência.
+     * Se o aluno já possuir o contrato de destino, somente o atualiza e reativa,
+     * caso contrário insere um novo.
+     * 
+     * @param stdClass $dataContract
+     * @return int
+     */
+    private function obterContratoDestino($dataContract)
+    {
+        $verifyContract = new stdClass();
+        $verifyContract->personId = $dataContract->personId;
+        $verifyContract->courseId = $dataContract->courseId;
+        $verifyContract->courseVersion = $dataContract->courseVersion;
+        $verifyContract->turnId = $dataContract->turnId;
+        $verifyContract->unitId = $dataContract->unitId;
+        
+        $businessContract = new BusinessAcademicBusContract();
+        $contract = $businessContract->searchContract($verifyContract);
+        
+        // Se o contrato já existe, somente atualiza.
+        if ( count($contract) > 0 )
+        {
+            $dataContract->contractId = $contract[0][0];
+            $businessContract->updateContract($dataContract);
+        }
+        else
+        {
+            $dataContract->contractId = $businessContract->insertContract($dataContract);
+        }
+        
+        return $dataContract->contractId;
+    }
+    
+    /**
+     * Efetua a transferência de versão do curso.
+     * 
+     * @return \stdClass
+     * @throws Exception
+     */
+    public function transferenciaDeVersao()
+    {
+        $module = MIOLO::getCurrentModule();
+        $businessContract = new BusinessAcademicBusContract();
+        $businessContract->db = $this->db;
+        $busReason = new BusinessAcademicBusReason();
+                
+        //Define variável do contrato
+        $this->contractId = $this->contractId; 
+        $contract = $businessContract->getContract($this->contractId);
+                
+        //Edita o contrato
+        $dataContract = new AcdContract($this->contractId);
+        $dataContract->personId = $contract->personId;
+        $dataContract->courseId = $this->newCourseOccurrence->courseId;
+        $dataContract->courseVersion = $this->newCourseOccurrence->courseVersion;
+        $dataContract->turnId = $this->newCourseOccurrence->turnId;
+        $dataContract->unitId = $this->newCourseOccurrence->unitId;
+        $dataContract->formationDate = $contract->formationDate;
+        $dataContract->formationPeriodId = $contract->formationPeriodId;
+        $dataContract->conclusionDate = $contract->conclusionDate;
+        $dataContract->emendsDate = $contract->emendsDate;
+        $dataContract->diplomaDate = $contract->diplomaDate;
+        $dataContract->inscriptionSelectiveProcId = $contract->inscriptionSelectiveProcId;
+        $dataContract->maturityDay = $contract->maturityDay;
+        $dataContract->isListener = $contract->isListener;
+        $dataContract->isRequestAcademicDegree = $contract->isRequestAcademicDegree;
+        $dataContract->globalAverage = $contract->globalAverage;
+        $dataContract->obs = $contract->obs;
+        $dataContract->parcelsNumber = $contract->parcelsNumber;
+        $dataContract->exploitEnrollsInTransfer = $contract->exploitEnrollsInTransfer;
+
+        if ( !$businessContract->updateContract($dataContract) )
+        {
+            throw new Exception(_M('Ocorreu um erro ao transferir o contrato.', $module));
+        }
+        
+        $this->newContractId = $this->contractId;
+        
+        //Migra para a nova turma
+        $this->newClassId = $this->newClassId;
+        if( !$this->migrarTurma() )
+        {
+            throw new Exception(_M('Ocorreu um erro ao migrar o aluno para a nova turma.', $module));
+        }
+        
+        $reason = $busReason->getReason($this->reasonId);
+        
+        $dataMovementContract = new stdClass();
+        $dataMovementContract->contractId = $this->newContractId;
+        $dataMovementContract->stateContractId = $reason->stateContractId;
+        $dataMovementContract->reasonId = $this->reasonId;
+        $dataMovementContract->stateTime = date(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP'));
+        $dataMovementContract->learningPeriodId = $this->newLearningPeriod;
+        
+        $busMovementContract = new BusinessAcademicBusMovementContract();
+        
+        if ( !$busMovementContract->insertMovementContract($dataMovementContract) )
+        {
+            throw new Exception(_M('Ocorreu um erro ao inserir movimentação contratual de transferência interna.', $module));
+        }
+
+        //Migra as disciplinas
+        $disciplinas = $this->transferenciaDeVersaoMigrarDisciplinas();
+
+        $return = new stdClass();
+        $return->disciplinas = $disciplinas->disciplinas;
+        $return->vinculos    = $disciplinas->vinculos;
+        $return->noActions   = $disciplinas->noActions;
+        
+        return $return;
+    }
+    
+    /**
+     * Trabalha com as disciplinas equivalentes e comuns das versões do contrato.
+     * 
+     * @return \stdClass
+     */
+    protected function transferenciaDeVersaoMigrarDisciplinas()
+    {
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $busEnroll->db = $this->db;
+        $busCurriculum = new BusinessAcademicBusCurriculum();
+        $busCurriculum->db = $this->db;
+        $busCurricularComponent = new BusinessAcademicBusCurricularComponent();
+        $busGroup = new BusinessAcademicBusGroup();
+        $busGroup->db = $this->db;
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $busLearningPeriod->db = $this->db;
+        $busContractLock = new BusinessAcademicBusContractLock();
+        $busContractLock->db = $this->db;
+        $busDegreeEnroll = new BusinessAcademicBusDegreeEnroll();
+        $busExploitation = new BusinessAcademicBusExploitation();
+        
+        $return = new stdClass();
+        
+        $filters = new stdClass();
+        $filters->contractId = $this->contractId;      
+        $filters->exploitation = true;
+        $searchEnroll = $busEnroll->searchEnroll($filters);
+        
+        $equivalenciasN1 = array();
+        
+        if( count($searchEnroll) > 0 )
+        {
+            //Percorre todas as matrículas do contrato no período
+            foreach( $searchEnroll as $cod=>$linha )
+            {
+                $enroll = $busEnroll->getEnroll($linha[0]);
+                $oldContractId = $enroll->contractId;
+                
+                if ( $enroll->isExploitation && !$enroll->groupId )
+                {
+                    $enroll->groupId = $busExploitation->getGroupIdFromExploitation($linha[0]);
+                    $aproveitamentoExterno = $busExploitation->getCurriculumIdAndPeriodIdFromExploitation($linha[0]);
+                }
+                
+                if( (strlen($enroll->groupId) > 0) || (is_null($enroll->groupId) && strlen($aproveitamentoExterno[0]) > 0) )
+                {
+                    if ( strlen($enroll->groupId) > 0 )
+                    {
+                        $group = $busGroup->getGroup($enroll->groupId);
+                        $learningPeriod = $busLearningPeriod->getLearningPeriod($group->learningPeriodId);     
+                    }
+                    else
+                    {
+                        $enroll->curriculumId = $aproveitamentoExterno[0];
+                        $learningPeriod->periodId = $aproveitamentoExterno[1];
+                    }
+                                        
+                    $curriculum      = $busCurriculum->getCurriculum($enroll->curriculumId);
+                    $curricComponent = $busCurricularComponent->getCurricularComponent($curriculum->curricularComponentId, $curriculum->curricularComponentVersion);
+                    
+                    $noAction     = true;
+                    $dataNoAction = array();
+                    
+                    //Grid data
+                    $dataNoAction[0] = NULL;
+                    $dataNoAction[1] = $enroll->curriculumId;
+                    $dataNoAction[2] = $group->groupId;
+                    $dataNoAction[3] = $learningPeriod->periodId;
+                    $dataNoAction[4] = $curriculum->curricularComponentId . ' / ' . $curriculum->curricularComponentVersion . ' - ' . $curriculum->curricularComponentName;
+                    $dataNoAction[5] = $curricComponent->academicNumberHours;
+                    $dataNoAction[6] = $enroll->statusDescription;                    
+
+                    $filtersCurriculum = new stdClass();
+                    $filtersCurriculum->curricularComponentId = $curriculum->curricularComponentId;
+                    $filtersCurriculum->curricularComponentVersion = $curriculum->curricularComponentVersion;
+
+                    $filtersCurriculum->courseId = $this->newCourseOccurrence->courseId;
+                    $filtersCurriculum->courseVersion = $this->newCourseOccurrence->courseVersion;
+                    $filtersCurriculum->turnId = $this->newCourseOccurrence->turnId;
+                    $filtersCurriculum->unitId = $this->newCourseOccurrence->unitId;
+
+                    $newCurriculumId = $busCurriculum->searchCurriculum($filtersCurriculum);
+                    if ( $newCurriculumId[0][17] == SAGU::getParameter('ACADEMIC', 'STATE_CURRICULUM_TYPE_INACTIVE') )
+                    {
+                        unset($newCurriculumId);
+                    }
+                    
+                    //Se aproveitar disciplinas comuns entre os cursos
+                    if( count($newCurriculumId) > 0 && $this->options['takeCurriculum'] == DB_TRUE )
+                    {
+                        //Atualiza o curriculum
+                        $enroll->curriculumId = $newCurriculumId[0][0];
+                        $enroll->contractId = $this->newContractId;
+                        
+                        $busEnroll->updateEnroll($enroll);
+                        
+                        $data = array();
+                        //Grid data
+                        $data[0] = NULL;
+                        $data[1] = $newCurriculumId[0][0];
+                        $data[2] = $group->groupId;
+                        $data[3] = $learningPeriod->periodId;
+                        $data[4] = $newCurriculumId[0][10];
+                        $data[5] = $newCurriculumId[0][25];
+                        $data[6] = $enroll->statusDescription;
+
+                        $return->disciplinas[] = $data;
+                        $noAction = false;
+                    }
+                    
+                    //Se aproveitar vínculos de disciplinas (equivalências)
+                    if( $this->options['takeCurriculumLinks'] == DB_TRUE && ( count($newCurriculumId) == 0  || $this->options['takeCurriculum'] == DB_FALSE ) )
+                    {
+                        if( $enroll->statusId != SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_CANCELLED') )
+                        {
+                            $busCurriculumLink = new BusinessAcademicBusCurriculumLink();
+
+                            $filtersCurriculumLink = new stdClass();
+                            $filtersCurriculumLink->curriculumId = $curriculum->curriculumId;
+                            
+                            $filtersCurriculumLink->courseId = $curriculum->courseId;
+                            $filtersCurriculumLink->courseVersion = $curriculum->courseVersion;
+                            $filtersCurriculumLink->courseUnitId = $curriculum->unitId;
+                            $filtersCurriculumLink->courseTurnId = $curriculum->turnId;
+                            
+                            $filtersCurriculumLink->courseLinkId = $this->newCourseOccurrence->courseId;
+                            $filtersCurriculumLink->courseLinkVersion = $this->newCourseOccurrence->courseVersion;
+                            $filtersCurriculumLink->courseLinkUnitId = $this->newCourseOccurrence->unitId;
+                            $filtersCurriculumLink->courseLinkTurnId = $this->newCourseOccurrence->turnId;
+
+                            $searchCurriculumLink = $busCurriculumLink->searchCurriculumLink($filtersCurriculumLink);
+                            
+                            $busCurricularComponent = new BusinessAcademicBusCurricularComponent();
+                            $curricularComponent    = $busCurricularComponent->getCurricularComponent($curriculum->curricularComponentId, $curriculum->curricularComponentVersion);
+                            
+                            // Vínculo 1:1
+                            if ( count($searchCurriculumLink) == 1 && !in_array($searchCurriculumLink[0], $equivalenciasN1)  )
+                            {
+                                unset($filtersCurriculumLink->curriculumId);
+                                $filtersCurriculumLink->curriculumLinkId = $searchCurriculumLink[0][5];
+                                
+                                $maisEquivalencias = $busCurriculumLink->searchCurriculumLink($filtersCurriculumLink);
+                                
+                                // Vínculo n:1
+                                if ( count($maisEquivalencias) > 1 )
+                                {
+                                    $equivalenciasN1 = $maisEquivalencias;
+                                    $vinculos        = array();
+                                    $equivEnrolls    = 0;
+                                    
+                                    // Verifica se o aluno está aprovado em todas as disciplinas equivalentes.
+                                    foreach ( $equivalenciasN1 as $equivalenciaN1 )
+                                    {
+                                        foreach ( $searchEnroll as $eLinkEnroll )
+                                        {
+                                            if ( (int)$eLinkEnroll[3] == (int)$equivalenciaN1[0] && $eLinkEnroll[20] == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPROVED') ) //aprovado $eLinkEnroll[20]
+                                            {
+                                                $groupLink           = $busGroup->getGroup($eLinkEnroll[2]);
+                                                $learningPeriodLink  = $busLearningPeriod->getLearningPeriod($groupLink->learningPeriodId);
+                                                
+                                                $dataExp = array();
+                                                //Grid data
+                                                $args = $equivalenciaN1[5] . '|' . $oldContractId;// . '|' . $learningPeriodLink->learningPeriodId;
+                                                $action = SForm::getAjaxAction('FrmTransferenciaDeVersaoResumo::mostraPopupInformarNota', 'mPopupResponse', false, array('args' => $args), true, false);
+                                                $dataExp[0] = '<a href="' . $action . '">Definir nota</a>';
+                                                $dataExp[1] = $equivalenciaN1[0];
+                                                $dataExp[2] = $group->groupId;
+                                                $dataExp[3] = $learningPeriodLink->periodId;
+                                                $dataExp[4] = $equivalenciaN1[3] .' - '. $equivalenciaN1[4]. ' <br><b>('.$equivalenciaN1[8] .' - '. $equivalenciaN1[9].')</b>';
+                                                $dataExp[5] = $curricularComponent->academicNumberHours;
+                                                $dataExp[6] = $enroll->statusDescription;
+                                                
+                                                $vinculos[$equivEnrolls] = $dataExp;
+                                                $equivEnrolls ++;
+                                            }
+                                        }
+                                    }
+                                    
+                                    if ( count($equivalenciasN1) == $equivEnrolls )
+                                    {
+                                        $busInternalExploitation = new BusinessAcademicBusInternalExploitation();
+                                    
+                                        $filters = new stdClass();
+                                        $filters->contractId = $this->newContractId;
+                                        $filters->learningPeriodId = $this->newLearningPeriod->learningPeriodId;
+                                        $filters->curriculumId = $equivalenciasN1[0][5];
+                                        $filters->exploitationEnrollId = $enroll->enrollId;
+                                        $filters->exploitationNumberHours = $equivalenciasN1[0][10];
+                                        $filters->finalnote = $_SESSION['novaNota'][$oldContractId][$equivalenciasN1[0][5]];
+
+                                        if ( $busInternalExploitation->insertInternalExploitation($filters) )
+                                        {
+                                            foreach ( $vinculos as $vinculo )
+                                            {
+                                                $return->vinculos[] = $vinculo;
+                                            }
+                                        }
+                                    }
+                                    else
+                                    {
+                                        unset($equivalenciasN1);
+                                    }
+                                }
+                                else
+                                {
+                                    //Atualiza o curriculum
+                                    $enroll->curriculumId = $searchCurriculumLink[0][5];
+                                    $enroll->contractId = $this->newContractId;
+
+                                    $busEnroll->updateEnroll($enroll);
+
+                                    $dataExp = array();
+                                    //Grid data
+                                    $dataExp[0] = NULL;
+                                    $dataExp[1] = $searchCurriculumLink[0][0];
+                                    $dataExp[2] = $group->groupId;
+                                    $dataExp[3] = $learningPeriod->periodId;
+                                    $dataExp[4] = $searchCurriculumLink[0][3] .' - '. $searchCurriculumLink[0][4]. ' <br><b>('.$searchCurriculumLink[0][8] .' - '. $searchCurriculumLink[0][9].')</b>';
+                                    $dataExp[5] = $curricularComponent->academicNumberHours;
+                                    $dataExp[6] = $enroll->statusDescription;
+
+                                    $return->vinculos[] = $dataExp;
+                                    $noAction = false;
+                                }
+                            }
+                            // Vinculo 1:n
+                            else if ( count($searchCurriculumLink) > 1 &&
+                                      in_array($enroll->statusId, array(SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPROVED'),
+                                                                        SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_EXCUSED'))) )
+                            {
+                                $exploitation = '';
+                                foreach ( $searchCurriculumLink as $curriculumLink )
+                                {
+                                    $busInternalExploitation = new BusinessAcademicBusInternalExploitation();
+                                    
+                                    $filters = new stdClass();
+                                    $filters->contractId = $this->newContractId;
+                                    $filters->learningPeriodId = $this->newLearningPeriod->learningPeriodId;
+                                    $filters->curriculumId = $curriculumLink[5];
+                                    $filters->exploitationEnrollId = $enroll->enrollId;
+                                    $filters->exploitationNumberHours = $curriculumLink[10];
+                                    $filters->finalnote = $busDegreeEnroll->obterNotaPorCurriculumEContrato($curriculumLink[0], $oldContractId);
+
+                                    if ( $busInternalExploitation->insertInternalExploitation($filters) )
+                                    {
+                                        $exploitation .= ' <br><b>('.$curriculumLink[8] .' - '. $curriculumLink[9].')</b>';
+                                    }
+                                }
+                                
+                                if ( strlen($exploitation) > 0 )
+                                {
+                                    $dataExp = array();
+                                    //Grid data
+                                    $dataExp[0] = NULL;
+                                    $dataExp[1] = $searchCurriculumLink[0][0];
+                                    $dataExp[2] = $group->groupId;
+                                    $dataExp[3] = $learningPeriod->periodId;
+                                    $dataExp[4] = $searchCurriculumLink[0][3] .' - '. $searchCurriculumLink[0][4] . $exploitation;
+                                    $dataExp[5] = $curricularComponent->academicNumberHours;
+                                    $dataExp[6] = $enroll->statusDescription;
+                                    
+                                    $return->vinculos[] = $dataExp;
+                                    $noAction = false;
+                                }
+                            }
+                            
+                            if ( in_array($searchCurriculumLink[0], $equivalenciasN1) )
+                            {
+                                $noAction = false;
+                            }
+                        }
+                    }
+                    
+                    if ( $noAction )
+                    {
+                        $return->noActions[] = $dataNoAction;
+                    }
+                }
+            }
+        }
+        
+        return $return;        
+    }
+    
+    /**
+     * Retorna todos os alunos cujo contrato extiverem na 
+     * ocorrência de curso recebida por parâmetro.
+     * 
+     * @param stdClass $filters
+     * @return array
+     */
+    public static function obterContratosParaTransferenciaDeVersaoDeCursoEmLote($filters)
+    {
+        $sql = "SELECT DISTINCT A.contractId,
+                                A.personId,
+                                getPersonName(A.personId) AS name,
+                                B.classId
+                           FROM acdContract A
+                     INNER JOIN acdClassPupil B
+                             ON B.contractId = A.contractId
+                          WHERE A.courseId = ?
+                            AND A.courseVersion = ?
+                            AND A.turnId = ?
+                            AND A.unitId = ?";
+        
+        $params = array(
+            $filters->courseId,
+            $filters->courseVersion,
+            $filters->turnId,
+            $filters->unitId
+        );
+        
+        if ( strlen($filters->classId) > 0 )
+        {
+            $sql .= " AND B.classId = ?";
+            $params[] = $filters->classId;
+        }
+        
+        $contracts = SDatabase::query($sql, $params);
+        $contratos = array();
+        
+        $busContract = new BusinessAcademicBusContract();
+        foreach ( $contracts as $contract )
+        {
+            $estado = $busContract->getContractLastMovementStatus($contract[0]);
+            if ( !(MUtil::getBooleanValue($estado->isCloseContract)) )
+            {
+                $contratos[] = $contract;
+            }
+        }
+        
+        return $contratos;
+    }
+}
+?>

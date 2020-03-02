@@ -1,0 +1,155 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Gerencia importacao de atividades complementares para o SAGU
+ *
+ * @author Luís Felipe Wermann [luis_felipe@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * @since
+ * Class created on 03/11/2014
+ *
+ **/
+class sCSVAvaliacaoDosAlunos extends sCSVFileImporter
+{
+    public function getTitle()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        return _M('Avaliação dos Alunos', $module);
+    }
+    
+    public function __construct()
+    {
+        $typeDefs = array('name', 'label', 'isRequired', 'type', 'replaceVars' );
+        $defs = array(
+            array( 'cpf', _M('Identificador pessoa'), true ),
+            array( 'curso', _M('Cod. do curso'), true ),
+            array( 'versao', _M('Versao'), true ),
+            array( 'turno', _M('Turno'), true ),
+            array( 'campus', _M('Campus'), true ),
+            array( 'tipoAvaliacao', _M('Tipo de avaliacao do MEC'), true),
+            array( 'dataAvaliacao', _M('Data de avaliacao'), true),
+            array( 'eDispensado', _M('Dispensado') ,true),
+            array( 'estaPresente', _M('Presente'), true),
+            array( 'mensagemAvaliacao', _M('Mensagem de avaliacao do aluno'), false),
+            array( 'notaDoAluno', _M('Nota do aluno'), false)
+        );
+        
+        $this->setColumnsArray($typeDefs, $defs);
+        
+        parent::__construct();
+    }
+    
+    public function importLine2($data)
+    {
+        $personId = $this->obterPersonId($data->cpf);
+        
+        //Verifica se existe pessoa
+        if ( strlen($personId) == 0 )
+        {
+            throw new Exception(_M("Não foi encontrada nenhuma pessoa com o identificador '{$data->cpf}'."));
+        }
+        else
+        {
+            //Verifica se existe curso, versao, turno, unidade
+            $curso = $this->obterCursoPeloCodigo($data->curso);
+            if ( strlen ( $curso ) == 0 )
+            {
+                throw new Exception(_M("O curso de identificador '{$data->curso}' não está cadastrado no sistema."));
+            }
+            $versao = $this->obterCursoVersao($data->curso, $data->versao);
+            if ( strlen ($versao) == 0)
+            {
+                throw new Exception(_M("A versão '{$data->versao}' do curso '{$data->curso}' não está cadastrada no sistema."));
+            }
+            $this->obterTurno($data->turno);
+            $this->obterUnidade($data->campus);
+
+            //Verifica se existe contrato
+            $contractId = $this->obterContratoDaPessoa($personId, $data->curso, $data->versao, $data->turno, $data->campus);
+
+            //Verifica se existe tipo de avaliacao do MEC
+            $tipoAvaliacaoId = $this->obterTipoDeAvaliacaoDoMEC($data->tipoAvaliacao);
+
+            //Verifica dispesando e esta presente
+            if ($data->eDispensado == 's' || $data->eDispensado == 'S')
+            {
+                $insert->excused = DB_TRUE;
+            }
+            elseif ($data->eDispensado == 'n' || $data->eDispensado == 'N')
+            {
+                $insert->excused = DB_FALSE;
+            }
+            else
+            {
+                throw new Exception(_M("A pessoa com o identificador {$data->cpf} está com o atributo 'É dispensado' incorreto: {$data->eDispensado}. Valores possíveis: S ou N."));
+            }
+
+            if($data->estaPresente == 's' || $data->estaPresente == 'S')
+            {
+                $insert->isPresent = DB_TRUE;
+            }
+            elseif ($data->estaPresente == 'n' || $data->estaPresente == 'N')
+            {
+                $insert->isPresent = DB_FALSE;
+            }
+            else
+            {
+                throw new Exception(_M("A pessoa com o identificador {$data->cpf} está com o atributo 'Está presente' incorreto. Valores possíveis: S ou N."));
+            }
+
+            //Verifica se a mensagem da avaliacao esta no sistema
+            $data->mensagemAvaliacao = $this->fixValue($data->mensagemAvaliacao);
+            if (strlen ($this->fixValue($data->mensagemAvaliacao)) > 0)
+            {
+                $mensagemAvaliacao = $this->obterMensagemDeAvaliacaoDosAlunos($data->mensagemAvaliacao);
+            }
+            
+            //Verifica data
+            $data->dataAvaliacao = $this->fixValue($data->dataAvaliacao);
+            if (!SAGU::validaData($data->dataAvaliacao))
+            {
+                throw new Exception ( _M("A data de avaliação '{$data->dataAvaliacao}' não é uma data válida."));
+            }
+            
+            //Verifica nota
+            $data->notaDoAluno = $this->fixValue($data->notaDoAluno);
+            if ( SAGU::verificarVariavel($this->fixValue($data->notaDoAluno)) != SAGU::TIPO_VARIAVEL_NUMERO)
+            {
+                throw new Exception (_M("A nota do aluno '{$data->cpf}' não é uma nota de número válida."));
+            }
+
+            //Insere novo
+            $busAvaliacao = new BusinessAcademicBusTestEndCourseContract();
+
+            $insert->testEndCourseTypeId = $tipoAvaliacaoId[0][0];
+            $insert->contractId = $contractId;
+            $insert->testEndCourseDate = $this->fixValue($data->dataAvaliacao);
+            $insert->mensagemDeAvaliacaoDosAlunosId = $this->fixValue($mensagemAvaliacao[0][0]);
+            $insert->notaDoAluno = $this->fixValue($data->notaDoAluno);
+
+            $busAvaliacao->insertTestEndCourseContract($insert);
+        }
+    }
+}
+?>

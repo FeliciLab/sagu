@@ -1,0 +1,392 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulário de notas do portal do aluno
+ *
+ * @author Arthur Lehdermann [arthur@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Equipe Solis [sagu2@solis.coop.br]
+ *
+ * @since
+ * Class created on 23/02/2011
+ */
+/**
+ * Form to manipulate an enroll
+ */
+class FrmNotes extends SForm
+{
+    /*
+     * Armazena os dados da pessoa (do aluno logado)
+     */
+    public $personData;
+
+    /**
+     * Class constructor
+     */
+    public function __construct()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+
+        parent::__construct(_M('Notas', $module), null, null);
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $busPerson = new BusinessBasicBusPerson();
+        $busFrequencyAndNotes = new BusinessServicesBusFrequencyAndNotes();
+
+        $this->personData = $busPerson->getPersonByMioloUserName(trim($MIOLO->getLogin()->id));
+        $personId = $this->GetFormValue('personId', $this->personData->personId);
+        $fields[] = new MHiddenField('personId', $personId);
+
+        $filters = $this->getTypesData();
+        $periodId = $this->getFormValue('periodId', (strlen(MIOLO::_request('periodId')) > 0) ? MIOLO::_request('periodId') : SAGU::getParameter('BASIC', 'CURRENT_PERIOD_ID'));
+        $period = new MComboBox('periodId', $periodId, _M('Período', $module), $busFrequencyAndNotes->listPuplisPeriods($this->personData->personId));
+        $period->setJsHint(_M('Selecione um período', $module));
+        $validators[] = new MRequiredValidator('periodId', _M('Período', $module));
+        $fields[] = $period;
+
+        $fields[] = new MSeparator('');
+
+        $url = 'javascript:history.go(-1)';
+        $btnBack = new MButton('btnBack', '<< ' . _M('Voltar', $module), $url);
+        $btnSearch = new MButton('btnSearch', _M('Consultar', $module), $this->getAjaxAction('showNotes', 'divNotes'));
+        $fields[] = new MHContainer('hctButtons', array($btnBack, $btnSearch));
+
+        $fields[] = new MSeparator();
+        $fields[] = new MDiv('divPopup', NULL);
+        $fields[] = new MDiv('divNotes', NULL);
+        $fields[] = new MSeparator();
+
+        $url = str_replace('&amp;', '&', $this->manager->getCurrentURL());
+        $MIOLO->getRequiredJS4Ajax();
+
+        $code = '
+        function showNotes()
+        {
+            args = new Array();
+            args[0] = document.getElementById(\'personId\').value;
+            args[1] = document.getElementById(\'periodId\').value;
+
+            xGetElementById(\'divNotes\').innerHTML = \'Loading...<img src = "/images/loading.gif"/>\';
+            cpaint_call("' . $url . '", "POST", \'showNotes\', args, tableResult, "TEXT");
+        }
+
+        function tableResult(result)
+        {
+            xGetElementById(\'divNotes\').innerHTML = result;
+            MIOLO_parseAjaxJavascript(result);
+        }
+        ';
+
+        $this->page->addJsCode($code);
+
+        if ( $periodId && $personId )
+        {
+
+            $this->AddJsCode("javascript:saguDoAjax('showNotes', 'divNotes', true, {'personId':" . $personId . ", 'periodId':'" . $periodId . "'})");
+        }
+
+        if ( isset($validators) )
+        {
+            $this->setValidators($validators);
+        }
+
+        $this->setFields($fields);
+    }
+
+    /**
+     * Exibe as notas
+     *
+     * @param <type> $args
+     * @return BaseGroup
+     */
+    public function showNotes($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $filter->personId = $args->personId;
+        $filter->periodId = $args->periodId;
+
+        // Instancia os bussiness
+        $busGroup = new BusinessAcademicBusGroup();
+        $busEvaluation = new BusinessAcademicBusEvaluation();
+        $busDegreeEnroll = new BusinessAcademicBusDegreeEnroll();
+        $busFrequencyAndNotes = new BusinessServicesBusFrequencyAndNotes();
+        $busEvaluationEnroll = new BusinessAcademicBusEvaluationEnroll();
+        $busProfessorFrequency = new BusinessServicesBusProfessorFrequency();
+        $busAcademicConsultation = new BusinessServicesBusAcademicConsultation();
+        $busDiverseConsultation = new BusinessAcademicBusDiverseConsultation();
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+
+        // Pega os dados do contrato do aluno
+        $contracts = $busAcademicConsultation->getPersonContracts($filter->personId);
+        $curricularComponents = array();
+
+        for ( $i = 0; $i < count($contracts); $i++ )
+        {
+            $filter->contractId = $contracts[$i]->contractId;
+            $filter->notCancelled = true;
+
+            // Pega os dados das disciplinas
+            $curricularComponent = $busDiverseConsultation->getCurricularComponentCoursed($filter);
+
+            if ( count($curricularComponent) > 0 )
+            {
+                if ( count($curricularComponents) > 0 )
+                {
+                    $curricularComponents = array_merge($curricularComponents, $curricularComponent);
+                }
+                else
+                {
+                    $curricularComponents = $curricularComponent;
+                }
+            }
+        }
+
+        if ( is_array($curricularComponents) &&  (count($curricularComponents) > 0) )
+        {
+            $count = 0;
+            foreach ( $curricularComponents as $index => $value )
+            {
+                $enrollId = $value[0];
+                $groupId = $value[1];
+
+                if ( strlen($groupId) > 0 )
+                {
+                    // Pega o periodo letivo do grupo
+                    $learningPeriodId = $busLearningPeriod->getLearningPeriodByGroup($groupId);
+
+                    // Adicionar as frequencias
+                    // busca lista de alunos e de calendário academico
+                    $pupils = $busProfessorFrequency->listGroupPupils($value[0]);
+                    $academicCalendars = $busProfessorFrequency->listGroupAcademicCalendar($value[1]);
+
+                    // Field status
+                    $statusLabel = new MLabel(_M('Status', $module) . ':');
+                    $statusLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                    $statusV = new MLabel($value[10], 'bold');
+                    $statusV->setBold(TRUE);
+                    $hctStatus = new MHContainer('hctStatus', array($statusLabel, $statusV));
+
+                    // Field numberHours
+                    $numberHorsLabel = new MLabel(_M('Horas', $module) . '/' . _M('Créditos', $module) . ':');
+                    $numberHorsLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                    $numberHorsV = new MLabel($value[6]);
+                    $numberHorsV->setBold(TRUE);
+                    $hctNumberHours = new MHContainer('hctNumberHour', array($numberHorsLabel, $numberHorsV));
+
+                    // Field professors
+                    $professorsArray = $busDiverseConsultation->getGroupProfessorNames($value[1]);
+                    if ( count($professorsArray) > 0 )
+                    {
+                        $professors = implode('<br>', $professorsArray);
+                    }
+                    else
+                    {
+                        $professors = _M('A definir', $module);
+                    }
+                    $professorLabel = new MLabel(_M('Professor', $module) . ':');
+                    $professorLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                    $professorV = new MLabel($professors);
+                    $professorV->setBold(TRUE);
+                    $hctProfessor = new MHContainer('hctProfessor', array($professorLabel, $professorV));
+                    
+                    // Notas
+                    $learningPeriodDegrees = $busFrequencyAndNotes->getLearningPeriodDegrees($learningPeriodId);
+
+                    if ( count($learningPeriodDegrees) > 0 )
+                    {
+                        // Instancia uma MTableRaw
+                        $tableRaw = new MTableRaw(null, null, null);
+
+                        foreach ( $learningPeriodDegrees as $degree )
+                        {
+                            $filters = new stdClass();
+                            $filters->degreeId = $degree->degreeId;
+                            $filters->groupId = $groupId;
+
+                            $evaluations = $busEvaluation->searchEvaluation($filters);
+                            //Obtém o método de avaliação da disciplina oferecida
+                            $useConcept = $busGroup->obterMetodoAvaliacao($groupId);
+
+                            if ( count($evaluations) > 0 )
+                            {
+                                foreach ( $evaluations as $evaluation )
+                                {
+                                    $evaluationData = $busEvaluation->getEvaluation($evaluation[0]);
+                                    $evaluationGrade = $busEvaluationEnroll->getEvaluationEnrollCurrentGrade($evaluationData->evaluationId, $enrollId, ($useConcept == DB_TRUE));
+
+                                    // Prova
+                                    $column[] = $evaluationData->description;
+
+                                    // Nota
+                                    $tableData[$count][] = $evaluationGrade;
+                                    // Alinhamento da nota a direita
+                                    $tableRaw->attributes['cell'][$count][] = "width=0 align=\"right\" valign=\"top\"";
+                                }
+                            }
+
+                            // Avaliação
+                            $column[] = $degree->description;
+                            $degreeGrade = $busDegreeEnroll->getDegreeEnrollCurrentGrade($degree->degreeId, $enrollId, ($useConcept == DB_TRUE));
+
+                            // Nota
+                            $tableData[$count][] = $degreeGrade;
+                            // Alinhamento da nota a direita
+                            $tableRaw->attributes['cell'][$count][] = "width=0 align=\"right\" valign=\"top\"";
+                        }
+
+                        /*
+                         * Percorre o array das notas, caso não tenha nenhuma exibe uma
+                         * mensagem de nenhuma nota registrada até o momento
+                         */
+                        $hasRegisters = false;
+                        foreach ( (array)$tableData[0] as $val )
+                        {
+                            if ( !is_null($val) )
+                            {
+                                $hasRegisters = true;
+                            }
+                        }
+                        if ( $hasRegisters )
+                        {
+                            // Define os dados da tabela das notas
+                            $tableRaw->array = &$tableData;
+                            $tableRaw->colTitle = $column;
+
+                            // Define como "zebrada"
+                            $tableRaw->SetAlternate(true);
+                        }
+                        else
+                        {
+                            // Mensagem alertando de que nenhuma nota foi inserida até o momento
+                            $tableRaw = new MText('noRecords', _M('Nenhuma nota foi inserida pelo professor até o momento.', $module));
+                        }
+
+                        $bsgTableRaw = new BaseGroup('bsgTableRaw' . $index, _M('Notas', $module), array( new MSeparator(), $tableRaw ), 'vertical');
+                        $bsgTableRaw->showLabel = true;
+                        $bsgTableRaw->width = '100%';
+
+                        $count++;
+                        unset($tableData);
+                        unset($column);
+                    }
+
+                    // Adiciona opção para impressão do documento de plano de ensino
+                    $gradebook = $MIOLO->getActionURL('services', 'main:pupil:notes', null, array(
+                                'groupId' => $groupId,
+                                'event' => 'generateGradeBook',
+                                'generateOption' => 'pdf'
+                            ));
+                    $imgDocument = $MIOLO->getUI()->getImageTheme($MIOLO->getConf('theme.main'), 'document-16x16.png');
+                    $actGradebook = new MImageLink('btnGradeBook', '', $gradebook, $imgDocument);
+                    $gradebookLabel = new MLabel(_M('Plano de ensino', $module) . ':');
+                    $gradebookLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                    $hctGradebook = new MHContainer('hct' . rand(), array($gradebookLabel, $actGradebook));
+
+                    $bsgCurriculumComponent = new BaseGroup('bsgCurriculumComponent' . $index, $value[4], array($hctStatus, $hctNumberHours, $hctProfessor, $hctGradebook, $bsgTableRaw, $bsgFrequency), 'vertical');
+                    $bsgCurriculumComponent->showLabel = true;
+                    $bsgCurriculumComponent->width = '100%';
+                    $fields[] = $bsgCurriculumComponent;
+
+                    unset($table);
+                    $count = 0;
+                }
+            }
+        }
+        else
+        {
+            $this->AddAlert(_M('Nenhuma nota registrada até o presente momento.', $module));
+        }
+
+        return $fields;
+    }
+
+    /**
+     * Método para geração do documento de plano de ensino
+     */
+    public function generateGradeBook()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'academic';
+
+        $options['module'] = $module;
+        $options['reportName'] = 'gradebook';
+
+        if ( strlen(MIOLO::_REQUEST('groupId')) > 0 )
+        {
+            $options['parameters']['groupid'] = (int)MIOLO::_REQUEST('groupId');
+
+            // O nome do professor
+            $busDiverseConsultation = new BusinessAcademicBusDiverseConsultation();
+            $professorsArray = $busDiverseConsultation->getGroupProfessorNames(MIOLO::_REQUEST('groupId'));
+            if ( count($professorsArray) > 0 )
+            {
+                $professorName = implode('<br>', $professorsArray);
+            }
+            else
+            {
+                $professorName = _M('A definir', $module);
+            }
+            if ( strlen($professorName) > 0 )
+            {
+                $options['parameters']['professorName'] = (string)$professorName;
+            }
+        }
+
+        if ( strlen(MIOLO::_REQUEST('generateOption')) > 0 )
+        {
+            $options['fileType'] = MIOLO::_REQUEST('generateOption');
+        }
+
+        $sreport = new SReport($options);
+
+        if ( !$sreport->generate() )
+        {
+            $this->addError(_M('Não foi possível gerar o documento.', $module));
+        }
+    }
+
+    /**
+     * Method to gather all information from the form fields
+     * and put them on a database compatible object
+     */
+    public function getTypesData()
+    {
+        // Get filters values
+        $data->personId = $this->personData->personId;
+        $data->periodId = $this->GetFormValue('periodId', SAGU::getParameter('basic', 'CURRENT_PERIOD_ID'));
+
+        return $data;
+    }
+}
+?>

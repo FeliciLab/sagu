@@ -1,0 +1,3072 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Matricula Web
+ *
+ * @author Jonas Guilherme Dahmer [jonas@solis.coop.br]
+ *
+ * \b Maintainers: \n
+ * Jonas Guilherme Dahmer [jonas@solis.coop.br]
+ * Luís Felipe Wermann[luis_felipe@solis.com.br]
+ *
+ * @since
+ * Class created on 10/04/2012
+ *
+ */
+
+$interface = php_sapi_name();
+if ( $interface != 'cli' )
+{
+    session_start();
+}
+
+class Matricula extends SForm//SType
+{
+    
+    const MATRICULA_NORMAL = '1';
+    const MATRICULA_WEB = '2';
+    
+    const CONSULTA_CONFIGURACAO = 'consulta_configuracao';
+    const CONSULTA_DISCIPLINAS = 'consulta_disciplinas';
+    const CONSULTA_DISCIPLINAS_ELETIVAS = 'consulta_disciplinas_eletivas';
+    const CONSULTA_DISCIPLINAS_PENDENTES = 'consulta_disciplinas_pendentes';
+    
+    protected $tipo;
+    protected $contractId;
+    protected $learningPeriodId;
+    protected $uncheckedGroups = array();
+
+
+    public function __construct($contractId, $tipo)
+    {
+        $this->definirContrato($contractId);
+        $this->definirTipo($tipo);
+    }
+
+    public function getUncheckedGroups()
+    {
+        return $this->uncheckedGroups;
+    }
+
+    public function setUncheckedGroups($uncheckedGroups)
+    {
+        $this->uncheckedGroups = $uncheckedGroups;
+    }
+    
+    public function setLearningPeriodId($learningPeriodId)
+    {
+        $this->learningPeriodId = $learningPeriodId;
+    }
+    
+    public function getLearningPeriodId()
+    {
+        return $this->learningPeriodId;
+    }
+    
+    /**
+     * Lista os contratos ativos para a matricula
+     *
+     * @param Object $filters
+     * @return Array
+     */
+    public static function listaContratos($filters)
+    {
+        return AcdContract::listAvailableContractsForEnroll($filters);
+    }
+    
+    /**
+     * Verifica a configuracao da matricula
+     *
+     * @param String $interno
+     * @param String $externo
+     * @param String $geral
+     * @return boolean 
+     */
+    public function verificaConfiguracao($interno=null, $externo=null, $geral=null)
+    {
+        $result = false;
+        
+        if($this->tipo == self::MATRICULA_WEB && strlen($externo)>0)
+        {
+            if($this->obterConfiguracoes()->$externo==DB_TRUE)
+            {
+                $result = true;
+            }
+            else
+            {
+                $result = false;
+            }
+        }
+        elseif($this->tipo == self::MATRICULA_NORMAL && strlen($interno)>0)
+        {
+            if($this->obterConfiguracoes()->$interno==DB_TRUE)
+            {
+                $result = true;
+            }
+            else
+            {
+                $result = false;
+            }
+        }
+        
+        if($geral)
+        {
+            if($this->obterConfiguracoes()->$geral==DB_TRUE)
+            {
+                $result = true;
+            }
+            else
+            {
+                $result = false;
+            }
+        }
+        
+        return $result;
+    }
+    
+    /**
+     * Verifica o bloqueio de matricula para o aluno,
+     * conforme as configuracoes de matricula.
+     * 
+     * @param Interger $personId
+     * @return boolean 
+     */
+    public function verificaBloqueio($personId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $blockProcess = array();
+        $msg = '';
+        
+        if ( strlen($this->learningPeriodId) == 0 )
+        {
+            throw new Exception(_M('O código do período letivo deve ser informado.', $module));
+        }
+        if ( strlen($this->contractId) == 0 )
+        {
+            throw new Exception(_M('Deve ser informado um código de contrato.', $module));
+        }
+        
+        $busContract = new BusinessAcademicBusContract();
+        $contract = $busContract->getContract($this->contractId);
+
+        $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+        $person = $busPhysicalPerson->getPhysicalPerson($contract->personId);
+        
+        if ( strlen($contract->contractId) == 0 )
+        {
+            throw new Exception(_M('Contrato @1 não encontrado.', $module, $this->contractId));
+        }
+
+        if( $this->verificaConfiguracao('blockDocsMissing','blockDocsMissingExternal') )
+        {
+            $blockProcess[] = $this->verificaDocumentosPendentes($contract->personId);
+        }
+        
+        //Não gera informações financeiras
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $dataLearningPeriod = $busLearningPeriod->getLearningPeriod($this->learningPeriodId);
+        if ( $dataLearningPeriod->isFinanceGenerate == DB_TRUE )
+        {
+            $blockProcess[] = $this->verificaPamentosPendentes();
+        }
+
+        // Verifica inadimplencia financeira com a instituicao
+        if ( $this->verificaConfiguracao('checkDebits', 'checkDebitsExternal') )
+        {
+            $busOrgano = new BusinessFinanceBusOrgano();
+            
+            
+            
+            if ( $busOrgano->possuiInadimplencias($person->personCpf) )
+            {
+                $blockProcess[] = true;
+                $msg .= _M('Você possui alguma inadimplência com a instituição, favor procurar o setor financeiro.', $module);
+            }
+        }
+                        
+        // Verifica se possui pendencias no gnuteca
+        if ( SAGU::getParameter('BASIC', 'MODULE_GNUTECA_INSTALLED') == 'YES' )
+        {
+            $busGnuteca = new BusinessGnutecaBusGnutecaToSagu2();
+            
+            $matricula = new Matricula($this->contractId, Matricula::MATRICULA_NORMAL);
+            $enrollConfig = $matricula->obterConfiguracoes();
+            
+            if ( $busGnuteca->verificaPendenciasGnuteca($enrollConfig->pendenciasGnuteca, $personId, $enrollConfig->bloqueioEmprestimos, $enrollConfig->bloqueioMultas, $enrollConfig->bloqueioPenalidades) )
+            {                
+                if ( $enrollConfig->pendenciasGnuteca == AcdEnrollConfig::SOMENTE_AVISO )
+                {
+                    $MIOLO->session->setValue('alertPendenciasGnuteca', $enrollConfig->bloqueioMensagem);
+                }
+                else
+                {
+                    $this->AddError($enrollConfig->bloqueioMensagem);
+                }
+            }
+        }
+                
+        $block = in_array(true, $blockProcess);
+        
+        // se algo bloquear a matricula
+        if ( $block )
+        {
+            throw new Exception(_M('Matrícula bloqueada. @1', $module, $msg));
+        }
+        
+        return $block;
+    }
+    
+    /**
+     * Obtém o semestre em que o aluno está matriculado em todas disciplinas
+     * @param type $contractId - Contrato
+     * @param type $learningPeriodId - Período letivo
+     * @return integer - Semestre
+     */
+    public function verificaMatriculaTodasDisciplinas($contractId = NULL, $learningPeriodId  = NULL)
+    {
+        $sql = "SELECT * FROM verifica_matricula_todas_disciplinas(?,?);";
+        $result = SDatabase::query(SAGU::prepare($sql, array($contractId, $learningPeriodId)));
+        
+        return $result[0][0] > 0;
+    }
+    
+    /**
+     * Verifica documentos pendentes do contrato da pessoa
+     *
+     * @return Boolean
+     */
+    public function verificaDocumentosPendentes()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $busContract = new BusinessAcademicBusContract();
+        $contract = $busContract->getContract($this->contractId);
+        
+        //verifica por documentos faltando
+        $busDocument = new BusinessBasicBusDocument();
+        $missingDocs = $busDocument->checkMissingDocuments($contract->personId, $contractId, true);
+
+        $blockProcess = false;
+        if ( count($missingDocs) > 0 )
+        {
+            foreach ( $missingDocs as $documentTypeId => $documentData )
+            {
+                $blockProcess = $blockProcess ? $blockProcess : $documentData->isBlockEnroll;
+
+                if ( $documentData->isBlockEnroll )
+                {
+                    $msg = _M('A entrega do documento @1 é requisito obrigatório para a efetivação da matrícula do aluno.', $module, $documentData->documentName);
+                }
+                else
+                {
+                    $msg = _M('O documento @1 não foi entregue.', $module, $documentData->documentName);
+                }
+                $this->addAlert($msg);
+            }
+        }
+
+        //verifica observacoes nos documentos
+        $documentsObs = $busDocument->checkDocumentsObs($contract->personId);
+        if ( count($documentsObs) > 0 )
+        {
+            foreach ( $documentsObs as $obs )
+            {
+                $obj = new stdClass();
+                list ( $obj->documentTypeId,
+                        $obj->documentName,
+                        $obj->observation,
+                        $obj->isBlock ) = $obs;
+
+                $this->addInfo(_M('Observações para o documento @1: @2', $module, $obj->documentName, $obj->observation));
+            }
+        }
+        
+        return $blockProcess;
+    }
+    
+    
+    /**
+     * Verifica se a pessoa possui debito financeiro atrasado
+     *
+     * @return boolean 
+     */
+    public function verificaDebitoFinanceiroEmAtraso()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $business = new BusinessFinanceBusGeneralQueries();
+        $debt = $business->getDefaulterDebt($this->contractId, false);
+        
+        $enrollConfig = $this->obterConfiguracoes();
+
+        $blockProcess = false;
+        
+        if ( $debt > 0 )
+        {
+            $contract = $this->obterContratoObjeto();
+            $msg = _M('O sistema detectou um débito financeiro em atraso com a instituição.', $module);
+
+            //bloqueia a matricula se encontrar algum debito. parametro configuravel
+            if( $this->verificaConfiguracao('blockDebt','blockDebtExternal') )
+            {
+                $msg .= ' ' . _M('Para efetuar a matrícula, a situação de débito financeiro atrasado deve ser resolvida.', $module);
+                $blockProcess = true;
+            }
+
+            if( $this->verificaConfiguracao('checkDebits','checkDebitsExternal') )
+            {
+                $url = $MIOLO->getActionURL('finance', 'main', null, array('personId' => $contract->personId, 'event' => 'btnSearch:click'));
+                $financialSituation = new MLink('fin', _M('Clique aqui para consultar este débito.', $module), $url, null, '_new');
+                $msg .= ' ' . $financialSituation->generate();
+            }
+
+            if ( $blockProcess )
+            {
+                $this->addError($msg);
+            }
+        }
+        
+        return $blockProcess;
+    }
+    
+    /**
+     * Verifica se a pessoa possui debito financeiro em atraso.
+     *
+     * @return boolean 
+     */
+    public function verificaDebitoFinanceiroEmAberto()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $business = new BusinessFinanceBusGeneralQueries();
+        $openDebt = $business->getDefaulterDebt($this->contractId, true);
+        
+        $blockProcess = false;
+
+        if ( $openDebt > 0 && $this->verificaConfiguracao('checkDebits','checkDebitsExternal') )
+        {
+            $contract = $this->obterContratoObjeto();
+            $msg = _M('O sistema detectou um débito financeiro em aberto com a instituição.', $module);
+
+            //bloqueia a matricula se encontrar algum debito. parametro configuravel
+            if ( $enrollConfig->checkDebits == DB_TRUE && (!$MIOLO->checkAccess(get_class($this), A_ADMIN, false, true)) )
+            {
+                $msg .= ' ' . _M('Para efetuar a matrícula, a situação de débito financeiro em aberto deve ser resolvida.', $module);
+                $blockProcess = true;
+
+            }
+
+            if ( $MIOLO->checkAccess('FINANCE', A_ACCESS, false, true) )
+            {
+                $url = $MIOLO->getActionURL('finance', 'main', null, array('personId' => $contract->personId, 'event' => 'btnSearch:click'));
+                $financialSituation = new MLink('fin', _M('Clique aqui para consultar este débito.', $module), $url, null, '_new');
+                $msg .= ' ' . $financialSituation->generate();
+            }
+
+            $this->addError($msg);
+        }
+        
+        return $blockProcess;
+    }
+    
+    /**
+     * Verifica se a pessoa possui debito no gnuteca
+     *
+     * @return boolean 
+     */
+    public function verificaDebitoNaBiblioteca()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+       
+        $busContract = new BusinessAcademicBusContract();
+        $contract = $busContract->getContract($this->contractId);
+ 
+        $busGnuteca = new BusinessGnutecaBusGnutecaToSagu2();
+        $debt = count($busGnuteca->searchPersonOpenFines($contract->personId));
+        
+        $blockProcess = false;
+
+        if ( $debt > 0 )
+        {
+            $msg = _M('O sistema detectou um débito com a biblioteca.', $module);
+
+            //bloqueia a matricula se encontrar algum debito. parametro configuravel
+            if ( $enrollConfig->blockDebt == DB_TRUE && (!$MIOLO->checkAccess(get_class($this), A_ADMIN, false, true)) )
+            {
+                $msg .= ' ' . _M('Para efetuar a matrícula, a situação de débito deve ser resolvida.', $module);
+                $blockProcess = true;
+            }
+
+            if ( $MIOLO->checkAccess('FINANCE', A_ACCESS, false, true) )
+            {
+                $url = $MIOLO->getActionURL('finance', 'main', null, array('personId' => $contract->personId, 'event' => 'btnSearch:click'));
+                $financialSituation = new MLink('fin', _M('Clique aqui para consultar este débito.', $module), $url, null, '_new');
+                $msg .= ' ' . $financialSituation->generate();
+            }
+
+            $this->addError($msg);
+        }
+        
+        return $blockProcess;
+    }
+
+    
+    /**
+     * Verifica pagamentos pendentes do contrato da pessoa
+     *
+     * @return Boolean
+     */
+    public function verificaPamentosPendentes()
+    {
+        $checks = array();
+        
+        //verifica debitos financeiros
+        if ( SAGU::getParameter('BASIC', 'MODULE_FINANCE_INSTALLED') == 'YES' )
+        {
+            //Buscar por um débito financeiro em atraso com a instituição
+            $checks[] = $this->verificaDebitoFinanceiroEmAtraso();
+
+            //Buscar por um débito financeiro em aberto com a instituição
+            $checks[] = $this->verificaDebitoFinanceiroEmAberto();
+        }
+
+        //verifica debitos no gnuteca
+        if ( SAGU::getParameter('BASIC', 'MODULE_GNUTECA_INSTALLED') == 'YES' && SAGU::getParameter('ACADEMIC', 'CHECK_GNUTECA_FINES') == 'YES' )
+        {
+            $checks[] = $this->verificaDebitoNaBiblioteca();
+        }
+        
+        return in_array(true, $checks);
+    }
+    
+    /**
+     * Retorna a mensagem a ser exibida conforme o tipo de matricula.
+     * Por exemplo, matricula para calouros, veteranos e periodo de ajuestes.
+     *
+     * @return MText 
+     */
+    public function mensagemDoTipoDeMatricula()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $busPeriodEnrollDate = new BusinessAcademicBusPeriodEnrollDate();
+        $periodEnrollDate = $busPeriodEnrollDate->getCurrentPeriodEnrollDate($this->learningPeriodId);
+        $busFunctions = new BusinessBasicBusFunctions();
+
+        //AJUSTE DE MATRÍCULAS e MATRÍCULA FORA DE PERÍODO (para funcionários)
+        if ( strtoupper($periodEnrollDate->isAdjustment) == strtoupper(DB_TRUE) ||
+                !($busFunctions->isBetweenDates(date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')), $periodEnrollDate->beginDate, $periodEnrollDate->endDate, SAGU::getParameter('BASIC', 'MASK_DATE')))
+        )
+        {
+            $enrollType = _M('Esta matrícula está sendo feita fora de um período de matrícula, portanto será efetuada como ajuste.', $module);
+        }
+        // MATRÍCULAS PARA CALOUROS(PROCESSO SELETIVO)
+        elseif ( strtoupper($periodEnrollDate->isSelectiveProc) == DB_TRUE )
+        {
+            $enrollType = _M('Esta matrícula está sendo feita dentro de um período de matrícula para calouros.', $module);
+        }
+        // MATRÍCULAS PARA VETERANOS
+        else
+        {
+            $enrollType = _M('Esta matrícula está sendo feita dentro de um período de matrícula para veteranos.', $module);
+        }
+        // exibe o periodo de matricula
+        if ( strlen($periodEnrollDate->beginDate) > 0 && strlen($periodEnrollDate->endDate) > 0 )
+        {
+            $enrollType .= ' ' . _M('O período de matrícula vai de @1 até @2.', $module, $periodEnrollDate->beginDate, $periodEnrollDate->endDate);
+        }
+        $txtEnrollPeriodInfo = new MText('txtEnrollPeriodInfo', $enrollType);
+        $txtEnrollPeriodInfo->setColor('blue');
+        
+        return $txtEnrollPeriodInfo;
+    }
+    
+    /**
+     * Retorna o nome do curso
+     *
+     * @return String 
+     */
+    public function obterCurso()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $acdContract = new AcdContract($this->contractId);
+        
+        $busCourse = new BusinessAcademicBusCourse();
+        $curso = $busCourse->getCourse($acdContract->courseId);
+        
+        return $curso->name;
+    }
+    
+    /**
+     * Retorna a turma
+     *
+     * @return Integer classId 
+     */
+    public function obterTurma()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $busClassPupil = new BusinessAcademicBusClassPupil();
+        
+        $classId = $busClassPupil->getContractCurrentClass($this->contractId)->classId;
+        
+        return $classId;
+    }
+    
+    /**
+     * Retorna a turma atual do periodo
+     *
+     * @return int 
+     */
+    public function obterTurmaPeriodo()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $busClassPupil = new BusinessAcademicBusClassPupil();
+        
+        $classId = $this->obterTurma();
+        
+        $classPupil = $busClassPupil->getContractCurrentClass($this->contractId);
+
+        if ( strlen($classPupil->classId) < 1 )
+        {
+            $this->addAlert(_M('Este aluno não pertence a nenhuma turma.', $module) . ' ' .
+                    _M('Se você continuar com o processo de matrícula, o aluno passará a pertencer à turma @1.', $module, $classId));
+        }
+        elseif ( $classPupil->classId != $classId )
+        {
+            $this->addAlert(_M('A turma do contrato é @1, não @2. Continuando, a turma será substituída.', $module, $classPupil->classId, $classId));
+        }
+
+        $busClass = new BusinessAcademicBusClass();
+        $classActualPeriod = $busClass->getSemesterContract($this->contractId);
+        //se nao encontrar o periodo atual, assume-se que o aluno esta no periodo atual
+        if ( strlen($classActualPeriod) <= 0 )
+        {
+            $classActualPeriod = 1;
+        }
+        
+        return $classActualPeriod;
+    }
+    
+    /**
+     * Obtem a disciplina oferecida
+     *
+     * @param $curricularComponentId
+     * @return Array de AcdEnroll
+     */
+    public function obterDisciplinaOferecida($curricularComponentId)
+    {
+        if(!$curricularComponentId)
+        {
+            return false;
+        }
+        
+        $showOtherUnitsGroups = $this->verificaConfiguracao('showOtherUnitsGroups', 'showOtherUnitsGroupsExternal');
+        $showOtherTurnsGroups = $this->verificaConfiguracao('showOtherTurnsGroups', 'showOtherTurnsGroupsExternal');
+        $showOtherClassesGroups = $this->verificaConfiguracao('showOtherClassesGroups', 'showOtherClassesGroupsExternal');
+        $showOtherCoursesGroups = $this->verificaConfiguracao('showOtherCoursesGroups', 'showOtherCoursesGroupsExternal');
+        $freeOtherPeriodGroups = $this->verificaConfiguracao('freeOtherPeriodGroups', 'freeOtherPeriodGroupsExternal');
+        
+        $acdEnroll = new AcdEnroll();
+        $enrollData = $acdEnroll->getGroupsAvailableForEnroll($this->contractId, $this->obterTurma(), $this->learningPeriodId, $showOtherUnitsGroups, $showOtherTurnsGroups, $showOtherClassesGroups, $showOtherCoursesGroups, $freeOtherPeriodGroups, $curricularComponentId);
+        
+        return $enrollData;
+    }
+    
+    /**
+     * Retorna os dados da disciplina
+     *
+     * @param type $curricularComponentId
+     * @param type $groupId
+     * @return Array de AcdEnroll 
+     */
+    public function obterDisciplina($curricularComponentId=null,$groupId=null, $liberarSubstitutas=true, $curriculumId = null)
+    {
+        if(!$curricularComponentId && !$groupId)
+        {
+            return false;
+        }
+        
+        $showOtherUnitsGroups = $this->verificaConfiguracao('showOtherUnitsGroups', 'showOtherUnitsGroupsExternal');
+        $showOtherTurnsGroups = $this->verificaConfiguracao('showOtherTurnsGroups', 'showOtherTurnsGroupsExternal');
+        $showOtherClassesGroups = $this->verificaConfiguracao('showOtherClassesGroups', 'showOtherClassesGroupsExternal');
+        $showOtherCoursesGroups = $this->verificaConfiguracao('showOtherCoursesGroups', 'showOtherCoursesGroupsExternal');
+        $freeOtherPeriodGroups = $this->verificaConfiguracao('freeOtherPeriodGroups', 'freeOtherPeriodGroupsExternal');
+//        $freeOtherPeriodGroups = false;
+
+        $eletivas = true;
+
+        $acdEnroll = new AcdEnroll();
+        $enrollData = $acdEnroll->getGroupsAvailableForEnroll($this->contractId, $this->obterTurma(), $this->learningPeriodId, $showOtherUnitsGroups, $showOtherTurnsGroups, $showOtherClassesGroups, $showOtherCoursesGroups, $freeOtherPeriodGroups, $curricularComponentId, $eletivas, $groupId, $semester, $classPeriod, $liberarSubstitutas, $curriculumId);
+
+        return $enrollData;
+    }
+    
+    /**
+     * Retorna as disciplinas matriculadas do aluno
+     *
+     * @return Array 
+     */
+    public function listaDisciplinasMatriculadas()
+    {
+        $enrollData = $this->listaDisciplinasOferecidasParaEsteSemestre();
+        foreach($enrollData as $e)
+        {
+            if($e->enrollStatus == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED'))
+            {
+                $group[$e->groupId] = $e->curriculumId;
+            }
+        }
+        
+        return $group;
+    }    
+    
+    /**
+     * Retorna as disciplinas oferecidas para o semestre,
+     * sem as disciplinas eletivas.
+     *
+     * @return Array 
+     */
+    public function listaDisciplinasOferecidasParaEsteSemestre($semestre=null)
+    {        
+        if ( $data = $this->obterConsulta(self::CONSULTA_DISCIPLINAS) )
+        {
+            return $data;
+        }
+        
+        $matricula    = new Matricula($this->contractId, Matricula::MATRICULA_WEB);
+        $enrollConfig = $matricula->obterConfiguracoes();
+        $busEnroll    = new BusinessAcademicBusEnroll();
+        
+        $showOtherUnitsGroups = $this->verificaConfiguracao('showOtherUnitsGroups', 'showoOtherUnitsGroupsExternal');
+        $showOtherTurnsGroups = $this->verificaConfiguracao('showOtherTurnsGroups', 'showOtherTurnsGroupsExternal');
+        $showOtherClassesGroups = $this->verificaConfiguracao('showOtherClassesGroups', 'showOtherClassesGroupsExternal');
+        $showOtherCoursesGroups = $this->verificaConfiguracao('showOtherCoursesGroups', 'showoOtherCoursesGroupsExternal');
+        $freeOtherPeriodGroups = false;
+                
+        $acdEnroll = new AcdEnroll();
+        $enrollData = $acdEnroll->getGroupsAvailableForEnroll($this->contractId, $this->obterTurma(), $this->learningPeriodId, $showOtherUnitsGroups, $showOtherTurnsGroups, $showOtherClassesGroups, $showOtherCoursesGroups, $freeOtherPeriodGroups, null, false, null, $semestre);
+        
+        $disciplinasDisponiveis           = $this->obtemTotalDeHorasSomadasDasDisciplinasDisponiveis($enrollData, $this->contractId, $this->learningPeriodId, $enrollConfig->freeInCourseConditions);
+        $todasDiscDisponiveis             = $disciplinasDisponiveis->todasDiscDisponiveis;
+        $horasAcademicasTotaisDisponiveis = $disciplinasDisponiveis->horasAcademicasTotaisDisponiveis;
+        
+        // Se existirem possíbilidades de matrícula
+        if ( $horasAcademicasTotaisDisponiveis > 0 )
+        {
+            /**
+             * Verifica entre as disciplinas bloqueadas por requisito, se alguma delas poderá ser liberada pelo critério
+             * de soma da carga horária total cursada, junto à carga horária total liberada para matrícula, caso o requisito
+             * esteja configurado para ser calculado desta forma, pela flag 'consideraDiscMatriculadas'.
+             */
+            foreach ( $todasDiscDisponiveis as $k => $disciDisponivel )
+            {
+                // Verifica se o parametro ENROLL_SHOW_ONLY_WITH_SCHEDULE estiver habilitado, lista apenas disciplinas com horário definido.
+                if ( SAGU::getParameter('ACADEMIC', 'ENROLL_SHOW_ONLY_WITH_SCHEDULE') == DB_TRUE && !$this->temHorarioDefinido($disciDisponivel->groupId) )
+                {
+                    continue;
+                }
+                
+                // Se verificado que a disciplina está bloqueada por requisitos.
+                if ( $disciDisponivel->estaBloqueada )
+                {                    
+                    $curriculumData = new stdClass();
+                    $curriculumData->curriculumId = $disciDisponivel->curriculumId;
+                    $curriculumData->horasAcademicasTotaisDisponiveis = $horasAcademicasTotaisDisponiveis;
+                    $preCondicao = $busEnroll->isPreConditionsFree($curriculumData, $this->contractId, $this->learningPeriodId, $enrollConfig->freeInCourseConditions == DB_TRUE, DB_TRUE);
+
+                    $busCurricularComponentUnblock = new BusinessAcademicBusCurricularComponentOutOfCurriculumUnblock();
+                    
+                    // Verifica se a disciplina é um desbloqueio fora de curriculum e não considera os pré-requisitos.
+                    $filters = new stdClass();
+                    $filters->contractId = $this->contractId;
+                    $filters->learningPeriodId = $this->learningPeriodId;
+                    $filters->curriculumId = $curriculumData->curriculumId;
+                    $isOutOfCurriculum = $busCurricularComponentUnblock->searchCurricularComponentOutOfCurriculumUnblock($filters);
+                                        
+                    // Se atendeu a condição do requisito ou é um desbloqueio fora de curriculum, será listada como disciplina disponível para matrícula.
+                    if ( $preCondicao || strlen($isOutOfCurriculum[0][0]) > 0 )
+                    {
+                        $disciDisponivel->numberHourCondition = $busEnroll->numberHourCondition;
+                        $data[] = $disciDisponivel;
+                    }
+                }
+                else
+                {
+                    // Se não possuir requisitos, será listada como disciplina disponível para matrícula.
+                    $data[] = $disciDisponivel;
+                }
+            }
+        }
+
+    if ( !$data )
+    {
+            throw new Exception( _M('Não foram encontradas disciplinas disponíveis para matrícula. Entre em contato com a instituição.'));
+    }
+        
+        $this->salvarConsuta(self::CONSULTA_DISCIPLINAS, $data);
+        
+        return $data;
+    }
+    
+    public function temHorarioDefinido($groupId)
+    {
+        $busSchedule = new BusinessAcademicBusSchedule();
+        
+        return $busSchedule->existeHorarioParaOferecida($groupId);
+    }
+    
+    /**
+     * Retorna as disciplinas oferecidas pendentes para o semestre.
+     *
+     * @return Array de AcdEnroll
+     */
+    public function listaDisciplinasOferecidasPendentes($semestre=null)
+    {
+        if($data = $this->obterConsulta(self::CONSULTA_DISCIPLINAS_PENDENTES))
+        {
+            return $data;
+        }
+        
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $acdEnroll = new AcdEnroll();        
+        $disciplinasPendentes = $acdEnroll->getPendingCurriculumIds($this->contractId, $semestre);//$this->obterTurmaPeriodo());
+
+        if ( count($disciplinasPendentes) > 0 )
+        {
+            for ( $i = 0; $i < count($disciplinasPendentes); $i++ )
+            {
+                if($disciplinasPendentes[$i][0])
+                {
+                    $disciplinas = $this->obterDisciplina(null, $disciplinasPendentes[$i][0]);
+                    
+                    if($disciplinas)
+                    {
+                        $enrollData[] = $disciplinas[0];
+                    }
+                }
+            }
+        }
+        
+        $this->salvarConsuta(self::CONSULTA_DISCIPLINAS_PENDENTES, $enrollData);
+        
+        return $enrollData;   
+    }
+    
+    /**
+     * Retorna as disciplinas eletivas para o semestre.
+     *
+     * @param Boolean $returnObject - se true retorna um Array de AcdEnroll
+     * @return Array
+     */
+    public function listaDisciplinasEletivas($returnObject=false)
+    {
+        $busCurricularComponent = new BusinessAcademicBusCurricularComponent();
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $acdContract = new AcdContract($this->contractId);
+        
+        $grupos = $busCurricularComponent->grupoDeEletivas($acdContract->courseId, $acdContract->courseVersion, $acdContract->turnId, $acdContract->unitId, $this->contractId);
+
+        foreach( $grupos as $grupo )
+        {
+            //Passando dados para buscar disciplinas oferecidas
+            $dados = new stdClass();
+            $dados->courseid = $acdContract->courseId;
+            $dados->courseversion = $acdContract->courseVersion;
+            $dados->turnid = $acdContract->turnId;
+            $dados->unitid = $acdContract->unitId;
+            $dados->naoPermiteOutrosCursos = $this->verificaConfiguracao('showOtherCoursesGroups', 'showOtherCoursesGroupsExternal');;
+            $dados->contractid = $acdContract->contractid;
+            
+            //Mudando chavemaneto, ticket #34805
+            $chave = $grupo->curricularComponentId . '/' . $grupo->curricularComponentVersion . ' - ' . $grupo->name;
+            
+            $disciplinas = $busCurricularComponent->eletivasDoGrupo($grupo->curricularComponentGroupElectiveId, $this->learningPeriodId, false, $dados);
+
+            foreach($disciplinas as $disciplina)
+            {
+                $oferecida = $this->obterDisciplina($disciplina->curricularComponentId);
+                
+                if( count($oferecida) > 0 )
+                {
+                    if( $returnObject )
+                    {
+                        $eletivas[] = $oferecida;
+                    }
+                    else
+                    {
+                        $disciplina->grupo = $chave;
+                        $disciplina->curriculumId = $grupo->curriculumId;
+                        
+                        //Verifica se já exite matrícula na eletiva
+                        $filters = new stdclass();
+                        $filters->contractId = $this->contractId;
+                        $filters->groupId = $disciplina->groupId;
+                        $filters->curriculumId = $disciplina->curriculumId;
+                        $filters->learningPeriodIdInPeriod = $this->learningPeriodId;
+                        $filters->inStatusId[] = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED');
+                        $filters->inStatusId[] = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_PRE_ENROLLED');
+                        
+                        $enrollId = $busEnroll->searchEnroll($filters);
+                        
+                        if( !empty($enrollId) )
+                        {
+                            $disciplina->enrollId = $enrollId;
+                        }
+                       
+                        $eletivas[$chave][] = $disciplina;
+                    }
+                }
+            }
+        }
+        
+        return $eletivas;
+    }
+    
+    /**
+     * Listas as disciplina oferecidas
+     */
+    public function listaDisciplinasOferecidas()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $blockProcess = false;
+        $contractId = $this->contractId;
+        $learningPeriodId = $this->learningPeriodId;
+        $enrollConfig = $this->obterConfiguracoes();
+        $fields = array();
+        $enrollData = $this->listaDisciplinasOferecidasParaEsteSemestre();
+
+        //traz os dados organizados
+        $args->group = array();
+        for ( $i = 0; $i < count($enrollData); $i++ )
+        {
+            $args->group[$enrollData[$i]->groupId] = $enrollData[$i]->curriculumId;
+        }
+
+        $busEnroll = new BusinessAcademicBusEnroll();
+
+        //busca as disciplinas oferecidas pendentes
+        $curriculums = $this->listaDisciplinasOferecidasPendentes();
+
+        //se encontrar disciplinas pendentes
+        if ( count($curriculums) > 0 )
+        {
+            $args->gridName = 'pendingGroups';
+            $args->pendingGroups = array();
+            for ( $i = 0; $i < count($curriculums); $i++ )
+            {
+                $enrollId = $busEnroll->getEnrolledEnrollId($curriculums[$i][0], $contractId, $learningPeriodId);
+                if ( strlen($enrollId) > 0 )
+                {
+                    $enroll = $busEnroll->getEnroll($enrollId);
+                    $args->pendingGroups[$enroll->groupId] = $enroll->curriculumId;
+                }
+            }
+        }
+
+        $args->gridName = 'customGroups';
+        $args->customGroups = array();
+        //busca o periodo letivo
+        $enroll = $busEnroll->getEnrollByLearningPeriod($contractId, $learningPeriodId);
+        //busca as disciplinas ja selecionadas
+        $displayed = $this->getAllSelectedGroups($args);
+        for ( $i = 0; $i < count($enroll); $i++ )
+        {
+            if ( strlen($displayed[$enroll[$i][2]]) == 0 )
+            {
+                $args->customGroups[$enroll[$i][2]] = $enroll[$i][1];
+            }
+        }
+            
+    }
+    
+    /**
+     * Retorna as disciplinas selecionas no formulario.
+     *
+     * @param (stdClass) $args, pode ser o getData ou o retorno do ajax.
+     * @return Array no formato $key => $value, onde a cheve e o groupId e o valor o curriculumId.
+     */
+    public function getAllSelectedGroups($args)
+    {
+        $allGroups = array();
+        //disciplinas da matricula
+        if ( count($args->group) > 0 )
+        {
+            foreach ( $args->group as $groupId => $curriculumId )
+            {
+                $allGroups[$groupId] = $curriculumId;
+            }
+        }
+        //disciplinas pendentes
+        if ( count($args->pendingGroups) > 0 )
+        {
+            foreach ( $args->pendingGroups as $groupId => $curriculumId )
+            {
+                $allGroups[$groupId] = $curriculumId;
+            }
+        }
+        //outras disciplinas
+        if ( count($args->customGroups) > 0 )
+        {
+            foreach ( $args->customGroups as $groupId => $curriculumId )
+            {
+                $allGroups[$groupId] = $curriculumId;
+            }
+        }
+
+        
+        foreach ( $allGroups as $key => $group )
+        {
+            if ( $group == NULL || strlen($group) == 0 )
+            {
+                unset($allGroups[$key]);
+            }
+        }
+        
+        return $allGroups;
+    }
+
+    public function obterDisciplinaOferecidaDaSessao($groupId)
+    {
+        $disciplinaOferecida = $this->listaDisciplinasOferecidasParaEsteSemestre();
+        foreach($disciplinaOferecida as $d)
+        {
+            if($d->groupId == $groupId)
+            {
+                return $d;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Verifica o conflito de horario entre as disciplinas selecidas.
+     * Faz o bloqueio ou libera a disciplina conforme o caso.
+     *
+     * @param $disciplinas
+     * @param $status2
+     * @return String JS 
+     */
+    public function verificarConflitoDeHorarios($disciplinas=null, $status2=null, $args=null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $acdEnroll = new AcdEnroll();
+
+        $grupos['grupo'] = $this->listaDisciplinasOferecidasParaEsteSemestre();
+        $grupos['pendentes'] = $this->listaDisciplinasOferecidasPendentes();
+        $grupos['eletivas'] = $this->listaDisciplinasEletivas();
+        
+        $disponiveis = $this->listaDisciplinasOferecidasParaEsteSemestre();
+        $pendentes = $this->listaDisciplinasOferecidasPendentes();
+        $eletivas = $this->listaDisciplinasEletivas();
+        $oferecidas = array();
+        
+        //Primeiro vamos juntar tudo num só array
+        
+        //Juntar as disponiveis
+        foreach ( $disponiveis as $d )
+        {
+            if ( !array_key_exists($d->groupId, $oferecidas))
+            {
+                $oferecidas[$d->groupId] = $d;
+            }
+        }
+        
+        //Juntar as pendentes
+        foreach ( $pendentes as $d )
+        {
+            if ( !array_key_exists($d->groupId, $oferecidas))
+            {
+                $oferecidas[$d->groupId] = $d;
+            }
+        }
+        
+        //Juntar as eletivas, lembrando que elas vem em grupos e nao avulsas
+        foreach ( $eletivas as $grupo )
+        {
+            foreach ($grupo as $eletiva)
+            {
+                if ( !array_key_exists($eletiva->groupId, $oferecidas))
+                {
+                    $oferecidas[$eletiva->groupId] = $this->obterDisciplina($eletiva->curricularComponentId, $eletiva->groupId);
+                }
+            }
+        }
+
+        //Realiza as checagens e vai montando o status de script
+        $status = array();
+        foreach ( $oferecidas as $groupId => $disciplina )
+        {
+            //Nome da DIV
+            $dvName = 'div' . $groupId . $disciplina->curriculumCurricularComponentId;
+
+            //Verifica se ainda tem vagas
+            if ( strlen($disciplina->vacant) > 0 &&
+                 strlen($disciplina->totalEnrolled) > 0 )
+            {
+                //BLOQUEIA
+                if ( (SAGU::calcNumber($disciplina->vacant . '-' . $disciplina->totalEnrolled)) < 1 ) 
+                {
+                    $status[$dvName]['status'] = 'bloqueado';
+                }
+            }
+            
+            if ( !(strlen($status[$dvName]['status']) > 0) )
+            {
+                //Vamos passar todas as oferecidas capturadas contra as disponiveis na tela
+                foreach ($args->group  as $groupIdContrario => $curriculumIdContrario )
+                {
+                    if ( $groupId != $groupIdContrario && !(strlen($status[$dvName]['status']) > 0))
+                    {
+                        
+                        //Verifica se tem desbloqueio de choque de horário
+                        if( !$acdEnroll->verificaDesbloqueioDeChoqueDeHorario($this->contractId, $disciplina->curriculumId) &&
+                            !$acdEnroll->verificaDesbloqueioDeChoqueDeHorario($this->contractId, $curriculumIdContrario) )
+                        {
+                            //Verifica se uma bate com a outra
+                            $conflito = $busEnroll->hasShockingSchedule($groupId, $groupIdContrario);
+                            
+                            //BLOQUEIA
+                            if ( $conflito )
+                            {
+                                $status[$dvName]['status'] = 'bloqueado';
+                            }
+                        }
+                    }
+                }
+            }
+            
+            //Termina de montar o status
+            $status[$dvName]['groupId'] = $groupId;
+            $status[$dvName]['curriculumCurricularComponentId'] = $disciplina->curriculumCurricularComponentId;
+            
+            if ( !(strlen($status[$dvName]['status']) > 0) )
+            {
+                $status[$dvName]['status'] = 'liberado';
+            }
+            
+            //No fim mata a oferecida do array pra poupar tempo
+            unset($oferecidas[$groupId]);
+        }
+        
+        return $this->scriptMostrarDisciplinas($status, $status2);
+    }
+    
+    /**
+     * Gera script ajax para mostrar/nao mostrar as disciplinas na interface
+     * 
+     * @params $status;
+     * 
+     * @return $script;
+     */
+    public function scriptMostrarDisciplinas($status = null, $status2)
+    {
+        //Ou só faz bloqueios de vínculos, ou faz a checagem mais abaixo
+        count ($status) > 0 ? $statusFinal = $status : $statusFinal = $status2;
+
+        //Só adiciona os bloqueios de vínculo, aos que já vieram dos horários
+        if (count($status) > 0)
+        {
+            foreach ($status2 as $div => $cont)
+            {
+                if ($cont['status'] == 'bloqueado')
+                {
+                    $statusFinal[$div]['status'] = 'bloqueado';
+                }
+            }
+        }
+        
+        //Realiza os bloqueios/desbloqueios
+        foreach ($statusFinal as $d => $s)
+        {
+            $groupId = $s['groupId'];
+            $dv = 'div' . $s['groupId'] . 'Box';
+            if ($s['status'] == 'bloqueado')
+            {
+                $script .= " if(document.getElementById('{$dv}'))
+                             {
+                                if(document.getElementById('group[{$groupId}]'))
+                                {
+                                    if(!document.getElementById('group[{$groupId}]').checked)
+                                    {
+                                        document.getElementById('{$dv}').style.opacity='0.6'; 
+                                        document.getElementById('group[{$groupId}]').disabled=true; 
+                                    }
+                                }
+                             }";
+            }
+            elseif ($s['status'] == 'liberado')
+            {
+                $script .= " if(document.getElementById('{$dv}'))
+                             {
+                                document.getElementById('{$dv}').style.opacity='1';
+                                document.getElementById('group[{$groupId}]').disabled=false; 
+                             }";
+            }
+        }
+
+        if ($script)
+        {
+            $script = "<script>$script</script>";
+        }
+        
+        return $script;
+    }
+
+    /**
+     * Salva a matricula e retorna os fields com a mensagem de
+     * sucesso e botoes para impressao de documentos se estiverem
+     * configurados.
+     *
+     * @param type $args
+     * @return Fields
+     */
+    public function salvar($args, $tipoDeMatricula = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $fields = array();
+
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+
+        try
+        {
+            $groups = $this->getAllSelectedGroups($args);
+
+            if ( count($groups) == 0 )
+            {
+                throw new Exception(_M('Nenhuma disciplina oferecida selecionada.', $module));
+            }
+
+            if ( !$busEnroll->beginTransaction() )
+            {
+                throw new Exception(_M('Não foi possível iniciar uma nova transação.', $module));
+            }
+            
+            $acdEnroll = new AcdEnroll();
+            $acdEnroll->contractId = $this->contractId;
+            $acdEnroll->learningPeriodId = $this->learningPeriodId;
+            $acdEnroll->originEnroll = $args->originEnroll;
+            if($tipoDeMatricula == Matricula::MATRICULA_WEB)
+            {
+                $acdEnroll->isInternet = 't';
+            }
+            $enrollData = $acdEnroll->save($groups, $tipoDeMatricula);
+            
+            // Caso esteja definido para o semestre ser equivalente a carga horária cursada.
+            
+            $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+            $learningPeriod = $busLearningPeriod->getLearningPeriod($this->learningPeriodId);
+
+            $acdSemesterContractPeriod = new AcdSemesterContractPeriod(null, $this->contractId, $learningPeriod->periodId);
+            $acdSemesterContractPeriod->atualizaSemestreDoContrato();
+            
+            // se nao ocorreu nenhum erro salva a matricula na base
+            $busEnroll->endTransaction();
+            $fields[] = $this->obterDocumentosParaDownload();
+        }
+        catch ( Exception $e )
+        {
+            $msg = $e->getMessage();
+            $busEnroll->undoTransaction();
+            $this->addError($e->getMessage());
+        }
+        
+        
+        if($this->verificaConfiguracao('sendConfirmationEmail', 'sendConfirmationEmailExternal'))
+        {
+            #FIXME: quando acessado esta tela retorna um erro de parametros, verificar
+            //$this->enviarEmailConfirmacaoMatricula($args);
+        }
+        
+        if ( !$enrollData )
+        {
+            $mensagem = MMessage::getStaticMessage('divInformacao', _M('Não foi possível efetuar a matrícula pelos seguintes motivos:') . $msg, MMessage::TYPE_WARNING);
+            $div = new Mdiv('',$mensagem);
+            $div->addBoxStyle('width', '98%');
+        }
+        else
+        {
+            $mensagem = MMessage::getStaticMessage('divInformacao', _M('Matrícula efetuada com sucesso'), MMessage::TYPE_SUCCESS);
+            $div = new Mdiv('',$mensagem);
+            $div->addBoxStyle('width', '98%');
+        }
+        
+        $fields2[] = $div;
+        $fields2[] = $fields;
+                
+        // botao voltar
+        if( MIOLO::_REQUEST('returnTo') == 'PORTAL' )
+        {
+            $fields2[] = new MButton('btnBackReturnToPortal', _M('Voltar ao portal'));
+        }
+        elseif( $module == 'services' )
+        {
+            $image = 'images/button_previous.png';
+            $fields2[] = new MButton('btnBackPortal', _M('Voltar para o portal', $module), SAGU::getServicesPupilHomeUrl(), $image);
+        }
+        
+        return $fields2;
+    }
+
+    /**
+     * Manipula as diciplinas as outras disciplinas,
+     * que nao sao as eletivas nem as normais para o periodo.
+     *
+     * @param (stdClass) $args
+     * @return Array de fields.
+     */
+    public function manageCustomGroup($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $contractId = $this->contractId;
+        $busGroup = new BusinessAcademicBusGroup();
+        $busCurriculum = new BusinessAcademicBusCurriculum();
+        $busCurricularComponent = new BusinessAcademicBusCurricularComponent();
+        $busEnroll = new BusinessAcademicBusEnroll();
+
+        try
+        {
+            $busContract = new BusinessAcademicBusContract();
+            
+            $contract = $busContract->getContract($contractId);
+
+            if ( strlen($contract->contractId) == 0 )
+            {
+                throw new Exception(_M('Contrato @1 não encontrado.', $module, $contractId));
+            }
+
+            $enrollConfig = $this->obterConfiguracoes();
+
+            $gridName = $args->gridName;
+            if ( $gridName == 'customGroups' )
+            {
+                $curriculumId = $args->customCurriculumId;
+                $groupId = $args->customGroupId;
+                $gridTitle = _M('Outras disciplinas oferecidas', $module);
+            }
+            elseif ( $gridName == 'pendingGroups' )
+            {
+                $curriculumId = $args->pendingCurriculumId;
+                $groupId = $args->pendingGroupId;
+                $gridTitle = _M('Disciplinas oferecidas pendentes', $module);
+            }
+            else
+            {
+                throw new Exception(_M('A tabela especificada (@1) é inválida.', $module, $gridName));
+            }
+
+            switch ( $args->gridAction )
+            {
+                case 'add':
+                    if ( strlen($groupId) == 0 || strlen($curriculumId) == 0 )
+                    {
+                        throw new Exception(_M('Por favor selecione uma disciplina oferecida e uma disciplina do currículo para adicionar', $module));
+                    }
+
+                    $allGroups = $this->getAllSelectedGroups($args);
+
+                    if ( array_key_exists($groupId, $allGroups) )
+                    {
+                        throw new Exception(_M('Disciplina oferecida @1 já foi selecionada.', $module, $groupId));
+                    }
+
+                    if ( in_array($curriculumId, array_values($allGroups)) )
+                    {
+                        throw new Exception(_M('O código de currículo @1 já foi selecionado.', $module, $curriculumId));
+                    }
+
+                    $group = $busGroup->getGroup($groupId);
+
+                    if ( strlen($group->groupId) == 0 )
+                    {
+                        throw new Exception(_M('Disciplina oferecida @1 não existe.', $module, $groupId));
+                    }
+
+                    $curriculum = $busCurriculum->getCurriculum($curriculumId);
+                    $groupCurriculum = $busCurriculum->getCurriculum($group->curriculumId);
+
+                    if ( strlen($curriculum->curriculumId) == 0 )
+                    {
+                        throw new Exception(_M('Disciplina selecionada não existe.', $module));
+                    }
+
+                    if ( $busEnroll->isCoursed($curriculum, $contractId) )
+                    {
+                        throw new Exception(_M('Disciplina selecionada já foi cursada ou possui aproveitamento.', $module));
+                    }
+
+                    $args->{$gridName}[$groupId] = $curriculumId;
+                    break;
+                case 'delete':
+                    if ( property_exists($args, $gridName) )
+                    {
+                        $newCustomGroups = array();
+                        if ( count($args->$gridName) > 0 )
+                        {
+                            foreach ( $args->$gridName as $groupId => $curriculumId )
+                            {
+                                if ( $groupId != $args->item )
+                                {
+                                    $newCustomGroups[$groupId] = $curriculumId;
+                                }
+                            }
+                        }
+                        $args->$gridName = $newCustomGroups;
+                    }
+                    break;
+                default:
+            }
+        }
+        catch ( Exception $e )
+        {
+            $this->addError($e->getMessage());
+        }
+
+        // gera a grid com as disciplinas adicionais
+        $enrollData = array();
+        if ( property_exists($args, $gridName) )
+        {
+            if ( count($args->$gridName) > 0 )
+            {
+                foreach ( $args->$gridName as $groupId => $curriculumId )
+                {
+                    $group = $busGroup->getGroup($groupId);
+                    $curriculum = $busCurriculum->getCurriculum($curriculumId);
+
+                    $row = new stdClass();
+                    $row->groupId = $groupId;
+                    $row->curriculumId = $curriculumId;
+                    $row->semester = $group->semester;
+                    $row->groupCurricularComponentId = $group->curriculumCurricularComponentId;
+                    $row->groupCurricularComponentVersion = $group->curriculumCurricularComponentVersion;
+                    $row->groupCurricularComponentName = $group->curriculumCurricularComponentName;
+                    $row->curriculumCurricularComponentId = $curriculum->curricularComponentId;
+                    $row->curriculumCurricularComponentVersion = $curriculum->curricularComponentVersion;
+                    $row->curriculumCurricularComponentName = $curriculum->curricularComponentName;
+                    $row->classId = $group->classId;
+                    $row->learningPeriodId = $group->learningPeriodId;
+                    $row->totalEnrolled = $group->totalEnrolled;
+                    $row->vacant = $group->vacant;
+                    $row->regimenId = $group->regimenId;
+                    $row->regimenDescription = $group->regimenDescription;
+                    $row->startDate = $group->startDate;
+                    $row->endDate = $group->endDate;
+
+                    // busca informacao da ultima pessoa matriculada nesta disciplina
+            $lastEnroll = $busEnroll->getLastEnrollByGroupId($ithis->contractId, $groupId);
+
+                    $row->enrollId = $lastEnroll->enrollId;
+                    $row->enrollStatus = $lastEnroll->statusId;
+                    $row->enrollStatusDescription = $lastEnroll->statusDescription;
+                    
+                    if( ($lastEnroll->groupId == $groupId && $lastEnroll->statusId == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED')) || (!$lastEnroll->groupId) )
+                    {
+                        $enrollData[] = $row;
+                    }
+                }
+            }
+        }
+
+        // gera a tabela com as checkboxes para estas disciplinas
+        $fields[] = $this->generateTable($enrollData, $gridTitle, $gridName, false, true, $gridName);
+
+        return $fields;
+    }
+    
+    
+    /**
+     * Verifica se a matricula nas disciplinas selecionadas pode ser efetuada
+     * conforme a configuracao utilizada para esta matricula.
+     *
+     * @param Array $groups.
+     * @return Boolean.
+     */
+    public function checkEnrollData($groups, $nextStep = false)
+    {           
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $busGroup = new BusinessAcademicBusGroup();
+        $busConcurrence = new BusinessAcademicBusCurriculumConcurrence();
+        $busCurriculum = new BusinessAcademicBusCurriculum();
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        
+        $busContract = new BusinessAcademicBusContract();
+        $contract    = $busContract->getContract($this->contractId);
+
+        $busEnrollConfig = new BusinessAcademicBusEnrollConfig();
+        $enrollConfig = $this->obterConfiguracoes();
+        if ( $nextStep )
+        {
+            $totalDeHorasSelecionas = $this->obtemTotalDeHorasSomadasDasDisciplinasSelecionadas($groups, $enrollConfig);
+        }
+        
+        $groupIds = array_keys($groups); 
+                
+        // Testar cada groupId com todos os outros groupIds
+        for ( $i=0; $i<count($groupIds); $i++ )
+        {
+            if ( $nextStep )
+            {
+                // Verificar requisitos (pré e co)
+                $groupData = $this->verificaRequisitoPorSomaDeHorasAcademicasCursadasEMatriculadas($totalDeHorasSelecionas, $groupIds[$i], $groups[$groupIds[$i]], $enrollConfig);
+                
+                if ( !is_null($groupData) )
+                {
+                    $this->errors[] = _M("Ops! A disciplina @1 não pode ser matriculada, pois você não atingiu o máximo de horas totais cursadas e/ou matrículadas requeridas para a disciplina. Escolha mais disciplinas para atingir a carga horária exigida.", $module, $groupData);
+                }
+                
+                // Verificar bloqueio por CO requisitos
+                $desmarcadas = (array) $this->uncheckedGroups;
+                $blockPorCoRequisito = $busEnroll->obterBloqueioPorCoRequisito($this->contractId, $groups[$groupIds[$i]], $groups, true, $desmarcadas);
+
+                if ( $blockPorCoRequisito )
+                {
+                    $this->errors[] = _M('Ops!') . ' ' . $blockPorCoRequisito;
+                }
+            }
+            
+            for ( $j=$i+1; $j<count($groupIds); $j++ )
+            {
+                // Choque de horário
+                if($this->verificaConfiguracao('checkScheduleShock', 'checkScheduleShockExternal'))
+                {
+                    // Verificar se os horários de uma oferecida conflitam com a outra
+                    if ( $busEnroll->hasShockingSchedule($groupIds[$i], $groupIds[$j]) )
+                    {
+                        // Verifica se o contrato possui desbloqueio de choque para uma das disciplinas (curriculumId) com choque
+                        if ( ! ($busEnroll->isScheduleShock($this->contractId, $this->learningPeriodId, $groups[$groupIds[$i]]) ||
+                                $busEnroll->isScheduleShock($this->contractId, $this->learningPeriodId, $groups[$groupIds[$j]])) )
+                        {
+                            $group1 = $busGroup->getGroup($groupIds[$i]);
+                            $group1Data = $group1->curriculumCurricularComponentId . '/' . $group1->curriculumCurricularComponentVersion . ' - ' . $group1->curriculumCurricularComponentName;
+
+                            $group2 = $busGroup->getGroup($groupIds[$j]);
+                            $group2Data = $group2->curriculumCurricularComponentId . '/' . $group2->curriculumCurricularComponentVersion . ' - ' . $group2->curriculumCurricularComponentName;
+
+                            $this->errors[] = _M('Disciplinas @1 e @2 possuem conflito de horário.', $this->module, $group1Data, $group2Data);
+                        }
+                    }
+                }
+
+                // Verificar se existe concorrência de currículo
+                if ( $busConcurrence->hasCurriculumConcurrence($groups[$i], $groups[$j]) )
+                {
+                    // Se existe concorrência, verificar algum se tratam de eletivas. Neste caso, ignorar concorrência.
+                    $dataCurriculum1 = $busCurriculum->getCurriculum($groups[$i]);
+                    $dataCurriculum2 = $busCurriculum->getCurriculum($groups[$j]);
+
+                    if ( ! ($dataCurriculum1->curricularComponentTypeId == SAGU::getParameter('ACADEMIC', 'CURRICULAR_COMPONENT_TYPE_ELECTIVE')) ||
+                           ($dataCurriculum2->curricularComponentTypeId == SAGU::getParameter('ACADEMIC', 'CURRICULAR_COMPONENT_TYPE_ELECTIVE')) )
+                    {
+                        $group1 = $busGroup->getGroup($groupIds[$i]);
+                        $group1Data = $group1->curriculumCurricularComponentId . '/' . $group1->curriculumCurricularComponentVersion . ' - ' . $group1->curriculumCurricularComponentName;
+
+                        $group2 = $busGroup->getGroup($groupIds[$j]);
+                        $group2Data = $group2->curriculumCurricularComponentId . '/' . $group2->curriculumCurricularComponentVersion . ' - ' . $group2->curriculumCurricularComponentName;
+
+                        $this->errors[] = _M('As disciplinas @1 e @2 são concorrentes, portanto apenas uma delas pode ser cursada.', $this->module, $group1Data, $group2Data);
+                    }
+                }
+                
+                if ( $groups[$groupIds[$i]] == $groups[$groupIds[$j]] )
+                {
+                    $group1 = $busGroup->getGroup($groupIds[$i]);
+                    $group1Data = $group1->curriculumCurricularComponentId . '/' . $group1->curriculumCurricularComponentVersion . ' - ' . $group1->curriculumCurricularComponentName;
+
+                    $group2 = $busGroup->getGroup($groupIds[$j]);
+                    $group2Data = $group2->curriculumCurricularComponentId . '/' . $group2->curriculumCurricularComponentVersion . ' - ' . $group2->curriculumCurricularComponentName;
+                    
+                    $this->errors[] = _M('As disciplinas @1 e @2 correspondem ao mesmo currículo, por isso apenas uma das disciplinas pode ser cursada.', $this->module, $group1Data, $group2Data);
+                }
+            }
+        }
+
+        $data = new stdClass();
+        $data->contractId = $this->contractId;
+        $data->learningPeriodId = $this->learningPeriodId;
+        $data->groupId = $groups;
+
+        $learningPeriod = $busLearningPeriod->getLearningPeriod($this->learningPeriodId);
+
+        // Se a checagem de quantidades mínimas e máximas deve ser feita com base em horas
+        // ou com base em número de créditos
+        if($this->verificaConfiguracao('minimumAndMaxLimitCreditsBlockEnroll', 'minimumAndMaxLimitCreditsBlockEnrollExternal'))
+        {
+            if ( $nextStep )
+            {
+                if ( $learningPeriod->isNumberHours == DB_TRUE )
+                {
+                    // Número mínimo de horas totais nos quais o aluno deve se matricular
+                    if ( ! $busEnroll->checkMinimumHoursCondition($data) )
+                    {
+                        $this->errors[] = _M('Número mínimo de horas não alcançado.', $module);
+                    }
+
+                    // Número mínimo de horas totais nos quais o aluno deve se matricular
+                    if ( $busEnroll->exceedsMaximumNumberOfHours($data) )
+                    {
+                        $this->errors[] = _M('Número máximo de horas excedido.', $module);
+                    }
+
+                    // Número mínimo de horas totais nos quais o aluno deve se matricular no seu turno
+                    if($this->verificaConfiguracao('minimumCreditsTurnCourse', 'minimumCreditsTurnCourseExternal'))
+                    {
+                        if ( ! $busEnroll->checkTurnMinimumHoursCondition($data) )
+                        {
+                            $this->errors[] = _M('Número mínimo de horas por turno não alcançado.', $module);
+                        }
+                    }
+                }
+                else
+                {
+                    // Número mínimo de créditos totais nos quais o aluno deve se matricular
+                    if ( ! $busEnroll->checkMinimumCreditsCondition($data) )
+                    {
+                        $this->errors[] = _M('Número mínimo de créditos não atingido.', $module);
+                    }
+
+                    // Número máximo de créditos totais nos quais o aluno pode se matricular
+                    if ( $busEnroll->exceedsMaximumNumberOfCredits($data) )
+                    {
+                        $this->errors[] = _M('Número máximo de créditos excedido.', $module);
+                    }
+
+                    // Número mínimo de créditos totais nos quais o aluno deve se matricular no seu turno
+                    if($this->verificaConfiguracao('minimumCreditsTurnCourse', 'minimumCreditsTurnCourseExternal'))
+                    {
+                        if ( ! $busEnroll->checkTurnMinimumCreditsCondition($data) )
+                        {
+                            $this->errors[] = _M('Número mínimo de créditos no turno não atingido.', $module);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Número máximo de reprovações para bloquear a matrícula
+        if($this->verificaConfiguracao(null, null, 'disapprovementsToBlockTimeToCourseDisapproved'))
+        {
+            if ( $learningPeriod->maximumDisapprovals > 0 )
+            {
+                $disapprovementsCurriculumIds = $busEnroll->getContractDisapprovements($this->contractId, $this->learningPeriodId);
+
+                if ( count($disapprovementsCurriculumIds) > $learningPeriod->maximumDisapprovals )
+                {
+                    $this->errors[] = _M('Número máximo de dependências atingido. O aluno deve cursar as dependências antes.', $module);
+                }
+            }
+        }
+                
+        return (count($this->errors) == 0);
+    }
+    
+    /**
+     * Verificar requisitos (pré e co)
+     * Necessária esta verificação para as disciplinas que foram liberadas para matrícula por liberação da carga horária disponível,
+     * somente serão confirmadas se a carga horária das disciplinas marcadas chegar ao exigido do requisito. Se a disciplina
+     * foi exibida como opção e possui pré-requisitos, então seu pré-requisito é pelo critério de cálculo total de horas cursadas 
+     * somadas as possibilidades de matrícula.
+     * 
+     * @param double $totalDeHorasSelecionas
+     * @param int $groupId
+     * @param int $curriculumId
+     * @param AcdEnrollConfig $enrollConfig
+     * @return string
+     */
+    public function verificaRequisitoPorSomaDeHorasAcademicasCursadasEMatriculadas($totalDeHorasSelecionas, $groupId, $curriculumId, $enrollConfig)
+    {
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $busGroup  = new BusinessAcademicBusGroup();
+        $busCurricularComponentUnblock = new BusinessAcademicBusCurricularComponentOutOfCurriculumUnblock();
+        $return    = null;
+        $preCondition = true;
+        
+        // Verifica se a disciplina é um desbloqueio fora de curriculum e não considera os pré-requisitos.
+        $data = new stdClass();
+        $data->contractId = $this->contractId;
+        $data->learningPeriodId = $this->learningPeriodId;
+        $data->curriculumId = $curriculumData->curriculumId;
+        $isOutOfCurriculum = $busCurricularComponentUnblock->searchCurricularComponentOutOfCurriculumUnblock($data);
+        
+        if ( !strlen($isOutOfCurriculum[0][0]) > 0 )
+        {
+            $curriculumData = new stdClass();
+            $curriculumData->curriculumId = $curriculumId;
+            $curriculumData->horasAcademicasTotaisDisponiveis = $totalDeHorasSelecionas;        
+            $preCondition = $busEnroll->isPreConditionsFree($curriculumData, $this->contractId, $this->learningPeriodId, $enrollConfig->freeInCourseConditions == DB_TRUE, DB_TRUE);
+        }
+        
+        if ( !$preCondition )
+        {
+            $group  = $busGroup->getGroup($groupId);
+            $return = $group->curriculumCurricularComponentId . '/' . $group->curriculumCurricularComponentVersion . ' - ' . $group->curriculumCurricularComponentName;
+        }
+        
+        return $return;
+    }
+    
+    /**
+     * Retorna as disciplinas disponíveis para matrícula, juntamente com o
+     * total de horas academicas somadas.
+     * 
+     * @param stdClass $enrollData
+     * @param int $contractId
+     * @param int $learningPeriodId
+     * @param char $freeInCourseConditions
+     * @return \stdClass
+     */
+    public function obtemTotalDeHorasSomadasDasDisciplinasDisponiveis($enrollData, $contractId, $learningPeriodId, $freeInCourseConditions)
+    {
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $return    = new stdClass();
+        
+        $return->todasDiscDisponiveis             = array();
+        $return->horasAcademicasTotaisDisponiveis = 0;
+        
+        foreach ( $enrollData as $k => $e )
+        {
+            if ( $busEnroll->isCoursed($e, $contractId) )
+            {
+                continue;
+            }
+            
+            // Verifica se uma disciplina possui seus pré-requisitos cumpridos 
+            $curriculumData = new stdClass();
+            $curriculumData->curriculumId = $e->curriculumId;            
+            $preCondition = $busEnroll->isPreConditionsFree($curriculumData, $contractId, $learningPeriodId, $freeInCourseConditions == DB_TRUE, DB_TRUE);
+            
+            $e->estaBloqueada = true;
+            
+            // Se atende a pré condição do requisito, ou se não possuir requisitos, disciplina fica liberada.
+            if ( $preCondition )
+            {
+                $return->horasAcademicasTotaisDisponiveis += (double)$e->academicNumberHours;
+                $e->estaBloqueada = false;
+            }
+            
+            $return->todasDiscDisponiveis[] = $e;
+        }
+        
+        return $return;
+    }
+    
+    /**
+     * Verifica o total de horas das disciplinas selecionadas para matrícula,
+     * descartando as que possuírem pré-requisitos.
+     * 
+     * @param array $groups
+     * @return double
+     */
+    public function obtemTotalDeHorasSomadasDasDisciplinasSelecionadas($groups, $enrollConfig)
+    {
+        $busGroup  = new BusinessAcademicBusGroup();
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $groupIds  = array_keys($groups);
+        
+        $totalDeHorasSelecionas = 0;
+        
+        for ( $x = 0; $x < count($groupIds); $x++ )
+        {
+            $curriculumData = new stdClass();
+            $curriculumData->curriculumId = $groups[$groupIds[$x]];
+            $preCondition = $busEnroll->isPreConditionsFree($curriculumData, $this->contractId, $this->learningPeriodId, $enrollConfig->freeInCourseConditions == DB_TRUE, DB_TRUE);
+
+            // Se não possuir pré-requisito, ou se o pré-requisito já estiver cumprido.
+            if ( $preCondition )
+            {
+                // Obtém as horas academicas da disciplinas
+                $group = $busGroup->getGroup($groupIds[$x]);
+                $totalDeHorasSelecionas += (double)$group->academicNumberHours;                  
+            }
+        }
+        
+        return $totalDeHorasSelecionas;
+    }
+    
+    public function generateSchedulesArray($schedulesArray)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = 'academic';
+        
+        if ( count($schedulesArray) > 0 )
+        {
+            $busGroup = new BusinessAcademicBusGroup();
+
+            $weekDays = array();
+            $turns    = array();
+
+            foreach ( $schedulesArray as $weekdayId => $schedulesData )
+            {
+                if ( ! array_key_exists($weekdayId, $weekDays) )
+                {
+                    $weekDays[$weekdayId] = $schedulesData->description;
+                }
+                
+                if ( count($schedulesData->turns) > 0 )
+                {
+                    foreach ( $schedulesData->turns as $turnId => $turnData )
+                    {
+                        if ( ! array_key_exists($turnId, $turns) )
+                        {
+                            $turns[$turnId] = $turnData->description;
+                        }
+                    }
+                }
+            }
+        
+            $columns = array();
+            $data = array();
+            
+            $j = 1;
+            
+            if ( (count($weekDays) > 0) && (count($turns) > 0) )
+            {
+                $columns[0] = '&nbsp';
+                
+                foreach ( $weekDays as $weekDayId => $weekDayDescription )
+                {
+                    foreach ( $turns as $turnId => $turnDescription )
+                    {
+                        $scheduleData = $schedulesArray[$weekDayId]->turns[$turnId];
+                        if ( (isset($scheduleData)) && (count($scheduleData->schedules) > 0) )
+                        {
+                            $columns[$weekDayId] = '<center><b>' . $weekDayDescription . '</b></center>';
+                            $data[$turnId][0] = '<center><b>' . $turnDescription . '</b></center>';
+                            
+                            $text = array();
+                            $counter = 0;
+                            
+                            foreach ( $scheduleData->schedules as $scheduleId => $turnSchedule )
+                            {
+                                $groupData = $busGroup->getGroup($turnSchedule->groupId);
+                                
+                                $text[$counter] .= '<center><b>' . $turnSchedule->beginHour . '-' . $turnSchedule->endHour . '</b></center><center>' . $groupData->curriculumCurricularComponentName . '</center>';
+                                
+                                $filters->scheduleId = $scheduleId;
+                                $professors = $turnSchedule->professors;
+                                
+                                if ( count($professors) > 0 )
+                                {
+                                    foreach ( $professors as $professorData )
+                                    {
+                                        $text[$counter] .= '<center><i>' . $professorData . '</i></center>';
+                                    }
+                                }
+                                else
+                                {
+                                    $text[$counter] .= '<center><i>' . _M('Sem professor definido', $module) . '</i></center>';
+                                }
+                                
+                                $place = '';
+                                if ( strlen($turnSchedule->place) > 0 )
+                                {
+                                    $place = '<center>' . $turnSchedule->place;
+                                    
+                                    if ( strlen($turnSchedule->unit) > 0 )
+                                    {
+                                        $place .= ' - ' . $turnSchedule->unit;
+                                    }
+                                    
+                                    $place .= '</center>';
+                                }
+                                elseif ( strlen($turnSchedule->unit) > 0 )
+                                {
+                                    $place = '<center>' . $turnSchedule->unit . '</center>';
+                                }
+                                
+                                if ( strlen($place) > 0 )
+                                {
+                                    $text[$counter] .= $place;
+                                }
+                                
+                                $counter++;
+                            }
+                            
+                            sort($text);
+                            $data[$turnId][$weekDayId] = implode('<br>', $text);
+                        }
+                    }
+                }
+            }
+             
+            $data2 = array();
+            $data3 = array();
+            if ( count($data) > 0 )
+            {
+                foreach ( $data as $dataKey => $arrayRow )
+                {
+                    foreach ( $arrayRow as $key => $value )
+                    {
+                        foreach ( $data as $dataKey2 => $arrayRow2 )
+                        {
+                            foreach ( $arrayRow2 as $key2 => $value2 )
+                            {
+                                if ( ! array_key_exists($key2, $arrayRow) )
+                                {
+                                    $arrayRow[$key2] = '&nbsp';
+                                }
+                                
+                                if ( ! array_key_exists($key, $arrayRow2) )
+                                {
+                                    $arrayRow2[$key] = '&nbsp';
+                                }
+                            }
+                        }
+                        
+                        $data2[$dataKey2] = $arrayRow2;
+                    }
+                    
+                    $data2[$dataKey] = $arrayRow;
+                }
+                
+                ksort($data2);
+                $j = 0;
+                
+                foreach ( $data2 as $dataRow )
+                {
+                    $i = 0;
+                    ksort($dataRow);
+                    foreach ( $dataRow as $dataElement )
+                    {
+                        $data3[$j][$i] = $dataElement;
+                        $i++;
+                    }
+                    
+                    $j++;
+                }
+            }
+            
+            if ( count($columns) > 0 )
+            {
+                $i = 0;
+                $columns2 = array();
+                
+                foreach ( $columns as $column ) 
+                {
+                    $columns2[$i] = $column;
+                    $i++;
+                }
+            }
+            
+        }
+
+        if ( count($columns2) > 0 && count($data3) > 0 )
+        {
+            $schedulesTable = new MTableRaw(_M('Horário do período', $module), $data3, $columns2);
+            $schedulesTable->setAlternate(true);
+        }
+        else
+        {
+            $data3 = array(_M('Não há informações a exibir, pois não existem horários cadastrados para as disciplinas selecionadas.', $module),
+                           _M('Assegure-se de que as disciplinas oferecidas selecionadas possuam horários definidos.', $module));
+            $schedulesTable = new MTableRaw(_M('Horário do período', $module), $data3);
+        }
+        
+        return $schedulesTable;
+    }
+    
+    
+    public function enviarEmailConfirmacaoMatricula($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $groups = $this->getAllSelectedGroups($args);
+        
+        $busSchedule = new BusinessAcademicBusSchedule();
+
+        $disciplinasHorarios = array();
+        
+        if ( count($groups) > 0 )
+        {
+            foreach ( $groups as $groupId => $curriculumId )
+            {
+                $schedulesData = $busSchedule->getGroupScheduleDataByDate($groupId);
+                
+                if ( count($schedulesData) > 0 )
+                {
+                    foreach ( $schedulesData as $scheduleData )
+                    {
+                        $disciplinasHorarios[$scheduleData->weekday->id]->description = $scheduleData->weekday->description;
+                    
+                        foreach ( $scheduleData->units as $unitId => $unit )
+                        {
+                            foreach ( $unit->turns as $turnId => $turn )
+                            {
+                                $disciplinasHorarios[$scheduleData->weekday->id]->turns[$turnId]->description = $turn->description;
+                            
+                                foreach ( $turn->times as $timeId => $time )
+                                {
+                                    $disciplinasHorarios[$scheduleData->weekday->id]->turns[$turnId]->schedules[$timeId]->beginHour = $time->beginHour;
+                                    $disciplinasHorarios[$scheduleData->weekday->id]->turns[$turnId]->schedules[$timeId]->endHour = $time->endHour;
+                                    $disciplinasHorarios[$scheduleData->weekday->id]->turns[$turnId]->schedules[$timeId]->groupId = $groupId;
+                                    $disciplinasHorarios[$scheduleData->weekday->id]->turns[$turnId]->schedules[$timeId]->unit = $unit->description;
+                                    $disciplinasHorarios[$scheduleData->weekday->id]->turns[$turnId]->schedules[$timeId]->professors = $time->professors;
+                                }
+                            }
+
+                            ksort($disciplinasHorarios[$scheduleData->weekday->id]->turns);
+                        }
+                    }
+                }
+            }
+
+            ksort($disciplinasHorarios);
+        }
+        
+        $schedulesTable = $this->generateSchedulesArray($disciplinasHorarios);
+        $schedulesTable->addStyle('border-width', 'thin');
+        $schedulesTable->addStyle('border-style', 'solid');
+        $schedulesTable->addStyle('border-color', 'black');
+
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $learningPeriod = $busLearningPeriod->getLearningPeriod($this->enrollData->learningPeriodId);
+
+        $emailId = strlen($this->obterConfiguracoes()->confirmationEmailId) > 0 ? $this->obterConfiguracoes()->confirmationEmailId : SAGU::getParameter('ACADEMIC', 'ACD_ENROLL_CONFIRMED_EMAIL_ID'); 
+
+        $businessMailServer = new BusinessBasicBusMailServer();
+        $getMailServer = $businessMailServer->getMailServer();
+
+        $businessEmail = new BusinessBasicBusEmail();
+        $getEmail = $businessEmail->getEmail($emailId);
+
+        $businessUnit = new BusinessBasicBusUnit();
+        $getUnit = $businessUnit->getUnit($learningPeriod->unitId);
+
+        $busPhysicaPerson = new BusinessBasicBusPhysicalPerson();
+        $getPerson = $busPhysicaPerson->getPhysicalPerson($this->enrollData->contractPersonId);
+
+        $searchData = array( "\$PERIODID",
+                             "\$PERSONNAME",
+                             "\$PERSONID",
+                             "\$COURSEDESC",
+                             "\$CAMPUSDESC" );
+
+        $replaceData = array( $this->enrollData->periodId,
+                              $contract->personName,
+                              $this->enrollData->contractPersonId,
+                              $contract->courseName,
+                              $getUnit->description );
+
+        $subject = str_replace($searchData, $replaceData, $getEmail->subject);
+
+        $body = "<html><head><title>".$subject."</title></head>" ;
+
+        $searchData[] = "$#CURRICULARCOMPONENTTABLE#$";
+
+        /**
+         * FIXME: str_replace para definir as bordas da MTableRaw, já que o miolo as pré-define como 0
+         * e não permite alteração, uma vez que esta definição consta no construtor da classe MSimpleTable,
+         * instanciada pelo método Generate() da classe MTableRaw sem os devidos parâmetros
+         */
+        $replaceData[] = str_replace('border="0"', 'border="1"', $schedulesTable->generate());
+
+        $body .= '<body>';
+        $body .= str_replace($searchData, $replaceData, $getEmail->body);
+        $body .= "</body></html>";
+
+        //$recipient = $this->enrollData->contractPersonName . ' <' . $getPerson->email . '>';
+
+        if ( (strlen(trim($getMailServer->host)) > 0) && (strlen($getMailServer->port) > 0) )
+        {
+            //Include class sendEmail
+            $MIOLO->uses( 'classes/sendEmail.class', 'basic' );
+            //Parameters
+            $from = str_replace($searchData, $replaceData, $getEmail->from);
+            $fromName = $from;
+            
+            $recipients[$getPerson->name] = strtolower($getPerson->email);
+            //$recipients['jonas'] = strtolower('jonas@solis.com.br');
+            
+            $bcc = explode(',', $getEmail->bcc);
+            //Instance of sendEmail
+            $okEmail = new sendEmail($from, $fromName, $recipients , $subject, $body, $bcc );
+            //Send mail
+            return $okEmail->sendEmail();
+        }
+        
+        return false;
+    }
+    
+
+    /**
+     * Siimula o valor da mensalidade conforme as disciplinas selecionadas.
+     *
+     * @param type $args
+     * @return Array. 
+     */
+    public function simularMensalidade($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $fields = array();
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $busConvenant = new BusinessFinanceBusConvenant();
+        
+        SDatabase::beginTransaction();
+        
+        try
+        {
+            /*
+             * Verifica a turma do aluno
+             */
+            $busClassPupil = new BusinessAcademicBusClassPupil();
+            $classPupil = $busClassPupil->getContractCurrentClass($this->contractId);
+
+            // Se o aluno nao possuir uma turma, coloca ele em uma turma selecionada
+            if ( strlen($classPupil->classId) < 1 )
+            {
+                $newClassPupil = new AcdClassPupil();
+                $newClassPupil->classId = $this->obterTurma();
+                $newClassPupil->contractId = $this->contractId;
+                $newClassPupil->beginDate = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+
+                if ( !$busClassPupil->insertClassPupil($newClassPupil) )
+                {
+                    throw new Exception(_M('Erro definindo turma @1 para o contrato @2.', $module, $newClassPupil->classId, $newClassPupil->contractId));
+                }
+            }
+            elseif ( $classPupil->classId != $this->obterTurma() )
+            {
+                $today = mktime(0, 0, 0, date('m'), date('d'), date('Y'));
+                $yesterday = $today - 86400;
+
+                $classPupil->endDate = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'), $yesterday);
+
+                if ( !$busClassPupil->updateClassPupil($newClassPupil) )
+                {
+                    throw new Exception(_M('Erro cancelando turma @1 para o contrato @2.', $module, $classPupil->classId, $classPupil->contractId));
+                }
+
+                $newClassPupil = new AcdClassPupil();
+                $newClassPupil->classId = $this->obterTurma();
+                $newClassPupil->contractId = $this->contractId;
+                $newClassPupil->beginDate = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+
+                if ( !$busClassPupil->insertClassPupil($newClassPupil) )
+                {
+                    throw new Exception(_M('Erro definindo turma @1 para o contrato @2.', $this->module, $newClassPupil->classId, $newClassPupil->contractId));
+                }
+            }
+            
+            //efetua a matricula na forma de simulacao
+            $enrollData = $busEnroll->enroll($this->contractId, $this->learningPeriodId, $this->getAllSelectedGroups($args), true);
+            
+            //Verifica configuração de semestre cheio - Somente via portal
+            if (MIOLO::getCurrentModule() == 'services')
+            {
+                $msgSemestre = $this->verificarSemestreCheio();
+            
+                if (strlen ($msgSemestre) > 0 )
+                {
+                    throw new Exception($msgSemestre);
+                }
+            }
+            
+            $busInvoice = new BusinessFinanceBusInvoice();
+
+            $total = 0;
+            foreach($enrollData->invoices as $invoice)
+            {
+                
+                $value = $busInvoice->getInvoiceBalance($invoice->invoiceId);
+                
+                if($value)
+                {
+                    $total = SAGU::calcNumber($total.'+'.$value);
+                }
+                $convenants = $busConvenant->getInvoiceConvenants($invoice->invoiceId);
+                $invoiceConvenants[$invoice->invoiceId] = $convenants;                
+            }
+
+            
+            $enrollData->invoiceConvenants = $invoiceConvenants;
+
+            $enrollData->total = SAGU::formatNumber($total, 2);
+            
+        }
+        catch ( Exception $e )
+        {
+            if ( SAGU::userIsFromServices() )
+            {
+                $args = array(
+                    'randomid' => $MIOLO->_REQUEST('randomid'),
+                    'step' => 2
+                );
+
+                $goto = $MIOLO->GetActionURL('services', 'main:pupil:enrollWeb', null, $args);
+            }
+            else
+            {
+                $goto = $this->getPreviousURL();
+            }
+            
+            $msg = $e->getMessage();
+            
+            // define uma mensagem mais amigavel para o usuario
+            if ( preg_match('/Defina uma pol(.*)tica para o pre(.*)o do curso/', $msg) )
+            {
+                $msg = _M('O curso em questão está sem política cadastrada, procure o setor financeiro');
+            }
+            
+            $MIOLO->error($msg, $goto);
+            SDatabase::rollback();
+        }
+
+        SDatabase::rollback();
+        return $enrollData;
+    }
+    
+    /**
+     * Verificar se aluno se matriculou em semestre cheio.
+     * 
+     * @return boolean|string
+     */
+    public function verificarSemestreCheio()
+    {
+        $bloquearSemestreCheio = $this->obterConfiguracoes()->bloqueiaMatriculaWebSemestreCheio;
+        if( $bloquearSemestreCheio != AcdEnrollConfig::BLOQUEAR_SEMESTRE_CHEIO_NENHUM )
+        {
+            $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+            $learningPeriodData = $busLearningPeriod->getLearningPeriod($this->learningPeriodId);
+            
+            $calouro = AcdContract::alunoCalouro($this->contractId, $learningPeriodData->periodId);
+            $matriculatoEmTodoSemestre = $this->verificaMatriculaTodasDisciplinas($this->contractId, $this->learningPeriodId);
+            $msg = "Nós somente disponibilizamos a matrícula web para alunos que gostariam de se matricular em todas disciplinas de um dos semestres de seu curso. Entre em contato com a instituição, ou quem sabe, vamos retornar e selecionar mais algumas disciplinas, que tal?";
+            $erro = DB_FALSE;
+            
+            if( $bloquearSemestreCheio != AcdEnrollConfig::BLOQUEAR_SEMESTRE_CHEIO_AMBOS )
+            {
+                if( $bloquearSemestreCheio == AcdEnrollConfig::BLOQUEAR_SEMESTRE_CHEIO_CALOURO )
+                {
+                    //Calouro
+                    if( !$matriculatoEmTodoSemestre && $calouro )
+                    {
+                        $erro = DB_TRUE;
+                    }
+                }
+                else
+                {
+                    //Veterano
+                    if( !$matriculatoEmTodoSemestre && !$calouro )
+                    {
+                        $erro = DB_TRUE;
+                    }
+                }
+            }
+            else
+            {
+                //Ambos
+                if( !$matriculatoEmTodoSemestre )
+                {
+                    $erro = DB_TRUE;
+                }
+            }
+        }
+        
+        if ( $erro == DB_TRUE )
+        {
+            $result = $msg;
+        }
+        else
+        {
+            $result = false;
+        }
+        
+        return $result;
+    }
+    
+    /**
+     * Verifica se a matricula esta aberta para este contrato e periodo
+     *
+     * @return Boolean 
+     */
+    public function matriculaAberta($isFreshMen = false)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        if($this->learningPeriodId)
+        {
+            $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+            $learningPeriod = $busLearningPeriod->getLearningPeriod($this->learningPeriodId);
+            $busPeriodEnrollDate = new BusinessAcademicBusPeriodEnrollDate();
+
+            //verifica se o periodo letivo nao esta fechado
+            //verifica se a configuracao vigente permite matricula do aluno
+            //verifica se existe periodo de matricula vigente
+            if($learningPeriod->isClosed == DB_FALSE && $this->verificaConfiguracao(null, 'enableEnrollWeb') && count($busPeriodEnrollDate->listPeriodEnrollDate($this->contractId, $isFreshMen, $this->tipo==Matricula::MATRICULA_WEB))>0)
+            {
+                return true;
+            }
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Retorna o termo de aceite para esta matricula.
+     *
+     * @return String
+     */
+    public function obterTermoDeAceite()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $learningPeriod = $busLearningPeriod->getLearningPeriod($this->learningPeriodId);
+        
+        return $learningPeriod->enrollAcceptedTerm;
+    }
+    
+    /**
+     * Retorna as configuracoes para a matricula.
+     *
+     * @return AcdEnrollConfig 
+     */
+    public function obterConfiguracoes($dataReturn = true)
+    {
+        if($data = $this->obterConsulta(self::CONSULTA_CONFIGURACAO))
+        {
+            if ( $dataReturn )
+            {
+                return $data;
+            }
+        }
+        
+        //Método que obtém as configurações de matrícula para o curso
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $busContract = new BusinessAcademicBusContract();
+        $contract = $busContract->getContract($this->contractId);
+
+        $filter = new stdClass();
+        $filter->courseId = $contract->courseId;
+        $filter->courseVersion = $contract->courseVersion;
+        $filter->turnId = $contract->turnId;
+        $filter->unitId = $contract->unitId;
+        $filter->vigente = true;
+        
+        //Primeiro tenta buscar a configuracao de matricula do curso do contrato
+        if($enrollConfig = AcdEnrollConfig::searchGrid($filter))
+        {
+            $acdEnrollConfig = new AcdEnrollConfig($enrollConfig[0][0]);
+            $this->salvarConsuta(self::CONSULTA_CONFIGURACAO, $acdEnrollConfig);
+            
+            return $acdEnrollConfig;
+        }
+        //Em último caso procura a configuracao geral de curso
+        else
+        {
+            $filter->courseId = null;
+            $filter->courseVersion = null;
+            $filter->turnId = null;
+            $filter->unitId = null;
+            
+            if($enrollConfig = AcdEnrollConfig::searchGrid($filter))
+            {
+                $acdEnrollConfig = new AcdEnrollConfig($enrollConfig[0][0]);
+                $this->salvarConsuta(self::CONSULTA_CONFIGURACAO, $acdEnrollConfig);
+                
+                return $acdEnrollConfig;
+            }
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Retorna os botoes com os links dos documentos para download conforme
+     * configuracao.
+     *
+     * @return MDiv 
+     */
+    public function obterDocumentosParaDownload()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();   
+        $busContract = new BusinessAcademicBusContract();
+        $contract = $busContract->getContract($this->contractId);
+        
+        // link para o contrato
+        if($this->verificaConfiguracao(null, 'avaliableContract'))
+        {
+            $vars = array('personId' => $contract->personId, 
+                            'learningPeriodId' => $this->learningPeriodId, 
+                            'contractId' => $this->contractId,
+                            'courseId' => $contract->courseId,
+                            'courseVersion' => $contract->courseVersion,
+                            'turnId' => $contract->turnId,
+                            'unitId' => $contract->unitId,
+                            'fileType' => 'pdf',
+                            'event'=>'tbBtnPrint_click');
+
+            $action = 'window.open(\'' . $MIOLO->getActionUrl($module, 'main:document:contract:graduation', null, $vars) . '\')';
+
+            $btnContract = new MButton('btnContract', _M('Contrato', $module), $action);
+            $btnContract->addBoxStyle('margin-left', '0');
+            $btnContract->addBoxStyle('float', 'left');
+            $fields[] = $btnContract;
+        }
+
+        // link para o termo aditivo
+        if($this->verificaConfiguracao(null, 'avaliableAddendum'))
+        {
+            $vars = array('personId' => $contract->personId, 
+                            'learningPeriodId' => $this->learningPeriodId, 
+                            'event' => 'tbBtnPrint_click', 
+                            'radFileType' => 'pdf', 
+                            'opts' => 'E','contractId' => $this->contractId,
+                            'courseId' => $contract->courseId,
+                            'courseVersion' => $contract->courseVersion,
+                            'turnId' => $contract->turnId,
+                            'unitId' => $contract->unitId,
+                            'periodId' => $contract->periodId);
+
+            $action = 'window.open(\'' . $MIOLO->getActionUrl('academic', 'main:document:contract:additiveTerm', null, $vars) . '\')';
+
+            $btnAdditiveTerm = new MButton('btnAdditiveTerm', _M('Termo aditivo', $module), $action);
+            $btnAdditiveTerm->addBoxStyle('margin-left', '0');
+            $btnAdditiveTerm->addBoxStyle('float', 'left');
+            $fields[] = $btnAdditiveTerm;
+        }
+
+        // link para a confirmacao de matricula
+        if($this->verificaConfiguracao(null, 'avaliableEnrollConfirmation'))
+        {
+            $vars = array('contractId' => $this->contractId, 
+                            'learningPeriodId' => $this->learningPeriodId, 
+                            'event' => 'tbBtnPrint_click', 
+                            'fileType' => 'pdf',
+                            'isFromServices' => DB_TRUE);
+
+            $action = 'window.open(\'' . $MIOLO->getActionUrl($module, 'main:document:enrollConfirmation', null, $vars) . '\')';
+
+            $btnEnrollConfirmation = new MButton('btnEnrollConfirmation', _M('Confirmação de matrícula', $module), $action);
+            $btnEnrollConfirmation->addBoxStyle('margin-left', '0');
+            $btnEnrollConfirmation->addBoxStyle('float', 'left');
+            $fields[] = $btnEnrollConfirmation;
+        }
+        
+        if ( SAGU::getParameter('BASIC', 'MODULE_FINANCE_INSTALLED') == 'YES' )
+        {
+            //Link para imprimir o boleto 
+            $busReceivableInvoice = new BusinessFinanceBusReceivableInvoice();
+            $filters = new stdClass();
+            $filters->learningPeriodId = $this->learningPeriodId;
+            $filters->contractId = $this->contractId;
+            $filters->isCanceled = DB_FALSE;
+            $invoiceIds = $busReceivableInvoice->searchReceivableInvoice($filters);
+
+            $ids = array();
+            for ( $i = 0; $i < count($invoiceIds); $i++ )
+            {
+                $ids[] = $invoiceIds[$i][0];
+            }
+
+            $action = $MIOLO->getActionUrl('finance', 'main', null, array('invoices' => implode(',', $ids), 'event' => 'generateCarnetByInvoicesPassedByURL'));
+            $opts = array( '_invoiceId' => $ids[0], 'event' => 'submit_button_click' );                    
+            $hrefPrint = $MIOLO->getActionURL( 'finance', "main:process:printInvoice", null, $opts );
+            $fields[] = new MButton('btnImprimirBoleto', _M('Imprimir boleto'), $hrefPrint);
+        }
+
+        $div = new MDiv('',$fields);
+        $div->addBoxStyle('margin-left','35%');
+        
+        return $div;
+    }
+    
+    /**
+     * Retorna a mensagem do passo conforme configuracao
+     *
+     * @param Integer $passo
+     * @return String 
+     */
+    public function obterMensagemDoPasso($passo)
+    {
+        // Quando estamos na matricula via sistema que possui um passo inicial a mais,
+        //  deve ser feito o ajuste para aparecer no passo correto.
+        if ( !SAGU::userIsFromServices() && is_numeric($passo) )
+        {
+            $passo --;
+        }
+        
+        if($passo==2)
+        {
+            $mensagem = $this->obterConfiguracoes()->configurableMessageStep2;
+        }
+        elseif($passo==3)
+        {
+            $mensagem = $this->obterConfiguracoes()->configurableMessageStep3;
+        }
+        else
+        {
+            $mensagem = $this->obterConfiguracoes()->configurableMessageStep1;
+        }
+        
+        return $mensagem;
+    }
+
+    public function definirTipo($tipo)
+    {
+        $this->tipo = $tipo;
+    }
+    
+    public function obterTipo()
+    {
+        return $this->tipo;
+    }
+    
+    public function definirContrato($contractId)
+    {
+        $this->contractId = $contractId;
+    }
+    
+    public function obterContrato()
+    {
+        return $this->contractId;
+    }
+    
+    public function obterPeriodoLetivo()
+    {
+        return $this->learningPeriodId;
+    }
+    
+    /**
+     *
+     * @return AcdEnroll
+     */
+    public function obterContratoObjeto()
+    {
+        static $objects = array();
+        
+        if ( !isset($objects[$this->contractId]) )
+        {
+            $busContract = new BusinessAcademicBusContract();
+            $objects[$this->contractId] = $busContract->getContract($this->contractId);
+        }
+        
+        return $objects[$this->contractId];
+    }
+    
+    public function definirLearningPeriodId($learningPeriodId)
+    {
+        $this->learningPeriodId = $learningPeriodId;
+    }
+    
+    public function obterLearningPeriodId()
+    {
+        return $this->learningPeriodId;
+    }
+    
+    /**
+    * Gera a tabela que serve como estrutura para selecionar as disciplinas na matricula web
+    *
+    * @param Object $enrollData.
+    * @param String $title.
+    * @param String $chkBoxName. Default e 'group'.
+    * @param Boolean $showControls.
+    * @param Boolean $allowDelete.
+    * @param String $gridName.
+    * @param Object $args, 
+    * @param Boolean $onlyDates.
+    * @param Boolean $imageCheck.
+    * @param Integer $semester.
+    *
+    * @return MTableRaw()
+    */
+    public function generateTable($enrollData, $title, $chkBoxName = 'group', $showControls = true, $allowDelete = false, $gridName = null, $args = null, $onlyDates = false, $imageCheck = false, $semester = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SModules::MODULE_ACADEMIC;
+        
+        if($args)
+        {
+            $selectedGroups = $this->getAllSelectedGroups($args);
+        }
+        
+        if(!$onlyDates)
+        {
+            $fields[] = $divTitulo = new MDiv('divTitulo', $title, 'm-box-title');
+            $divTitulo->addStyle('width', '98%');
+        }
+        
+        $busContract = new BusinessAcademicBusContract();
+        $contract = $busContract->getContract($this->obterContrato());
+        $busEnroll = $MIOLO->getBusiness($module, 'BusEnroll');
+        $busSchedule = $MIOLO->getBusiness($module, 'BusSchedule');
+        $acdEnroll = new AcdEnroll();
+
+        $enrollConfig = $this->obterConfiguracoes();
+
+        foreach($enrollData as $k=>$e)
+        {
+            if ( ( $enroll = $busEnroll->getLastEnrollByGroupId($this->contractId, $e->groupId) ) &&
+                 ( $enrollData[$k]->enrollStatus != SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_CANCELLED') && // esta condicao foi feita para soclucionar problema do ticket #24116
+                  !is_null($enrollData[$k]->enrollStatus) ) 
+               )
+            {
+                $enrollData[$k]->enrollStatus = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED');
+            }
+        }
+        
+        //faz o bloqueio antes
+        foreach($enrollData as $e)
+        {
+            if($e->enrollStatus == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED'))
+            {
+                foreach($enrollData as $e2)
+                {
+                    if($e2->enrollStatus != SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED'))
+                    {
+                        $key = $e2->groupCurricularComponentId.$e2->curriculumCurricularComponentId.$e2->groupId;
+                        
+                        $d1 = SAGU::getDatePart($e->startDate, 'dow');
+                        $d2 = SAGU::getDatePart($e2->startDate, 'dow');
+
+                        if($e->turnId == $e2->turnId && $e2->curriculumCurricularComponentId != $e->curriculumCurricularComponentId && SAGU::dateOverlaps($e2->startDate, $e2->endDate, $e->startDate2, $e->endDate2) && $d1 && $d2 )
+                        {
+                            $datahora1 = $busEnroll->getScheduleBeginAndEndHours($e->groupId);
+                            $datahora2 = $busEnroll->getScheduleBeginAndEndHours($e2->groupId);
+
+                            $conflita = false;
+
+                            foreach($datahora1 as $dh1)
+                            {
+                                    foreach($datahora2 as $dh2)
+                                    {
+                                            //verifica se os horarios ocorrem no mesmo dia
+                                            if($dh1[0] == $dh2[0])
+                                            {
+                                                    //verifica se os horario conflitam
+                                                    if(SAGU::hourOverlaps($dh1[1], $dh1[2], $dh2[1], $dh2[2]))
+                                                    {
+                                                            if(!$acdEnroll->verificaDesbloqueioDeChoqueDeHorario($this->contractId,$e->curriculumId) && !$acdEnroll->verificaDesbloqueioDeChoqueDeHorario($this->contractId,$e2->curriculumId))
+                                                            {
+                                                                    $conflita = true;
+                                                            }
+                                                    }
+                                            }
+                                    }
+                            }
+                            $horarios1 = $busSchedule->getScheduleOfGroup($e->groupId);
+                            $horarios2 = $busSchedule->getScheduleOfGroup($e2->groupId);
+
+                            $conflita2 = false;
+
+                            foreach($horarios1 as $h1)
+                            {
+                                    foreach($horarios2 as $h2)
+                                    {
+                                            if($h1[2]==$h2[2])
+                                            {
+                                                    if($h1[3]==$h2[3])
+                                                    {
+                                                            if(!$acdEnroll->verificaDesbloqueioDeChoqueDeHorario($this->contractId,$e->curriculumId) && !$acdEnroll->verificaDesbloqueioDeChoqueDeHorario($this->contractId,$e2->curriculumId))
+                                                            {
+                                                                    $conflita2 = true;
+                                                            }
+                                                    }
+                                            }
+                                    }
+                            }
+
+                            if(!$conflita2)
+                            {
+                                    $conflita = false;
+                            }
+
+                            if($conflita)
+                            {
+                                    $blocks[$key] = $key;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        $data = array( );
+        for ( $i = 0; $i < count($enrollData); $i++ )
+        {
+            $enable = true;
+            $row1 = array( );
+            $row2 = array( );
+            $actions = array( );
+            $controlName = $chkBoxName . '[' . $enrollData[$i]->groupId . ']';
+            
+            $key = $enrollData[$i]->groupCurricularComponentId.$enrollData[$i]->curriculumCurricularComponentId.$enrollData[$i]->groupId;
+            if ( in_array($key, $blocks) && $enrollData[$i]->enrollStatus != SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') )
+            {
+                $enable = false;
+            }
+            
+            //bloqueia se nao houver mais vagas
+            if ( is_numeric($enrollData[$i]->vacant) && is_numeric($enrollData[$i]->totalEnrolled) )
+            {
+                if ( ( SAGU::calcNumber($enrollData[$i]->vacant.'-'.$enrollData[$i]->totalEnrolled) < 1 ) &&
+                     ( $enrollData[$i]->enrollStatus != SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') ) )
+                {
+                    $enable = false;
+                }
+            }
+            
+            if ( ( $showControls && $enrollData[$i]->totalEnrolled < $enrollData[$i]->vacant ) || 
+                 ( $showControls && $enrollData[$i]->enrollStatus == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') ) ) //verifica se esta habilitado para matricula e possui vagas
+            {
+                if(count($selectedGroups)>0)
+                {
+                    if($selectedGroups[$enrollData[$i]->groupId])
+                    {
+                        $selected = true;
+                    }
+                    else
+                    {
+                        $selected = false;
+                    }
+                }                
+                elseif($enrollData[$i]->enrollStatus == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED')) //verifica se ja se matriculou nesta disciplina
+                {
+                    $selected = true;
+                }
+                /* OPCAO QUE JA TRAZ AS DISCIPLINAS DO SEMESTRE ATUAL MARCADAS
+                elseif($semester && $semester==$enrollData[$i]->semester) //verifica se esta matriculado no semestre atual
+                {
+                    $selected = true;
+                }
+                 */
+                else
+                {
+                    $selected = false;
+                }
+                                
+                $chk = new MCheckBox($controlName, $enrollData[$i]->curriculumId, '', $selected);
+                $ajax[0] = array( 'verificar', 'divResponse', false, array('groupId' => $enrollData[$i]->groupId, 'curriculumId' => $enrollData[$i]->curriculumId) );
+                
+                $browser = $_SERVER['HTTP_USER_AGENT'];
+        
+                if(strstr($browser, 'MSIE')) //para o ie
+                {
+                    $acao = SForm::getMultipleAjaxAction($ajax);
+                    $acao = substr($acao, 0, -14);
+                    $chk->addAttribute('onclick', $acao);
+                }
+                else
+                {
+                    $chk->addAttribute('onchange', SForm::getMultipleAjaxAction($ajax));
+                }
+                
+                //desabilita o botao se a cadeira ja estiver lotada e o aluno nao estiver matriculado
+                if(!$enable && $enrollData[$i]->enrollStatus != SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED'))
+                {
+                    $chk->addAttribute('DISABLED', 'DISABLED');
+                }
+                
+                $ajax = null;
+                $actions[] = $chk;
+            }
+            else
+            {
+                if ( $enable )
+                {
+                    $actions[] = new SHiddenField($controlName, $enrollData[$i]->curriculumId);
+                }
+                else
+                {
+                    $actions[] = new SHiddenField($controlName);
+                }
+            } 
+
+            $row[] = $actions;
+
+            $fieldsRow = array( );
+            $curricularComponent = $enrollData[$i]->curriculumCurricularComponentId . '/' . $enrollData[$i]->curriculumCurricularComponentVersion . '  - ' . $enrollData[$i]->curriculumCurricularComponentName;
+            if ( strlen($enrollData[$i]->groupCurricularComponentId) > 0 && strlen($enrollData[$i]->groupCurricularComponentVersion) > 0 )
+            {
+                if ( $enrollData[$i]->curriculumCurricularComponentId != $enrollData[$i]->groupCurricularComponentId
+                        || $enrollData[$i]->curriculumCurricularComponentVersion != $enrollData[$i]->groupCurricularComponentVersion )
+                {
+                    $curricularComponent .= ' (' . $enrollData[$i]->groupCurricularComponentId . '/' . $enrollData[$i]->groupCurricularComponentVersion . '  - ' . $enrollData[$i]->groupCurricularComponentName . ')';
+                }
+            }
+            $fieldsRow[] = new MText('txtCurricularComponent', $curricularComponent);
+
+            #FIXME: retirar depois de corrigir o parametro
+            $enrollConfig->scheduleDisplayModeExternal = 'W'; //padrao exibido no layout do projeto
+
+            $fieldsRow[] = $this->exibirDataDaDisciplina($enrollConfig->scheduleDisplayModeExternal, $enrollData[$i]);
+
+            $row1[] = new MVContainer('divCurricularComponent', $fieldsRow);
+
+            $row[] = $enrollData[$i]->totalEnrolled . '/' . $enrollData[$i]->vacant;
+            $row[] = $enrollData[$i]->regimenDescription;
+            $row[] = $enrollData[$i]->enrollId;
+            $row[] = strlen($enrollData[$i]->enrollStatusDescription) > 0 ? $enrollData[$i]->enrollStatusDescription : _M('DISPONÍVEL', $module);
+            $row[] = $busEnroll->getGroupProfessors($enrollData[$i]->groupId);
+
+            $curricularComponent = new MText('txtCurricularComponent', $curricularComponent);
+            $data = $this->exibirDataDaDisciplina($enrollConfig->scheduleDisplayModeExternal, $enrollData[$i]);
+            $professor = $busEnroll->getGroupProfessors($enrollData[$i]->groupId);
+
+            $vagas = $enrollData[$i]->totalEnrolled . '/' . $enrollData[$i]->vacant;
+
+            $busCurricularComponent = new BusinessAcademicBusCurricularComponent();
+            $dataCurricularComponent = $busCurricularComponent->getCurricularComponent($enrollData[$i]->curriculumCurricularComponentId, $enrollData[$i]->curriculumCurricularComponentVersion);
+            
+            $numberHourCondition = null;
+            
+            if ( strlen($enrollData[$i]->numberHourCondition) > 0 )
+            {
+                $numberHourCondition = "/ <b><font color='red'>" . $enrollData[$i]->numberHourCondition . " HORAS REQUERIDAS</font></b>";
+            }
+            
+            $horasCredito = $dataCurricularComponent->academicNumberHours . ' Horas / ' . $dataCurricularComponent->academicCredits . ' Créditos ' . $numberHourCondition;
+
+            if(!$onlyDates)
+            {
+                if ( $enrollData[$i]->semester != $semester )
+                {
+                    $semester = $enrollData[$i]->semester;
+                    $fields[] = $divSemestre = new MDiv('divSemestre', _M('Semestre ') . SAGU::numberToRoman($semester), 'm-box-title');
+                    $divSemestre->addStyle('width', '98%');
+                }
+            }
+
+            $fields[] = $this->gradeDisciplina($curricularComponent, $data, $professor, $actions, $vagas, $horasCredito, $enrollData[$i]->curriculumCurricularComponentId, $enrollData[$i]->groupId, $onlyDates, $imageCheck, $enable);
+        }
+
+        return $fields;
+    }
+
+    /**
+     * Gera a grade da disciplina dentro da estrutura da tabela principal das disciplinas
+     *
+     * @param type $curricularComponent
+     * @param type $data
+     * @param type $professor
+     * @param type $actions
+     * @param type $vagas
+     * @param type $horasCredito
+     * @param type $curricularComponentId
+     * @param type $groupId
+     * @param type $onlyDates
+     * @param type $imageCheck
+     * @param type $enable
+     * @return Mdiv 
+     */
+    public function gradeDisciplina($curricularComponent, $data, $professor, $actions, $vagas, $horasCredito, $curricularComponentId, $groupId, $onlyDates, $imageCheck, $enable=true)
+    {   
+        $MIOLO = MIOLO::getInstance();
+
+        if(!$professor[0][0])
+        {
+            $professor = _M('PROFESSOR NÃO DEFINIDO');
+        }
+        
+        $curricularComponent->addAttribute('style', 'font-weight: bold; text-align: left;');
+        
+        $row1[] = '<div style="float:left;">'.$curricularComponent->generate().'&nbsp;</div>';
+        $row1[] = '<div style="float:left;">'.$horasCredito.'&nbsp;</div>';
+
+        //exibe a checkbox com a acao para selecionar a disciplina ou 
+        //a imagem com a disciplina marcada caso esteja no ultimo passo
+        if($imageCheck)
+        {
+            //adiciona as acoes para o caso dpo regime seriado
+            $divAction = new MDiv('',$actions);
+            $divAction->addBoxStyle('display', 'none');
+            
+            $row2[] = '<img src="'.$MIOLO->getUI()->getImageTheme('smodern', 'botao_aplicar.png').'">'.$divAction->generate();
+        }
+        else
+        {
+            $row2[] = $actions;
+        }
+       
+        $row2[] = $data;
+        $row2[] = $vagas.' Vagas';
+        $row2[] = $professor;
+
+        //imagem para exibir informacoes da disciplina
+        $info = new MImageLink('informacoes', _M('Informações'), SForm::getAjaxAction('infoDisciplina', 'divResponse', false, array('curricularComponentId'=>$curricularComponentId,'groupId'=>$groupId),true,false), $MIOLO->getUI()->getImageTheme('smodern', 'button_add.png'));
+        $row2[] = $info->generate();
+
+        //se nao for para exibir somente a data da disciplina e a acao de selecionar, 
+        //exibe tambem o nome da disciplina. Este caso e utilizado na disciplina eletiva.
+        if(!$onlyDates)
+        {
+            $dataTable[] = $row1;
+        }
+        
+        $dataTable[] = $row2;
+
+        $table = new MTableRaw('', $dataTable, null);
+
+        //faz a formatacao das celulas na estrutura da tabela
+        if(!$onlyDates)
+        {
+            $table->setCell(0, 0, null, 'colspan="3"');
+            $table->setCell(0, 1, null, 'colspan="2"'); 
+            $c = 1;
+        }
+        else
+        {
+            $c = 0;
+        }
+        
+        //tamanhos
+        $table->setCell($c, 0, null, 'width="25"');
+        $table->setCell($c, 1, null, 'width="200"');
+        $table->setCell($c, 2, null, 'width="250"');
+        $table->setCell($c, 4, null, 'width="150" align="right"');
+
+        $dvT = new Mdiv('div'.$groupId.'Box', $table);
+        
+        //faz a formatacao das celulas na estrutura da tabela
+        if(!$onlyDates)
+        {
+            $dvT->addStyle('width', '98%');
+        }
+        else
+        {
+            $dvT->addStyle('width', '100%');
+        }
+        
+        $dvT->addStyle('clear', 'both');
+        
+        //desabilita a disciplina
+        if(!$enable)
+        {
+            $dvT->addBoxStyle('opacity', '0.6');
+        }
+
+        return $dvT;
+    }
+    
+    /**
+     * Retorna a data e horario da disciplina conforme a configuracao da matricula.
+     *
+     * @param type $tipo
+     * @param type $enrollData
+     * @return MText 
+     */
+    public function exibirDataDaDisciplina($tipo, $enrollData)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $busEnroll = new BusinessAcademicBusEnroll();
+
+        if ( $tipo == 'D' ) //mostra todas as datas
+        {
+            $field = new MTableRaw(null, $busEnroll->getScheduleOccurrenceDatesByBeginAndEndHour($enrollData->groupId), null);
+        }
+        elseif ( $tipo == 'W' ) // somente os dias da semana
+        {
+            $datahora = $busEnroll->getScheduleBeginAndEndHoursByWeekDayForEnrollWeb($enrollData->groupId);
+
+            foreach($datahora as $d)
+            {
+                $horarios[] = $d;
+            }
+
+            $horarios = implode('',$horarios);
+
+            //Caso nao venham horarios, vamos dizer para o usuario isso
+            if ( is_null($horarios) )
+            {
+                $horarios = _M("Horário não definido.");
+            }
+            
+            $field = new MText('txtStartEndDate', $horarios);
+            $field->addAttribute('style', 'text-align: left;');
+        }
+        elseif ( $tipo == 'B' ) //mostra a data inicial e final da disciplina
+        {
+            $field = new MText('txtStartEndDate', $enrollData->startDate . ' - ' . $enrollData->endDate);
+            $field->addAttribute('style', 'text-align: left;');
+        }
+        else
+        {
+            throw new Exception(_M('Modo de exibição de horário não reconhecido (@1). Verifique a configuração de matrícula.', $module, $tipo));
+        }
+
+        return $field;
+    }
+    
+    /**
+     * Gera a estrutura das disciplinas eletivas
+     *
+     * @param type $args
+     * @return MDiv 
+     */
+    public function disciplinasEletivas($args=null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $acdEnroll = new AcdEnroll();
+        $fields[] = $divTitulo = new MDiv('divTitulo', _M('Disciplinas eletivas'), 'm-box-title');
+        $i = 1;
+        $grupo = null;
+        $selectedGroups = $this->getAllSelectedGroups($args);
+                
+        $confEnroll = $this->obterConfiguracoes();
+        $showOtherClassesGroups = ($confEnroll->showOtherClassesGroupsExternal == DB_TRUE) ? true : false;
+        
+        $disciplinasEletivas = $this->listaDisciplinasEletivas();
+        
+        foreach ($disciplinasEletivas as $groupId=>$eletivas)
+        {
+            $options = null;
+            $fieldsDiv = null;
+            $divResponseName = 'divEletivaHorarios'.$i;
+            $eletivasAtivas = false;
+            $enrollData2 = array();
+            
+            unset($groupId,$curriculumId,$curricularComponentId,$value);
+
+            foreach ($eletivas as $k=>$eletiva)
+            {
+                if( count($selectedGroups) > 0 )
+                {
+                    if ( !empty($eletiva->enrollId) )
+                    {
+                        $groupId = $selectedGroups[$eletiva->groupId];
+                        $curriculumId = $eletiva->curriculumId;
+                        $curricularComponentId = $eletiva->curricularComponentId;
+                        $value = $eletiva->curricularComponentId;
+                    }
+                }
+
+                $options[$eletiva->curricularComponentId] = $eletiva->name;
+                $grupo = $eletiva->grupo;
+                $curriculumId = $eletiva->curriculumId; 
+
+                $eletivasAtivas = true;
+            }
+
+            if($eletivasAtivas)
+            {
+                
+                $select = new MSelection('eletiva'.$i, $value, '<b><span style="color: #000000;">'.$grupo.'</span></b>', $options);
+                
+                
+                $ajax[0] = array( 'selecionarEletiva', $divResponseName, false, array('eletiva'=>$i, 'groupId'=>$groupId, 'curriculumId'=>$curriculumId) );
+                
+                
+                $select->addAttribute('onchange', SForm::getMultipleAjaxAction($ajax));
+                                
+                $fieldsDiv[] = $select;
+
+                $div = '';
+
+                if($value)
+                {                    
+                    $enrollDataEletiva = $this->obterDisciplina($curricularComponentId, null, false);
+
+                    if($enrollDataEletiva)
+                    {
+                        unset($enrollDataNew);
+                        
+                        //Mudando o chaveamento do array $enrollData, pois o retorno da obterDisciplina mudou
+                        $j = 0;
+                        foreach ( $enrollDataEletiva as $key => $enroll )
+                        {
+                            $enrollDataEletiva[$key]->curriculumId = $curriculumId;
+                            $enrollDataNew[$j] = $enrollDataEletiva[$key];
+                            $j++;
+                        }
+
+                        $div = $this->generateTable($enrollDataNew, '', 'group', true, false, null, null, true);
+                    }   
+                }
+                
+                $fieldsDiv[] = new Mdiv($divResponseName,$div);
+
+                $dataTable[0][0] = SAGU::alignFields($fieldsDiv);
+
+                $table = new MTableRaw('', $dataTable, null);
+                $table->setCell(0, 0, null, 'colspan="3"');
+
+                $fields[] = new MDiv('divEletiva'.$i,$table);
+
+                $i++;
+            }
+        }
+        
+        $dvT = new MDiv('divDisciplinasEletivas', $fields);
+        $dvT->addStyle('width', '98%');
+        $dvT->addStyle('clear', 'both');
+        
+        return $dvT;
+    }
+    
+    public function salvarConsuta($registro, $data)
+    {
+        $_REQUEST[$registro] = base64_encode(serialize($data));
+    }
+
+    public function obterConsulta($registro)
+    {
+        if($_REQUEST[$registro])
+        {
+            return $data = unserialize(base64_decode($_REQUEST[$registro]));
+        }
+        return false;
+    }
+    
+    public static function limparConsulta()
+    {
+        $_REQUEST[self::CONSULTA_CONFIGURACAO] = null;
+        $_REQUEST[self::CONSULTA_DISCIPLINAS] = null;
+        $_REQUEST[self::CONSULTA_DISCIPLINAS_ELETIVAS] = null;
+        $_REQUEST[self::CONSULTA_DISCIPLINAS_PENDENTES] = null;
+    }
+}
+?>

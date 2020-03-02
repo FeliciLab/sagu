@@ -1,0 +1,146 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ *
+ * This file has general queries related to finance processes.
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ *
+ * @since
+ * Class created on 21/10/2005
+ *
+ **/
+
+/**
+ * Class to provide general queries that may be useful to many modules
+ **/
+class BusinessFinanceBusGeneralQueries extends sBusiness
+{
+    /**
+     * Obtain the debt pertaining to a specific defaulter
+     *
+     * @param: contractId: Contract for a person to analyse the debts
+     *         futureDebts (boolean) default false: Check for future debts (open invoices whith future debts)
+     *
+     * @returns (float): Return the debt value
+     *
+     **/
+    public function getDefaulterDebt($contractId, $futureDebts = true)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        /*
+         * SAGU::getParameter('FINANCE', 'DEFAULT_QUERY_RULE') is a constant defined under basConfig
+         * to determine if the defaulter debt will be calculated using
+         * the person's contract or using the person id
+         */
+        if ( SAGU::getParameter('FINANCE', 'DEFAULT_QUERY_RULE') == 'PERSON' )
+        {
+            /*
+             * This select calculates the debt summing all entries from all contracts of a person, considering
+             * the debt pertains to a person, not to a specific contract
+             */
+            $sql = "SELECT COALESCE(SUM(ROUND(C.value, getParameter('BASIC', 'REAL_ROUND_VALUE')::INT) * CASE WHEN D.operationTypeId = 'C' THEN -1 ELSE 1 END),0.0) AS debt
+                      FROM acdContract A,
+                      ONLY finReceivableInvoice B,
+                           finEntry C,
+                           finOperation D
+                     WHERE B.isCanceled = '" . DB_FALSE . "'
+                       AND B.invoiceIdDependence IS NULL
+                       AND A.contractId = ?
+                       AND B.personId = A.personId
+                       AND C.invoiceId = B.invoiceId
+                       AND D.operationId = C.operationId";
+
+             if ( $futureDebts == false )
+             {
+                $sql.= " AND B.maturityDate < (now() - (getparameter('FINANCE', 'DIAS_PARA_BLOQUEIO_POR_VENCIMENTO_MATRICULA')::varchar || ' days ')::interval)::date ";
+             }
+        }
+        else
+        {
+            /*
+             * This select calculates the debt summing all entries from a specific contract only, meaning the debt
+             * pertains to the contract only. In this case, a pupil may enroll even if he has some debt on another
+             * contract.88
+             */
+            $sql = "SELECT COALESCE(SUM(C.value * CASE WHEN D.operationTypeId = 'C' THEN -1 ELSE 1 END),0.0) AS debt
+                      FROM acdContract A,
+                      ONLY finReceivableInvoice B,
+                           finEntry C,
+                           finOperation D
+                     WHERE B.isCanceled = '" . DB_FALSE . "'
+                       AND B.invoiceIdDependence IS NULL
+                       AND A.contractId = ?
+                       AND B.personId = A.personId
+                       AND B.courseId = A.courseId
+                       AND B.courseVersion = A.courseVersion
+                       AND C.invoiceId = B.invoiceId
+                       AND D.operationId = C.operationId";
+
+            if ( $futureDebts == false )
+            {
+                $sql.= " AND B.maturityDate < (now() - (getparameter('FINANCE', 'DIAS_PARA_BLOQUEIO_POR_VENCIMENTO_MATRICULA')::varchar || ' days ')::interval)::date ";
+            }
+        }
+
+        $db = $this->getDatabase();
+        $result = $db->query(SAGU::prepare($sql, $contractId));
+        $debt = $result[0][0];
+        
+        // Soma tambem valores da Negociacao, caso pref. estiver habilitada
+        $negotiation = 0;
+        if ( SAGU::getParameter('ACADEMIC', 'BLOCK_ENROLL_WITH_NEGOTIATION') == DB_TRUE )
+        {
+            $sql = "SELECT COALESCE(SUM(C.value), 0.0) AS debt
+                      FROM acdContract A,
+                      ONLY finReceivableInvoice B,
+                           finEntry C,
+                           finOperation D,
+                           fin.negotiationgeneratedentries NGE
+                     WHERE B.isCanceled IS FALSE
+                       AND B.invoiceIdDependence IS NULL
+                       AND A.contractId = ?
+                       AND B.personId = A.personId
+                       AND C.invoiceId = B.invoiceId
+                       AND D.operationId = C.operationId
+                       AND NGE.entryId = C.entryId
+                       AND BALANCE(B.invoiceId) > 0";
+            
+            $result = $db->query(SAGU::prepare($sql, $contractId));
+            $negotiation = $result[0][0];
+        }
+        
+        $debt = SAGU::calcNumber("{$debt} + {$negotiation}");
+
+        return $debt;
+    }
+}
+?>

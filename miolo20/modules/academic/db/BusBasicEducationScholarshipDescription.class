@@ -1,0 +1,391 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * This class contains methods to get, search and list data from the
+ * tables used by the basic education scholarship description report.
+ *
+ * @author William Prigol Lopes [william@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ *
+ * @since
+ * This class was created 19/11/2008
+ *
+ **/
+
+class BusinessAcademicBusBasicEducationScholarshipDescription extends sBusiness
+{
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $personId
+     * @return unknown
+     */
+    public function getPhysicalPersonData($personId)
+    {
+        $sql = 'SELECT A.personId,
+                       A.name,
+                       TO_CHAR(A.dateBirth,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       A.cityIdBirth,
+                       B.name,
+                       (SELECT name FROM basState WHERE basState.stateId = B.stateId),
+                       C.nationality
+                  FROM ONLY basPhysicalPerson A
+             LEFT JOIN basCity B
+                    ON (B.cityId = A.cityIdBirth)
+             LEFT JOIN basCountry C
+                    ON (C.countryId = B.countryId)
+                 WHERE A.personId = ?';
+        
+        $args = array( $personId );
+        
+        $result = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+        
+        list( $personData->personId, $personData->personName, $personData->dateBirth, $personData->cityIdBirth, $personData->cityNameBirth, $personData->stateDescription, $personData->nationality ) = $result[0];
+        
+        return $personData;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $contractId
+     * @return unknown
+     */
+    public function getEnrollData($contractId)
+    {
+        
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $busEnroll = new BusinessAcademicBusEnroll();
+        
+        // Get all related contracts and her contract
+        $contractId = implode( ',', $busEnroll->getRelatedContracts( $contractId ) );
+        
+        $sql = ' SELECT unit_acdContract.courseId,
+                        formationLevelId 
+                   FROM unit_acdContract
+             INNER JOIN acdCourse
+                      ON (acdContract.courseId = acdCourse.courseId)
+                  WHERE contractid IN (' . $contractId . ')
+                    AND formationLevelId IN (' . SAGU::getParameter('ACADEMIC', 'BASIC_AND_MIDDLE_LEVEL_FORMATION') . ')';
+        
+        $args = array( $contractId );
+        $contractData = $this->getDatabase()->query( $sql );
+        
+        // Get the default institution information
+        $businessCompany = new BusinessBasicBusLegalPerson();
+        $legalPerson = $businessCompany->getLegalPerson( SAGU::getParameter('BASIC', 'DEFAULT_COMPANY_CONF') );
+
+        $lb = "\<text:line-break/\>";
+        //
+        // In second time, we get the curriculum for the course
+        //
+        $sql1 = ' SELECT semester, 
+                         C.curricularcomponentid,
+                         name,
+                         C.curriculumid,
+                         CC.academicnumberhours
+                    FROM unit_acdcurriculum C
+              INNER JOIN acdCurricularComponent CC
+                      ON ( C.curricularcomponentid = CC.curricularcomponentid ) 
+                   WHERE courseid IN (?)
+                GROUP BY 1,2,3,4,5
+                ORDER BY 1,2 ';
+
+        $args = array( $contractData[0][0] );
+        $curricularComponentData = $this->getDatabase()->query( SAGU::prepare( $sql1, $args ) );
+        
+        $sql2 = ' SELECT max(semester)
+                         FROM unit_acdcurriculum
+                   WHERE courseId = ? ';
+        
+        $maxSemester = $this->getDatabase()->query( SAGU::prepare( $sql2, $args ) );
+        $maxSemester = $maxSemester[0][0];
+        
+        // Reorganizar o currículo ordenando os semestres na horizontal
+        foreach ( $curricularComponentData as $ccd )
+        {
+            if ( $oldccd != $ccd[2] )
+            {
+                $oldccd = $ccd[2];
+                if ( ! is_array( $ccData[$ccd[2]] ) )
+                {
+                    $ccData[$ccd[2]][0] = $ccd[2];
+                    for ( $x = 1; $x < $maxSemester; $x ++ )
+                    {
+                        $ccData[$ccd[2]][$x] = SAGU::getParameter('ACADEMIC', 'NOT_COURSED_IDENTIFICATION_FOR_BASIC_EDUCATION_SCOLARSHIP_DESCRIPTION') ? SAGU::getParameter('ACADEMIC', 'NOT_COURSED_IDENTIFICATION_FOR_BASIC_EDUCATION_SCOLARSHIP_DESCRIPTION') : ' ';
+                    }
+                }
+            }
+
+            // Obter as notas das disciplinas aprovadas
+            $sql3 = 'SELECT unit_acdEnroll.curriculumId, 
+                            ( CASE WHEN unit_acdGroup.useConcept = TRUE 
+                                   THEN 
+                                        acdDegreeEnroll.concept::varchar 
+                                   WHEN unit_acdGroup.evaluationByFrequency = TRUE 
+                                   THEN 
+                                        unit_acdEnroll.frequency::varchar      
+                                   ELSE 
+                                        ROUND(acdDegreeEnroll.note::numeric, ' . SAGU::getParameter('BASIC', 'GRADE_ROUND_VALUE') . ')::varchar 
+                              END ),
+                            ( CASE WHEN statusId IN (' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPR_OR_EXC') . ')
+                                   THEN 
+                                        0
+                                   ELSE 
+                                        1
+                              END )
+                       FROM unit_acdEnroll 
+                 INNER JOIN unit_acdGroup 
+                         ON (acdenroll.groupid = unit_acdgroup.groupid) 
+                 INNER JOIN acdDegreeEnroll 
+                         ON (acdDegreeEnroll.enrollId = unit_acdEnroll.enrollId) 
+                 INNER JOIN acdDegree 
+                         ON (acdDegreeEnroll.degreeId=acdDegree.degreeId) 
+                      WHERE unit_acdenroll.curriculumid = ? 
+                        AND contractid IN (' . $contractId . ')
+                        AND datecancellation IS NULL 
+                        AND parentDegreeId IS NULL
+                  UNION ALL 
+                     SELECT curriculumId,
+                            note,
+                            0
+                       FROM acdComplementaryEnroll
+                      WHERE curriculumId = ?
+                        AND contractId IN (' . $contractId . ')
+                   ORDER BY 3 ';
+            
+            $args = array( $ccd[3], $ccd[3] );
+            $result = $this->getDatabase()->query( SAGU::prepare( $sql3, $args ) );
+            
+            if ( is_array( $result[0] ) )
+            {
+                $ccData[$ccd[2]][$ccd[0]] = $result[0][1];
+                $ccTotalHours[$ccd[0]][] = $ccd[4];
+            }
+        }
+        
+        // Calculate total hours baseed on curricular components
+        for($x = 1; $x <= $maxSemester; $x ++)
+        {
+            if (is_array( $ccTotalHours[$x] ))
+            {
+                $ccTotalHours[$x] = SAGU::calcNumber( implode( ' + ', $ccTotalHours[$x] ) );
+            } else
+            {
+                $ccTotalHours[$x] = SAGU::getParameter('ACADEMIC', 'NOT_COURSED_IDENTIFICATION_FOR_BASIC_EDUCATION_SCOLARSHIP_DESCRIPTION') ? SAGU::getParameter('ACADEMIC', 'NOT_COURSED_IDENTIFICATION_FOR_BASIC_EDUCATION_SCOLARSHIP_DESCRIPTION') : ' ';
+            }
+        }
+        
+        $sql4 = ' SELECT DISTINCT C.semester, 
+                                  ( SELECT extract( year FROM beginDate ) 
+                                      FROM unit_acdlearningperiod L
+                                     WHERE L.learningperiodid = G.learningperiodid )::VARCHAR, 
+                                  \'default_institution\',
+                                  \'default_city\',
+                                  \'default_state\'
+                             FROM unit_acdEnroll E 
+                       INNER JOIN unit_acdcurriculum C
+                               ON ( E.curriculumid = C.curriculumid ) 
+                       INNER JOIN unit_acdGroup G
+                               ON ( E.groupid = G.groupid ) 
+                            WHERE E.contractid IN (' . $contractId . ')
+                              AND E.datecancellation IS NULL
+                              AND E.statusid in (' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPR_OR_EXC') . ') 
+                        UNION ALL
+                  SELECT DISTINCT semester, 
+                                  period, 
+                                  basLegalPerson.name, 
+                                  basCity.name, 
+                                  basCity.stateId
+                             FROM acdcomplementaryenroll CE
+                       INNER JOIN unit_acdcurriculum CR
+                               ON ( CE.curriculumid = CR.curriculumid ) 
+                  INNER JOIN ONLY baslegalperson LP
+                               ON ( CE.institutionid = LP.personid) 
+                       INNER JOIN bascity CY
+                               ON ( LP.cityid = CY.cityid)  
+                            WHERE CE.contractid IN (' . $contractId . ')
+                              AND CE.enrollstatusid in (' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPR_OR_EXC') . ') ';
+        
+        // TODO: Modify the ER structure to indicate the company information related to learning period  
+        $args = array( $contractId, $contractId );
+        $studyLocations = $this->getDatabase()->query( $sql4 );
+        
+        if ( is_array( $studyLocations[0] ) )
+        {
+            
+            foreach ( $studyLocations as $sL )
+            {
+                $series[] = $sL[0];
+                $years[] = $sL[1];
+                $colleges[] = ($sL[2] == 'default_institution') ? $legalPerson->name : $sL[2];
+                $cities[] = ($sL[3] == 'default_city') ? $legalPerson->cityName : $sL[3];
+                $states[] = ($sL[4] == 'default_state') ? $legalPerson->stateId : $sL[4];
+            }
+            // Break lines to present on report
+            $studyData->series = implode( $lb, $series );
+            $studyData->years = implode( $lb, $years );
+            $studyData->colleges = implode( $lb, $colleges );
+            $studyData->cities = implode( $lb, $cities );
+            $studyData->states = implode( $lb, $states );
+        
+        }
+        else
+        {
+            // Não existindo registro de horários, colocar valores vazios para evitar aparecer as variáveis no Agata.
+            $studyData->series = ' ';
+            $studyData->years = ' ';
+            $studyData->colleges = ' ';
+            $studyData->cities = ' ';
+            $studyData->states = ' ';
+        }
+        
+        $enrollData->studyData = $studyData;
+        $enrollData->formationLevel = $contractData[0][1];
+        $enrollData->ccData = $ccData;
+        $enrollData->ccTotalHours = $ccTotalHours;
+        $enrollData->companyLocation = $legalPerson->stateName;
+        $enrollData->legalPerson->name = $legalPerson->name;
+        $enrollData->legalPerson->fakeName = $legalPerson->fakeName;
+        $enrollData->legalPerson->zipCode = $legalPerson->zipCode;
+        $enrollData->legalPerson->address = $legalPerson->location . ', ' . $legalPerson->number . ' ' . $legalPerson->complement . ' ' . $legalPerson->neighborhood;
+        $enrollData->legalPerson->phone = $legalPerson->phone;
+        $enrollData->legalPerson->maxSemester = $maxSemester;
+        $enrollData->legalPerson->stateName = $legalPerson->stateName;
+        
+        // Finally, get the disciplines that this contract have disapproved curricular components to show messages
+        $sql5 = ' SELECT value
+                   FROM acdMovementContractComplement
+                  WHERE stateContractId IN (' . SAGU::getParameter('ACADEMIC', 'STATE_CONTRACT_ID_PERIOD_DISAPPROVEMENT') . ')
+                    AND contractId IN (' . $contractId . ') ';
+        
+        $args = array( $contractId );
+        $cresult = $this->getDatabase()->query( $sql5 );
+        
+        if ( is_array( $cresult ) )
+        {
+            foreach ( $cresult as $key => $rdata )
+            {
+                $msg[$key] = _M('Aluno(a) reprovado na @1 série', $module, $rdata[0] );
+            }
+            
+            $msg = implode( $lb, $msg );
+        } 
+        else
+        {
+            $msg = ' ';
+        }
+        $enrollData->msg = $msg;
+        
+        return $enrollData;
+    }
+    
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $contractId
+     * @return unknown
+     */
+    public function relatedContracts($contractId)
+    {
+        
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $busEnroll = new BusinessAcademicBusEnroll();
+        
+        // Get all related contracts and her contract
+        $contractId = implode( ',', $busEnroll->getRelatedContracts( $contractId ) );
+        
+        $sql = ' SELECT unit_acdContract.courseId,
+                        formationLevelId 
+                   FROM unit_acdContract
+             INNER JOIN acdCourse
+                      ON (acdContract.courseId = acdCourse.courseId)
+                  WHERE contractid IN (' . $contractId . ')
+                    AND formationLevelId IN (' . SAGU::getParameter('ACADEMIC', 'BASIC_AND_MIDDLE_LEVEL_FORMATION') . ')';
+        
+        $args = array( $contractId );
+        $contractData = $this->getDatabase()->query( $sql );
+        
+        return $contractData;
+    }
+    
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $contractId
+     * @return unknown
+     */
+    public function checkCurricularComponent($courseId)
+    {
+        $sql1 = 'SELECT semester, 
+                        C.curricularcomponentid,
+                        name,
+                        C.curriculumid,
+                        CC.academicnumberhours
+                   FROM unit_acdcurriculum C
+             INNER JOIN acdCurricularComponent CC
+                     ON ( C.curricularcomponentid = CC.curricularcomponentid ) 
+                  WHERE courseid IN (?)
+               GROUP BY 1,2,3,4,5
+               ORDER BY 1,2 ';
+
+        $args = array( $courseId );
+        $curricularComponentData = $this->getDatabase()->query( SAGU::prepare( $sql1, $args ) );
+        
+        return $curricularComponentData;
+    }
+        
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $contractId
+     * @return unknown
+     */
+    public function checkSemester($courseId)
+    {
+        $sql = ' SELECT max(semester)
+                        FROM unit_acdcurriculum
+                  WHERE courseId = ? ';
+        
+        $args = array( $courseId );
+        $maxSemester = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+        
+        return $maxSemester;
+    }
+
+}
+
+?>

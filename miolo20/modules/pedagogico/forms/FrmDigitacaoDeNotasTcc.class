@@ -1,0 +1,244 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulário do módulo pedagógico
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @since
+ * Class Created on 07/10/2014
+ *
+ **/
+class FrmDigitacaoDeNotasTcc extends SForm
+{
+    
+    public $grid;
+    
+    /**
+     * Class constructor
+     **/
+    public function __construct()
+    {
+        parent::__construct(_M('Digitação de notas do TCC'), new AcpAvaliacao(), array('avaliacaoid') );
+    }
+
+    /**
+     * Default method to define fields
+     **/
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $matriculaid = MIOLO::_REQUEST('matriculaid');
+        $matricula = new AcpMatricula($matriculaid);
+        $url = $MIOLO->GetActionURL($module, 'main:diverseConsultation', '', array('personId' => $matricula->inscricaoturmagrupo->inscricao->personid));
+        
+        //Desabilita ações da grid
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+        $this->toolbar->setButtonUrl('tbBtnClose', $url);
+        
+        $ofertacomponentecurricular = new AcpOfertaComponenteCurricular($matricula->ofertacomponentecurricularid);
+        
+        $tcc = AcpTcc::obterTccDaMatricula($matriculaid);
+        
+        $fields[] = new SHiddenField('tccid', $tcc->tccid);
+        $fields[] = new SHiddenField('matriculaid', $matriculaid);
+        
+        //Informações da disciplina
+        $situacao = AcpMatricula::listarSituacao();
+        $fields[] = new MTextLabel('lblNome', $matricula->_pessoa, _M('Aluno', $module));
+        $fields[] = new MTextLabel('lblDisciplina', $ofertacomponentecurricular->_descritivo, _M('Disciplina', $module));
+        $fields[] = new MTextLabel('lblTurma', $ofertacomponentecurricular->ofertaturma->descricao, _M('Turma', $module));
+        $fields[] = new MTextLabel('lblTurma', $situacao[$matricula->situacao], _M('Situação', $module));
+        
+        $modelodeavaliacao = AcpModeloDeAvaliacao::obterModeloDaOfertaDeComponenteCurricular($matricula->ofertacomponentecurricularid);
+        $componentesdeavaliacao = new AcpComponenteDeAvaliacao();
+        
+        //Cria lista de componentes de avaliação do modelo
+        foreach($componentesdeavaliacao->obterComponentesDeAvaliacaoDoModelo($modelodeavaliacao->modeloDeAvaliacaoId) as $cod=>$componente)
+        {
+            $componentes[$componente->componenteDeAvaliacaoId] = $componente->descricao;
+        }
+        
+        //Cria campo para selecionar o componente de avaliação
+        $fldComponente = new MSelection('componentedeavaliacaoId', NULL, NULL, $componentes, false, '', '', false);
+        $fldComponente->setAutoPostBack(true);
+        $fields[] = new MBaseGroup('bsgComponenteDeAvaliacao', _M('Selecione a NOTA a ser informada'), array($fldComponente));
+        
+        $componentedeavaliacaoid = $this->getFormValue('componentedeavaliacaoId');
+        
+        //Cria grid para preenchimento das notas quando componente for selecionado
+        if( strlen($componentedeavaliacaoid) > 0 )
+        {
+            $avaliadoresBanca = AcpTccBanca::listarBancaDoTcc($tcc->tccid);
+
+            $grid = $MIOLO->getUI()->getGrid($module, 'GrdDigitacaoDeNotasTcc', array('componentedeavaliacaoid' => $componentedeavaliacaoid, 'modelodeavaliacaoid' => $modelodeavaliacao->modeloDeAvaliacaoId, 'matriculaid' => MIOLO::_REQUEST('matriculaid')));
+            $grid instanceof SGrid;
+            $grid->setData($avaliadoresBanca);
+            $grid->disablePagination();
+            $grid->disableColumnSorting();
+            $this->grid = $grid;
+            $fields[] = new MDiv(rand(), $grid);
+            
+            //Cria campo conceito final caso o modelo de avaliação for por conceito e o componente selecionado for FINAL
+            if( $modelodeavaliacao->tipoDeDados == AcpModeloDeAvaliacao::TIPO_CONCEITO )
+            {
+                $componentedeavaliacao = new AcpComponenteDeAvaliacao($componentedeavaliacaoid);
+                if( $componentedeavaliacao->classeDeComponente == AcpComponenteDeAvaliacao::CLASSE_FINAL )
+                {
+                    $type = new AcpAvaliacao();
+                    $msql = $type->msql();            
+                    $msql->setWhere('AcpAvaliacao.matriculaid = ? AND AcpAvaliacao.componentedeavaliacaoid = ? AND AcpAvaliacao.tccbancaid IS NULL', array($matriculaid, $componentedeavaliacaoid));
+                    $avaliacao = $type->findOne($msql);
+
+                    $componenteConceito = AcpComponenteDeAvaliacaoConceito::obterComponenteConceitoDoComponente($componentedeavaliacao->componenteDeAvaliacaoId);
+                    $conceitos = AcpConceitosDeAvaliacao::listarConceitosDoConjunto($componenteConceito->conjuntoDeConceitosId);
+                    $fields[] = new MSelection('conceitoFinalId', $avaliacao->conceitodeavaliacaoid, _M('Conceito FINAL', $module), $conceitos);
+                    $validators[] = new MRequiredValidator('conceitoFinalId', _M('Conceito FINAL', $module));
+                }
+            }
+        }
+        
+        $fields[] = new MDiv('divValidacao');
+        
+        $fields[] = new MSeparator();
+        
+        $fields[] = new MHContainer('divBtn', array(new MButton('btnVoltar', _M('Voltar', $module), $url)));
+        
+        parent::defineFields(array('fields' => $fields, 'validators' => $validators));
+    }
+    
+    /**
+     * Event triggered when user chooses Save from the toolbar
+     */
+    public function tbBtnSave_click($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+                
+        $matriculaid = MIOLO::_REQUEST('matriculaid');
+        $componentedeavaliacaoid = MIOLO::_REQUEST('componentedeavaliacaoId');
+        $tccid = MIOLO::_REQUEST('tccid');
+        
+        try
+        {
+            SDatabase::beginTransaction();
+
+            $avaliadoresBanca = AcpTccBanca::listarBancaDoTcc($tccid);
+
+            foreach($avaliadoresBanca as $cod=>$banca)
+            {
+                unset($avaliacao);
+                $avaliacao = AcpAvaliacao::obterAvaliacao($matriculaid, $componentedeavaliacaoid, $tccid);
+                if( !$avaliacao )
+                {
+                    $avaliacao = new AcpAvaliacao();
+                }
+                $avaliacao->matriculaid = $matriculaid;
+                $avaliacao->componentedeavaliacaoid = $componentedeavaliacaoid;
+                $avaliacao->tccbancaid = $banca['acptccbanca.tccbancaid'];
+                $avaliacao->nota = MIOLO::_REQUEST('nota_'.$banca['acptccbanca.tccbancaid']);
+                $avaliacao->conceitodeavaliacaoid = MIOLO::_REQUEST('conceito_'.$banca['acptccbanca.tccbancaid']);
+                $avaliacao->parecer = MIOLO::_REQUEST('parecer_'.$banca['acptccbanca.tccbancaid']);
+                $avaliacao->datalancamento = SAGU::getDateNow();
+                $avaliacao->save();
+            }
+            
+            $componentedeavaliacao = new AcpComponenteDeAvaliacao($componentedeavaliacaoid);
+            $modelodeavaliacao = new AcpModeloDeAvaliacao($componentedeavaliacao->modeloDeAvaliacaoId);
+            
+            //Caso for CONCEITO e o componente for FINAL insere o CONCEITO FINAL
+            if( $modelodeavaliacao->tipoDeDados == AcpModeloDeAvaliacao::TIPO_CONCEITO )
+            {
+                if( $componentedeavaliacao->classeDeComponente == AcpComponenteDeAvaliacao::CLASSE_FINAL )
+                {
+                    unset($avaliacao);
+
+                    $type = new AcpAvaliacao();
+                    $msql = $type->msql();
+                    $msql->setWhere('AcpAvaliacao.matriculaid = ? AND AcpAvaliacao.componentedeavaliacaoid = ? AND AcpAvaliacao.tccbancaid IS NULL', array($matriculaid, $componentedeavaliacaoid));
+                    $avaliacao = $type->findOne($msql);
+                    
+                    if( !$avaliacao )
+                    {
+                        $avaliacao = new AcpAvaliacao();
+                    }
+
+                    $avaliacao->matriculaid = $matriculaid;
+                    $avaliacao->componentedeavaliacaoid = $componentedeavaliacaoid;
+                    $avaliacao->conceitodeavaliacaoid = MIOLO::_REQUEST('conceitoFinalId');
+                    $avaliacao->datalancamento = SAGU::getDateNow();
+                    $avaliacao->tccbancaid = SType::NULL_VALUE; //Salva a nota final sem codígo da banca, definindo como conceito final
+                    
+                    $avaliacao->save();
+                }
+            }
+
+            SDatabase::commit();
+            $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL( $module, $action, null, array('matriculaid' => MIOLO::_REQUEST('matriculaid')));
+            $this->messageSuccess(_M('Informações registradas com sucesso!'), $goto);
+        }
+        catch (Exception $e)
+        {
+            SDatabase::rollback();
+            $this->messageError(_M('Ops... Houve algum erro ao salvar... É possível que algum registro desmarcado tenha dependência em algum lugar do sistema.'), $MIOLO->getCurrentURL());
+        }
+    }
+    
+    /**
+     * Valida o conteúdo do campo nota
+     * @param type $args
+     */
+    public function validaNota($args)
+    {
+        $module = MIOLO::getCurrentModule();
+        
+        $cod = $args->cod;
+        $tccbancaid = $args->tccbancaid;
+        $id = 'nota_'.$tccbancaid;
+        $valor = $args->$id;
+        
+        $componenteDeAvaliacaoNotaId = $args->componenteDeAvaliacaoNotaId;
+        $componenteDeAvaliacaoNota = new AcpComponenteDeAvaliacaoNota($componenteDeAvaliacaoNotaId);
+        
+        $valorMaximo = $componenteDeAvaliacaoNota->valorMaximo;
+        $valorMinimo = $componenteDeAvaliacaoNota->valorMinimo;
+        
+        if( strlen($valor) > 0 )
+        {
+            if( $valor > $valorMaximo || $valor < $valorMinimo || !is_numeric(trim($valor)) )
+            {
+                $this->page->addAJAXJsCode("document.getElementById('$id').value = '';");
+                $this->addError(_M('A nota deve estar entre @1 e @2.', $module, $valorMinimo, $valorMaximo), '');
+            }
+        }
+    }
+}
+?>

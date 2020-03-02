@@ -1,0 +1,601 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Time sheet form
+ *
+ * @author Andre Chagas Dias [andre@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 13/10/2008
+ */
+
+MIOLO::Import('extensions::cpaint.inc.php','cpaint');
+
+/**
+ * Form to manipulate a curriculum
+ **/
+class FrmTimeSheet extends MForm
+{
+    public $action, $tables, $divCounter;
+
+    /**
+     * Class constructor
+     */
+    public function __construct()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+
+        parent::__construct(_M('Definição da grade de horários', $module));
+
+        if ( ($f = $this->page->request('cpaint_function')) != '' )
+        {
+            $this->manager->getTheme()->clearContent();
+            $this->$f($this->page->request('cpaint_argument'));
+            $this->page->generateMethod = 'generateAjax';
+        }
+        else
+        {
+            $this->defineFields();
+            $this->eventHandler();
+        }
+        // Ajax calls
+        $this->page->addScript('cpaint/cpaint.inc.js');
+        $this->page->addScript(SAGU::ABSOLUTE_URL_JS_FILES . 'sagu.js');
+        $this->page->addScript('m_validate.js');
+        $this->page->onLoad('document.' . $this->name . '.description.focus();');
+        $this->setHelp(get_class($this), SAGU::getFileModule(__FILE__), MIOLO::getCurrentAction());
+    }
+
+    /**
+     * Default method to define fields
+     **/
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+
+        //Business
+        $businessTimeSheet = new BusinessAcademicBusTimeSheet();
+
+        $fields[] = $this->showToolbars();                
+
+        //fields of the time sheet
+
+        if ( in_array($function, array('update', 'delete')) )
+        {
+            $timeSheetId = $_GET['timeSheetId'] ? $_GET['timeSheetId'] : $_POST['timeSheetId'];
+            $fields[] = new MTextLabel('timeSheetId', $timeSheetId, _M('Código', $module));
+            $fields[] = new MHiddenField('timeSheetId', $timeSheetId);
+            $business = new BusinessAcademicBusTimeSheet();
+            $data = $business->getTimeSheet($timeSheetId);
+        }
+
+        $description = new MTextField('description', $this->getFormValue('description', $data->description), _M('Descrição', $module), SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $description->setJsHint(_M('Informe a descrição da grade de horários', $module));
+        $fields[] = $description;
+        $validators[] = new MRequiredValidator('description');
+
+        $beginDate = new MCalendarField('beginDate', $this->getFormValue('beginDate', $data->beginDate), _M('Data inicial', $module), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+        $beginDate->setJsHint(_M('Informe a data inicial',$module));
+        $fields[] = $beginDate;
+        $beginDate->setValidator( new MDATEDMYValidator('beginDate', _M('Data inicial', $module), 'required'));
+
+        if ( in_array($function,array('update','delete')) )
+        {
+            $endDate = new MCalendarField('endDate', $this->getFormValue('endDate', $data->endDate), _M('Data final',$module), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+            $endDate->setJsHint(_M('Informe a data final',$module));
+            $endDate->setValidator( new MDATEDMYValidator('endDate', _M('Data final', $module), 'optional') );
+            $fields[] = $endDate;
+        }
+
+        $fields[] = new MSeparator('');
+
+        if ( $function == 'update' && (strlen($data->timeSheetId) > 0) )
+        {
+                $url = str_replace('&amp;', '&',$this->manager->getCurrentURL());
+                $MIOLO->getRequiredJS4Ajax(); 
+                $fields[] = new MTextLabel('lastModification', '[' . $data->userName . ' - ' . $data->dateTime . ']', _M('Última modificação',$module));
+                $fields[] = new Separator('');
+
+                //Button Time to add a feature called ajax with the fields of time
+                $fields[] = new MButton('btnViewTimes', _M('Visualizar horários',$module), 'javascript:tableRawShow(' . $data->timeSheetId .',\'NULL\',\'NULL\',\''. $this->name .'\')');
+
+                $fields[] = new Separator('');
+                $fields[] = new Separator('');
+
+                $fields[] = new MDiv('divTime');
+
+                $jsCode = 'function tableRawShow(timeSheetId,timeId,action,formName)
+                           { 
+                               showLoading();
+                               noAjaxCall = false;
+                               args = new Array();
+                               args[0] = action;
+                               args[1] = timeSheetId;
+
+                               if ( action == "SAVE" )
+                               {
+                                   eval(\'validations = \' + formName + \'_validations;\');
+                                   validate =  MIOLO_Validate_Input(validations);
+
+                                   if(validate)
+                                   {
+                                       args[2] = timeId;
+                                       args[3] = document.getElementById(\'turnId\').value;
+                                       args[4] = document.getElementById(\'beginHour\').value;
+                                       args[5] = document.getElementById(\'endHour\').value;
+                                       args[6] = document.getElementById(\'numberMinutes\').value;
+                                   }
+                                   else
+                                   {
+                                       noAjaxCall = true;
+                                   }
+                                }
+
+                                if ( action == "DELETE" )
+                                {
+                                    var del = confirm("' . SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE') . '");
+
+                                    del ? args[2] = timeId : noAjaxCall = true ;
+                                }
+
+                                if(!noAjaxCall)
+                                {
+                                    xGetElementById("divTime").innerHTML = \'Loading...<img src="/images/loading.gif"/>\';
+                                    cpaint_call("' . $url . '", "POST", "tableRawShow", args, tableResult, "TEXT");
+                                }
+
+                                stopShowLoading();
+                            }
+
+                            function newTime(timeSheetId, timeId, action)
+                            {
+                                showLoading();
+                                args = new Array();
+                                args[0] = action;
+
+                                if ( action == "EDIT" )
+                                {
+                                    args[1] = timeId;
+                                    document.getElementById("divNewTime").style.display = \'block\';
+                                }
+                                if ( action == "NULL" )
+                                {
+                                    if ( document.getElementById("divNewTime").style.display == "" )
+                                    {
+                                        document.getElementById("divNewTime").style.display = \'none\'
+                                    }
+
+                                    expandRetractContainer("divNewTime");
+                                }
+
+                                xGetElementById("divNewTime").innerHTML = \'Loading...<img src = "/images/loading.gif"/>\';
+                                cpaint_call("' . $url . '", "POST", "newTime", args, newTimeResult, "TEXT");
+                                stopShowLoading();
+                            }
+
+                            function newTimeResult(result)
+                            {
+                                xGetElementById("divNewTime").innerHTML = result;
+                                MIOLO_parseAjaxJavascript(result);
+
+                                stopShowLoading();
+                            }
+
+                            function tableResult(result)
+                            {
+                                xGetElementById("'.'divTime' . '").innerHTML = result;
+                                MIOLO_parseAjaxJavascript(result);
+
+                                stopShowLoading();
+                            }';
+                
+                $this->page->addJsCode($jsCode);
+                $fields[] = new Separator('');
+        }
+
+        $this->setFields($fields);
+
+        if ( isset($validators) )
+        {
+            $this->setValidators($validators);
+        }
+
+        $this->setLabelWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $this->setShowPostButton(false);
+        $this->setClose($MIOLO->getActionURL($module,substr($action,0,strrpos($action,':'))));
+    }
+    
+    public function showToolbars()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        
+        $toolBar = new MToolBar('toolBar',$MIOLO->getActionURL($module,$action));
+        $toolBar->disableButton('tbBtnPrint');
+        
+        if ( $function == 'insert' )
+        {
+            $toolBar->disableButton('tbBtnDelete');
+        }
+        elseif ( $function == 'delete' )
+        {
+            $toolBar->disableButton('tbBtnSave');
+        }
+        $toolBar->hideButton('tbBtnReset');
+        $toolBar->hideButton('tbBtnBack');
+        
+        return $toolBar;
+        
+    }
+
+    public function tableRawShow($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $businessTime = new BusinessAcademicBusTimeSheet();
+
+        list ( $timeData->action,
+               $timeData->timeSheetId,
+               $timeData->timeId,
+               $timeData->turnId,
+               $timeData->beginHour,
+               $timeData->endHour,
+               $timeData->numberMinutes ) = explode(',', $args[0]);
+
+        if ( $timeData->action == 'DELETE')
+        {
+            if(strlen($timeData->timeId) > 0 )
+            {
+                try
+                {
+                    $data = $businessTime->deleteTime($timeData->timeId);
+                }
+                catch( Exception $e )
+                {
+                    $fields[] = $this->showToolbars();
+                    $this->manager->getTheme()->setContent($fields);
+                    $MIOLO->error(_M('Horário já está sendo utilizado, impossibilitando a exclusão.'));                    
+                }
+            }
+        }
+
+        if($timeData->action == 'SAVE')
+        {
+            if( strlen($timeData->timeId) > 0 )
+            {
+                $data = $businessTime->updateTime($timeData);
+            }
+            else
+            {
+                $data = $businessTime->insertTime($timeData);
+            }
+        }
+
+        $timeSheetIdCurrent = $timeData->timeSheetId;
+        unset($timeData);
+        $timeData->timeSheetId = $timeSheetIdCurrent;
+
+        $arrayData = $businessTime->searchTime($timeData);
+
+        if ( count($arrayData) > 0 )
+        {
+            foreach ( $arrayData as $v )
+            {
+                $linkEdit = ('javascript:newTime( \'' . $timeData->timeSheetId . '\' ,\'' . $v[0] . '\',\'EDIT\');');
+                $linkImgEdit = new MImageLink("linkEdit", _M('Atualizar', $module), $linkEdit, $MIOLO->getUI()->getImageTheme('smodern', 'button_edit.png') );
+                $linkDrop = ('javascript:tableRawShow(\'' .$timeData->timeSheetId. '\',\'' . $v[0] . '\',\'DELETE\',\'NULL\');');
+                $linkImgDrop = new MImageLink("linkDrop", _M('Excluir', $module), $linkDrop, $MIOLO->getUI()->getImageTheme('smodern', 'button_drop.png') );
+
+                $dataTable[] = array ( array ( $linkImgEdit->generate(),
+                                               $linkImgDrop->generate() ),
+                                       $v[0],
+                                       $v[1], 
+                                       $v[2], 
+                                       $v[3], 
+                                       $v[4] );
+            }
+        }
+
+        $columns = array( _M('Ações',$module),
+                          _M('Código do horário', $module),
+                          _M('Código', $module).'/'._M('Turno', $module),
+                          _M('Hora inicial', $module),
+                          _M('Hora final', $module),
+                          _M('Equivalência em minutos (min.)', $module) );
+
+        $table = new MTableRaw(null, $dataTable, $columns);
+        $table->SetAlternate(true);
+        $table->addStyle('width', '100%');
+        $table->setCellAttribute(0, 0, 'width', '5%');
+        $table->setCellAttribute(0, 1, 'width', '10%');
+        $table->setCellAttribute(0, 3, 'width', '10%');
+        $table->setCellAttribute(0, 4, 'width', '10%');
+        $table->setCellAttribute(0, 5, 'width', '10%');
+
+
+        $btnNewTime = new MButton('btnNewTime', _M('Novo horário', $module), 'javascript:newTime(\'' . $timeData->timeSheetId . ' \' , \'\', \'NULL\');');
+        $fields[] = new MSeparator();
+        $divNewTime = new MDiv('divNewTime', null);
+
+        $bsgTime = new BaseGroup('bsgCurriculumComponent', _M('Horários', $module), array($table, $btnNewTime, $divNewTime), 'vertical');
+        $bsgTime->showLabel = true;
+        $bsgTime->width = '100%';
+        $bsgTime->setClass('inlineTable');
+
+        $fields[] = $bsgTime;
+        
+        $fields[] = $this->showToolbars();
+        $this->manager->getTheme()->setContent($fields);
+
+   }
+
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $args
+     */
+    public function newTime($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $businessTime = new BusinessAcademicBusTimeSheet();
+
+        list ( $timeData->action,
+               $timeData->timeId,
+               $timeData->timeSheetId ) = explode(',', $args[0]);
+
+        $hctTime = new MSeparator('');
+
+        unset($fields);
+
+        if ( $timeData->action == 'EDIT' )
+        {
+            //Field time
+            $data = $businessTime->getTime($timeData->timeId);
+            $timeLabel = new MText('timeLabel', _M('Código do horário', $module).':');
+            $timeLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $timeLabelValue = new MText('timeIdObj', ' <b>' . $data->timeId . '</b>');
+            $timeId = new MHiddenField('timeId', $data->timeId);
+            $hctTime = new MHContainer('hctTime', array($timeLabel,$timeLabelValue,$timeId));
+            $hctTime->setShowLabel(true);
+        }
+        if ( $timeData->action == 'CLEAR')
+        {
+            unset($data);
+        }
+
+        // Turn
+        $turnLabel = new MText('turnLabel', _M('Turno',$module) . ':');
+        $turnLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $turnLabel->setClass('m-caption m-caption-required');
+        $business = new BusinessBasicBusTurn();
+        $turnId = new MComboBox( 'turnId', $this->GetFormValue('turnId',$data->turnId), null, $business->listTurn(), null, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE') );
+        $turnId->setJsHint(_M('Informe o código do turno',$module));
+        $hctTurn = new MHContainer('hctTurn', array($turnLabel, $turnId));
+        $hctTurn->setShowLabel(true);
+        $validators[] = new MIntegerValidator('turnId', _M('Turno',$module), 'required');
+
+        // Begin Hour
+        $beginHourLabel = new MText('beginHourLabel', _M('Hora inicial',$module) . ':');
+        $beginHourLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $beginHourLabel->setClass('m-caption m-caption-required');
+        $beginHour = new MTextField('beginHour', $this->getFormValue('beginHour', $data->beginHour), null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $beginHour->setJsHint(_M('Informe a hora inicial',$module));
+        $hctBeginHour = new MHContainer('hctBeginHour', array($beginHourLabel, $beginHour));
+        $hctBeginHour->setShowLabel(true);
+        $validators[] = new MTimeValidator('beginHour',_M('Hora inicial',$module),'required');
+
+        // End Hour
+        $endHourLabel = new MText('endHourLabel', _M('Hora final',$module) . ':');
+        $endHourLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $endHourLabel->setClass('m-caption m-caption-required');
+        $endHour = new MTextField('endHour', $this->getFormValue('endHour', $data->endHour), null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $endHour->setJsHint(_M('Informe a hora final',$module));
+        $hctEndHour = new MHContainer('hctEndHour', array($endHourLabel, $endHour));
+        $hctEndHour->setShowLabel(true);
+        $validators[] = new MTimeValidator('endHour',_M('Hora final',$module),'required');
+
+        // Number Minutes
+        $numberMinutesLabel = new MText('numberMinutesLabel', _M('Equivalência em minutos',$module) . ':');
+        $numberMinutesLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $numberMinutesLabel->setClass('m-caption m-caption-required');
+        $numberMinutes = new MTextField('numberMinutes', $this->getFormValue('numberMinutes', $data->numberMinutes), null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), _M('min.', $module));
+        $numberMinutes->setJsHint(_M('Informe a equivalência em minutos',$module));
+        $hctNumberMinutes = new MHContainer('hctNumberMinutes', array($numberMinutesLabel, $numberMinutes));
+        $hctNumberMinutes->setShowLabel(true);
+        $validators[] = new MIntegerValidator('numberMinutes',_M('Equivalência em minutos',$module), 'required');
+
+        $form = new MForm();
+        $form->box->boxTitle = null;
+
+        $buttonsAdd = new MButton('saveData', _M('Salvar', $module), 'tableRawShow(\'' . $this->getFormValue('timeSheetId', $data->timeSheetId) . '\',\'' . $timeData->timeId . '\',\'SAVE\', \'' . $form->name . '\');');
+        $buttonsClear = new MButton('clearData', _M('Limpar', $module), 'newTime(\'' . $timeData->timeSheetId . '\',\'NULL\',\'CLEAR\');') ;
+        $divButtons = new MDiv('divButtons', array($buttonsAdd, $buttonsClear));
+
+        $bsgNewTime = new BaseGroup('bsgNewTime', _M('Novo horário',$module), array($hctTime, $hctTurn, $hctBeginHour, $hctEndHour, $hctNumberMinutes, $divButtons), 'vertical');
+        $bsgNewTime->showLabel = true;
+        $bsgNewTime->width = '100%';
+        $fields[] = $bsgNewTime;
+
+        $fields[] = new MDiv('divNewTime', $vctNewTime, null, 'align=left');
+
+        $form->setFields($fields);
+        $form->setValidators($validators);
+        $form->setShowPostButton(false);
+
+        $this->manager->getTheme()->setContent($form);
+    }
+
+    /**
+     * Event triggered when user chooses New from the toolbar
+     **/
+    public function tbBtnNew_click($sender=NULL)
+    {
+    }
+
+    /**
+     * Event triggered when user chooses Delete from the toolbar
+     **/
+    public function tbBtnDelete_click($sender=NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+
+        $data = $this->getTypesData();
+        $opts = array('event' => 'tbBtnDelete_confirm',
+                      'function' => 'delete',
+                      'timeSheetId' => MIOLO::_request('timeSheetId'));
+
+        $gotoYes = $MIOLO->getActionURL( $module, $action, null, $opts );
+
+        // This return the primary key to the search form so that user
+        // can see the record he would delete
+        $opts = array('timeSheetIdS' => MIOLO::_request('timeSheetId'));
+        $goto = SAGU::getStackBackUrl();
+        $gotoNo = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+
+        $caption = _M('Questão',$module);
+        $MIOLO->question(SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE'), $gotoYes, $gotoNo);
+    }
+
+    /**
+     * Event triggered when user chooses Yes from the Delete prompt dialog
+     **/
+    public function tbBtnDelete_confirm($sender=NULL)
+    {
+        $MIOLO       = MIOLO::getInstance();
+        $module      = SAGU::getFileModule(__FILE__);
+        $action      = MIOLO::getCurrentAction();
+        $function    = MIOLO::_REQUEST('function');
+        $timeSheetId = MIOLO::_REQUEST('timeSheetId');
+
+        try
+        {
+            $business = new BusinessAcademicBusTimeSheet();
+            $ok = $business->deleteTimeSheet($this->timeSheetId->value);
+
+            if ( $ok )
+            {
+                $goto = SAGU::getStackBackUrl();
+                $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+                $caption = _M('Informação',$module);
+                $MIOLO->information(SAGU::getParameter('BASIC', 'MSG_RECORD_DELETED'), $goto);
+            }
+            else
+            {
+                $msg = _M('Erro executando a operação solicitada.',$module);
+                $goto = SAGU::getStackBackUrl();
+                $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+                $caption = _M('Erro',$module);
+                $MIOLO->error( $msg, $goto, $caption );
+            }
+        }
+        catch(Exception $e)
+        {
+            $errorMsg = _M('Horário já está sendo utilizado, impossibilitando a exclusão.');
+            $goTo     = $MIOLO->GetActionURL($module, 'main:register:timeSheet');
+            $MIOLO->error($errorMsg, $goTo);
+        }
+    }
+
+    /**
+     * Event triggered when user chooses Save from the toolbar
+     **/
+    public function tbBtnSave_click($sender=NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+
+        $data = $this->getTypesData();
+        $business = new BusinessAcademicBusTimeSheet();
+
+        try
+        {
+            if ( $function == 'update' )
+            {
+                $ok = $business->updateTimeSheet($data);
+                $msg = SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED');
+                $opts = array('timeSheetIdS' => $data->timeSheetId);
+                $caption = _M('Informação',$module);
+                $MIOLO->information($msg, $MIOLO->getActionURL( $module, $action, null, $opts));
+            }
+            else
+            {
+                $ok = $business->insertTimeSheet($data);
+                $msg = SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED');
+                $lastTimeSheetId = $business->getLastTimeSheetId();
+
+                $opts = array( 'function'=>'update',
+                               'timeSheetId' => $lastTimeSheetId[0][0] );
+
+                $goto = SAGU::getStackBackUrl();
+                $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL( $module, $action, null, $opts);
+
+                $opts = array('function'=>'insert');
+
+                $gotoYes = $MIOLO->getActionURL($module, $action, null, $opts);
+                $caption = _M('Questão',$module);
+                $MIOLO->question($msg, $gotoYes, $goto);
+            }
+        }
+        catch ( Exception $e )
+        {
+            $this->addError($e->getMessage());
+        }
+    }
+
+    /**
+     * Method to gather all information from the form fields
+     * and put them on a database compatible object
+     **/
+    public function getTypesData()
+    {
+        $data = new AcdTimeSheet();
+        $vars = get_object_vars($data);
+
+        foreach ( $vars as $var => $value )
+        {
+            $data->$var = $this->getFormValue($var);
+        }
+
+        return $data;
+    }
+}
+?>

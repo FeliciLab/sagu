@@ -1,0 +1,384 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ *  Formulário de ajuste de pontuação curricular
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @since
+ * Class created on 13/07/2011
+ *
+ */
+class FrmSubscriptionEvaluationOptionAdjustment extends SForm
+{
+    public function __construct($data)
+    {
+        $module = SAGU::getFileModule(__FILE__);
+
+        parent::__construct(_M('Ajuste de pontuação curricular', $module), null, null);
+
+        $this->toolbar->disableButton( MToolBar::BUTTON_SEARCH );
+        $this->toolbar->disableButton( MToolBar::BUTTON_PRINT );
+        $this->toolbar->disableButton( MToolBar::BUTTON_NEW ); 
+        $this->toolbar->disableButton( MToolBar::BUTTON_DELETE );
+        
+        
+        // Caso tenha um "return_to" adiciona o botão de voltar
+        if ( strlen(MIOLO::_REQUEST('return_to')) > 0 )
+        {
+            $this->toolbar->setButtonURL(MToolBar::BUTTON_BACK, MIOLO::_REQUEST('return_to'));
+            $this->toolbar->setIsPost(MToolBar::BUTTON_BACK, true);
+        }
+        else // Se não desabilita ele
+        {
+            
+        }
+    }
+
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        // Return to
+        $returnTo = MIOLO::_REQUEST('return_to');
+        $fields[] = new SHiddenField('returnTo', $returnTo);
+        
+        $subscriptionId = MIOLO::_REQUEST('subscriptionId');   
+        $fields[] = new MHiddenField('subscriptionId', $subscriptionId);
+        if( !(strlen($subscriptionId) > 0) )
+        {
+            $MIOLO->error(_M('Nenhuma inscrição selecionada', $module));
+        }
+        $subscription = $data = new SprSubscription($subscriptionId);        
+               
+        $dataLabel->personId = $subscription->personId;        
+        $dataLabel->personName = $subscription->physicalPerson->name; 
+        $dataLabel->subscriptionId = $subscription->subscriptionId;        
+        $dataLabel->selectiveProcess = $subscription->selectiveProcess->description;
+
+        //Cria campos de informacao
+        $labels = array(
+            'personId' => _M('Código', $module),
+            'personName' => _M('Nome', $module),
+            'subscriptionId' => _M('Inscrição', $module),
+            'selectiveProcess' => _M('Processo seletivo', $module),
+        );
+
+        foreach ( $labels as $id => $label )
+        {
+            $fld1 = new MLabel($label . ':');
+            $fld1->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+            $fld2 = new MLabel( $dataLabel->$id );
+            $fld2->setBold(true);
+            $fields2[] = new MHContainer("{$id}Cnt", array($fld1, $fld2));
+        }
+
+        // Foto do estagiário
+        $photo = new SPersonPhotoDisplayField(array('fileId' => $subscription->physicalPerson->photoId));
+
+        $vCnt = new MVContainer('vctStage', $fields2);
+        $personalData = new MHContainer('hctNew', array($vCnt, $photo));
+        $fields[] = new MBaseGroup('bgrStage', _M('Dados do inscrito', $module), array($personalData));
+        
+        $filters = new stdClass();
+        $filters->selectiveProcessId = $subscription->selectiveProcessId;
+        $steps = SprStep::search($filters);
+        
+        //Cria array de etapas
+        for( $v = 0; $v<count($steps); $v++)
+        {
+            $stepOptions[$steps[$v]->stepId] = $steps[$v]->description;
+        }           
+        $fields[] = $fieldStep = new MSelection('stepId', null, _M('Etapa', $module), $stepOptions);
+        $fieldStep->setAutoPostBack(true);
+        $validators[] = new MRequiredValidator('stepId', _M('Etapa', $module));
+        
+        $fields[] = new MSeparator();
+        
+        $fields[] = new MDiv('divDataGrid', $this->loadTableRaw());
+        
+        $this->setFields($fields);        
+        $this->setValidators($validators);
+        
+        parent::defineFields();
+    }
+
+    public function tbBtnSave_click($sender = NULL, $success = NULL, $opts = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        try
+        {
+            SDatabase::beginTransaction();
+            
+            $subscriptionId = MIOLO::_REQUEST('subscriptionId');
+            $stepId = MIOLO::_REQUEST('stepId');
+            
+            $subscription = $data = new SprSubscription($subscriptionId);            
+            $step = new SprStep($stepId);
+            
+            //Percorre cada avaliação da etapa
+            for ( $c = 0; $c < count($step->evaluations); $c++ )
+            {
+                //Somente avaliações onde candidato poderá informar a pontuação com a qual pretende concorrer nesta opção do critério de avaliação
+                if( $step->evaluations[$c]->enableDesiredScoreField == DB_TRUE )
+                {
+                    $evaluation = $step->evaluations[$c];
+                    
+                    //
+                    // Busca e salva pontos de avaliacao
+                    //
+                    $evaluationPoints = new SprEvaluationPoints();
+                    $filters =new stdClass();
+                    $filters->evaluationId = $evaluation->evaluationId;
+                    $filters->subscriptionId = $subscriptionId;
+                    $searchEvaluationPoints = SprEvaluationPoints::search($filters);
+                    if ( count($searchEvaluationPoints) > 0 )
+                    {
+                        $evaluationPoints = $searchEvaluationPoints[0];
+                    }
+                    $evaluationPoints->evaluationId = $evaluation->evaluationId;
+                    $evaluationPoints->subscriptionId = $subscriptionId;
+                    $evaluationPoints->totalPoints = MIOLO::_REQUEST("evaluationScore{$evaluation->evaluationId}");
+                    $evaluationPoints->save();
+                    
+                    //Id da avaliação
+                    $id = $step->evaluations[$c]->evaluationId;
+
+                    $evFilter = new stdClass();
+                    $evFilter->evaluationId = $id;
+                    $evaluationOption = SprEvaluationOption::search($evFilter);
+                    for ( $d = 0; $d < count($evaluationOption); $d++ )
+                    {
+                        $evaluationOptionId = $evaluationOption[$d]->evaluationOptionId;
+
+                        //Salva a pontuação                        
+                        $subscriptionEvaluationOption = new SprSubscriptionEvaluationOption($evaluationOptionId, $subscriptionId);
+                        $subscriptionEvaluationOption->finalScore = ( strlen(MIOLO::_REQUEST("finalScore{$evaluationOptionId}")) > 0 ? MIOLO::_REQUEST("finalScore{$evaluationOptionId}") : null );
+                        $subscriptionEvaluationOption->observation = ( strlen(MIOLO::_REQUEST("observation{$evaluationOptionId}")) > 0 ? MIOLO::_REQUEST("observation{$evaluationOptionId}") : null );
+                        if ( !$subscriptionEvaluationOption->save() )
+                        {
+                            throw new Exception( _M('Não foi possível salvar os ajustes de pontuação curricular', $module) );
+                        }
+                    }
+                }
+            }
+            SDatabase::commit();            
+            $msg = _M("Ajuste de pontuação curricular salvos com sucesso", $module);
+            $caption = _M('Informação', $module);
+            SAGU::information($msg, MIOLO::_REQUEST('returnTo'));
+        }        
+        catch (Exception $e)
+        {
+            SDatabase::rollback();
+            $this->AddError($e->getMessage());
+        }
+    }
+    
+    /*
+     * Carrega TableRaw com as avaliações da etapa
+     */
+    public function loadTableRaw()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $fields[] = new MHiddenField('limbo');        
+        $ok = false;        
+        
+        $subscriptionId = MIOLO::_REQUEST('subscriptionId');
+        $stepId = MIOLO::_REQUEST('stepId');
+        
+        if( strlen($stepId) > 0 )
+        {
+            $subscriptionId = $subscriptionId;
+            $stepId = $stepId;
+            $step = new SprStep($stepId);
+
+            if( count($step->evaluations) > 0 )
+            {
+                //Títulos da tabela
+                $colTitle = array(
+                    _M('Item de avaliação', $module),
+                    _M('Forma de pontuação', $module),
+                    _M('Auto-pontuação do candidato', $module),
+                    _M('Pontuação do avaliador', $module),
+                    _M('Justificativa', $module),
+                    _M('Anexo(s)', $module));
+
+                $table = new MTableRaw(_M('Ajuste de pontuação curricular', $module), null, $colTitle);
+                
+                $tamanhoCampoDescricao = SAGU::getParameter('basic', 'FIELD_DESCRIPTION_SIZE');
+                $tamanhoCampoInteiro = SAGU::getParameter('basic', 'FIELD_ID_SIZE');
+                
+                //Percorre cada avaliação da etapa
+                for ( $c = 0; $c < count($step->evaluations); $c++ )
+                {
+                    $finalScoreSum = 0;
+                    $desiredScoreSum = 0;
+                    
+                    //Somente avaliações onde candidato poderá informar a pontuação com a qual pretende concorrer nesta opção do critério de avaliação
+                    if( $step->evaluations[$c]->enableDesiredScoreField == DB_TRUE )
+                    {
+                        $ok = true;
+                        //Id da avaliação
+                        $evaluationId = $step->evaluations[$c]->evaluationId;
+
+                        //Adiciona Descrição da avaliação e total de pontos da mesma
+                        $description = $step->evaluations[$c]->description;
+                        if( strlen($description) > 0 )
+                        {
+                            unset($flds);
+                            $flds[] = new Mlabel("<b>".$step->evaluations[$c]->description."</b>");
+                            $maxPoints = $step->evaluations[$c]->maxPoints;
+                            if( strlen($maxPoints) > 0 )
+                            {
+                                $flds[] = new Mlabel(_M('pontuação máxima', $module).':' . $maxPoints);
+                            }
+                            $evaluationTitle = new MHContainer("{$evaluationId}Cnt", $flds);
+
+                        }
+                        $array[] = array($evaluationTitle); //Adiciona separador para nova prova
+                        $table->setCell(count($array)-1, 0, null, 'colspan="6" style="background-color: #A4C594; text-align:left"');
+
+                        $evFilter = new stdClass();
+                        $evFilter->evaluationId = $evaluationId;
+                        $evaluationOption = SprEvaluationOption::search($evFilter);
+                        for ( $d = 0; $d<count($evaluationOption); $d++ )
+                        {
+                            $evaluationOptionId = $evaluationOption[$d]->evaluationOptionId;
+
+                            //Pontuação desejada
+                            $optionFilter = new stdClass();
+                            $optionFilter->subscriptionId = $subscriptionId;
+                            $optionFilter->evaluationOptionId = $evaluationOptionId;
+                            $subscriptionEvaluationOption = SprSubscriptionEvaluationOption::search($optionFilter);
+
+                            $finalScoreValue = $subscriptionEvaluationOption[0]->finalScore;
+                            $finalScoreSum += $finalScoreValue;
+                            
+                            $desiredScoreValue = $subscriptionEvaluationOption[0]->desiredScore;
+                            $desiredScoreSum += $desiredScoreValue;
+                            
+                            //Campo pontuação do avaliador
+                            $finalScoreField = new MTextField("finalScore{$evaluationOptionId}", $finalScoreValue, null, $tamanhoCampoInteiro);
+                            $finalScoreField->addAttribute('onchange', SForm::getAjaxAction('changeFinalScore', 'limbo', true, array( 'evaluationId' => $evaluationId )));
+                            $validators[] = new MIntegerValidator("finalScore{$evaluationOptionId}", _M('Pontuação da opção', $module).': '.$evaluationOption[$d]->description);
+                            //Campo justificativa
+                            $observationField = new MTextField("observation{$evaluationOptionId}", $subscriptionEvaluationOption[0]->observation, null, $tamanhoCampoDescricao);
+
+
+                            //
+                            // Busca arquivos anexos
+                            //
+                            $filters = new stdClass();
+                            $filters->evaluationOptionId = $evaluationOptionId;
+                            $attachments = (array) SprAttachment::search($filters);
+                            $downloadLinks = array('-');
+                            if ( count($attachments) > 0 )
+                            {
+                                $downloadLinks = array();
+                                $busFile = new BusinessBasicBusFile();
+                                foreach ( $attachments as $att )
+                                {
+                                    $url = $busFile->getUrl($att->fileId, array('permission' => true));
+                                    $link = new MLink($att->fileId.'lnk', null, $url, $att->file->uploadFileName, '_new');
+                                    $downloadLinks[] = $link->generate();
+                                }
+                            }
+                            $downloadLinks = implode(' ', $downloadLinks);
+
+                            //
+                            $array[] = array(
+                                $evaluationOption[$d]->description,
+                                $evaluationOption[$d]->scoringInfo,
+                                $desiredScoreValue,
+                                $finalScoreField,
+                                $observationField,
+                                $downloadLinks);
+                        }
+                        
+                        //
+                        // Coluna abaixo das opcoes
+                        //
+                        $evaluationScoreField = new MTextField("evaluationScore{$evaluationId}", $finalScoreSum, null, $tamanhoCampoInteiro);
+                        $evaluationScoreField->setReadOnly(true);
+                        
+                        $desiredScoreField = new MTextField("desiredScore{$evaluationId}", $desiredScoreSum, null, $tamanhoCampoInteiro);
+                        $desiredScoreField->setReadOnly(true);
+                        
+                        $array[] = array(null, null, $desiredScoreField, $evaluationScoreField, null, null); //Adiciona separador para nova prova
+                        for ( $i=0; $i < count($colTitle); $i++ )
+                        {
+                            $table->setCell(count($array)-1, $i, null, 'style="background-color: #A4C594;"');
+                        }
+                    }
+                }
+                
+                $table->array = $array;
+                
+                if ( $ok )
+                {
+                    //Cria a tabela
+                    $fields[] = $table;
+                }                
+                $this->setValidators($validators);
+            }
+            else
+            {
+                $this->addInfo(_M('Nenhuma avaliação para a etapa selecionada', $module));
+            }
+        }
+        return $fields;
+    }
+    
+    
+    /**
+     * Exibe o total da pontuacao do avaliador para o grupo
+     * 
+     * @param stdClass $args
+     * 
+     * @return string
+     */
+    public function changeFinalScore($args)
+    {
+        $totalScore = 0;
+        
+        $evaluation = new SprEvaluation($args->evaluationId);
+        foreach ( (array) $evaluation->evaluationOptions as $evaluationOption )
+        {
+            $id = "finalScore{$evaluationOption->evaluationOptionId}";
+            $totalScore += $args->$id;
+        }
+        
+        $this->page->addAJAXJsCode(" xGetElementById('evaluationScore{$args->evaluationId}').value = '{$totalScore}'; ");
+        
+        return null;
+    }
+}
+?>

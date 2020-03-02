@@ -1,0 +1,232 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ *
+ * @author Armando Taffarel Neto [taffarel@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 21/12/2005
+ *
+ **/
+
+/**
+ * Form to search the acdCurricularComponentUnblock table
+ */
+class FrmInsuficientConditionCurricularComponentCancellation extends SManagementForm
+{
+    private $home;
+    /**
+     * Class constructor
+     */
+    public function __construct($data)
+    {
+        $module = MIOLO::getCurrentModule();
+        $this->home   = $data->home;
+        parent::__construct( new acdPeriod(), 'periodId', NULL, _M('Executar', $module) );
+    }
+
+    /**
+     *  Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);        
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+
+        $businessPeriod = new BusinessAcademicBusPeriod();
+        $periodId       = new MComboBox('periodIdS', strlen($this->getFormValue('periodIdS', $data->periodId))>0 ? $this->getFormValue('periodIdS', $data->periodId) : SAGU::getParameter('BASIC', 'CURRENT_PERIOD_ID'), _M('Período',$module), $businessPeriod->listPeriod() );
+        $periodId->setJsHint(_M('Selecione um período', $module));
+        $validators[]   = new MRequiredValidator('periodIdS','', 'required');
+        $fields[] = $periodId;
+
+        $fields[] = new MButton('btnFilter', null . _M('Filtrar', $module));
+        
+        $fields[] = new Separator('');
+        
+        parent::defineFields($fields, $validators, $data);
+    }
+    
+
+    /**
+     * Event triggered when user chooses Save from the toolbar
+     **/
+    public function btnFilter_click($sender = null)
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+
+        $data     = $this->getTypesData();
+        $business = new BusinessAcademicBusInsuficientConditionCurricularComponentCancellation();
+
+        set_time_limit(0);
+        $gridData = $business->selectEnrollsToBeCancelled($data->periodId);
+
+        if (count($gridData) > 0)
+        {
+            $grid = $MIOLO->getUI()->getGrid($module,'GrdInsuficientConditionCurricularComponentCancellation', null);
+            $grid->setData($gridData);
+            $this->addField($grid);
+        
+            $btn1[]     = new MButton('btnRun', _M('Executar', $module));
+            $div1       = new MDiv('div1', $btn1, null, 'center');
+    
+            $fields[] = $div1;
+            $fields[] = new Separator('');
+            $this->addField($fields);
+        }
+        else
+        {
+            $this->addError(_M('Não foram encontradas disciplinas matrículadas por insuficiência de requisitos.', $module));
+        }        
+    }
+    
+    public function btnRun_click($sender=NULL)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $busEnroll         = new BusinessAcademicBusEnroll();
+        $busGroup          = new BusinessAcademicBusGroup();
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $busContract       = new BusinessAcademicBusContract();
+        
+        $business = $MIOLO->getBusiness($module, 'BusInsuficientConditionCurricularComponentCancellation');
+        $cnt = 0;
+
+        $enrolls = MIOLO::_REQUEST('selectGrdInsuficientConditionCurricularComponentCancellation');
+
+        $transaction = $business->getDatabase()->getTransaction();
+        SDatabase::beginTransaction();
+        
+        try
+        {
+            if ( count($enrolls) > 0 )
+            {
+                //Percorrerá todoas as matrículas
+                foreach ( $enrolls as $id => $value )
+                {
+                    $enrollData         = $busEnroll->getEnroll($value);
+                    $groupData          = $busGroup->getGroup($enrollData->groupId);
+
+                    $learningPeriodData = $busLearningPeriod->getLearningPeriod($groupData->learningPeriodId);
+                    $contractData       = $busContract->getContract($enrollData->contractId);
+
+                    //Parcelas que restam para os alunos
+                    $restantParcels = $busEnroll->getPeriodRestantParcels($enrollData->contractId, $groupData->learningPeriodId);
+
+                    if ( $business->curricularComponentCancellation($value) )
+                    {
+                        $cnt++;
+                    }
+
+                    if ( $restantParcels == 0 )
+                    {
+                        //Não restam parcelas para serem pagas pelo aluno
+                        $stringFinance .= '<br>' . $contractData->personName  . ' - '  . $groupData->curriculumCurricularComponentName . '.' . '<br>';
+                    }
+                    else
+                    {
+                        if ( (count($business->getErrors()) > 0) || (count($busLearningPeriod->getErrors()) > 0) || (count($busEnroll->getErrors()) > 0) )
+                        {
+                            SDatabase::rollback();
+
+                            $msg  = _M('Erro cancelando a matrícula', $module);
+                            $goto = SAGU::getStackBackUrl();
+                            $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action, null,  $opts);
+                            $caption = _M('Erro',$module);
+                            $MIOLO->error( $msg, $goto, $caption );
+                        }
+                    }
+                }
+            }
+        }
+        catch ( Exception $e )
+        {
+            SDatabase::rollback();
+            $MIOLO->error($e->getMessage());
+        }
+
+        if ( $cnt > 0 )
+        {
+            SDatabase::commit();
+
+            $msg  = _M('@1 matrículas canceladas', $module,$cnt);
+
+            if ( strlen($stringFinance) > 0 )
+            {
+                $stringFinance1 .= '<br>' . _M('Não foi gerado financeiro para os alunos abaixo porque não há parcelas restantes para este período', $module) . ':' . '<br>';
+
+                $stringFinance1 = $stringFinance1 . $stringFinance;
+
+                $msg .= '<br>' . $stringFinance1;
+            }
+
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL( $module, $action, null, null);
+
+            $caption = _M('Informação', $module);
+            $MIOLO->information($msg, $goto);
+        }
+        else
+        {
+            $this->addError(_M('Nenhuma disciplina cancelada. Tente escolher outro período', $module));
+        }
+    }
+
+    public function getTypesData()
+    {
+        $data = parent::getTypesData();
+        $vars = get_object_vars($data);
+        foreach ( $vars as $var => $value )
+        {
+            if ( $this->$var && $var != 'description' )
+            {
+                $data->$var = $this->$var->value;
+            }
+        }
+
+        return $data;
+    }
+
+}
+
+?>

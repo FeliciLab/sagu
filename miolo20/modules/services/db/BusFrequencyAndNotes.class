@@ -1,0 +1,546 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file handles the connection for academic module
+ *
+ * @author Samuel Koch [Samuel Koch@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Equipe Solis [sagu2@solis.coop.br]
+ * 
+ * @since
+ * Class created on 07/05/2009
+ *
+ **/
+
+/**
+ * Class to manipulate the basCenter table
+ **/
+class BusinessServicesBusFrequencyAndNotes extends sBusiness
+{
+    /**
+     * A list containing all periods the professor has curricular components
+     *
+     * @param $professorId (integer): Primary key for query
+     *
+     * @return (array): An array containing all the periods the professor has ministered curricular components
+     *
+     **/
+    public function listPuplisPeriods($personId)
+    {
+        $sql = 'SELECT A.periodId,
+                       A.description
+                  FROM acdPeriod A
+                 WHERE A.periodId IN (SELECT DISTINCT CC.periodId
+                                        FROM acdSchedule AA
+                                  INNER JOIN acdGroup BB
+                                          ON (AA.groupId = BB.groupId)
+                                  INNER JOIN acdLearningPeriod CC
+                                          ON (CC.learningPeriodId = BB.learningPeriodId)
+                                  INNER JOIN acdEnroll DD
+                                          ON (BB.groupId = DD.groupId)
+                                  INNER JOIN acdContract EE
+                                          ON (DD.contractId = EE.contractId)
+                                       WHERE EE.personId = ?)
+              ORDER BY A.description';
+
+        $db  = $this->getDatabase();
+        
+        $args = array( $personId );
+
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+    
+    
+    /**
+     * Do a search on the database table handled by the class
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): An array containing the search results
+     **/
+    public function searchDegree($enrollId)
+    {
+        $sql = 'SELECT A.degreeId,
+                       B.periodId,
+                       A.description,
+                       A.degreenumber,
+                       A.weight,
+                       C.note
+                  FROM acdDegree A
+            INNER JOIN acdLearningPeriod B
+                    ON (B.learningPeriodId = A.learningPeriodId)
+            INNER JOIN acdDegreeEnroll C
+                    ON (A.degreeid = C.degreeid)
+                 WHERE C.enrollid = ?';
+
+        $args[] = $enrollId;
+
+        $db = $this->getDatabase();
+
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+
+    /**
+     * Do a search on the database table handled by the class
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): An array containing the search results
+     **/
+    public function searchDegreeByGroup($learningPeriodId, $groupId)
+    {
+        $sql = 'SELECT A.degreeId,
+                       A.description
+                  FROM acdDegree A
+            INNER JOIN acdLearningPeriod B
+                    ON (B.learningPeriodId = A.learningPeriodId)
+            INNER JOIN acdGroup D
+                    ON (D.learningPeriodId = B.learningPeriodId)
+                 WHERE B.learningPeriodId = ?
+                   AND D.groupId = ?';
+
+        $args = array( $learningPeriodId,
+                       $groupId );
+
+        $db = $this->getDatabase();
+
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+    
+    /**
+     *  Get the grades data for the specified enroll id
+     * 
+     * @param $enrollId (int): Enroll unique id
+     *
+     * @return (array): an array of records
+     */
+    public function getEnrollGradesData($enrollId)
+    {
+        $db = $this->getDatabase();
+
+        $args = array($enrollId);
+
+        $sql = "SELECT note,
+                       examNote,
+                       finalNote,
+                       frequency,
+                       statusId
+                  FROM acdEnroll
+                 WHERE enrollId = ? ";
+
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        return $result[0];
+    }
+    
+    
+    public function getComplementaryActivitiesData($contractId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = 'academic';
+        
+        $busContract  = new BusinessAcademicBusContract();
+        $contractData = $busContract->getContract($contractId);
+        
+        //Obtém as disciplinas do currículo do aluno que são do tipo 'Atividades complementares'
+        $sql = 'SELECT B.curriculumId,
+                       B.curricularComponentId,
+                       B.curricularComponentVersion,
+                       C.name,
+                       C.academicNumberHours,
+                       C.academicCredits
+                  FROM unit_acdcurriculum B
+            INNER JOIN acdCurricularComponent C
+                    ON (C.curricularComponentId = B.curricularComponentId AND
+                        C.curricularComponentVersion = B.curricularComponentVersion)
+                 WHERE B.courseId = ?
+                   AND B.courseVersion = ?
+                   AND B.unitId = ?
+                   AND B.turnId = ?
+                   AND B.curriculumTypeId IN (' . SAGU::getParameter('ACADEMIC', 'ACD_CURRICULUM_TYPE_COMPLEMENTARY_ACTIVITY') . ')';
+                   
+        $args = array($contractData->courseId,
+                      $contractData->courseVersion,
+                      $contractData->unitId,
+                      $contractData->turnId);
+        
+        $result1 = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        
+        unset($return);
+        if ( count($result1) > 0 )
+        {
+            foreach ( $result1 as $complActivityCurriculum )
+            {
+                unset($complActivityData, $caDetails);
+                    
+                $caHoursConcluded   = 0;
+                $caCreditsConcluded = 0;
+                
+                list ( $caCurriculumId,
+                       $caCurricularComponentId,
+                       $caCurricularComponentVersion,
+                       $caCurricularComponentName,
+                       $caAcademicNumberHours,
+                       $caAcademicCredits ) = $complActivityCurriculum;
+                      
+                //Obtém as atividades aproveitadas como 'Atividade Complementar'
+                $sql = 'SELECT A.description,
+                               A.totalHours,
+                               A.totalCredits,
+                               A.degree,
+                               A.concept,
+                               A.periodId,
+                               B.obsExploitation
+                          FROM acdComplementaryActivities A
+                    INNER JOIN acdEnroll B
+                            ON (B.enrollId = A.enrollId)
+                         WHERE B.curriculumId = ?
+                           AND B.contractId = ?
+                      ORDER BY A.periodId';
+                           
+                $args = array($caCurriculumId, $contractId);
+                           
+                $result2 = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+                
+                //Obtém os totais de horas e créditos concluidos
+                if ( count($result2) > 0 )
+                {       
+                    foreach ( $result2 as $complActivityDetails )
+                    {
+                        list ( $ca->description,
+                               $ca->totalHours,
+                               $ca->totalCredits,
+                               $ca->degree,
+                               $ca->concept,
+                               $ca->periodId,
+                               $ca->obs ) = $complActivityDetails;
+                              
+                        $caHoursConcluded += $ca->totalHours;
+                        
+                        
+                        //Insere a atividade no vetor de detalhes
+                        $caDetails[] = clone($ca);
+                    }
+                }
+                
+                $caCreditsRate = (float) $caAcademicCredits / (float) $caAcademicNumberHours;
+                
+                $caCreditsConcluded += $caHoursConcluded * $caCreditsRate;
+                
+                //Monta o objeto que representa a atividade complementar
+                $complActivityData->curricularComponentId      = $caCurricularComponentId;
+                $complActivityData->curricularComponentVersion = $caCurricularComponentVersion;
+                $complActivityData->curricularComponentName    = $caCurricularComponentName;
+                $complActivityData->numberHours                = $caAcademicNumberHours;
+                $complActivityData->credits                    = $caAcademicCredits;
+                $complActivityData->hoursConcluded             = $caHoursConcluded;
+                $complActivityData->creditsConcluded           = $caCreditsConcluded;
+                $complActivityData->details                    = $caDetails;
+                
+                $caHoursNotConcluded = $complActivityData->numberHours - $caHoursConcluded;
+                
+                //Verificação para não exibir horas negativas
+                if ( $caHoursNotConcluded > 0 )
+                {
+                    $complActivityData->hoursNotConcluded = $caHoursNotConcluded;
+                }
+                else
+                {
+                    $complActivityData->hoursNotConcluded = 0;
+                }
+                
+                $caCreditsNotConcluded = $complActivityData->hoursNotConcluded * $caCreditsRate;
+                
+                if ( $caCreditsNotConcluded > 0 )
+                {
+                    $complActivityData->creditsNotConcluded = $caCreditsNotConcluded;
+                }
+                else
+                {
+                    $complActivityData->creditsNotConcluded = 0;
+                }
+                
+                //Insere o objeto no vetor de retorno
+                $return[] = clone($complActivityData);
+            }
+            
+            /* Vetor de objetos com os atributos:
+               |_ curricularComponentId = código da disciplina de atividade complementar
+               |_ curricularComponentVersion = versão da disciplina de atividade complementar
+               |_ curricularComponentName = nome da disciplina de atividade complementar
+               |_ numberHours = carga horária exigida em atividades complementares
+               |_ credits = número de créditos exigidos em atividades complementares
+               |_ hoursConcluded = número de horas em atividades complementares já concluídas
+               |_ creditsConcluded = número de créditos em atividades complementares já concluídas
+               |_ hoursNotConcluded = horas que faltam fazer em atividades complementares
+               |_ creditsNotConcluded = créditos que faltam fazer em atividades complementares
+               |_ details = detalhes das atividades aproveitadas (vetor de objetos)
+                  |_ description = descrição da atividade
+                  |_ totalHours = número de horas aproveitadas com a atividade
+                  |_ totalCredits = número de créditos aproveitados com a atividade
+                  |_ degree = grau obtido na atividade
+                  |_ concept = conceito obtido na atividade
+                  |_ periodId = periodo em que a atividade foi realizada 
+                  |_ obs = campo para observações */
+            
+            return $return;
+        }
+        else
+        {
+            return null;
+        }
+    }
+    
+    /**
+     * Obtain the curricular component exploited.
+     *
+     * @param $personId (int): Person wich data will be got
+     *
+     * @return (array): return curricular component exploited
+     *
+     */
+    public function getCurricularComponentExploited($filters)
+    {
+        $sql = 'SELECT A.enrollId,
+                       E.periodId,
+                       C.curricularComponentId || \'/\' || C.curricularComponentVersion,
+                       C.name as curricularComponentName,
+                       F.description as status,
+                       ROUND(C.academicCredits::NUMERIC, \'' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '\'),
+                       C.academicNumberHours,
+                       (SELECT sum(XX.exploitationNumberHours)
+                          FROM acdExploitation XX
+                         WHERE XX.enrollId = A.enrollId) as exploitedNumberHours,
+                       D.courseId || \'/\' || D.courseVersion || \' - \' || G.name as course
+                  FROM acdEnroll A
+            INNER JOIN unit_acdcurriculum B
+                    ON (B.curriculumId = A.curriculumId)
+            INNER JOIN acdCurricularComponent C
+                    ON (C.curricularComponentId      = B.curricularComponentId AND
+                        C.curricularComponentVersion = B.curricularComponentVersion)
+            INNER JOIN acdContract D
+                    ON (D.contractId = A.contractId)
+            INNER JOIN acdLearningPeriod E
+                    ON (E.learningPeriodId = A.learningPeriodId)
+            INNER JOIN acdEnrollStatus F
+                    ON (F.statusId = A.statusId)
+            INNER JOIN acdCourse G
+                    ON (G.courseId = D.courseId)
+                 WHERE A.enrollId IN (SELECT enrollId FROM acdExploitation) ';
+                   
+        $args = array();
+        if ( count($filters->contractId) > 0 )
+        {
+            $sql   .= ' AND A.contractId in (?)';
+            $args[] = implode(",", $filters->contractId);
+        }
+        if ( strlen($filters->personId) > 0 )
+        {
+            $sql   .= ' AND D.personId = ?';
+            $args[] = $filters->personId;
+        }
+        
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        
+        return $result;
+    }
+    
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $learningPeriodId
+     * @return unknown
+     */
+    public function getLearningPeriodDegrees($learningPeriodId, $groupSelect=null)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $degreeData = $this->getLearningPeriodFinalDegree($learningPeriodId);
+
+        if ( $degreeData )
+        {
+            unset($returnDegree);
+             
+            $returnDegree = $this->getChildDegrees($degreeData->degreeId);
+
+            for ( $count = 0; $count < count($returnDegree); $count++ )
+            {
+                $orderDegree[$returnDegree[$count]->degreeNumber] = $returnDegree[$count];
+            }
+            
+            $orderDegree[] = $degreeData;
+            
+            ksort($orderDegree);
+
+            if ( is_array($groupSelect) )
+            {
+                $groupSelect = str_replace('[', '', $groupSelect);
+                $groupSelect = str_replace(']', '', $groupSelect);
+    
+                foreach ( $orderDegree AS $value )
+                {
+                    if ( in_array($value->description, $groupSelect) )
+                    {
+                        $returnGroup[] = $value;
+                    }
+                }
+
+                return $returnGroup;
+            }
+            else 
+            {
+                return $orderDegree;
+            }
+        }
+        else 
+        {
+            return null;
+        }
+    }
+        
+    public function getLearningPeriodFinalDegree($learningPeriodId)
+    {
+        $sql = 'SELECT degreeId
+                  FROM acdDegree
+                 WHERE learningPeriodId = ?
+                   AND degreeNumber = 0
+                   AND parentDegreeId IS NULL';
+                   
+        $args = array( $learningPeriodId );
+        
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+     
+        if ( strlen($result[0][0]) > 0 )
+        {
+            return $this->getDegree($result[0][0]);
+        }
+        else 
+        {
+            return null;
+        }
+    }
+    
+    public function getChildDegrees($parentDegreeId)
+    {
+        $sql = 'SELECT degreeId,
+                       learningPeriodId,
+                       description,
+                       TO_CHAR(limitDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') AS limitDate,
+                       degreeNumber,
+                       weight,
+                       parentDegreeId,
+                       mayBeNull
+                  FROM acdDegree
+                 WHERE parentDegreeId = ?
+              ORDER BY degreeNumber';
+        
+        $args[] = $parentDegreeId;
+        
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        
+        if ( count($result) > 0 )
+        {
+            $return = array();
+            foreach ( $result as $res )
+            {
+                $degreeData = new AcdDegree();
+                
+                list( $degreeData->degreeId,
+                      $degreeData->learningPeriodId,
+                      $degreeData->description,
+                      $degreeData->limitDate,
+                      $degreeData->degreeNumber,
+                      $degreeData->weight,
+                      $degreeData->parentDegreeId,
+                      $degreeData->mayBeNull ) = $res;
+                
+                $childDegrees = $this->getChildDegrees($degreeData->degreeId);
+
+                if ( is_array($childDegrees) )
+                {
+                    $return = array_merge($return, $childDegrees);
+                }
+                
+                $return[] = clone($degreeData);
+            }
+
+            return $return;
+        }
+        
+        return null;
+    }
+    
+    /**
+     * Return a specific record from the database
+     *
+     * @param $degreeId (integer): Primary key of the record to be retrieved
+     *
+     * @return (object): Return an object of the type handled by the class
+     *
+     **/
+    public function getDegree($degreeId)
+    {
+        $sql = 'SELECT A.degreeId,
+                       A.learningPeriodId,
+                       A.description,
+                       TO_CHAR(A.limitDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') AS limitDate,
+                       A.degreeNumber,
+                       A.weight,
+                       A.parentDegreeId,
+                       A.mayBeNull,
+                       A.userName,
+                       TO_CHAR(A.dateTime,\'' . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . '\'),
+                       A.ipAddress
+                  FROM acdDegree A
+                 WHERE A.degreeId = ?';
+
+        $pk = array( $degreeId );
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $pk));
+
+        $degree = new AcdDegree();
+
+        list ( $degree->degreeId,
+               $degree->learningPeriodId,
+               $degree->description,
+               $degree->limitDate,
+               $degree->degreeNumber,
+               $degree->weight,
+               $degree->parentDegreeId,
+               $degree->mayBeNull,
+               $degree->userName,
+               $degree->dateTime,
+               $degree->ipAddress ) = $result[0];
+
+        return $degree; 
+    }
+}
+?>

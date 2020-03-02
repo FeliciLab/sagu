@@ -1,0 +1,214 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Salary return form
+ *
+ * @author Armando Taffarel Neto [taffarel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ *
+ * @since
+ * Class created on 03/05/2006
+ *
+ **/
+
+/**
+ * Form to salary return
+ **/
+class FrmSalaryReturn extends SForm
+{
+    private $home;
+    
+    /**
+     * Class constructor
+     **/
+    public function __construct($data)
+    {
+        $module = MIOLO::getCurrentModule();
+        $this->home   = $data->home;
+
+        parent::__construct( _M('Retorno de salários', $module), null, null );
+    }
+
+    /**
+     * Default method to define fields
+     **/
+    public function defineFields()
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        
+        if ( ! $this->page->isPostBack() )
+        {
+            $fields[] = new MFileField('importReturnFile', $this->getFormValue('importReturnFile', $data->importReturnFile), _M('Importar arquivo de retorno', $module));
+
+            $fields[] = new MSeparator('');
+
+            $btn1[]   = new MButton('btnValidate', _M('Validar', $module));
+            $div1     = new MDiv('div1', $btn1, null);
+            $fields[] = $div1;
+        
+            $fields[] = new MSeparator('');
+        }
+        
+        parent::defineFields( array( 'fields' => $fields, 'validators' => $validators ) );
+        
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+    }
+
+    /**
+     * Event triggered when user chooses Validate from the toolbar
+     **/
+    public function btnValidate_click($sender=NULL)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        try
+        {
+            if ($_FILES["importReturnFile"]["error"] === 0)
+            {
+                $data->uploadFileName = $_FILES["importReturnFile"]["name"];
+                $data->contentType    = $_FILES["importReturnFile"]["type"];
+                $data->size           = $_FILES["importReturnFile"]["size"];
+                $tempFile             = $_FILES["importReturnFile"]["tmp_name"];
+
+                $businessFile = new BusinessBasicBusFile();
+                $businessFile->insertFile($data, $tempFile);
+
+                $args = array('event'=>'process_click',
+                              'fileId'=>$dataFile->fileId
+                             );
+
+                $goProcessUrl = $MIOLO->getActionURL($module, $action, '', $args);
+                $MIOLO->Information(_M('Arquivo importado com sucesso. Por favor, clique no botão "OK" para continuar o processamento', $module), $goProcessUrl);
+            }
+            else
+            {
+                throw new Exception(_M('Alguns problemas ocorreram durante a atualização do arquivo. Por favor, tente novamente.', $module));
+            }
+        }
+        catch ( Exception $e )
+        {
+            $MIOLO->information($e->getMessage());
+        }
+    }
+    
+   /**
+     * Event triggered when user set new from the toolbar
+     */
+    public function process_click($sender = null)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        $data->fileId        = MIOLO::_request('fileId');
+
+        $businessFile = new BusinessBasicBusFile();
+        $fileData = $businessFile->getFileAsString($data->fileId, true);
+
+        if (strlen($fileData)>0)
+        {
+            $header  = $fileData[0];
+            $trailer = $fileData[count($fileData)-1];
+            unset($fileData[0], $fileData[count($fileData)]);
+            $details = $fileData;
+
+            foreach($details as $key => $line)
+            {
+                $personName          = trim(substr($line, 43, 30));
+                $personId            = trim(substr($line, 73, 20));
+                $datePayment         = trim(substr($line, 154, 8));
+                $valuePayment        = trim(substr($line, 162, 15));
+
+                if( ( strlen( $datePayment ) > 0 ) && ( strlen( $valuePayment ) > 0) )
+                {
+                    $business = new BusinessHumanResourcesBusSalaryReturn();
+                    $data = $business->getEmployeeSalay($personId);
+                    
+                    if ($data->value == $valuePayment)
+                    {
+                        $valuePayment = $valuePayment / 100;
+                        $valuePayment = sprintf("%.2f", $valuePayment);
+                        
+                        $dataReturn[$key][0] = $personId . ' - ' . $personName;
+                        $dataReturn[$key][1] = _M('Pagamento OK', $module);
+                        $dataReturn[$key][2] = $datePayment;
+                        $dataReturn[$key][3] = $valuePayment;
+                        $dataReturn[$key][3] = $valuePayment;
+                    }
+                    else
+                    {
+                        $valuePayment = $valuePayment / 100;
+                        $valuePayment = sprintf("%.2f", $valuePayment);
+
+                        $value = $data->value / 100;
+                        $value = sprintf("%.2f", $value);
+
+                        $dataReturn[$key][0] = $personId . ' - ' . $personName;
+                        $dataReturn[$key][1] = _M('Pagamento OK', $module);
+                        $dataReturn[$key][2] = $datePayment;
+                        $dataReturn[$key][3] = $valuePayment;
+                        $dataReturn[$key][4] = $value;
+                    }
+                }
+            }
+        }
+        else
+        {
+            $goProcessUrl = $MIOLO->getActionURL($module, $action, '', null);
+            $MIOLO->Error(_M('O arquivo está vazio', $module), $goProcessUrl);
+        }
+
+
+        if( is_array($dataReturn) )
+        {
+            $cols = array(_M('Pessoa', $module), _M('Descrição', $module), _M('Data', $module), _M('Valor de pagamento', $module), _M('Salário', $module));
+            
+            $tableRaw = new MTableRaw(_M('Detalhes para o retorno de salários', $module), $dataReturn, $cols, true);
+            $tableRaw->setAlternate(true);
+            $tableRaw->addAttribute('width=\"100%\"');
+            
+            $this->addField($tableRaw);
+        }
+        else
+        {      
+            $goProcessURL = $MIOLO->getActionURL($module, $action);
+            $MIOLO->information(_M('The file don\'t have returns. The process is conclued !', $module), $goProcessURL);
+        }
+    }
+}
+
+?>

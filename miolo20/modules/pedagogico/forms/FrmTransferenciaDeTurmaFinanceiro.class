@@ -1,0 +1,373 @@
+<?php
+
+/* 
+ * To change this license header, choose License Headers in Project Properties.
+ * To change this template file, choose Tools | Templates
+ * and open the template in the editor.
+ */
+
+class FrmTransferenciaDeTurmaFinanceiro extends FrmTransferenciaDeTurmaPai
+{
+    public function __construct()
+    {
+        parent::__construct(null, null, null, _M('Transferência de turma'));
+        
+        $this->addStyleFile('m_grids.css');
+        $this->page->addScript('m_grid.js');
+    }
+    
+    public function defineFields()
+    {
+        $personId = MIOLO::_REQUEST('personId');
+        $turmaDestino = MIOLO::_REQUEST('turmaDestino');
+        $turmaOrigem = MIOLO::_REQUEST('turmaOrigem');
+        
+        $diferencaPreco = $this->obtemDiferencaDoPreco($personId, $turmaOrigem, $turmaDestino);
+        
+        $parcelasEmAberto = $this->verificaSeExisteParcelasEmAberto($personId, $turmaOrigem);
+                        
+        $fields[] = new MTextLabel('',_M('Para os dados financeiros do aluno, selecione a opção desejada:'));
+        
+        $fields[] = $radioButton1 = new MRadioButton('ajusteFinanceiro', 'naoAjustarFinanceiro', '', true, _M('Não ajustar o financeiro'));
+        $radioButton1->addAttribute('onchange', SForm::getAjaxAction('calculaFinanceiro', 'divFinanceiro', false, array('acao' => 'naoAjustarFinanceiro')));
+                
+        if ( $diferencaPreco > 0 && $parcelasEmAberto )
+        {
+            $fields[] = $radioButton2 = new MRadioButton('ajusteFinanceiro', 'ajustarParcelasEmAberto', '', '', _M('Ajustar os valores das parcelas em aberto considerando acréscimos ou descontos com base no preço do curso'));
+            $radioButton2->addAttribute('onchange', SForm::getAjaxAction('calculaFinanceiro', 'divFinanceiro', false, array('acao' => 'ajustarParcelasEmAberto')));
+
+            $fields[] = $radioButton3 = new MRadioButton('ajusteFinanceiro', 'gerarNovaParcela', '', '', _M('Gerar nova parcela'));
+            $radioButton3->addAttribute('onchange', SForm::getAjaxAction('calculaFinanceiro', 'divFinanceiro', false, array('acao' => 'gerarNovaParcela')));
+        }
+        else if ( $diferencaPreco < 0 && $parcelasEmAberto )
+        {
+            $fields[] = $radioButton2 = new MRadioButton('ajusteFinanceiro', 'ajustarParcelasEmAberto', '', '', _M('Ajustar os valores das parcelas em aberto considerando acréscimos ou descontos com base no preço do curso'));
+            $radioButton2->addAttribute('onchange', SForm::getAjaxAction('calculaFinanceiro', 'divFinanceiro', false, array('acao' => 'ajustarParcelasEmAberto')));
+        
+            $fields[] = MMessage::getStaticMessage('', _M('O valor do novo curso é menor que o anterior.'), MMessage::TYPE_WARNING);
+        }
+        else if (  $diferencaPreco > 0 )
+        {
+            $fields[] = $radioButton3 = new MRadioButton('ajusteFinanceiro', 'gerarNovaParcela', '', '', _M('Gerar nova parcela'));
+            $radioButton3->addAttribute('onchange', SForm::getAjaxAction('calculaFinanceiro', 'divFinanceiro', false, array('acao' => 'gerarNovaParcela')));
+        }
+        else
+        {
+            if ( $diferencaPreco === false )
+            {
+                // Mensgem informando que a turma não possui preço cadastrado
+                $fields[] = MMessage::getStaticMessage('', _M('O financeiro não será ajustado, pois a turma não possui preço cadastrado.'), MMessage::TYPE_WARNING);
+            }
+            else if ( $parcelasEmAberto || $diferencaPreco == 0 )
+            {
+                // Mensagem informando que não existe diferença para ajustar o financeiro
+                $fields[] = MMessage::getStaticMessage('', _M('O financeiro não será ajustado, pois não existe diferença entre os preços de curso.'), MMessage::TYPE_WARNING);
+            }
+            else
+            {
+                // Mensagem informando que não existem títulos abertos para serem ajustados
+                $fields[] = MMessage::getStaticMessage('', _M('O financeiro não será ajustado, pois não existem títulos abertos.'), MMessage::TYPE_WARNING);
+            }
+        }
+            
+        $fields[] = new MDiv('divFinanceiro');
+        
+        parent::defineFields($fields, $validators, $data);
+    }
+    
+    public function calculaFinanceiro($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $personId = MIOLO::_REQUEST('personId');
+        $turmaDestino = MIOLO::_REQUEST('turmaDestino');
+        $turmaOrigem = MIOLO::_REQUEST('turmaOrigem');
+        
+        try
+        {
+            if ( $args->acao != 'naoAjustarFinanceiro' && strlen($args->acao) > 0 )
+            {
+                SDatabase::beginTransaction();
+
+                // Efetua matrícula nas oferecidas na nova turma
+                $this->matricularNasOfertasDaTurma($personId, $turmaDestino);
+
+                if ( $args->acao == 'ajustarParcelasEmAberto' )
+                {
+                    $dataGrid = $this->ajustarParcelaEmAberto($personId, $turmaOrigem, $turmaDestino);
+                    $titulo = _M('Títulos ajustados');
+                }
+                else if ( $args->acao == 'gerarNovaParcela' )
+                {
+                    $dataGrid = $this->gerarNovaParcela($personId, $turmaOrigem, $turmaDestino);
+                    $titulo = _M('Título novo');
+                }
+                
+                SDatabase::rollback();
+
+                $fld[] = $grid = $MIOLO->getUI()->getGrid($module, 'GrdTransferenciaDeTurmaFinanceiro');
+                $grid->setData($dataGrid);
+
+                $hctGrid = new MDiv('hctGrid', $fld);
+                $hctGrid->addBoxStyle('width', '100%');
+
+                $base = new MBaseGroup('namebasegroup', $titulo, array($hctGrid));
+
+                return $base;
+            }
+            else
+            {
+                return '';
+            }
+        }
+        catch ( Exception $e )
+        {
+            SDatabase::rollback();
+            return '';
+        }
+        
+    }
+    
+    public function ajustarParcelaEmAberto($personId, $turmaOrigem, $turmaDestino)
+    {
+        $diferenca = $this->obtemDiferencaDoPreco($personId, $turmaOrigem, $turmaDestino);
+        
+        // Objeto do preco
+        $precoDestino = PrcPrecoCurso::obterPrecoDaOfertaDaTurma($turmaDestino, PrcPrecoCurso::TIPO_MATRICULA);
+        
+        //Obtém o centro de custo do curso
+        $costcenterid = PrcCentroCustoOcorrenciaCurso::obterCentroDeCustoDaOcorrenciaDeCurso($precoDestino->ocorrenciacursoid);
+        if( !strlen($costcenterid) > 0 )
+        {
+            $ocorrenciadecurso = new AcpOcorrenciaCurso($precocurso->ocorrenciacursoid);
+            throw new Exception(_M('Nenhum centro de custo encontrado para o curso @1. Acesse "Pedagógico > Precificação > Contábil > Centro de custo da ocorrência de curso" e defina um centro de custo', $module, $ocorrenciadecurso->curso->nome. ' - '.$ocorrenciadecurso->turn->description.' - '.$ocorrenciadecurso->unit->description));
+        }
+        
+        $filters = new stdClass();
+        $filters->personId = $personId;
+        $filters->ofertaTurmaId = $turmaOrigem;
+        $inscricaoOrigem = AcpInscricao::buscarInscricoes($filters);
+        
+        $inscricaoOrigemId = $inscricaoOrigem[0]->inscricaoid;
+        
+        $titulos = PrcTituloInscricao::obterTitulosDaMatricula($inscricaoOrigemId, true);
+                
+        $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+        $operacoesPadroes = $busDefaultOperations->getDefaultOperations();
+                
+        if ( $diferenca < 0 )
+        {
+            $diferenca = abs($diferenca);
+            $operacao = $operacoesPadroes->repaymentCurricularComponentOperation; // reembolso de disciplina repaymentCurricularComponentOperation
+        }
+        else
+        {
+            $operacao = $operacoesPadroes->addCurricularComponentOperation; // Acréscimo de disciplina addCurricularComponentOperation
+        }
+        
+        // Calcula o valor a ser lançado nos títulos existentes
+        $valor = count($titulos) > 0 ? ($diferenca / count($titulos)) : 0;
+                
+        $busEntry = new BusinessFinanceBusEntry();
+        
+        foreach ( $titulos as $titulo )
+        {
+            //Lançamento
+            $entry = new FinEntry();
+            $entry->operationId = $operacao;
+            $entry->entryDate = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+            $entry->value = $valor;
+            $entry->costCenterId = $costcenterid;
+            $entry->isAccounted = DB_FALSE;
+            $entry->creationType = 'A';
+            $entry->invoiceId = $titulo->invoiceid;
+
+            //Insere o lançamento
+            $entryId = $busEntry->insertEntry($entry);
+        }
+        
+        $dataGrid = PrcTituloInscricao::obterInformacoesTituloTransferencia($inscricaoOrigemId);
+                
+        return $dataGrid;
+    }
+    
+    public function gerarNovaParcela($personId, $turmaOrigem, $turmaDestino)
+    {
+        $diferenca = $this->obtemDiferencaDoPreco($personId, $turmaOrigem, $turmaDestino);
+          
+        $filters = new stdClass();
+        $filters->personId = $personId;
+        $filters->ofertaTurmaId = $turmaDestino;
+        $inscricaoDestino = AcpInscricao::buscarInscricoes($filters);
+        
+        $inscricaoDestinoId = $inscricaoDestino[0]->inscricaoid;
+        
+        // Objeto do preco
+        $precoDestino = PrcPrecoCurso::obterPrecoDaOfertaDaTurma($turmaDestino, PrcPrecoCurso::TIPO_MATRICULA);
+        
+        $filters = new stdClass();
+        $filters->personId = $personId;
+        $filters->ofertaTurmaId = $turmaOrigem;
+        $inscricaoOrigem = AcpInscricao::buscarInscricoes($filters);
+        
+        $inscricaoOrigemId = $inscricaoOrigem[0]->inscricaoid;
+        
+        // Obtém os títulos abertos da inscrição de origem da pessoa
+        $titulos = PrcTituloInscricao::obterInformacoesTitulo($inscricaoOrigemId, PrcTituloInscricao::TIPO_MATRICULA, true);
+        
+        $vencimento = SAGU::NVL($titulos[0]['vencimento'], SAGU::getDateNow());
+        $vencimento = SAGU::addIntervalInDate($vencimento, 'm', '1');
+        
+        $parcela = 1;
+        
+        $prcTituloInscricao = new PrcTituloInscricao();
+        $prcTituloInscricao->inserirTitulo($inscricaoDestino[0], PrcTituloInscricao::TIPO_MATRICULA, $precoDestino, $parcela, $diferenca, $vencimento);
+
+        $dataGrid = PrcTituloInscricao::obterInformacoesTituloTransferencia($inscricaoDestinoId);
+        
+        return $dataGrid;        
+    }
+    
+    public function obtemDiferencaDoPreco($personId, $turmaOrigem, $turmaDestino)
+    {
+        $filters = new stdClass();
+        $filters->personId = $personId;
+        $filters->ofertaTurmaId = $turmaOrigem;
+        
+        $inscricao = AcpInscricao::buscarInscricoes($filters);
+        
+        $inscricaoId = $inscricao[0]->inscricaoid;
+        
+        $precoOrigem = PrcPrecoCurso::obtemValorECondicaoDoCursoUtilizadoPeloAluno($inscricaoId);
+        $precoDestino = PrcPrecoCurso::obterPrecoDaOfertaDaTurma($turmaDestino, PrcPrecoCurso::TIPO_MATRICULA);
+        
+        if ( !strlen($precoDestino->valoravista) > 0 || !strlen($precoDestino->valoraprazo) > 0 )
+        {
+            return false;
+        }
+        
+        // Condição a vista
+        if ( $precoOrigem[1] === 1 )
+        {
+            $diferenca = $precoDestino->valoravista - $precoOrigem[0];
+        }
+        // Condição a prazo
+        else
+        {
+            $diferenca = $precoDestino->valoraprazo - $precoOrigem[0];
+        }
+                
+        return $diferenca;
+    }
+    
+    
+    public function verificaSeExisteParcelasEmAberto($personId, $turmaOrigem)
+    {
+        $filters = new stdClass();
+        $filters->personId = $personId;
+        $filters->ofertaTurmaId = $turmaOrigem;
+        $inscricaoOrigem = AcpInscricao::buscarInscricoes($filters);
+        
+        $inscricaoOrigemId = $inscricaoOrigem[0]->inscricaoid;
+        
+        $titulos = PrcTituloInscricao::obterInformacoesTituloTransferencia($inscricaoOrigemId);
+        
+        return count($titulos) > 0;
+    }
+    public function btnSaveAndFinish_click($sender = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $personId = MIOLO::_REQUEST('personId');
+        $turmaOrigem = MIOLO::_REQUEST('turmaOrigem');
+        $turmaDestino = MIOLO::_REQUEST('turmaDestino');
+        $aproveitarFrequencias = MIOLO::_REQUEST('aproveitarFrequencias');
+        $naoAjustarFinanceiro = MIOLO::_REQUEST('ajusteFinanceiro') == 'naoAjustarFinanceiro' ? DB_TRUE : DB_FALSE;
+        $ajustarParcelasEmAberto = MIOLO::_REQUEST('ajusteFinanceiro') == 'ajustarParcelasEmAberto' ? DB_TRUE : DB_FALSE;
+        $gerarNovaParcela = MIOLO::_REQUEST('ajusteFinanceiro') == 'gerarNovaParcela' ? DB_TRUE : DB_FALSE;
+                
+        try
+        {
+            SDatabase::beginTransaction();
+                        
+            $this->matricularNasOfertasDaTurma($personId, $turmaDestino);
+                        
+            if ( $ajustarParcelasEmAberto == DB_TRUE )
+            {
+                $this->ajustarParcelaEmAberto($personId, $turmaOrigem, $turmaDestino);
+            }
+            else if ( $gerarNovaParcela == DB_TRUE )
+            {
+                $this->gerarNovaParcela($personId, $turmaOrigem, $turmaDestino);
+            }
+            
+            // Salva log da transferência
+            $acpTransferenciaDeTurma = new AcpTransferenciaDeTurma();
+            $acpTransferenciaDeTurma->personId = $personId;
+            $acpTransferenciaDeTurma->ofertaTurmaOrigem = $turmaOrigem;
+            $acpTransferenciaDeTurma->ofertaTurmaDestino = $turmaDestino;
+            $acpTransferenciaDeTurma->aproveitarFrequencias = $aproveitarFrequencias;
+            $acpTransferenciaDeTurma->naoAjustarFinanceiro = $naoAjustarFinanceiro;
+            $acpTransferenciaDeTurma->ajustarParcelasEmAberto = $ajustarParcelasEmAberto;
+            $acpTransferenciaDeTurma->gerarNovaParcela = $gerarNovaParcela;
+            $acpTransferenciaDeTurma->save();
+                        
+            $filtrosOrigem = new stdClass();
+            $filtrosOrigem->personId = $personId;
+            $filtrosOrigem->ofertaTurmaId = $turmaOrigem;
+            
+            $filtrosDestino = new stdClass();
+            $filtrosDestino->personId = $personId;
+            $filtrosDestino->ofertaTurmaId = $turmaDestino;
+            
+            $matriculasOrigem = AcpMatricula::buscarMatriculas($filtrosOrigem);
+            $matriculasDestino = AcpMatricula::buscarMatriculas($filtrosDestino);
+                     
+            // Salva log das disciplinas de origem
+            foreach ( $matriculasOrigem as $matriculaOrigem )
+            {
+                $acpTransferenciaDeTurmaDisciplinas = new AcpTransferenciaDeTurmaDisciplinas();
+                $acpTransferenciaDeTurmaDisciplinas->transferenciaDeTurmaId = $acpTransferenciaDeTurma->transferenciaDeTurmaId;
+                $acpTransferenciaDeTurmaDisciplinas->nota = $matriculaOrigem->notafinal;
+                $acpTransferenciaDeTurmaDisciplinas->conceito = $matriculaOrigem->conceitofinal;
+                $acpTransferenciaDeTurmaDisciplinas->parecer = $matriculaOrigem->parecerfinal;
+                $acpTransferenciaDeTurmaDisciplinas->situacao = $matriculaOrigem->situacao;
+                $acpTransferenciaDeTurmaDisciplinas->tipo = AcpTransferenciaDeTurmaDisciplinas::DISC_ORIGEM; // Origem
+                $acpTransferenciaDeTurmaDisciplinas->frequencia = $matriculaOrigem->frequencia;
+                $acpTransferenciaDeTurmaDisciplinas->matriculaId = $matriculaOrigem->matriculaid;
+                $acpTransferenciaDeTurmaDisciplinas->save();
+            }
+            
+            // Salva log das disciplinas de destino
+            foreach ( $matriculasDestino as $matriculaDestino )
+            {
+                $acpTransferenciaDeTurmaDisciplinas = new AcpTransferenciaDeTurmaDisciplinas();
+                $acpTransferenciaDeTurmaDisciplinas->transferenciaDeTurmaId = $acpTransferenciaDeTurma->transferenciaDeTurmaId;
+                $acpTransferenciaDeTurmaDisciplinas->nota = $matriculaDestino->notafinal;
+                $acpTransferenciaDeTurmaDisciplinas->conceito = $matriculaDestino->conceitofinal;
+                $acpTransferenciaDeTurmaDisciplinas->parecer = $matriculaDestino->parecerfinal;
+                $acpTransferenciaDeTurmaDisciplinas->situacao = $matriculaDestino->situacao;
+                $acpTransferenciaDeTurmaDisciplinas->tipo = AcpTransferenciaDeTurmaDisciplinas::DISC_DESTINO; // Destino
+                $acpTransferenciaDeTurmaDisciplinas->frequencia = $matriculaDestino->frequencia;
+                $acpTransferenciaDeTurmaDisciplinas->matriculaId = $matriculaDestino->matriculaid;
+                $acpTransferenciaDeTurmaDisciplinas->save();
+            }
+            
+            SDatabase::commit();
+            
+            $msg = _M('Transferência executada com sucesso.');
+            $goto = $MIOLO->GetActionURL($module, 'main:process:transferenciaDeTurma', null, array('transferenciadeturmaid' => $acpTransferenciaDeTurma->transferenciaDeTurmaId));
+            SAGU::information($msg, $goto);
+        }
+        catch ( Exception $ex )
+        {
+            SDatabase::rollback();
+            $MIOLO->error('Ocorreu o erro durante a transferência: ' . $ex->getMessage());
+        }
+                
+        return;
+    }
+    
+}

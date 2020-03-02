@@ -1,0 +1,755 @@
+<?php
+/**
+ * <--- Copyright 2005-2013 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Type pedagogico
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.com.br]
+ *
+ * @since
+ * Class created on 29/08/2013
+ */
+
+// uses necessario para portal
+$MIOLO->uses('types/AcpOfertaCurso.class', 'pedagogico');
+$MIOLO->uses('types/AcpOcorrenciaCurso.class', 'pedagogico');
+$MIOLO->uses('types/AcpCurso.class', 'pedagogico');
+$MIOLO->uses('types/AcpPerfilCurso.class', 'pedagogico');
+$MIOLO->uses('types/AcpRegrasMatriculaPerfilCurso.class', 'pedagogico');
+$MIOLO->uses('types/AcpGradeHorario.class', 'pedagogico');
+$MIOLO->uses('types/AcpCursoDocente.class', 'pedagogico');
+$MIOLO->uses('types/AcpCamposAdicionaisCurso.class', 'pedagogico');
+$MIOLO->uses('types/AcpPerfilCursoCamposAdicionais.class', 'pedagogico');
+$MIOLO->uses('types/AcpPerfilCursoComponenteCurricular.class', 'pedagogico');
+$MIOLO->uses('types/AcpTipoComponenteCurricular.class', 'pedagogico');
+$MIOLO->uses('types/AcpTipoDocumento.class', 'pedagogico');
+
+class AcpInscricao extends SType
+{
+    protected $insertWithPkey = true;
+    
+    protected $_utilizaNovoPadrao = true;
+    
+    protected $_utilizaMultiUnidade = true;
+    
+    protected $_utilizaMultiCentro = true;
+    
+    protected $_defaultOrder = 'pessoa.name';
+    
+    protected $_tableViewName = 'unit_acpinscricao';
+    
+    protected $_virtualColumns = array(
+        '_pessoa' => 'pessoa.personid || \' - \' || pessoa.name',
+        '_nomecurso' => 'ofertacurso.descricao || \' (\' || curso.nome || \')\''
+    );
+    
+    protected $_descriptionColumn = 'pessoa.name || \' - \' || ofertacurso.descricao';
+    
+    protected $_associations = array(
+        'pessoa' => array(
+            'mode' => 'one',
+            'typeClass' => 'BasPessoaFisica',
+            'joinColumnLeft' => 'personid',
+            'joinColumnRight' => 'personid',
+            'joinOnly' => true,
+        ),
+        'ofertacurso' => array(
+            'mode' => 'one',
+            'typeClass' => 'AcpOfertaCurso',
+            'joinColumnLeft' => 'ofertacursoid',
+            'joinColumnRight' => 'ofertacursoid',
+        ),
+    );
+    
+    const ORIGEM_SITE = 'S';
+    const ORIGEM_ADMINISTRATIVA = 'A';
+    const ORIGEM_PROCESSO_SELETIVO = 'P';
+    
+    const SITUACAO_INSCRITO = 'I';
+    const SITUACAO_ESPERANDO = 'E';
+    const SITUACAO_TRANCADO = 'T';
+    const SITUACAO_CANCELADO = 'C';
+    const SITUACAO_PENDENTE = 'P';
+    
+    /**
+     * Objeto oferaCurso da inscrição
+     * @var AcpOfertaCurso
+     */
+    public $ofertacurso;
+    
+    /**
+     * Objeto pessoa da inscrição
+     * @var BasPessoaFisica
+     */
+    public $pessoa;
+    
+    public $inscricaoid;
+    public $personid;
+    public $situacao;
+    public $datasituacao;
+    public $origem;
+    public $precocondicaoinscricaoid;
+    public $diadevencimentoid; 
+    public $ofertacursoid;
+    public $buscaocorrenciacursoid;
+    public $buscaofertaturmaid;
+    public $buscaofertacursoid;
+    public $buscapendentes;
+    public $incluircancelados;
+    public $convenantid;
+    
+    public function __construct($id = null, $disableAssociations = false)
+    {
+        if ( in_array(MIOLO::_REQUEST('action'), array('main:process:inscricaoturmaexterna', 'main:process:inscricaopagamentoexterna', 'main:process:inscricaoexterna', 'main:process:termodeinscricao')) )
+        {
+            $this->_utilizaMultiUnidade = false;
+            $this->_utilizaMultiCentro = false;
+            $this->_tableViewName = null;
+        }
+        
+        if ( $disableAssociations )
+        {
+            $this->_defaultOrder = null;
+            $this->_virtualColumns = array();
+            $this->_associations = array();
+        }
+        
+        parent::__construct($id);
+    }
+
+    /**
+     * Sobrescrita do método de busca da grid. Para resolver o problema de visualização
+     * quando o aluno se inscreveu por módulos. Ticket #40034
+     * 
+     * @param (object) $args - Filtros
+     * @return string
+     */
+    public function getSearchGridSQL($args)
+    {
+        $sql = " SELECT DISTINCT inscricao.inscricaoId,
+                        ARRAY_TO_STRING(ARRAY_AGG(DISTINCT OF.descricao), ',') as turma,
+                        OC.descricao || ' (' || CU.nome || ')',
+                        inscricao.personid || ' - ' || getpersonname(inscricao.personid) AS pessoa,
+                        inscricao.situacao,
+                        TO_CHAR(inscricao.datasituacao, getParameter('BASIC', 'MASK_TIMESTAMP_DEFAULT')) AS dataSituacao,
+                        inscricao.origem,
+                        getPersonName(inscricao.personid) AS nomePessoa
+                   FROM acpInscricao inscricao
+             INNER JOIN acpinscricaoturmagrupo IT
+                     ON (IT.inscricaoid = inscricao.inscricaoid)
+             INNER JOIN acpOfertaTurma OF
+                     ON (IT.ofertaturmaid = OF.ofertaturmaid)
+             INNER JOIN acpOfertaCurso OC 
+                     ON (OF.ofertacursoid = OC.ofertacursoid)
+             INNER JOIN AcpOcorrenciaCurso OCC
+                     ON (OC.ocorrenciacursoid = OCC.ocorrenciacursoid)
+             INNER JOIN acpCurso CU
+                     ON (OCC.cursoId = CU.cursoId)  ";
+        
+        $wheres = array();
+                
+        // Incluir cancelados
+        if ( ( strlen($args->incluircancelados) > 0 ) && ( $args->incluircancelados != DB_TRUE ) )
+        {
+            $where = " AND inscricao.situacao <> ? ";
+            $wheres[] = AcpInscricao::SITUACAO_CANCELADO;
+        }
+        
+        // Apenas pendentes
+        if ( ( strlen($args->buscapendentes) > 0 ) && ( $args->buscapendentes == DB_TRUE ) )
+        {
+            $where .= " AND inscricao.situacao = ? ";
+            $wheres[] = AcpInscricao::SITUACAO_PENDENTE;
+        }
+        
+        // Ocorrência de curso
+        if ( strlen($args->buscaocorrenciacursoid) > 0 )
+        {
+            $where .= " AND OCC.ocorrenciaCursoId = ? ";
+            $wheres[] = $args->buscaocorrenciacursoid;
+        }
+        
+        //Oferta de curso
+        if( strlen($args->buscaofertacursoid) > 0 )
+        {
+            $where .= " AND OC.ofertaCursoId= ? ";
+            $wheres[] = $args->buscaofertacursoid;
+        }
+        
+        // Oferta de turma
+        if ( strlen($args->buscaofertaturmaid) > 0 )
+        {
+            $where .= " AND OF.ofertaTurmaId= ? ";
+            $wheres[] = $args->buscaofertaturmaid;
+        }
+
+        // Filtros genéricos
+        $filtroGenerico = MIOLO::_REQUEST('buscaS');
+        if( strlen($filtroGenerico) > 0 )
+        {
+            $where .= " AND (inscricao.inscricaoId::VARCHAR = ? OR
+                             getPersonName(inscricao.personId) ILIKE ? OR
+                             inscricao.personId::VARCHAR = ? OR
+                             TO_CHAR(inscricao.datasituacao, getParameter('BASIC', 'MASK_TIMESTAMP_DEFAULT'))::VARCHAR ILIKE ? OR
+                             (CASE WHEN inscricao.origem = ? THEN 'Processo Seletivo'
+                                   WHEN inscricao.origem = ? THEN 'Site'
+                                   WHEN inscricao.origem = ? THEN 'Administrativa'
+                                   ELSE 'Nenhuma'
+                              END) ILIKE ? )";
+            
+            $wheres[] = $filtroGenerico;
+            $wheres[] = $filtroGenerico . '%';
+            $wheres[] = $filtroGenerico;
+            $wheres[] = $filtroGenerico . '%';
+            $wheres[] = self::ORIGEM_PROCESSO_SELETIVO;
+            $wheres[] = self::ORIGEM_SITE;
+            $wheres[] = self::ORIGEM_ADMINISTRATIVA;
+            $wheres[] = $filtroGenerico . '%';
+        }
+        
+        if ( strlen($where) > 0  )
+        {
+            $sql .= ' WHERE ' . substr($where, 4);
+
+            $sql .= " GROUP BY inscricao.inscricaoId, 
+                           OC.descricao, 
+                           CU.nome, 
+                           inscricao.personid, 
+                           inscricao.situacao, 
+                           inscricao.datasituacao, 
+                           inscricao.origem, 
+                           nomePessoa
+                           
+                  ORDER BY nomePessoa";
+
+            return SAGU::prepare($sql, $wheres);
+        }
+    }
+    
+    public function beforeFind(MSQL $sql)
+    {
+        $sql->setColumns('acpofertaturma.descricao AS ofertaturmadesc');
+        $sql->addLeftJoin('acpinscricaoturmagrupo inscricaoturmagrupo', 'inscricaoturmagrupo.inscricaoid = acpinscricao.inscricaoid');
+        $sql->addLeftJoin('acpofertaturma', 'inscricaoturmagrupo.ofertaturmaid = acpofertaturma.ofertaturmaid');
+        $sql->addLeftJoin('prcprecocondicao', 'prcprecocondicao.precocondicaoid = inscricaoturmagrupo.precocondicaomatriculaid');
+        $sql->addLeftJoin('prccondicaodepagamento', 'prccondicaodepagamento.condicaodepagamentoid = prcprecocondicao.condicaodepagamentoid');
+        $sql->setColumns('prcprecocondicao.valorparcela AS parcela');
+        $sql->setColumns('prccondicaodepagamento.descricao AS condicaopagamento');
+
+        if ( strlen($this->buscaofertacursoid) > 0)
+        {
+            $sql->addEqualCondition('acpinscricao.ofertacursoid',$this->buscaofertacursoid);
+        }
+        
+        if ( strlen($this->buscaofertaturmaid) > 0)
+        {            
+            $sql->addEqualCondition('acpofertaturma.ofertaturmaid',$this->buscaofertaturmaid);
+        }
+        
+        if ( strlen($this->buscaocorrenciacursoid) > 0 )
+        {
+            $sql->addEqualCondition('ocorrenciacurso.ocorrenciacursoid', $this->buscaocorrenciacursoid);
+        }
+        
+        if ( ( strlen($this->buscapendentes) > 0 ) && ( $this->buscapendentes == DB_TRUE ) )
+        {
+            $sql->addEqualCondition('AcpInscricao.situacao', AcpInscricao::SITUACAO_PENDENTE);
+        }
+        
+        if ( ( strlen($this->incluircancelados) > 0 ) && ( $this->incluircancelados != DB_TRUE ) )
+        {
+            $sql->addNotEqualCondition('AcpInscricao.situacao', AcpInscricao::SITUACAO_CANCELADO);
+        }
+        
+        // Para os relatórios que possuem o componente sescolha, e necessitam apenas inscrições ativas
+        $args = $this->getAjaxArgs();
+        
+        if ( $args->apenasInscritos == DB_TRUE )
+        {
+            $sql->addEqualCondition('AcpInscricao.situacao', AcpInscricao::SITUACAO_INSCRITO);
+        }
+
+        return $sql;
+    }
+    
+    /**
+     * @return BasPessoaFisica
+     */
+    public function obterPessoa()
+    {
+        return new BasPessoaFisica($this->personid);
+    }
+    
+    /**
+     * @return array
+     */
+    public function obterInscricaoTurmaGrupos()
+    {
+        $itg = new AcpInscricaoTurmaGrupo(null, true);
+        
+        return $itg->findMany( $itg->msql()->addEqualCondition('acpinscricaoturmagrupo.inscricaoid', $this->inscricaoid) );
+    }
+    
+    public function listarOrigem()
+    {
+        return array(self::ORIGEM_SITE => _M('Site'),
+                     self::ORIGEM_ADMINISTRATIVA => _M('Administrativa'),
+                     self::ORIGEM_PROCESSO_SELETIVO => _M('Processo Seletivo'));
+    }
+    
+    public function listarSituacao()
+    {
+        return array(self::SITUACAO_INSCRITO => _M('Inscrito'),
+                     self::SITUACAO_ESPERANDO => _M('Esperando'),
+                     self::SITUACAO_TRANCADO => _M('Trancado'),
+                     self::SITUACAO_CANCELADO => _M('Cancelado'),
+                     self::SITUACAO_PENDENTE => _M('Pendente') );
+    }
+    
+    public function save() 
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        try
+        {
+            $isInsert = !$this->hasPkeyValue();
+            $ok = parent::save();
+
+            if ( $ok && $isInsert )
+            {
+                $inscricaoid = $this->inscricaoid;
+                $inscricao = new AcpInscricao($inscricaoid);
+
+                // Sem confirmacao: Ja muda o status e insere matricula automaticamente
+                if ( $inscricao->obterRegras()->formadeconfirmacaoinscricao == AcpRegrasMatriculaPerfilCurso::CONFIRMACAO_INSCRICAO_NENHUM )
+                {
+                    $inscricao->alterarParaInscrito(true);
+                }
+            }
+        }
+        catch(Exception $e)
+        {
+            $msg = $e->getMessage();
+            
+            if ( !SAGU::isConsoleMode() )
+            {
+                SDatabase::rollback();
+                
+                $MIOLO->error('Não foi possível gerar os títulos: '.$msg);
+            }
+            else
+            {
+                throw new Exception($e);
+            }
+        }
+        
+        return $ok;
+    }
+    
+    public function alterarParaInscrito($inserirMatriculas = true)
+    {        
+        //Valida o limite de alunos por curso/turma
+        $this->validarLimites();
+        
+        // altera status
+        $this->situacao = AcpInscricao::SITUACAO_INSCRITO;
+        $this->save();
+
+        // insere matriculas
+        if ( $inserirMatriculas )
+        {
+            $matricula = new AcpMatricula();
+            $matricula->inserirDaInscricao($this->inscricaoid);
+        }
+    }
+    
+    /**
+     * Valida os limites de alunos inscritos por turma
+     * @throws Exception - Aborta caso os limites de alunos inscritos na(s) turma(s) selecionada(s) excedeu
+     */
+    private function validarLimites()
+    {
+        $msg = '';
+        foreach( $this->obterInscricaoTurmaGrupos() as $cod => $inscricaoturmagrupo )
+        {
+            $inscricaoturmagrupo instanceof AcpInscricaoTurmaGrupo;
+            
+            $ofertaTurma = new AcpOfertaTurma($inscricaoturmagrupo->ofertaturmaid, true);
+            $maxAlunos = $ofertaTurma->maximoalunos;
+            
+            //Obtém total de matriculados na turma
+            $filters = new stdClass();
+            $filters->ofertaTurmaId = $ofertaTurma->ofertaturmaid;
+            $filters->situacao = AcpInscricao::SITUACAO_INSCRITO;
+
+            $totalMatriculados = AcpOfertaTurma::contarAlunosNaTurma($filters);           
+ 
+            if ( is_numeric($maxAlunos) && ( $totalMatriculados >= $maxAlunos ) )
+            {
+                if( strlen($msg) > 0 )
+                {
+                    $msg .= "<br>";
+                }
+                $msg .= _M('O limite máximo de alunos na turma @1 - @2 é de @3 e já alunos foi excedido. Verifique a turma selecionada.', null, $ofertaTurma->ofertaturmaid, $ofertaTurma->descricao, $maxAlunos);
+            }
+        }
+        
+        //Retorna mensagem do erro de validação na tela
+        if( strlen($msg) > 0 )
+        {
+            throw new Exception($msg);
+        }
+    }
+    
+    public function cancelarInscricao($canceladamatricula = false, $cancelaFinanceiro = true)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $inscricaoOld = new AcpInscricao($this->inscricaoid);
+        
+        //Caso o cancelamento de inscrição vier do cancelamento da matricula cancela de qualquer forma
+        if( !$canceladamatricula )
+        {
+            if ( $this->situacao != AcpInscricao::SITUACAO_PENDENTE )
+            {
+                $href = $MIOLO->GetActionURL($module, 'main:process:matricula', NULL, array('buscanomeS' => $this->obterPessoa()->name));
+                $link = new MLink('_link', null, $href, 'clicando aqui', '_new');
+                $msg = 'A inscrição de código @1 está com a situação diferente de Pendente.<br> Para cancelar a inscrição, é necessário cancelar a matrícula ';
+                
+                throw new Exception(_M($msg . $link->generate() . '.', null, $this->inscricaoid));
+            }
+        }
+        
+        $this->situacao = AcpInscricao::SITUACAO_CANCELADO;
+        
+        //Se a situação está mudando precisa trocar a data da situação
+        if ( $inscricaoOld->situacao != $this->situacao )
+        {
+            $this->datasituacao = SAGU::getDateNow(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP'));   
+        }
+        
+        $this->save();
+        
+        if ( $cancelaFinanceiro )
+        {
+            // Cancela titulos, caso tenha abertos
+            PrcTituloInscricao::cancelarTitulos($this->inscricaoid);
+        }
+            
+        // Cancela matricula, caso existir
+        $inscricaoturmagruposearch = AcpInscricaoTurmaGrupo::obterInscricaoTurmaGrupo($this->inscricaoid);
+        foreach( $inscricaoturmagruposearch as $cod =>$inscricaoturmagrupo)
+        {
+            $matricula = new AcpMatricula();
+            $sql = $matricula->msql()->addEqualCondition('inscricaoturmagrupo.inscricaoid', $inscricaoturmagrupo->inscricaoid);
+            $rows = $matricula->findMany($sql);
+
+            foreach ( $rows as $mat )
+            {
+                $mat instanceof AcpMatricula;
+
+                if ( $mat->situacao == AcpMatricula::SITUACAO_INSCRICAO )
+                {
+                    $mat->cancelarMatricula();
+                }
+            }
+            
+            //Caso o curso não for gratuito recalcula os titulos
+            if( $mat->inscricaoturmagrupo->inscricao->ofertacurso->ocorrenciacurso->curso->gratuito == DB_FALSE && $cancelaFinanceiro )
+            {
+                PrcTituloInscricao::cancelamentoFinanceiro($this->inscricaoid);
+            }
+        }
+    }
+    
+    /**
+     * @return AcpRegrasMatriculaPerfilCurso
+     */
+    public function obterRegras()
+    {
+        return $this->ofertacurso->ocorrenciacurso->curso->perfilcurso->regras;
+    }
+    
+    /**
+     * Verifica se determinada pessoa já possui uma inscrição ativa na oferta de turma
+     * @param type $personid - Código da pessoa
+     * @param type $ofertaturmaid - Código da oferta de turma
+     */
+    public static function possuiInscricaoAtiva($personid, $ofertaturmaid)
+    {
+        $return = FALSE;
+        
+        if ( strlen($personid) > 0 && strlen($ofertaturmaid) > 0 )
+        {
+            $type = new AcpInscricao();
+            $sql = $type->msql();
+            $sql->addInnerJoin('AcpInscricaoTurmaGrupo', 'AcpInscricao.inscricaoid = AcpInscricaoTurmaGrupo.inscricaoid');
+            $sql->addEqualCondition('AcpInscricao.personid', $personid);
+            $sql->addEqualCondition('AcpInscricaoTurmaGrupo.ofertaturmaid', $ofertaturmaid);
+            $sql->addNotEqualCondition('AcpInscricao.situacao', AcpInscricao::SITUACAO_CANCELADO);
+
+            $return = $type->findCount($sql) > 0;
+        }
+        
+        return $return;
+    }
+    
+    /**
+     * Verifica se aluno tem inscricao ativa em algum curso.
+     * Usado nos documentos do portal
+     * 
+     * @param string $cursoId - Código do curso
+     * @param integer $inscricaoTurmaGrupoId - Inscriç?o turma/grupo
+     * 
+     * @return true/false
+     */
+    public static function verificaInscricaoAtiva($inscricaoId, $filters)
+    {
+        $sql = "SELECT A.inscricaoId
+                  FROM acpInscricao A
+            INNER JOIN acpInscricaoTurmaGrupo B
+                    ON (A.inscricaoId = B.inscricaoId)
+            INNER JOIN acpOfertaTurma C
+                    ON (B.ofertaTurmaId = C.ofertaTurmaId)
+                 WHERE A.inscricaoId = ?
+                   AND A.situacao = ? ";
+        
+        $args[] = $inscricaoId;
+        $args[] = AcpInscricao::SITUACAO_INSCRITO;
+        
+        if ( strlen($filters->ofertaCursoId) > 0 )
+        {
+            $sql .= " AND C.ofertaCursoId = ? ";
+            $args[] = $filters->ofertaCursoId;
+        }
+        
+        if ( strlen($filters->ofertaTurmaId) > 0 )
+        {
+            $sql .= " AND C.ofertaTurmaId = ? ";
+            $args[] = $filters->ofertaTurmaId;
+        }            
+        
+        $return = SDatabase::query($sql, $args);
+        
+        return (strlen($return[0][0]) > 0);
+    }
+    
+
+    /**
+     * Obtém a carga horária total da inscrição na oferta de turma
+     * @param type $inscricaoid
+     */
+    public static function obterCargaHorariaTotal($inscricaoid, $ofertaturmaid)
+    {
+        $return = SDatabase::query('SELECT * FROM acp_cargahorariatotal(?, ?)', array($inscricaoid, $ofertaturmaid));
+        return $return[0][0];
+    }
+    
+    /**
+     * Obtém a carga horária total da inscrição até a data
+     * @param type $inscricaoid
+     */
+    public static function obterCargaHorariaTotalAteAData($inscricaoid, $ofertaturmaid, $data = null)
+    {
+        $return = SDatabase::query('SELECT * FROM acp_cargahorariatotalateadata(?, ?, ?)', array($inscricaoid, $ofertaturmaid, $data));
+        return $return[0][0];
+    }
+      
+    /**
+     * @return array
+     */
+    public static function buscarInscricoes($filters)
+    {   
+        $inscricao = new AcpInscricao();
+        $sql = $inscricao->msql();
+        
+        if ( strlen($filters->personId) > 0 )
+        {
+            $sql->addEqualCondition('acpinscricao.personid', $filters->personId);
+        }
+        
+        if ( strlen($filters->situacao) > 0 )
+        {
+            $sql->addEqualCondition('acpinscricao.situacao', $filters->situacao);
+        }
+        
+        if ( strlen($filters->formadeconfirmacaoinscricao) > 0 )
+        {
+            $sql->addEqualCondition('regras.formadeconfirmacaoinscricao', $filters->formadeconfirmacaoinscricao);
+        }
+        
+        if ( strlen($filters->invoiceId) > 0 )
+        {
+            $sql->addInnerJoin('prctituloinscricao titulo', "
+                    titulo.inscricaoid = acpinscricao.inscricaoid
+                and titulo.invoiceid = '{$filters->invoiceId}'
+                and titulo.tipo = '" . PrcTituloInscricao::TIPO_INSCRICAO . "'");
+        }
+        
+        if ( strlen($filters->ofertaTurmaId) > 0 )
+        {
+            $sql->addInnerJoin("acpinscricaoturmagrupo", "acpinscricaoturmagrupo.inscricaoid = acpinscricao.inscricaoid");
+            $sql->addEqualCondition("acpinscricaoturmagrupo.ofertaturmaid", $filters->ofertaTurmaId);
+        }
+        
+        if ( strlen($filters->cursoId) > 0 )
+        {
+            $sql->addLeftJoin("acpcursoinscricao", "acpinscricao.cursoinscricaoid = acpcursoinscricao.cursoinscricaoid");                        
+            $sql->addEqualCondition('acpinscricao.cursoid', $filters->cursoId);
+        }
+        
+        return $inscricao->findMany( $sql );
+    }
+    
+    /**
+     * @return array
+     */
+    public static function obterInformacoes($inscricaoId)
+    {
+        $sql = new MSQL();
+        $sql->setColumns('c.cursoid,
+                          pc.perfilcursoid,
+                          r.formadeconfirmacaomatricula');
+        $sql->setTables('AcpInscricao i');
+        $sql->addLeftJoin('acpofertacurso oc', 'oc.ofertacursoid = i.ofertacursoid');
+        $sql->addLeftJoin('acpocorrenciacurso o', 'o.ocorrenciacursoid = oc.ocorrenciacursoid');
+        $sql->addLeftJoin('acpcurso c', 'c.cursoid = o.cursoid');
+        $sql->addLeftJoin('acpperfilcurso pc', 'pc.perfilcursoid = c.perfilcursoid');
+        $sql->addLeftJoin('acpregrasmatriculaperfilcurso r', 'r.perfilcursoid = pc.perfilcursoid');
+        $sql->addEqualCondition('i.inscricaoid', $inscricaoId);
+
+        $rows = SDatabase::queryAssociative($sql);
+        
+        return $rows[0];
+    }
+    
+    /**
+     * @return boolean
+     */
+    public static function possuiInscricao($personId)
+    {
+        $sql = new MSQL();
+        $sql->setColumns('COUNT(*)');
+        $sql->setTables('acpinscricao i');
+        $sql->addEqualCondition('i.personid', $personId);
+        
+        $rows = SDatabase::query($sql->select());
+        
+        return $rows[0][0] > 0;
+    }
+    
+    public static function contarAvaliacoes($inscricaoId)
+    {
+        $rows = SDatabase::query("
+                SELECT COUNT(*)
+                  FROM acpavaliacao A
+            INNER JOIN acpmatricula M
+                    ON M.matriculaid = A.matriculaid
+            INNER JOIN acpinscricaoturmagrupo ITG
+                    ON ITG.inscricaoturmagrupoid = M.inscricaoturmagrupoid
+                 WHERE ITG.inscricaoId = ?", array($inscricaoId));
+        
+        return $rows[0][0];
+    }
+
+    public static function contarFrequencias($inscricaoId)
+    {
+        $rows = SDatabase::query("
+                SELECT COUNT(*)
+                  FROM acpfrequencia F
+            INNER JOIN acpmatricula M
+                    ON M.matriculaid = F.matriculaid
+            INNER JOIN acpinscricaoturmagrupo ITG
+                    ON ITG.inscricaoturmagrupoid = M.inscricaoturmagrupoid
+                 WHERE ITG.inscricaoId = ?", array($inscricaoId));
+        
+        return $rows[0][0];
+    }
+    
+    public function delete()
+    {
+        $ok = true;
+
+
+        $ok = $ok && SDatabase::execute("
+                DELETE FROM acpavaliacao WHERE avaliacaoid IN (
+                    SELECT avaliacaoid
+                          FROM acpavaliacao A
+                    INNER JOIN acpmatricula M
+                            ON M.matriculaid = A.matriculaid
+                    INNER JOIN acpinscricaoturmagrupo ITG
+                            ON ITG.inscricaoturmagrupoid = M.inscricaoturmagrupoid
+                         WHERE ITG.inscricaoId = ?
+                 )", array($this->inscricaoid));
+
+
+        $ok = $ok && SDatabase::execute("
+                DELETE FROM acpfrequencia WHERE frequenciaid IN (
+                    SELECT frequenciaid
+                      FROM acpfrequencia F
+                    INNER JOIN acpmatricula M
+                        ON M.matriculaid = F.matriculaid
+                    INNER JOIN acpinscricaoturmagrupo ITG
+                        ON ITG.inscricaoturmagrupoid = M.inscricaoturmagrupoid
+                     WHERE ITG.inscricaoId = ?
+                 )", array($this->inscricaoid));
+        
+        $ok = $ok && SDatabase::execute("DELETE FROM acpmatricula WHERE EXISTS(
+                SELECT 1
+                  FROM acpinscricaoturmagrupo ITG
+                 WHERE acpmatricula.inscricaoturmagrupoid = ITG.inscricaoturmagrupoid
+                   AND ITG.inscricaoId = ?
+        )", array($this->inscricaoid));
+        
+        $ok = $ok && SDatabase::execute("DELETE FROM acpinscricaoturmagrupo WHERE inscricaoid = ?", array($this->inscricaoid));
+        
+        // Exclui(cancela) os títulos da finreceivableinvoice referentes a matrícula e a inscrição
+        PrcTituloInscricao::cancelarTitulos($this->inscricaoid, PrcTituloInscricao::TIPO_MATRICULA);
+        PrcTituloInscricao::cancelarTitulos($this->inscricaoid, PrcTituloInscricao::TIPO_INSCRICAO);
+        
+        $ok = $ok && SDatabase::execute("DELETE FROM prctituloinscricao WHERE inscricaoid = ?", array($this->inscricaoid));
+        $ok = $ok && SDatabase::execute("DELETE FROM acpinscricao WHERE inscricaoid = ?", array($this->inscricaoid));
+        
+        return $ok;
+    }
+    
+    public static function obterCursoInfo($inscricaoId)
+    {
+        $sql = "SELECT C.nome as curso,
+                        C.cursoid,
+                        E.unitid
+                   FROM acpInscricao A
+             INNER JOIN acpOfertaCurso B
+                     ON (B.ofertacursoid = A.ofertacursoid)
+             INNER JOIN acpOcorrenciaCurso E
+                     ON (E.ocorrenciacursoid = B.ocorrenciacursoid)
+             INNER JOIN acpCurso C
+                     ON (C.cursoid = E.cursoid)
+                  WHERE A.inscricaoid = ? ;";
+        $params[] = $inscricaoId;
+        $return = SDatabase::query($sql, $params);
+        return $return;       
+    }
+}
+?>

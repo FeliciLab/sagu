@@ -1,0 +1,316 @@
+<?php
+
+/**
+ * Classe que importa as informações do arquivo do Urânia.
+ * 
+ * @author Bruno Edgar Fuhr <bruno@solis.com.br>
+ * @since 25/09/2013
+ */
+
+class BusinessAcademicBusUrania extends sBusiness
+{
+    
+    public function importarDados($periodId, $courseId, $courseVersion, $turnId, $unitId, $xmlUrania, $gravar = TRUE)
+    {
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $busCurriculum = new BusinessAcademicBusCurriculum();
+        $busGroup = new BusinessAcademicBusGroup();
+        $busSchedule = new BusinessAcademicBusSchedule();
+        $busScheduleProfessor = new BusinessAcademicBusScheduleProfessor();
+        $busWeekDay = new BusinessBasicBusWeekDay();
+        $busTimeSheet = new BusinessAcademicBusTimeSheet();
+        
+        // Turno
+        $timeSheet = $busTimeSheet->getTimeSheetByDescription($xmlUrania->getTurno());
+        $timeSheetId = $timeSheet[0];
+        // Horarios do turno
+        $times = $busTimeSheet->getTimesForUrania($timeSheetId);
+        
+        $courseVersion = is_numeric($courseVersion) ? $courseVersion : 1;
+        
+        // Obter LearningPeriod       
+        $filtros = new stdClass();
+        $filtros->periodId = $periodId;
+        $filtros->courseId = $courseId;
+        $filtros->courseVersion = $courseVersion;
+        $filtros->turnId = $turnId;
+        $filtros->unitId = $unitId;
+        $learningPeriod = $busLearningPeriod->searchLearningPeriod($filtros, true);
+        $learningPeriod = $learningPeriod[0];        
+        $learningPeriodId = $learningPeriod->learningPeriodId;
+        
+        if ( !$learningPeriodId )
+        {
+            throw new Exception(_M('Não foi encontrado um período letivo para este curso.'));
+            return false;
+        }
+        
+        $professores = $xmlUrania->getProfessores();
+        
+        $result = new stdClass();
+        $result->xml = $xmlUrania;
+        $result->groupIds = array();
+        $result->disciplinasInfo = array();
+        $result->groupIdsFail = array();
+        $result->professorFail = array();
+               
+        foreach ( $professores as $professor )
+        {
+            foreach ( $professor->dias as $dia )
+            {
+                SDatabase::beginTransaction();
+                $ok = FALSE;
+                
+                if ( !(is_numeric($professor->professorId)) )
+                {
+                    $result->professorFail[$professor->professorId] = utf8_decode($professor->professorId);
+                    continue;
+                }
+                
+                if ( is_array($dia->aulas) )
+                {
+                    $groupId = NULL;
+                    $primeiraAula = NULL;
+		    $curriculumId = NULL;
+		    foreach ( $dia->aulas as $keyAula => $aula )
+		    {
+			$primeiraAula = $aula;
+
+			if ( $aula->disciplina->curricularComponentId )
+			{
+		            // Obter CurriculumId
+                            $filtros = new stdClass();
+                            $filtros->courseId = $courseId;
+                            $filtros->courseVersion = $courseVersion;
+                            $filtros->turnId = $turnId;
+                            $filtros->unitId = $unitId;
+                            $filtros->curricularComponentId = $primeiraAula->disciplina->curricularComponentId;
+                            $filtros->curricularComponentVersion = $primeiraAula->disciplina->curricularComponentVersion;
+                            $curriculum = $busCurriculum->searchCurriculum($filtros);
+                            $curriculum = $curriculum[0];
+                            $curriculumId = $curriculum[0];
+			    if ( $curriculumId )
+			    {
+			        break;
+			    }
+			}
+		    }
+                    
+                    if ( $primeiraAula->disciplina->curricularComponentId )
+                    {
+                        // ClassId
+                        $classId = $primeiraAula->turma->classId;
+
+                        // Outros valores requiridos na acdGroup
+                        $regimenId = 1;
+                        $evaluationTypeId = 3;
+                        $financeCredits = $aula->disciplina->academicCredits ? $aula->disciplina->academicCredits : 0;
+
+                        // Dia da Semana
+                        $weekDay = $busWeekDay->getWeekDayByShortDescription($dia->id);
+                        $weekDayId = $weekDay[0];
+
+                        // Dias de ocorrência ( dias da semanha entre a data de inicio e fim do learningPeriod, sem feriados )
+                        $occurrenceDates = $this->obterDiasDeOcorrencia($weekDayId, $learningPeriod->beginDate, $learningPeriod->endDate);
+
+                        // Horarios                    
+                        $timeIds = array();
+                        foreach ($dia->aulas as $aula )
+                        {
+                            $timeIds[] = $times[$aula->horario];
+                        }
+
+                        // Adicionar na acdGroup
+                        $filtros = new stdClass();
+                        $filtros->learningPeriodId = $learningPeriodId;
+                        $filtros->curriculumId = $curriculumId;
+                        $filtros->curricularComponentId = $primeiraAula->disciplina->curricularComponentId;
+                        $filtros->classId = $classId;
+                        $filtros->unitId = $unitId;
+                        $group = $busGroup->searchGroup($filtros);
+                        $groupId = $group[0][0];
+
+                        if ( !$groupId )
+                        {
+                            $groupData = new stdClass();
+                            $groupData->learningPeriodId = $learningPeriodId;
+                            $groupData->curriculumId = $curriculumId;
+                            $groupData->classId = $classId;
+                            $groupData->unitId = $unitId;
+                            $groupData->regimenId = $regimenId;
+                            $groupData->evaluationTypeId = $evaluationTypeId;
+                            $groupData->financeCredits = $financeCredits;
+                            try
+                            {
+                                if ( $learningPeriodId && $curriculumId && $classId )
+                                {
+                                    $groupId = $busGroup->insertGroup($groupData);
+                                }
+                                else
+                                {
+                                    $ok = FALSE;
+                                }
+                            }
+                            catch ( Exception $e )
+                            {
+                                $ok = FALSE;
+                            }
+                        }
+
+                        if ( $groupId )
+                        {
+                            // Verificar se existe schedule
+                            $searchSchedule = new stdClass();
+                            $searchSchedule->groupId = $groupId;
+                            $searchSchedule->unitId = $unitId;
+                            $searchSchedule->professorId = $professor->professorId;
+                            $searchSchedule->learningPeriodId = $learningPeriodId;
+                            $searchSchedule->courseId = $courseId;
+                            $searchSchedule->courseVersion = $courseVersion;
+                            $schedules = $busSchedule->searchSchedule($searchSchedule);
+                            $scheduleId = $schedules[0][0];
+                            
+                            if ( !$scheduleId )
+                            {
+                                // Adicionar acdSchedules
+                                $scheduleData = new stdClass();
+                                $scheduleData->groupId = $groupId;
+                                $scheduleData->unitId = $unitId;
+                                $scheduleData->occurrenceDates = implode("'::DATE,'", $occurrenceDates);
+                                $scheduleData->timeIds = implode(',', $timeIds);
+                                try
+                                {
+                                    if ( is_array($occurrenceDates) && is_array($timeIds) )
+                                    {
+                                        $scheduleId = $busSchedule->insertSchedule($scheduleData);
+                                    }
+                                }
+                                catch ( Exception $e )
+                                {
+                                    $ok = FALSE;
+                                }
+                            }
+
+                            // acdSchedulesProfessor
+                            if ( $scheduleId )
+                            {
+                                // Verificar se existe o schedule para o professor
+                                $scheduleProfessor = $busScheduleProfessor->getScheduleProfessor($scheduleId, $professor->professorId);
+                                
+                                if ( !$scheduleProfessor->scheduleId )
+                                {
+                                    $scheduleProfessorData = new stdClass();
+                                    $scheduleProfessorData->scheduleId = $scheduleId;
+                                    $scheduleProfessorData->professorId = $professor->professorId;
+                                    try
+                                    {
+                                        $busScheduleProfessor->insertScheduleProfessor($scheduleProfessorData);
+                                        $ok = TRUE;
+                                    }
+                                    catch ( Exception $e )
+                                    {
+                                        $ok = FALSE;
+                                    }
+                                }
+                                else
+                                {
+                                    $ok = TRUE;
+                                }
+                            }
+
+                            if ( $ok && $gravar )
+                            {
+                                $result->groupIds[$groupId] = $groupId;
+                                
+                                $groupInfo = $busGroup->getGroup($groupId);
+                                $disciplinaInfo = array($groupInfo->curriculumCourseName, $groupInfo->curriculumCurricularComponentName);
+
+                                $result->disciplinasInfo[] = $disciplinaInfo;
+                                
+                                SDatabase::commit();
+                            }
+                            else
+                            {
+                                if ( $ok )
+                                {
+                                    $result->groupIds[$groupId] = $groupId;
+                                    
+                                    $groupInfo = $busGroup->getGroup($groupId);
+                                    $disciplinaInfo = array($groupInfo->curriculumCourseName, $groupInfo->curriculumCurricularComponentName);
+
+                                    $result->disciplinasInfo[] = $disciplinaInfo;
+                                }
+                                else
+                                {
+                                    $result->groupIdsFail[$groupId] = $groupId;
+                                }
+
+                                SDatabase::rollback();
+                            }
+
+                        }
+                        else
+                        {
+
+                        }
+                    }
+                }
+            }
+        }
+        
+        return $result;
+    }
+    
+    private function obterDiasDeOcorrencia($weekDay, $beginDate, $endDate)
+    {
+        $dates = array();
+        
+        $bDate = $this->explodirData($beginDate);
+        $eDate = $this->explodirData($endDate);
+        
+        // Obter ano        
+        $ano = $bDate['ano'];
+        
+        // Feriados
+        $busAcademicCalendarEvent = new BusinessAcademicBusAcademicCalendarEvent();
+        $holidays = $busAcademicCalendarEvent->getDatesThatThereWillBeNoClass($ano);
+        $holidayDates = array();
+        foreach ( $holidays as $holiday )
+        {
+            $hDate = $this->explodirData($holiday->eventDate);
+            $holidayDates[] = date('Y-m-d', mktime(0, 0, 0, $hDate['mes'], $hDate['dia'], $hDate['ano']));
+        }
+        
+        $currentDate = date('Y-m-d', mktime(0, 0, 0, $bDate['mes'], $bDate['dia'], $bDate['ano']));
+        $endDate = date('Y-m-d', mktime(0, 0, 0, $eDate['mes'], $eDate['dia'], $eDate['ano']));
+        
+        // Enquanto a data atual for menor ou igual a data final, testa se e o mesmo dia da semana e nao e feriado.
+        while ( strtotime($currentDate) <= strtotime($endDate) )
+        {
+            if ( date('w', strtotime($currentDate)) == $weekDay )
+            {
+                if ( !(in_array($currentDate, $holidayDates)) )
+                {
+                    $dates[] = $currentDate;
+                }
+            }
+            
+            $currentDate = date('Y-m-d', strtotime('+1 days', strtotime($currentDate)));
+        }
+        
+        return $dates;
+    }
+    
+    private function explodirData($data)
+    {
+        $dia =  substr("$data", 0, 2);
+	$mes =  substr("$data", 3, 5);
+	$ano =  substr("$data", 6, 10);
+        
+        return array('dia' => $dia, 'mes' => $mes, 'ano' => $ano);
+    }
+    
+}
+
+
+?>

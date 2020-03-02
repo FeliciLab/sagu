@@ -1,0 +1,1012 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Nataniel I. da Silva [nataniel@solis.coop.br]
+ *
+ * @version: $Id$
+ *
+ * @since
+ * Class created on 15/01/2014
+ *
+ **/
+
+class FrmMatriculaEmLoteNaDisciplina extends SForm
+{
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule(); 
+        
+        $MIOLO->uses('/ui/controls/msubdetail.class');
+        
+        $MIOLO->page->addScript('jquery-1.2.6.pack.js', 'basic');
+        $MIOLO->page->addScript('mask_cpf.js', 'basic');
+        $MIOLO->page->addJsCode("$(document).ready(function(){	$('#contentCpf').mask('999.999.999-99');});");
+
+        parent::__construct(_M('Matrícula em lote na disciplina', $module));
+        
+        $this->disableToolbar();
+
+    }
+
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+                
+        $groupId = $MIOLO->_REQUEST('groupId');
+        $group = MIOLO::_REQUEST('group');
+        
+        strlen($group) > 0 && !strlen($groupId) > 0 ?  $groupId = $group : $groupId ;
+        
+        $unidadeLogada = sMultiUnidade::obterObjetoUnidade();
+        
+        if ( !$this->estaEmUmEvento() )
+        {   
+            MSubDetail::clearData('dadosAluno');
+        }
+        
+        if( !$groupId )
+        {             
+            MSubDetail::clearData('dadosAluno');
+            $msg = 'Esta tela é referente a um processo específico. <br> Para este processo funcionar, é necessário informar o código de uma disicplina oferecida.';
+            $this->addError($msg);
+             
+            $groupLabel = new MText('groupLabel', _M('Disciplina oferecida', $module). ':');
+            $groupLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $groupId = new MLookupTextField('groupId', $this->getFormValue('groupId', $this->groupId), '', SAGU::getParameter('BASIC', 'FIELD_LOOKUPFIELD_SIZE'), null, null, 'null,null,null,null,null,null,curricularComponentName', $module, 'Group', null, null, true);
+            $groupId->setJsHint(_M('Informe o código da disciplina', $module));
+            $groupName = new MTextField('curricularComponentName', $this->getFormValue('curricularComponentName', $this->curricularComponentName), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $groupName->setReadOnly(true);
+            $groupName->setJsHint(_M('Disciplina', $module));
+            $hctGroup= new MHContainer('hctGroup', array($groupLabel,$groupId,$groupName));
+            $validators[] = new MIntegerValidator('groupId', _M('Disciplina oferecida'));
+            $fields[] = $hctGroup;
+             
+            $button = new MButton('ok', _M('Ok', $modules));
+            $button->addBoxStyle('margin-left','146px');
+            $fields[] = $button;
+            
+        }        
+        else
+        {   
+            $busCurricularComponent = new BusinessAcademicBusGroup();
+            $info = $busCurricularComponent->getGroup($groupId);
+            
+            if ( !strlen($unidadeLogada->unitId) > 0 )
+            {
+                MSubDetail::clearData('dadosAluno');
+                $msg = _M('Este processo não pode ser executado. Consulte o administrador do sistema para maiores informações.', $module);
+                $MIOLO->error($msg);
+            }
+            
+            if( $info->unitId != $unidadeLogada->unitId)
+            {   
+                MSubDetail::clearData('dadosAluno');
+                $msg = _M('A disciplina oferecida não pertence a unidade logada.', $module);
+                $MIOLO->error($msg);
+            }
+            elseif( $info->isClosed == 't' )
+            {     
+                MSubDetail::clearData('dadosAluno');
+                $msg = _M("A disciplina oferecida do código $groupId está encerrada e não pode receber mudanças nos alunos.", $module);
+                $MIOLO->error($msg);
+            }
+            
+            $validaUsuario = $MIOLO->checkAccess('FrmMatriculaEmLoteNaDisciplina', A_ADMIN, false, true);
+            
+            if( !$validaUsuario )
+            {
+                if( (SAGU::dateDiff($info->endDate, SAGU::getDateNow())) < 0 )
+                {   
+                    MSubDetail::clearData('dadosAluno');
+                    $msg = _M("A disciplina oferecida do código $groupId não pode receber alterações, pois a última aula ($info->endDate) já foi ministrada.", $module);
+                    $MIOLO->error($msg);
+                }
+            }
+            
+            $matriculados = null;            
+            $filters = null;
+            $filters->groupId = $groupId;
+            $filters->classId = $info->classId;
+            $filters->statusId = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED');
+            $busEnroll = new BusinessAcademicBusEnroll();
+            $matriculados = $busEnroll->searchEnroll($filters);
+            
+            $dataAlunos = $this->buscaAlunosMatriculados($matriculados);
+            
+            $fields[] = new SHiddenField('group', $info->groupId);
+            
+            $busUnit = new BusinessBasicBusUnit();
+            $unidade = $busUnit->getUnit($info->unitId);
+            
+            $bg[] = new SHiddenField('unidade', $unidade->description);
+                        
+            $course = new MText('course', 'Curso: '.'<b>'.$info->curriculumCourseName.'/'.$info->curriculumCourseVersion.'</b>');
+            $course->setClass('m-caption m-caption');
+            $hctCourse = new MContainer('hctCourse', array($course));
+            
+            $turn = new MText('turn', 'Turno: '.'<b>'.$info->turnDescription.'</b>');
+            $turn->setClass('m-caption m-caption');
+            $hctTurn = new MContainer('hctturn', array($turn));
+            
+            $unit = new MText('unit', 'Unidade: '.'<b>'.$unidade->description.'</b>');
+            $unit->setClass('m-caption m-caption');
+            $hctUnit = new MContainer('hctunit', array($unit));
+            
+            $group = new MText('group', 'Disciplina oferecida: '.'<b>'.$groupId.'</b>');
+            $group->setClass('m-caption m-caption');
+            $hctGroup = new MContainer('hctGroup', array($group));
+            
+            $class = new MText('class', 'Turma: '.'<b>'.$info->classId.'</b>');
+            $class->setClass('m-caption m-caption');
+            $hctClass = new MContainer('hctClass', array($class));
+            
+            $startDate = new MText('startDate', 'Data inicial: '.'<b>'.$info->startDate.'</b>');
+            $startDate->setClass('m-caption m-caption');
+            $hctStartDate = new MContainer('hctStartDate', array($startDate));
+            
+            $endDate = new MText('endDate', 'Data final: '.'<b>'.$info->endDate.'</b>');
+            $endDate->setClass('m-caption m-caption');
+            $hctEndDate = new MContainer('hctEndDate', array($endDate));
+            
+            $vagas = new MText('vagas', 'Vagas: '.'<b>'.$info->totalEnrolled.'/'.$info->vacant.'</b>');
+            $vagas->setClass('m-caption m-caption');
+            $hctVagas = new MContainer('hctVagas', array($vagas));
+            
+            $hctInfo = new MContainer('hctInfo', array($hctCourse, $hctTurn, $hctUnit, $hctGroup, $hctClass, $hctStartDate, $hctEndDate, $hctVagas), 'vertical');            
+            
+            $baseGroupInfo = new MBaseGroup('info', _M('Informações básicas', $module), array($hctInfo));
+            $fields[] = $baseGroupInfo;
+            
+            //SubDetail            
+            $fields[] = new MDiv('divResponse');
+            
+            $bg[] = new SHiddenField('validVagas', DB_TRUE);
+            $subValidators[] = new MRequiredValidator('validVagas',  null, 0 , _M('Número de vagas excedido!'));
+                                    
+            $cpfLabel = new MText('cpfLabel', _M('CPF', $module).':');
+            $cpfLabel->setClass('m-caption m-caption-required');
+            $cpfLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $cpf = new MTextField('contentCpf', $this->getFormValue('contentCpf', $this->contentCpf), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $cpf->setJsHint(_M('Informe um cpf válido'));
+            $cpf->addAttribute('onblur', SForm::getAjaxAction('buscaAluno', 'divResponse', null, $this->getFormValue('contentCpf')));
+            $bg[] = $hctCpf = new MContainer('hctCpf', array($cpfLabel, $cpf));
+            $subValidators[] = new MRequiredValidator('contentCpf',  _M('CPF', $module));
+            
+            $nameLabel = new MText('nameLabel', _M('Nome', $module).':');
+            $nameLabel->setClass('m-caption m-caption-required');
+            $nameLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $name = new MTextField('personName', $this->getFormValue('personName', $data->personName), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $name->setJsHint(_M('Informe um nome'));
+            $bg[] = $hctName = new MContainer('hctName', array($nameLabel, $name));
+            $subValidators[] = new MRequiredValidator('personName',  _M('Nome', $module));
+            
+            $sexLabel = new MText('sexLabel', _M('Sexo',$module).':');
+            $sexLabel->setClass('m-caption m-caption-required');
+            $sexLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $sex = new MSelection('sex', $this->getFormValue('sex', $data->sex), null, SAGU::listSex());
+            $sex->setJsHint(_M('Informe o sexo',$module));
+            $bg[] = $hctSex = new MContainer('hctSex', array($sexLabel, $sex));            
+            $subValidators[] = new MRequiredValidator('sex', _M('Sexo',$module));
+            
+            $dateBirthLabel = new MText('dateBirthLabel', _M('Data de nascimento',$module).':');
+            $dateBirthLabel->setClass('m-caption m-caption-required');
+            $dateBirthLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $dateBirth = new MCalendarField('dateBirth', $this->getFormValue('dateBirth', $data->dateBirth), null, SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+            $dateBirth->setJsHint(_M('Informe a data de nascimento',$module));
+            $bg[] = $hctDateBirth = new MContainer('hctDateBirth', array($dateBirthLabel, $dateBirth));            
+            $subValidators[] = new MRequiredValidator('dateBirth', _M('Data de nascimento',$module));
+            
+            //Especificar qual dos telefones de contato será carregado
+            $phoneLabel = new MText('phoneLabel', _M('Telefone',$module).':');
+            $phoneLabel->setClass('m-caption m-caption-required');
+            $phoneLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $phone = new MTextField('phone', $this->getFormValue('phone', $data->phone), null, SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+            $phone->setJsHint(_M('Informe o telefone',$module));
+            $bg[] = $hctPhone = new MContainer('hctPhone', array($phoneLabel, $phone));            
+            $subValidators[] = new MRequiredValidator('phone', _M('Telefone',$module));
+            
+            $emailLabel = new MText('emailLabel', _M('E-mail',$module).':');
+            $emailLabel->setClass('m-caption m-caption');
+            $emailLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $email = new MTextField('email', $this->getFormValue('email', $data->email), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $email->setJsHint(_M('Informe o e-mail',$module));
+            $bg[] = $hctEmail = new MContainer('hctEmail', array($emailLabel, $email));
+            
+            $busCity = new BusinessBasicBusCity();            
+            $options = $busCity->listCity(null, $unidade->description);
+
+            $cityLabel = new MText('cityLabel', _M('Município de origem',$module).':');
+            $cityLabel->setClass('m-caption m-caption-required');
+            $cityLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $city = new MSelection('cityId', $this->getFormValue('cityId', $data->cityId), null, $options);
+            $city->setJsHint(_M('Informe o município de origem',$module));
+            $bg[] = $hctCity = new MContainer('hctCity', array($cityLabel, $city));
+            $subValidators[] = new MRequiredValidator('cityId', _M('Município de origem',$module));
+
+            $busLegalPerson = new BusinessBasicBusLegalPerson();
+            $options = $busLegalPerson->listLegalPersonByType(3, $unidade->description);
+
+            /*$cnesLabel = new MText('cnesLabel', _M('CNES',$module).':');
+            $cnesLabel->setClass('m-caption m-caption'); //-required');
+            $cnesLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $cnes = new MSelection('cnes', $this->getFormValue('cnes', $data->pessoa), null, $options);
+            $cnes->setJsHint(_M('Informe o CNES',$module));
+            $bg[] = $hctCnes = new MContainer('hctCnes', array($cnesLabel, $cnes));*/
+            //$subValidators[] = new MRequiredValidator('cnes', _M('CNES',$module));
+            
+            $bg[] = new SHiddenField('cnes');
+
+            $options = array(('AGENTE COMUNITARIO DE SAUDE') => _M('Agente Comunitário de Saúde', $module),
+                             ('AUXILIAR EM ENFERMAGEM') => _M('Auxiliar em Enfermagem', $module), 
+                             ('TECNICO EM ENFERMAGEM') => _M('Técnico em Enfermagem', $module));
+
+            $workFunctionLabel = new MText('workFunctionLabel', _M('Categoria',$module).':');
+            $workFunctionLabel->setClass('m-caption m-caption-required');
+            $workFunctionLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $workFunction = new MSelection('workFunction', $this->getFormValue('workFunction', $data->workFunction), null, $options);
+            $workFunction->setJsHint(_M('Informe a categoria',$module));
+            $bg[] = $hctWorkFunction = new MContainer('hctWorkFunction', array($workFunctionLabel, $workFunction));
+            $subValidators[] = new MRequiredValidator('workFunction', _M('Categoria',$module));
+
+            $dadosBancarios = $MIOLO->_REQUEST('dados_bancarios');
+            $required = $dadosBancarios == DB_TRUE ? '-required' : '';
+            
+            $bancoLabel = new MText('bancoLabel', _M('Banco', $module).':');
+            $bancoLabel->setClass("m-caption m-caption{$required}");
+            $bancoLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $banco = new MTextField('banco', $this->getFormValue('banco', $data->banco), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $banco->setJsHint(_M('Informe um banco'));
+            $bg[] = $hctBanco = new MContainer('hctBanco', array($bancoLabel, $banco));
+            
+            $agenciaLabel = new MText('agenciaLabel', _M('Agência', $module).':');
+            $agenciaLabel->setClass("m-caption m-caption{$required}");
+            $agenciaLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $agencia = new MTextField('agencia', $this->getFormValue('agencia', $data->agencia), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $agencia->setJsHint(_M('Informe a agência'));
+            $bg[] = $hctAgencia = new MContainer('hctAgencia', array($agenciaLabel, $agencia));
+            
+            $digitoAgenciaLabel = new MText('digitoAgenciaLabel', _M('Dígito da agência', $module).':');
+            $digitoAgenciaLabel->setClass("m-caption m-caption{$required}");
+            $digitoAgenciaLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $digitoAgencia = new MTextField('digitoAgencia', $this->getFormValue('digitoAgencia', $data->digitoAgencia), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $digitoAgencia->setJsHint(_M('Informe o digito da agência'));
+            $bg[] = $hctDigitoAgencia = new MContainer('hctDigitoAgencia', array($digitoAgenciaLabel, $digitoAgencia));
+            
+            $numeroContaLabel = new MText('numeroContaLabel', _M('Número da conta', $module).':');
+            $numeroContaLabel->setClass("m-caption m-caption{$required}");
+            $numeroContaLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $numeroConta = new MTextField('numeroConta', $this->getFormValue('numeroConta', $data->numeroConta), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $numeroConta->setJsHint(_M('Informe o número da conta'));
+            $bg[] = $hctNumeroConta = new MContainer('hctDigitoAgencia', array($numeroContaLabel, $numeroConta));
+                        
+            $digitoContaLabel = new MText('digitoContaLabel', _M('Dígito da conta', $module).':');
+            $digitoContaLabel->setClass("m-caption m-caption{$required}");
+            $digitoContaLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $digitoConta = new MTextField('digitoConta', $this->getFormValue('digitoConta', $data->digitoConta), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $digitoConta->setJsHint(_M('Informe o digito da conta'));
+            $bg[] = $hctDigitoConta = new MContainer('hctDigitoConta', array($digitoContaLabel, $digitoConta));
+            
+            if($dadosBancarios == DB_TRUE)
+            {
+                $subValidators[] = new MRequiredValidator('banco',  _M('Banco', $module));
+                $subValidators[] = new MRequiredValidator('agencia',  _M('Agência', $module));
+                $subValidators[] = new MRequiredValidator('digitoAgencia',  _M('Digito da agência', $module));
+                $subValidators[] = new MRequiredValidator('numeroConta',  _M('Número da conta', $module));
+                $subValidators[] = new MRequiredValidator('digitoConta',  _M('Digito da conta', $module));
+            }
+            
+            $bg[] = new Separator();
+            
+            $bg[] = new SHiddenField('personId', $this->getFormValue('personId', $this->personId));
+            
+            $cols[] = new MGridColumn(_M('Código do aluno', $module), 'left', true, '', false, 'personId');
+            $cols[] = new MGridColumn(_M('CPF', $module), 'left', true, '', true, 'contentCpf');
+            $cols[] = new MGridColumn(_M('Nome', $module), 'left', true, '', true, 'personName');
+            $cols[] = new MGridColumn(_M('Sexo', $module), 'left', true, '', true, 'sex');
+            $cols[] = new MGridColumn(_M('Data de nascimento', $module), 'left', true, '', true, 'dateBirth');
+            $cols[] = new MGridColumn(_M('Telefone', $module), 'left', true, '', true, 'phone');
+            $cols[] = new MGridColumn(_M('E-mail', $module), 'right', true, '', false, 'email');
+            $cols[] = new MGridColumn(_M('Município de origem', $module), 'left', true, '', true, 'cityId');
+            $cols[] = new MGridColumn(_M('CNES', $module), 'left', true, '', false, 'cnes');
+            $cols[] = new MGridColumn(_M('Categoria', $module), 'left', true, '', true, 'workFunction');
+            $cols[] = new MGridColumn(_M('Banco', $module), 'right', true, '', false, 'banco');
+            $cols[] = new MGridColumn(_M('Agência', $module), 'right', true, '', false, 'agencia');
+            $cols[] = new MGridColumn(_M('Dígito da agência', $module), 'right', true, '', false, 'digitoAgencia');
+            $cols[] = new MGridColumn(_M('Numero da conta', $module), 'right', true, '', false, 'numeroConta');
+            $cols[] = new MGridColumn(_M('Dígito da conta', $module), 'right', true, '', false, 'digitoConta');
+            $cols[] = new MGridColumn(_M('Cidade', $module), 'right', true, '', false, 'cidadeid');
+            
+            $subAluno = new MSubDetail('dadosAluno', _M('Dados do aluno', $module), $cols, $bg, array('remove'));
+            $subAluno->setValidators($subValidators);
+            $subAluno->addActionEvent(MSubDetail::EVENT_ADD, 'eventSubAdd', __CLASS__);
+            $subAluno->addActionEvent(MSubDetail::EVENT_REMOVE, 'eventSubRemove', __CLASS__);            
+            
+            $fields[] = $subAluno;
+            
+            if($dataAlunos && $MIOLO->_REQUEST('__EVENTTARGETVALUE') != 'matricular:click')
+            {
+                $subAluno->setData($dataAlunos);            
+            }
+                        
+            $btnMatricular = new MButton('matricular', _M('Salvar', $module));
+            $btnCancelar = new MButton('cancelar', _M('Cancelar', $module));
+            
+            $fields[] = new MContainer('hctBtns', array($btnMatricular, $btnCancelar));
+                       
+        }
+                
+        parent::defineFields(array('fields' => $fields, 'validators' => $validators));
+        
+    }
+    
+    public function buscaAluno($cpf)
+    {   
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $busDocument = new BusinessBasicBusDocument();
+        
+        $cpf->contentCpf = $busDocument->formataCpf($cpf->contentCpf);
+        
+        $filters->content = $cpf->contentCpf == '000.000.000-00' ? '' : $cpf->contentCpf;
+        
+        $busCity = new BusinessBasicBusCity();
+        $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+        $dados = $busPhysicalPerson->searchPhysicalPerson($filters);
+        
+        $busCustomField = new BasCustomField(); 
+                        
+        $personId = $dados[0][0];                
+        $personName = $dados[0][3];
+        $sex = $dados[0][18];
+        $dateBirth = $dados[0][19];
+        $email = $dados[0][11];
+        $phone = $dados[0][20];
+        $cityId = $dados[0][5];
+        
+        if( strlen($cityId) > 0 )
+        {
+            $options = $busCity->listCity(null, $cpf->unidade);
+            
+            $existe = false;
+            foreach($options as $cidade)
+            {
+                if($cityId == $cidade[0])
+                {
+                    $existe = true;
+                }
+            }
+            
+            if(!$existe)
+            {
+                $cityId = null;
+            }
+        }
+        
+        $workFunction = $dados[0][22]; 
+        $cnes = $busCustomField->getCustomValue('pessoa_fisica_cnes', $dados[0][0]);
+        $banco = $busCustomField->getCustomValue('pessoa_fisica_banco', $dados[0][0]);
+        $agencia = $busCustomField->getCustomValue('pessoa_fisica_agencia', $dados[0][0]);
+        $digitoAgencia = $busCustomField->getCustomValue('pessoa_fisica_digito_agencia', $dados[0][0]);
+        $numeroConta = $busCustomField->getCustomValue('pessoa_fisica_numero_conta', $dados[0][0]);
+        $digitoConta = $busCustomField->getCustomValue('pessoa_fisica_digito_conta', $dados[0][0]);        
+                
+        $workFunction = SAGU::stringToASCII($workFunction);
+        
+        $options = array('AGENTE COMUNITARIO DE SAUDE', 'AUXILIAR EM ENFERMAGEM', 'TECNICO EM ENFERMAGEM');
+        
+        in_array($workFunction, $options) ? $workFunction : $workFunction = '' ;
+        
+        $MIOLO->page->addAJAXJsCode("
+            
+                validateOnBlurCPF(document.getElementById('contentCpf'));
+
+                document.getElementById('personName').value = '{$personName}';
+                document.getElementById('personName').disabled= true;
+                
+                if('{$personName}' == '')
+                {
+                    document.getElementById('personName').disabled=false;
+                }
+                
+                document.getElementById('sex').value = '{$sex}';
+                document.getElementById('sex').disabled= true;
+                
+                if('{$sex}' == '')
+                {
+                    document.getElementById('sex').disabled=false;
+                }
+                
+                document.getElementById('dateBirth').value = '{$dateBirth}';
+                document.getElementById('dateBirth').disabled= true;
+                document.getElementById('btndateBirth').style.display = 'none';
+                
+                if('{$dateBirth}' == '')
+                {
+                    document.getElementById('dateBirth').disabled=false;
+                    document.getElementById('btndateBirth').style.display = 'inline';
+                }
+                
+                document.getElementById('email').value = '{$email}';
+                document.getElementById('email').disabled= true;
+                
+                if('{$email}' == '')
+                {
+                    document.getElementById('email').disabled=false;
+                }
+                
+                document.getElementById('phone').value = '{$phone}';
+                document.getElementById('phone').disabled= true;
+                
+                if('{$phone}' == '')
+                {
+                    document.getElementById('phone').disabled=false;
+                }
+                
+                document.getElementById('cityId').value = '{$cityId}';
+                document.getElementById('cityId').disabled= true;
+                
+                if('{$cityId}' == '')
+                {
+                    document.getElementById('cityId').disabled=false;
+                }
+                
+                document.getElementById('workFunction').value = '{$workFunction}';
+                document.getElementById('workFunction').disabled= true;
+                                
+                if('{$workFunction}' == '')
+                {
+                    document.getElementById('workFunction').disabled=false;
+                }
+                
+                document.getElementById('cnes').value = '{$cnes}';
+                document.getElementById('cnes').disabled= true;
+                
+                if('{$cnes}' == '')
+                {
+                    document.getElementById('cnes').disabled=false;
+                }
+                
+                document.getElementById('banco').value = '{$banco}';
+                document.getElementById('banco').disabled= true;
+                
+                if('{$banco}' == '')
+                {
+                    document.getElementById('banco').disabled=false;
+                }
+
+                document.getElementById('agencia').value = '{$agencia}';
+                document.getElementById('agencia').disabled= true;
+                
+                if('{$agencia}' == '')
+                {
+                    document.getElementById('agencia').disabled=false;
+                }
+                
+                document.getElementById('digitoAgencia').value = '{$digitoAgencia}';
+                document.getElementById('digitoAgencia').disabled= true;
+                
+                if('{$digitoAgencia}' == '')
+                {
+                    document.getElementById('digitoAgencia').disabled=false;
+                }
+                
+                document.getElementById('numeroConta').value = '{$numeroConta}';
+                document.getElementById('numeroConta').disabled= true;
+                
+                if('{$numeroConta}' == '')
+                {
+                    document.getElementById('numeroConta').disabled=false;
+                }
+                
+                document.getElementById('digitoConta').value = '{$digitoConta}';
+                document.getElementById('digitoConta').disabled= true;
+                
+                if('{$digitoConta}' == '')
+                {
+                    document.getElementById('digitoConta').disabled=false;
+                }
+                
+                document.getElementById('personId').value = '{$personId}';
+
+            ");
+                
+        return ' ' ;
+    }
+    
+    public function matricular_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $alunos = MSubDetail::getData('dadosAluno');
+        $groupId = MIOLO::_REQUEST('group');
+        
+        $busCurricularComponent = new BusinessAcademicBusGroup();
+        $grupo = $busCurricularComponent->getGroup($groupId);
+        
+        $learningPeriodId = $grupo->learningPeriodId;        
+        
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $businessStudent = new BusinessBasicBusPhysicalPersonStudent();
+        $busContract = new BusinessAcademicBusContract();
+        $busDocument = new BusinessBasicBusDocument();        
+        $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+        $busCity = new BusinessBasicBusCity();
+        $busLegalPerson = new BusinessBasicBusLegalPerson();
+        $busCustomField = new BasCustomField();
+        $busClassPupil = new BusinessAcademicBusClassPupil();
+        
+        //Caso venha por url o parâmetro 'permiteAlterarTotal=f' não permitir alterar o
+        //número de alunos já cadastrados mesmo não alcançando o total de vagas da disciplina oferecida
+        $permiteAlterarTotal = MIOLO::_REQUEST('permiteAlterarTotal');
+        $count = 0;
+        foreach($alunos as $aluno)
+        {
+            if($aluno->removeData)
+            {
+                $count++;
+            }
+        }
+        
+        if( $permiteAlterarTotal == 'f' )
+        {
+            if( $grupo->totalEnrolled != (count($alunos) - $count))
+            {
+                $msg = _M('Não é possível alterar o número total de alunos inscritos.', $module);
+                $MIOLO->error($msg);
+            }   
+        }
+                
+        try
+        {
+            SDatabase::beginTransaction();
+            foreach($alunos as $aluno)
+            {   
+                $data = null;
+                if($aluno->personId && $aluno->removeData)
+                {                
+                    //Remove matrícula e cancela o contrato
+                    $dataContrato->personId = $aluno->personId;
+                    $contratos = $busContract->searchContract($dataContrato);
+                                                            
+                    foreach($contratos as $k => $contrato)
+                    {   
+                        $filters->contractId = $contrato[0];
+                        $enrolls = $busEnroll->searchEnroll($filters);
+                        
+                        if( $enrolls )
+                        {                        
+                            foreach( $enrolls as $k => $enroll)
+                            {
+                                $upEnroll = null;
+                                $upEnroll = $busEnroll->getEnroll($enroll[0]);                                
+                                $upEnroll->statusId = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_CANCELLED');
+                                
+                                $busEnroll->updateEnroll($upEnroll);
+                            } 
+                        }
+                        $cancel = true;
+                    }  
+                    
+                }
+                else if(!$aluno->personId && $aluno->removeData)
+                {
+                    //Não faz nada, pois foi adicionado a lista para gerar contrato e removido posteriormente, antes de efetuar a matrícula.
+                }
+                else
+                {      
+                    $filter = null;
+                    //Filtro buscar pessoa jurídica
+                    $filter->name = $aluno->cnes;
+                    $pessoaCnes = $busLegalPerson->searchLegalPerson($filter);
+
+                    //PREPARAR FILTROS PARA INSERIR/ATUALIZAR UMA PESSOA                  
+                    $data->personName = trim($aluno->personName);
+                    $data->sex = $aluno->sex;
+                    $data->dateBirth = $aluno->dateBirth;
+                    $data->workPhone = $aluno->phone;
+                    $data->cityId = $aluno->cidadeid;
+                    $data->email = $aluno->email;
+                    $data->workFunction = $aluno->workFunction;
+
+                    if($aluno->personId)
+                    {   
+                        $data->personId = $aluno->personId;
+
+                        $pessoa = $busPhysicalPerson->updatePhysicalPerson($data);
+                    }
+                    else
+                    {                                        
+                        $personId = $busPhysicalPerson->insertPhysicalPerson($data);
+
+                        //Prepara filtros para inserri cpf
+                        $data->personId = $personId;
+                        $data->documentTypeId = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF');
+                        $data->content = $aluno->contentCpf;
+                        $data->isDelivered = DB_FALSE;
+
+                        if($personId)
+                        {                        
+                            //INSERE DOCUMENTO
+                            $document = $busDocument->insertDocument($data);
+                        }
+
+                        if(!$document)
+                        {
+                            throw new Exception(_M('Não foi possível salvar o cpf desta pessoa!', $module));
+                        }
+                    }
+
+                    //SALVA CAMPOS CUSTUMIZÁVEIS
+                    $this->saveCustomFields('pessoa_fisica_cnes', $data->personId, $pessoaCnes[0][0]);
+                    $this->saveCustomFields('pessoa_fisica_banco', $data->personId, $aluno->banco);
+                    $this->saveCustomFields('pessoa_fisica_agencia', $data->personId, $aluno->agencia);
+                    $this->saveCustomFields('pessoa_fisica_numero_conta', $data->personId, $aluno->numeroConta);
+                    $this->saveCustomFields('pessoa_fisica_digito_agencia', $data->personId, $aluno->digitoAgencia);
+                    $this->saveCustomFields('pessoa_fisica_digito_conta', $data->personId, $aluno->digitoConta);
+                    
+                    if($data->personId)
+                    {
+                        //INSERE ALUNO BASPHYSICALPERSONSTUDENT                        
+                        $data->name = trim($aluno->personName);
+                        $businessStudent->insertOrUpdatePhysicalPersonStudent($data);
+                    }
+                           
+                    $filtroContrato = null;
+                    $filtroContrato->personId = $data->personId;
+                    $contratos = $busContract->searchContract($filtroContrato);
+                    $matriculado = false;
+                    
+                    if ( !count($contratos) > 0 )
+                    {
+                        //Filtros para gerar o contrato
+                        $data->courseId = $grupo->curriculumCourseId;
+                        $data->courseVersion = $grupo->curriculumCourseVersion;
+                        $data->turnId = $grupo->turnId;
+                        $data->unitId = $grupo->unitId;
+                        $data->isListener = DB_FALSE;
+                        $data->isRequestAcademicDegree = DB_FALSE;
+
+                        //gerar contrato
+                        if (  $busContract->insertContract($data) )
+                        {
+                            $contratos = $busContract->searchContract($data);
+                        }
+                    }
+                    
+                    if ( count($contratos) > 0 )
+                    {   
+                        // Verifica se em algum dos contratos ja está matriculado na disciplina.
+                        foreach ( $contratos as $contrato )
+                        {
+                            $contractId =null;
+                            $contractId = $contrato[0];
+                            
+                            $filtroConsulta2=null;
+                            $filtroConsulta2->contractId = $contractId;
+                            $filtroConsulta2->learningPeriodId = $learningPeriodId; 
+                            $filtroConsulta2->curriculumId = $grupo->curriculumId;
+                            if( $matriculas = $busEnroll->searchEnroll($filtroConsulta2) )
+                            {
+                                foreach( $matriculas as $matricula )
+                                {
+                                    
+                                    if( ($matricula[2] != $groupId) && ($matricula[20] == 1 || $matricula[20] == 2))
+                                    {
+                                         throw new Exception(_M('A pessoa ' . $aluno->personName . ', do CPF '. $aluno->contentCpf . ', já está matriculada ou aprovada em outra disciplina oferecida.'));
+                                    }
+                                }
+                            }
+                            
+                            $filtroConsulta=null;
+                            $filtroConsulta->contractId = $contractId;
+                            $filtroConsulta->learningPeriodId = $learningPeriodId;
+                            $filtroConsulta->groupId = $groupId;
+                            $filtroConsulta->statusId = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED');
+
+                            if ( $busEnroll->searchEnroll($filtroConsulta) )
+                            {
+                                $matriculado = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if ( $contractId )
+                    {
+                        $classData = null;
+                        $classData = new stdClass();
+                        $classData->contractId = $contractId;
+                        $classData->classId = $grupo->classId;
+                        $classData->beginDate = strlen($grupo->beginDate) > 0 ? $grupo->beginDate : date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+
+                        if ( strtoupper($busClassPupil->checkCourse($classData)) == strtoupper(DB_TRUE) && $grupo->classId )
+                        {                        
+                            $busClassPupil->insertOrUpdateClassPupil($classData);                        
+                        }
+
+                        $groups[$groupId] = $grupo->curriculumId;
+
+                        if ( $matriculado )
+                        {
+                            $return = true;
+                        }
+                        else
+                        {
+                            //gerar matrícula
+                            $return = $this->efetivarMatriculas($busEnroll, $contractId , $learningPeriodId, $groups);
+                        }
+                        
+                    }
+                    else
+                    {
+                        throw new Exception('Não foi possível gerar o contrato');
+                    }
+                }
+            }
+                     
+            if($return || $cancel)
+            {
+                SDatabase::commit();
+                MSubDetail::clearData('dadosAluno');
+
+                $MIOLO->information(_M('Matrícula gerada com sucesso.', $module));  
+            }
+            else
+            {
+                throw new Exception();
+            }
+        } 
+        catch (Exception $e) 
+        {
+            $MIOLO->session->setValue('group', $groupId);
+            
+            SDatabase::rollback();            
+            $this->addError(_M('Não foi possível gerar matrícula em lote na disciplina <br>').$e->getMessage());     
+        }
+    }
+    
+    private function efetivarMatriculas(BusinessAcademicBusEnroll $busEnroll, $contractId , $learningPeriodId, $group = array())
+    {
+        SDatabase::beginTransaction();        
+        
+        try
+        {   
+            $ok = $busEnroll->enroll($contractId, $learningPeriodId, $group, true);
+        }
+        catch (Exception $e)
+        {
+            SDatabase::rollback();
+
+            $busContract = new BusinessAcademicBusContract();
+            $contract = $busContract->getContract($contractId);
+            $person = $contract->personId . ' - ' . $contract->personName;
+
+            throw new Exception(_M('Houve um erro ao matricular a pessoa @1:<br>@2', $module, $person, $e->getMessage()));
+        }
+        
+        SDatabase::commit();
+        
+        return $ok;
+    }
+    
+    public function eventSubRemove($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        // Setar valor do campo validVagas = DB_TRUE ('t')
+        $MIOLO->page->addAJAXJsCode(" document.getElementById('validVagas').value = 't'; ");
+    }
+    
+    public function eventSubAdd($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule();
+        
+        $alunos = MSubDetail::getData('dadosAluno');
+                        
+        if($args->group)
+        {
+            $busCurricularComponent = new BusinessAcademicBusGroup();
+            $info = $busCurricularComponent->getGroup($args->group);
+            
+            $busLegalPerson = new BusinessBasicBusLegalPerson();
+            $busCity = new BusinessBasicBusCity();
+
+            if($args->cnes)
+            {
+                $cnes = $busLegalPerson->getLegalPerson($args->cnes);
+                $args->cnes = $cnes->name;
+            }
+
+            if($args->cityId)
+            {   
+                $args->cidadeid = $args->cityId;
+                $city = $busCity->getCity($args->cityId);
+                $args->cityId = $city->name;
+            }            
+        }
+            
+        $count = 0;
+        foreach($alunos as $aluno)
+        {
+            if($aluno->removeData)
+            {
+                $count++;
+            }
+        }
+        
+        //Caso venha por url o parâmetro 'permiteAlterarTotal=f' não permitir alterar o
+        //número de alunos já cadastrados mesmo não alcançando o total de vagas da disciplina oferecida
+        $permiteAlterarTotal = MIOLO::_REQUEST('permiteAlterarTotal');
+        
+        if( $permiteAlterarTotal == 'f' )
+        {
+            $vagasTotal = $info->totalEnrolled;
+        }
+        else
+        {
+            $vagasTotal = $info->vacant;
+        }
+        
+        if((count($alunos)-$count) >=  $vagasTotal)
+        {            
+            $args->validVagas = null;
+        }
+        
+        return $args;
+    }
+    
+    public function cancelar_click()
+    {   
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        $MIOLO->session->setValue('group', null);
+        $MIOLO->session->setValue('groupId', null);
+        MSubDetail::clearData('dadosAluno');
+        
+        $this->page->redirect($MIOLO->getActionURL($module, $action));
+    }
+    
+    public function buscaAlunosMatriculados($matriculados = array())
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+          
+        $busContract = new BusinessAcademicBusContract();
+        $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+        $busCustomField = new BasCustomField();
+        $busCity = new BusinessBasicBusCity();
+        $busLegalPerson = new BusinessBasicBusLegalPerson();
+                
+        $data = null;
+        foreach($matriculados as $matriculado)
+        {
+            $aluno = null;
+            $contrato = $busContract->getContract($matriculado[1]);  
+            
+            $isClosed = $busContract->isClosed($contrato->contractId);
+            
+            if( $isClosed == false )
+            {      
+                $dados = null;
+                $filters = null;
+                $filters->personId = $contrato->personId;
+                $dados = $busPhysicalPerson->searchPhysicalPerson($filters); 
+
+                $cnesFilters = null;
+                $cnes = null;
+
+                $cnesFilters = $busCustomField->getCustomValue('pessoa_fisica_cnes', $dados[0][0]);
+
+                if($cnesFilters)
+                {
+                    $cnes  = $busLegalPerson->getLegalPerson($cnesFilters);
+                }
+                
+                if( strlen($dados[0][5]) > 0 )
+                {
+                    $cidade = $busCity->getCity($dados[0][5]);
+                }
+                
+                $aluno->personName = $dados[0][3];
+                $aluno->personId = $dados[0][0];
+                $aluno->contentCpf = $dados[0][23];
+                $aluno->sex = $dados[0][18];
+                $aluno->dateBirth = $dados[0][19];
+                $aluno->email = $dados[0][11];
+                $aluno->phone = $dados[0][20];
+                $aluno->cityId = $cidade->name;
+                $aluno->workFunction = $dados[0][22]; 
+                $aluno->cnes = $cnes->name; //$busCustomField->getCustomValue('pessoa_fisica_cnes', $dados[0][0]);
+                $aluno->banco = $busCustomField->getCustomValue('pessoa_fisica_banco', $dados[0][0]);
+                $aluno->agencia = $busCustomField->getCustomValue('pessoa_fisica_agencia', $dados[0][0]);
+                $aluno->digitoAgencia = $busCustomField->getCustomValue('pessoa_fisica_digito_agencia', $dados[0][0]);
+                $aluno->numeroConta = $busCustomField->getCustomValue('pessoa_fisica_numero_conta', $dados[0][0]);
+                $aluno->digitoConta = $busCustomField->getCustomValue('pessoas_fisica_digito_conta', $dados[0][0]);        
+
+                $data[] = $aluno;
+            }
+        }
+               
+        asort($data);
+        
+        return $data;
+    }
+    
+    //Salva os valores dos campos personalizados, referenciando os campos do formulário FrmPhysicalPerson
+    public function saveCustomFields($identificador, $personId, $value)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $busCustomField = new BasCustomField();
+        
+        $valorCampoCustomizado = $busCustomField->getCustomValue($identificador, $personId);
+            
+        $id = $busCustomField->getCustomFieldId('FrmPhysicalPerson', $identificador);
+                        
+        if($id)
+        {
+            try
+            {
+                $customValue = new MCustomValue();
+                $customValue->customizedId = $personId;
+                $customValue->customFieldId = $id; //$customFieldId;
+                $customValue->value = $value;
+
+                if( $valorCampoCustomizado )
+                {
+                    $ok = $customValue->updateByData();
+                }
+                else
+                {
+                    if( strlen($value) > 0 )
+                    {
+                        $ok = $customValue->insert();
+                    }
+                }
+            }
+            catch ( Exception $e )
+            {   
+                try
+                {
+                    $customValue->updateByData();
+                }
+                catch ( Exception $err )
+                {
+                    $MIOLO->error($err->getMessage());
+                }
+            }
+        }
+                
+        return $ok;        
+    }
+    
+}
+
+?>

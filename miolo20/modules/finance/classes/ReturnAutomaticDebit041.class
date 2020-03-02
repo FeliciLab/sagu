@@ -1,0 +1,694 @@
+<?php
+ /**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This class generate the file for import to banrisul
+ *
+ * @author: William Prigol Lopes [william@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Leovan Tavares da Silva [leovan@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 14/06/2006
+ *
+ **/
+class ReturnAutomaticDebit041
+{
+    private $returnInfo;
+    private $business;
+
+    /*
+     * Return a specific message for message codes for rreturns..
+     *
+     * @param: $messageType (int): Id for return message codes
+     * 
+     * @return: Return the specific message by id, if do not exists, return null 
+     *
+     */
+    private function returnMessage($messageType)
+    {
+        $module = MIOLO::getCurrentModule();
+
+        $returnMessages['00'] = 'Débito Efetuado.';
+        $returnMessages['01'] = 'Débito não Efetuado - Insuficiência de Fundos.';
+        $returnMessages['02'] = 'Débito não Efetuado - Conta Corrente não Cadastrada.';
+        $returnMessages['04'] = 'Débito não Efetuado - Outras restrições.';
+        $returnMessages['10'] = 'Débito não Efetuado - Agência em regime de encerramento.';
+        $returnMessages['12'] = 'Débito não Efetuado - Valor Inválido.';
+        $returnMessages['13'] = 'Débito não Efetuado - Data de lançamento inválida.';
+        $returnMessages['14'] = 'Débito não Efetuado - Agência Inválida.';
+        $returnMessages['15'] = 'Débito não Efetuado - DAC da conta corrente inválido.';
+        $returnMessages['18'] = 'Débito não Efetuado - Data do débito anterior à do processamento.';
+        $returnMessages['30'] = 'Débito não Efetuado - Sem contrato de débito automático.';
+        $returnMessages['96'] = 'Manutenção do cadastro.';
+        $returnMessages['97'] = 'Cancelamento - não encontrado.';
+        $returnMessages['98'] = 'Cancelamento - não efetuado, fora de tempo hábil.';
+        $returnMessages['99'] = 'Cancelamento - cancelado conforme solicitação.';
+        return $returnMessages[$messageType] ? $returnMessages[$messageType] : _M('Código de mensagem de retorno inválida', $module);
+    }
+    
+    /*
+     * Get file data
+     *
+     * @param $fileId (varchar): The file id for basFile
+     */
+    private function getFileData($fileId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $businessFile = new BusinessBasicBusFile();
+        $path = $businessFile->getFilePath($fileId);
+    }
+
+    /**
+     * Function called when the class is instantiated, make the necessary processes
+     *
+     * @param: $data (object): Object containing information about processes
+     *
+     * @return: Return the automatic debit
+     *
+     */
+    public function ReturnAutomaticDebit041($data)
+    {  
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+
+        $businessFile = new BusinessBasicBusFile();
+        $path = $businessFile->getFilePath($data->fileId);
+        $fileData = file($path);
+
+        $this->business = new BusinessFinanceBusReturnAutomaticDebit();
+        $this->business->beginTransaction();
+        
+        if ( is_array($fileData) )
+        {
+            $header  = $fileData[0];
+            $trailer = $fileData[count($fileData)-1];
+            unset($fileData[0], $fileData[count($fileData)]);
+            $details = $fileData;
+
+            $this->processHeader($header);
+            $this->statistics =  $this->processDetails($details, $data);
+            $this->processTrailer($trailer);
+        }
+
+  //      return $log;
+    }
+
+    /**
+     * Function called when the class is instantiated, make the necessary processes
+     *
+     * @param: $data (object): Object containing information about processes
+     *
+     * @return: Return the automatic debit
+     *
+     */
+    private function processHeader($string)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $str[] = substr($string, 0, 1);
+        //
+        // Identify if that register is really, really a header...
+        //
+        if ($str[0] == 'A')
+        {
+            $str[] = substr($string, 1, 44);        // Register type
+            $str[] = substr($string, 45, 20);       // Unknown info
+            $yyyy  = substr($string, 65, 4);        // Year of file
+            $mm    = substr($string, 69, 2);        // Month of file
+            $dd    = substr($string, 71, 2);        // Day of file
+            $str[] = $yyyy.$mm.$dd;                 // Date of file
+            $str[] = substr($string, 73);           // Unknown info
+
+            $this->returnInfo->returnDate = SAGU::toDefaultDate($str[3], 'yyyymmdd');
+        }
+        else
+        {
+            $url = $MIOLO->getActionURL($module, 'main:process:remittanceReturn:returnAutomaticDebit:returnAutomaticDebit041');
+            $MIOLO->information(_M('O arquivo não contém um cabeçalho válido', $module), $url);
+        }
+    }
+
+    /**
+     * Function called when the class is instantiated, make the necessary processes
+     *
+     * @param: $data (object): Object containing information about processes
+     *
+     * @return: Return the automatic debit
+     *
+     */
+    private function processDetails($string, $data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $MIOLO->getClass('basic','sagu');
+        $db = SDatabase::getInstance();
+
+        if ( is_array($string) )
+        {
+            $line = 1;
+            foreach ( $string as $key => $strin )
+            {
+                $str[] = substr($strin, 0, 1);
+
+                //
+                // Identify if that register is really, really a detail. ;)
+                //
+                if ($str[0] == 'F')
+                {
+                    $yyyy  = trim(substr($strin, 44, 4));
+                    $mm    = trim(substr($strin, 48, 2));
+                    $dd    = trim(substr($strin, 50, 2));
+                    $str[] = SAGU::toDefaultDate($yyyy.$mm.$dd, 'yyyymmdd');                // Debit date
+                    $str[] = SAGU::calcNumber(trim(substr($strin, 52, 15)).'.0 /100', true);   // Value
+                    $str[] = trim(substr($strin, 67, 2));                                   // Message
+                    $str[] = trim(substr($strin, 69, 60));                                  // InvoiceId (equivalent to user's space from remittance).
+                }
+                else
+                {
+                    $url = $MIOLO->getActionURL($module, 'main:process:remittanceReturn:returnAutomaticDebit:returnAutomaticDebit041');
+                    $MIOLO->information(_M('Erro na linha @1 deste arquivo', $url, $key));
+                }
+                // data do débito
+                $invoiceData->entryDate = $str[1];
+                // valor do débito
+                $invoiceData->value     = $str[2];
+                // id do título
+                $invoiceData->invoiceId = $str[4];
+
+                $this->processData->invoice[] = clone($invoiceData);
+
+                $str[5] = $status;
+
+                $params = array('invoiceId'=>$str[4], 'event'=>'btnSearch_click');
+                $url = $MIOLO->getActionURL($module, 'main', null, $params);
+                $str[4]       = new MLink('invoice_'.$str[4], $str[4], $url, $str[4], '_new');
+                $dataString[] = array($key, $str[1], $str[2], $this->returnMessage($str[3]), $str[4]);
+                unset($str);
+            }
+
+            $this->returnInfo->invoiceData = $dataString;
+
+            $invoiceTax   = null;
+            $logs         = null;
+            $logsKey      = 0;
+            $logsKeyError = 0;
+
+            if ( is_array($this->processData->invoice) )
+            {
+                $entryInvoice->totalValueTax = '0.00';
+            
+                foreach ( $this->processData->invoice as $key => $dataLine )
+                {
+                    // Insere título para PROAD para as taxas.
+                    if ( strlen($invoiceTax) == 0 )
+                    {
+                        // Pega taxa bancária para o banco dos retornos.
+                        $sql = '     SELECT B.bankTaxValue,
+                                            A.bankAccountId
+                                FROM ONLY finReceivableInvoice A
+                                INNER JOIN finPolicy B
+                                        USING (policyId)
+                                        WHERE A.invoiceId = ? ';
+
+                        $args = array($dataLine->invoiceId);
+                        $ret = $db->query(SAGU::prepare($sql, $args));
+
+                        $invoiceFile->bankAccountId =  $data->bankAccountId;
+
+                        $entryInvoice->bankTaxValue = SAGU::getParameter('FINANCE', 'TAX_BANK_VALUE_FOR_AUT_DEB_BANRISUL');
+
+                        $MIOLO = MIOLO::getInstance();
+                        $MIOLO->getClass('basic','sagu');
+
+                        $module = is_null($module) ? 'finance' : $module;
+                        $db = SDatabase::getInstance();
+
+                        $sql = "SELECT bankTaxOperation FROM finDefaultOperations";
+                        $return = $db->query($sql);
+
+                        $entryInvoice->bankTaxOperation = SAGU::getParameter('FINANCE', 'OPERATION_ID_FOR_AUT_DEB_TAX_BANK_BANRISUL');
+
+                        if ( strlen($entryInvoice->bankTaxOperation) == 0 )
+                        {
+                            $entryInvoice->bankTaxOperation = SAGU::getParameter('FINANCE', 'BANK_TAX_OPERATION_INCENTIVE');
+                        }
+
+                        if ( (!empty( $entryInvoice->bankTaxOperation ) ) && ( $entryInvoice->bankTaxValue > 0 ) )
+                        {
+                            // pessoa para quem se destina o título. (PROAD)
+                            $invoiceFile->personId = SAGU::getParameter('FINANCE', 'PERSON_TO_RECEIVE_BANK_TAX');
+                            $invoiceFile->accountSchemeId = SAGU::getParameter('FINANCE', 'ACCOUNTSCHEME_ID_RETURN_REMITTANCE'); 
+                            $invoiceFile->costCenterId    = SAGU::getParameter('FINANCE', 'COSTCENTER_ID_RETURN_AUTOMATIC_DEBIT');
+                            $invoiceFile->parcelNumber    = 0;
+                            $invoiceFile->value           = 0;
+                            $invoiceFile->courseId        = 0;
+                            $invoiceFile->courseVersion   = 1;
+                            $invoiceFile->maturityDate    = SAGU::getDateNow();
+                            $invoiceFile->emissionDate    = SAGU::getDateNow();
+                            $invoiceFile->policyId        = SAGU::getParameter('FINANCE', 'POLICY_ID_RETURN_REMITTANCE');
+                            $invoiceFile->automaticDebit  = DB_FALSE;
+                            $invoiceFile->incomeSourceId  = 0;
+
+                            $business = new BusinessFinanceBusReceivableInvoice();
+
+                            // Insere título inicial 
+                            $sql = 'SELECT NEXTVAL(\'seq_invoiceId\')';
+                            $retVal = $db->query($sql);
+
+                            $db->execute('BEGIN TRANSACTION');
+
+                            if ( isset($retVal[0][0]) )
+                            {
+                                $invoiceId = $retVal[0][0];
+
+                                $field[] = 'invoiceId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceId;
+                                $field[] = 'personId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->personId;
+                                $field[] = 'accountSchemeId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->accountSchemeId;
+                                $field[] = 'costCenterId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->costCenterId;
+                                $field[] = 'parcelNumber';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->parcelNumber;
+                                $field[] = 'emissionDate';
+                                if ( is_null($invoiceFile->emissionDate) )
+                                {
+                                    $prepareValue[] = 'now()';
+                                }
+                                else
+                                {
+                                    $prepareValue[] = 'TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+                                    $dataValue[] = $invoiceFile->emissionDate;
+                                }
+                                $field[] = 'maturityDate';
+                                $prepareValue[] = 'TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+                                $dataValue[] = $invoiceFile->maturityDate;
+                                $field[] = 'value';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->value;
+                                $field[] = 'policyId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->policyId;
+                                $field[] = 'bankInvoiceId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->bankInvoiceId;
+                                $field[] = 'automaticDebit';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->automaticDebit;
+                                $field[] = 'comments';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->comments;
+                                $field[] = 'incomeSourceId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->incomeSourceId;
+                                $field[] = 'bankAccountId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->bankAccountId;
+                                $field[] = 'sagu1InvoiceId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->sagu1InvoiceId;
+
+                                $sql = 'INSERT INTO finInvoice
+                                                    (';
+                                for ( $i=0; $i<count($field); $i++ )
+                                {
+                                    $sql .= $field[$i] . ',';
+                                }
+                                $sql = substr($sql, 0, strlen($sql)-1) . ')
+                                            VALUES (';
+                                for ( $i=0; $i<count($prepareValue); $i++ )
+                                {
+                                    $sql .= $prepareValue[$i] . ',';
+                                }
+                                $sql = substr($sql, 0, strlen($sql)-1) . ')';
+
+                                if ( ! $db->execute(SAGU::prepare($sql, $dataValue)) )
+                                {
+                                    $invoiceId = false;
+                                }
+                            }
+
+                            if ( $invoiceId !== false )
+                            {
+                                unset($field, $prepareValue, $dataValue);
+
+                                $field[] = 'invoiceId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceId;
+                                $field[] = 'personId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->personId;
+                                $field[] = 'accountSchemeId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->accountSchemeId;
+                                $field[] = 'costCenterId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->costCenterId;
+                                $field[] = 'parcelNumber';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->parcelNumber;
+                                $field[] = 'emissionDate';
+                                if ( is_null($invoiceFile->emissionDate) )
+                                {
+                                    $prepareValue[] = 'now()';
+                                }
+                                else
+                                {
+                                    $prepareValue[] = 'TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+                                    $dataValue[] = $invoiceFile->emissionDate;
+                                }
+                                $field[] = 'maturityDate';
+                                $prepareValue[] = 'TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+                                $dataValue[] = $invoiceFile->maturityDate;
+                                $field[] = 'value';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->value;
+                                $field[] = 'policyId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->policyId;
+                                $field[] = 'bankInvoiceId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->bankInvoiceId;
+                                $field[] = 'automaticDebit';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->automaticDebit;
+                                $field[] = 'comments';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->comments;
+                                $field[] = 'incomeSourceId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->incomeSourceId;
+                                $field[] = 'bankAccountId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->bankAccountId;
+                                $field[] = 'sagu1InvoiceId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->sagu1InvoiceId;
+                                $field[] = 'sendDate';
+                                $prepareValue[] = 'TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+                                $dataValue[] = $invoiceFile->sendDate;
+                                $field[] = 'returnDate';
+                                $prepareValue[] = 'TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+                                $dataValue[] = $invoiceFile->returnDate;
+                                $field[] = 'returnFileId';
+                                $prepareValue[] = '?';
+                                $dataValue[] = $invoiceFile->returnFileId;
+
+                                $sql = 'INSERT INTO finReceivableInvoice
+                                                    (';
+                                for ( $i=0; $i<count($field); $i++ )
+                                {
+                                    $sql .= $field[$i] . ',';
+                                }
+                                $sql = substr($sql, 0, strlen($sql)-1) . ')
+                                            VALUES (';
+                                for ( $i=0; $i<count($prepareValue); $i++ )
+                                {
+                                    $sql .= $prepareValue[$i] . ',';
+                                }
+                                $sql = substr($sql, 0, strlen($sql)-1) . ')';
+
+                                if ( ! $db->execute(SAGU::prepare($sql, $dataValue)) )
+                                {
+                                    $invoiceId = false;
+                                }
+                            }
+
+                            $invoiceTax = $invoiceId;
+                        }
+                    }
+
+                    unset($invoiceLine);
+                    $business = new BusinessFinanceBusReceivableInvoice();
+                    $invoiceLine =  $business->getReceivableInvoice($dataLine->invoiceId);
+
+                    if ( strlen($invoiceLine->invoiceId) > 0 )
+                    {
+                        // Tem desconto ?
+                        if ( $dataLine->value < $invoiceLine->value )
+                        {
+                            // valor do desconto.
+                            $discountValue = SAGU::calcNumber ( $invoiceLine->value . ' - ' .   $dataLine->value); 
+
+                            if ( (strlen($entryInvoice->bankTaxValue) > 0)  AND ($entryInvoice->bankTaxValue > 0 ) AND ( strlen( $entryInvoice->bankTaxOperation ) > 0 ) )
+                            {
+                                unset($insert);
+                                $insert->invoiceId      = $invoiceTax;
+                                $insert->returnDate     = SAGU::getDateNow();
+                                $insert->bankInvoiceId  = $file->bankNumber;
+                                $insert->operationId    = $entryInvoice->bankTaxOperation;
+                                $insert->entryDate      = $dataLine->entryDate;
+                                $insert->value          = $entryInvoice->bankTaxValue;
+                                $insert->creationType   = 'A';
+                                $insert->costCenterId   = $invoiceFile->costCenterId;
+                                $entryInvoice->totalValueTax = SAGU::calcNumber($entryInvoice->bankTaxValue . ' + ' . $entryInvoice->totalValueTax);
+
+                                $forProcess->insertEntry[]->data = clone($insert);
+
+                                // Logs
+                                $opts        = array('invoiceId'=>$invoiceTax);
+                                $linkInvoice = new MOpenWindow('link'. $logsKey, $invoiceLine->invoiceId . ' - ' .   $invoiceTax , $MIOLO->getActionURL( $module, "main:report:receivableInvoiceConsult", null, $opts ) ) ;
+                                $log->ReturnsOk[$logsKey][0] = $linkInvoice->generate();
+                                $log->ReturnsOk[$logsKey][1] = SAGU::formatNumber($entryInvoice->bankTaxValue , SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'));
+    
+                                // pega informações sobre operação.
+                                $businessOperation = new BusinessFinanceBusOperation();
+                                $dataOperation     = $businessOperation->getOperation($entryInvoice->bankTaxOperation);
+                                $log->ReturnsOk[$logsKey][2] =  $entryInvoice->bankTaxOperation . ' - ' . $dataOperation->description;
+    
+                                // Incrementa contador para logs
+                                $logsKey++;
+                            }
+
+                            // Dados de insert de desconto.
+                            unset($insert);
+                            $insert->invoiceId      = $invoiceLine->invoiceId;
+                            $insert->returnDate     = SAGU::getDateNow();
+                            $insert->operationId    = SAGU::getParameter('FINANCE', 'DEFAULT_OPERATION_DISCOUNT_RETURN_AUTOMATIC_DEBIT');
+                            $insert->entryDate      = $dataLine->entryDate;
+                            $insert->value          = $discountValue;
+                            $insert->creationType   = 'A';
+                            $insert->costCenterId   = $invoiceLine->costCenterId;
+
+                            $forProcess->insertEntry[]->data = clone($insert);
+
+                            // Logs
+                            $opts        = array('invoiceId'=>$invoiceLine->invoiceId);
+                            $linkInvoice = new MOpenWindow('link'. $logsKey, $invoiceLine->invoiceId, $MIOLO->getActionURL( $module, "main:report:receivableInvoiceConsult", null, $opts ) ) ;
+
+                            $log->ReturnsOk[$logsKey][0] = $linkInvoice->generate();
+                            $log->ReturnsOk[$logsKey][1] = SAGU::formatNumber($discountValue, SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'));
+
+                            // pega informações sobre operação.
+                            $businessOperation = new BusinessFinanceBusOperation();
+                            $dataOperation     = $businessOperation->getOperation(SAGU::getParameter('FINANCE', 'DEFAULT_OPERATION_DISCOUNT_RETURN_AUTOMATIC_DEBIT'));
+
+                            $log->ReturnsOk[$logsKey][2] = SAGU::getParameter('FINANCE', 'DEFAULT_OPERATION_DISCOUNT_RETURN_AUTOMATIC_DEBIT') . ' - ' . $dataOperation->description;
+
+                            // Incrementa contador para logs
+                            $logsKey++;
+
+                            unset($insert);
+                            // Lançamento do pagamento.
+                            $insert->invoiceId      = $invoiceLine->invoiceId;
+                            $insert->returnDate     = SAGU::getDateNow();
+                            $insert->operationId    = $data->operationId;
+                            $insert->entryDate      = $dataLine->entryDate;
+                            $insert->value          = $dataLine->value;
+                            $insert->creationType   = 'A';
+                            $insert->costCenterId   = $invoiceLine->costCenterId;
+
+                            $forProcess->insertEntry[]->data = clone($insert);
+
+                            // Logs 
+                            $opts        = array('invoiceId'=>$invoiceLine->invoiceId);
+                            $linkInvoice = new MOpenWindow('link'. $logsKey, $invoiceLine->invoiceId, $MIOLO->getActionURL( $module, "main:report:receivableInvoiceConsult", null, $opts ) );
+
+                            $log->ReturnsOk[$logsKey][0] = $linkInvoice->generate();
+                            $log->ReturnsOk[$logsKey][1] = $dataLine->value;
+
+                            // pega informações sobre operação.
+                            $businessOperation = new BusinessFinanceBusOperation();
+                            $dataOperation     = $businessOperation->getOperation($data->operationId);
+
+                            $log->ReturnsOk[$logsKey][2] = $data->operationId . ' - ' . $dataOperation->description;
+                            // Incrementa contador para logs
+                            $logsKey++;
+                        }
+                        else
+                        {
+                            if ( (strlen($entryInvoice->bankTaxValue) > 0)  AND ($entryInvoice->bankTaxValue > 0 ) AND ( strlen( $entryInvoice->bankTaxOperation ) > 0 ) )
+                            {
+                                unset($insert);
+
+                                $insert->invoiceId      = $invoiceTax;
+                                $insert->returnDate     = SAGU::getDateNow();
+                                $insert->operationId    = $entryInvoice->bankTaxOperation;
+                                $insert->entryDate      = $this->returnInfo->returnDate;
+                                $insert->value          = $entryInvoice->bankTaxValue;
+                                $insert->creationType   = 'A';
+                                $insert->costCenterId   = $invoiceFile->costCenterId;
+                                $entryInvoice->totalValueTax = SAGU::calcNumber($entryInvoice->bankTaxValue . ' + ' . $entryInvoice->totalValueTax);
+
+                                $forProcess->insertEntry[]->data = clone($insert);
+
+                                // Logs
+                                $opts        = array('invoiceId'=>$invoiceTax);
+                                $linkInvoice = new MOpenWindow('link'. $logsKey, $invoiceLine->invoiceId . ' - ' .   $invoiceTax , $MIOLO->getActionURL( $module, "main:report:receivableInvoiceConsult", null, $opts ) ) ;
+                                $log->ReturnsOk[$logsKey][0] = $linkInvoice->generate();
+                                $log->ReturnsOk[$logsKey][1] = SAGU::formatNumber($entryInvoice->bankTaxValue , SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'));
+
+                                // pega informações sobre operação.
+                                $businessOperation = new BusinessFinanceBusOperation();
+                                $dataOperation     = $businessOperation->getOperation($entryInvoice->bankTaxOperation);
+                                $log->ReturnsOk[$logsKey][2] =  $entryInvoice->bankTaxOperation . ' - ' . $dataOperation->description;
+
+                                // Incrementa contador para logs
+                                $logsKey++;
+                            }
+
+                            unset($insert);
+                            // Lançamento do pagamento.
+                            $insert->invoiceId      = $invoiceLine->invoiceId;
+                            $insert->returnDate     = SAGU::getDateNow();
+                            $insert->operationId    = $data->operationId;
+                            $insert->entryDate      = $this->returnInfo->returnDate;
+                            $insert->value          = $dataLine->value;
+                            $insert->creationType   = 'A';
+                            $insert->costCenterId   = $invoiceLine->costCenterId;
+
+                            $forProcess->insertEntry[]->data = clone($insert);
+
+                           // Logs 
+                            $opts        = array('invoiceId'=>$invoiceLine->invoiceId);
+                            $linkInvoice = new MOpenWindow('link'. $logsKey, $invoiceLine->invoiceId, $MIOLO->getActionURL( $module, "main:report:receivableInvoiceConsult", null, $opts ) );
+
+                            $log->ReturnsOk[$logsKey][0] = $linkInvoice->generate();
+                            $log->ReturnsOk[$logsKey][1] = $dataLine->value;
+
+                            // pega informações sobre operação.
+                            $businessOperation = new BusinessFinanceBusOperation();
+                            $dataOperation     = $businessOperation->getOperation($data->operationId);
+
+                            $log->ReturnsOk[$logsKey][2] = $data->operationId . ' - ' . $dataOperation->description;
+                            // Incrementa contador para logs
+                            $logsKey++;
+                        }
+                    }
+                    else
+                    {
+                        $log->ReturnsError[$logsKeyError][0] = $dataLine->invoiceId;
+                        $log->ReturnsError[$logsKeyError][1] = $dataLine->value;
+                        // Incrementa contador para logs
+                        $logsKeyError++;
+                    }
+                } // foreach
+
+                if( $entryInvoice->totalValueTax > 0 )
+                {
+                    unset($update);
+                    $update = $business->getReceivableInvoice($invoiceTax);
+
+                    $update->value        = $entryInvoice->totalValueTax;
+                    $update->maturityDate = $this->returnInfo->returnDate;
+                    $update->invoiceId    = $invoiceTax;
+
+                    $forProcess->updateReceivableInvoiceClose->data = clone($update);
+
+                    $sql = "SELECT bankClosingTaxOperation FROM finDefaultOperations";
+                    $return = $db->query($sql);
+
+                    $entryInvoice->bankClosingTaxOperation = $return[0][0];
+
+                    $insert->invoiceId      = $invoiceTax;
+                    $insert->returnDate     = SAGU::getDateNow();
+                    $insert->operationId    = $entryInvoice->bankClosingTaxOperation;
+                    $insert->entryDate      = $this->returnInfo->returnDate;
+                    $insert->value          = $entryInvoice->totalValueTax;
+                    $insert->creationType   = 'A';
+                    $insert->costCenterId   = $invoiceFile->costCenterId;
+
+                    $forProcess->insertEntry[]->data = clone($insert);
+                }
+                $MIOLO = MIOLO::getInstance();
+                $businessProcess = new BusinessFinanceBusReturnAutomaticDebit();
+                $ok = $businessProcess->processReturnDebit($forProcess);
+            }
+        }
+        $db->execute('COMMIT');
+        return $log;
+    }
+
+    /**
+     * Function called when the class is instantiated, make the necessary processes
+     *
+     * @param: $data (object): Object containing information about processes
+     *
+     * @return: Return the automatic debit
+     *
+     */
+    private function processTrailer($string)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+  
+        $str[] = substr($string, 0, 1);
+        //
+        // Identify if that register is really, really a trailler... ;)
+        //
+        if ( $str[0] != 'Z' )
+        {
+            $url = $MIOLO->getActionURL($module, 'main:process:remittanceReturn:returnAutomaticDebit:returnAutomaticDebit041');
+            $MIOLO->information(_M('O trailer é inválido. Por favor, verifique se o arquivo é válido.', $module), $url);
+        }
+    }
+
+   /**
+    * Return the info data to show status of return import process
+    *
+    * @param: No parameters needed
+    *
+    * @return: Object containing informations to show in form
+    *
+    */
+    public function returnInfoData()
+    {
+        return $this->returnInfo;
+    }
+}
+?>

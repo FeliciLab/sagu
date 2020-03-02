@@ -1,0 +1,698 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ *
+ * This file handles the connection and actions for contract documents
+ *
+ * @author Daniel Afonso Heisler [daniel@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Andre Chagas Dias [andre@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 22/05/2006
+ *
+ **/
+
+/**
+ * Class to manipulate contract documents
+ **/
+class BusinessAcademicBusContractDocument extends sBusiness
+{
+    /**
+     * List all registers to generate contract documets
+     *
+     * @param: $data (object):
+     *
+     * @returns (array): Return an array with all the matching records
+     *
+     **/
+    public function getGraduationContractDocument($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $db = $this->getDatabase();
+
+        if ( (strlen($data->periodId) == 0) && (strlen($data->learningPeriodId) > 0) )
+        {
+            $sql = 'SELECT periodId
+                      FROM unit_acdlearningperiod
+                     WHERE learningPeriodId = ?';
+
+            $args[] = $data->learningPeriodId;
+            $result = $db->query(SAGU::prepare($sql, $args));
+            $data->periodId = $result[0][0];
+            unset($args);
+        }
+        if ( $data->situation == 'F' )
+        {
+            $sql = 'SELECT B.personId,
+                           B.name,
+                           TO_CHAR(B.dateBirth,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                           B.location,
+                           B.number,
+                           B.neighborhood,
+                           C.name,
+                           C.stateId,
+                           H.nationality,
+                           (SELECT basCity.name FROM basCity WHERE B.cityIdBirth = basCity.cityId LIMIT 1),
+                           I.description,
+                           B.zipCode,
+                           (SELECT basProfessionalActivity.description
+                                                        FROM basProfessionalActivity
+                                                        INNER JOIN basProfessionalActivityPeople ON(basProfessionalActivity.professionalActivityId = basProfessionalActivityPeople.professionalActivityId AND basProfessionalActivityPeople.personId = B.personId) ORDER BY basProfessionalActivityPeople.beginDate DESC LIMIT 1),
+                           B.sex,
+                           (SELECT basDocument.content FROM basDocument WHERE basDocument.personId = B.personId AND basDocument.documenttypeid = ? ),
+                           (SELECT basDocument.content FROM basDocument WHERE basDocument.personId = B.personId AND basDocument.documenttypeid = ? ),
+                           (SELECT basDocument.organ FROM basDocument WHERE basDocument.personId = B.personId AND basDocument.documenttypeid = ? ),
+                           (SELECT TO_CHAR(basDocument.dateExpedition ,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') FROM basDocument WHERE basDocument.personId = B.personId AND basDocument.documenttypeid = ? ),
+                           (SELECT basDocument.content FROM basDocument WHERE basDocument.personId = B.personId AND basDocument.documenttypeid = ? ),
+                           B.residentialPhone,
+                           B.cellPhone,
+                           B.email,
+                           J.description,
+                           A.name,
+                           getPhysicalPersonAge(B.personId),
+                           CASE WHEN getPhysicalPersonAge(C.personId) >= 18 THEN \'NÃO\' ELSE \'SIM\' END,
+                           N.name as reponsibleName
+                      FROM basPhysicalPerson B
+                 LEFT JOIN basCity C
+                        ON ( B.cityId = C.cityid )
+                 LEFT JOIN basState D
+                        ON ( C.stateId = D.stateId AND C.countryId = D.countryId )
+                 LEFT JOIN spr.subscription E
+                        ON ( B.personId = E.personId
+                       AND E.selectiveProcessId = ?
+                       AND E.finishedhighschool = TRUE )
+                 LEFT JOIN spr.subscriptionOption F
+                        ON ( E.subscriptionId = F.subscriptionId )
+                 LEFT JOIN spr.optionCourse G
+                        ON ( F.optionId = G.optionId
+                       AND G.courseId = ?
+                       AND G.courseVersion = ? )
+                 LEFT JOIN acdCourse A
+                        ON ( A.courseId = G.courseId )
+                 LEFT JOIN basCountry H
+                        ON ( B.countryidbirth = H.countryid )
+                 LEFT JOIN basMaritalStatus I
+                        ON ( B.maritalStatusId = I.maritalStatusId)
+                 LEFT JOIN basTurn J
+                        ON ( G.turnId = J.turnId )
+            LEFT JOIN ONLY basPhysicalPerson N
+                        ON N.personId = B.responsablelegalid
+                 WHERE ';
+
+            if ( strlen($data->personId) > 0 )
+            {
+                $sql .= ' CASE WHEN ( ? > 0 )
+                                  THEN E.personId = ?
+                             END ORDER BY 2';
+            }
+            else
+            {
+                $classifiedStatusId = SprSubscriptionStatus::CLASSIFIED;
+                $sql .= " HAS_SUBSCRIPTION_STATUS(E.subscriptionId, '{$classifiedStatusId}') = TRUE "; //Se esta classificado
+
+                $sql .= " ORDER BY 2";
+            }
+
+            $args[] = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF');
+            $args[] = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG');
+            $args[] = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG');
+            $args[] = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG');
+            $args[] = SAGU::getParameter('BASIC', 'ELECTORAL_TITLE_CODE');
+            $args[] = $data->selectiveProcessId;
+            $args[] = $data->courseId;
+            $args[] = $data->courseVersion;
+
+            if ( strlen($data->personId) > 0 )
+            {
+                $args[] = strlen($data->personId) > 0 ? $data->personId : 0;
+                $args[] = strlen($data->personId) > 0 ? $data->personId : 0;
+            }
+        }
+        else
+        {
+            $sql = 'SELECT DISTINCT C.personId,
+                                    C.name,
+                                    TO_CHAR(C.dateBirth,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                                    C.location,
+                                    C.number,
+                                    C.neighborhood,
+                                    D.name,
+                                    D.stateId,
+                                    I.nationality,
+                                    (SELECT basCity.name FROM basCity WHERE C.cityIdBirth = basCity.cityId LIMIT 1),
+                                    J.description,
+                                    C.zipCode,
+                                    (SELECT basProfessionalActivity.description
+                                                        FROM basProfessionalActivity
+                                                        INNER JOIN basProfessionalActivityPeople ON(basProfessionalActivity.professionalActivityId = basProfessionalActivityPeople.professionalActivityId AND basProfessionalActivityPeople.personId = C.personId) ORDER BY basProfessionalActivityPeople.beginDate DESC LIMIT 1),
+                                    C.sex,
+                                    (SELECT basDocument.content FROM basDocument WHERE basDocument.personId = C.personId AND basDocument.documenttypeid = ? ),
+                                    (SELECT basDocument.content FROM basDocument WHERE basDocument.personId = C.personId AND basDocument.documenttypeid = ? ),
+                                    (SELECT basDocument.organ FROM basDocument WHERE basDocument.personId = C.personId AND basDocument.documenttypeid = ? ),
+                                    (SELECT TO_CHAR(basDocument.dateExpedition ,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') FROM basDocument WHERE basDocument.personId = C.personId AND basDocument.documenttypeid = ? ),
+                                    (SELECT basDocument.content FROM basDocument WHERE basDocument.personId = C.personId AND basDocument.documenttypeid = ? ),
+                                    C.residentialPhone,
+                                    C.cellPhone,
+                                    C.email,
+                                    L.description,
+                                    B.name,
+                                    ? as period,
+                                    getPhysicalPersonAge(C.personId),
+                                    CASE WHEN getPhysicalPersonAge(C.personId) >= 18 THEN \'NÃO\' ELSE \'SIM\' END,
+                                    N.name as reponsibleName
+                               FROM unit_acdContract A
+                         INNER JOIN unit_acdcourseoccurrence M
+                                 ON ( A.courseId = M.courseId AND A.courseVersion = M.courseVersion AND      A.unitId = M.unitId AND A.turnId = M.turnId )
+                         INNER JOIN acdCourse B
+                                 ON ( M.courseId = B.courseId )
+                     LEFT JOIN ONLY basPhysicalPerson C
+                                 ON ( A.personId = C.personId )
+                          LEFT JOIN basCity D
+                                 ON ( C.cityId = D.cityId )
+                          LEFT JOIN basState E
+                                 ON ( D.stateId = E.stateId AND D.countryId = E.countryId )
+                          LEFT JOIN unit_acdEnroll F
+                                 ON ( A.contractId = F.contractId )
+                          LEFT JOIN unit_acdGroup G
+                                 ON ( F.groupId = G.groupId )
+                          LEFT JOIN unit_acdlearningperiod H
+                                 ON ( G.learningPeriodId = H.learningPeriodId AND H.periodId = ? )
+                          LEFT JOIN basCountry I
+                                 ON ( C.countryidbirth = I.countryid )
+                          LEFT JOIN basMaritalStatus J
+                                 ON ( C.maritalStatusId  = J.maritalStatusId )
+                          LEFT JOIN basTurn L
+                                 ON ( A.turnId = L.turnId )
+                     LEFT JOIN ONLY basPhysicalPerson N
+                                 ON N.personId = C.responsablelegalid
+                              WHERE ';
+
+            if ( strlen($data->personId) > 0 )
+            {
+                $sql .= ' C.personId = ? AND ';
+            }
+            
+            /**
+             * Problemas com a impressao de contrato de graduacao, vamos mudar essa lógica pelo
+             * seguinte motivo: ao fazer esse SQL, sao obtidos os contratos da pessoa, mas se
+             * eu quero imprimir o contrato TAL, nao tem porque buscar os outros contratos da 
+             * pessoa se tem que ser o TAL. Porque quando obtem mais de um contrato dá problemas
+             * em alguns modelos de clientes. Ticket #34465
+             */
+            if ( $data->imprimirContrato )
+            {
+                $sql .= ' A.contractId = ? AND ';
+            }
+
+            $sql .= ' A.courseId      = ?
+                      AND A.courseVersion = ?
+                      AND A.unitId        = ?
+                ORDER BY 2';
+
+            $args[] = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF');
+            $args[] = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG');
+            $args[] = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG');
+            $args[] = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG');
+            $args[] = SAGU::getParameter('BASIC', 'ELECTORAL_TITLE_CODE');
+            $args[] = $data->periodId;
+            $args[] = $data->periodId;
+
+            if ( strlen($data->personId) > 0 )
+            {
+                $args[] = $data->personId;
+            }
+            
+            if( $data->imprimirContrato )
+            {
+                $args[] = $data->contractId;
+            }
+            
+            $args[] = $data->courseId;
+            $args[] = $data->courseVersion;
+            $args[] = $data->unitId;
+        }
+
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        //Mesmo caso descrito acima, já consegui o contrato que eu queria, vamos pular a parte abaixo
+        //Ticket #34465
+        
+        if ( !$data->imprimirContrato )
+        {
+            if ( count($result) > 0 )
+            {
+                $businessContract = new BusinessAcademicBusContract();
+                $businessLearningPeriod = new BusinessAcademicBusLearningPeriod();
+
+                foreach ( $result as $key => $d )
+                {
+                    // Verifica se tem contractId
+                    if ( strlen($data->contractId) > 0 )
+                    {
+                        $contract = $businessContract->getContract($data->contractId);
+                        $contractId = $contract->contractId;
+                    }
+                    // Caso não tenha obtém pelos filtros do $data
+                    else
+                    {
+                        $contracts = $businessContract->searchContract($data);
+                        $contractId = $contracts[0][0];
+                    }
+
+                    //Obtém o número do contrato
+                    $forceNewContractNumber = $data->situation == 'O' || $data->situation == 'F' ? true : false;
+                    $contractNumber = $businessContract->getContractNumber($contractId, $forceNewContractNumber);
+
+                    $result[$key][] = $contractNumber;
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    //FIXME: Add coment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $data
+     * @return unknown
+     */
+    public function getExtensionContractDocument($data)
+    {
+        $db = $this->getDatabase();
+
+        $sql = ' SELECT A.enrollId,
+                        C.name as personName,
+                        TO_CHAR(C.dateBirth, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                        D.content as CPF,
+                        E.content as RG,
+                        C.location,
+                        C.number,
+                        C.complement,
+                        C.neighborhood,
+                        F.name as cityName,
+                        F.stateId
+                   FROM unit_acdEnroll A
+             INNER JOIN unit_acdContract B
+                     ON (A.contractId = B.contractId)
+        INNER JOIN ONLY basPhysicalPerson C
+                     ON (B.personId = C.personId)
+             INNER JOIN basDocument D
+                     ON (D.personId = B.personId AND
+                         D.documentTypeId = \'' . SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF') . '\')
+             INNER JOIN basDocument E
+                     ON (E.personId = B.personId AND
+                         E.documentTypeId = \'' . SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG') . '\')
+             INNER JOIN basCity F
+                     ON (F.cityId = C.cityId)
+             INNER JOIN unit_acdGroup G
+                     ON (A.groupId = G.groupId)
+             INNER JOIN acdcourse L
+                     ON (B.courseId = L.courseId)
+                  WHERE B.courseId = ?
+                    AND B.courseVersion = ?
+                    AND G.learningPeriodId = ?
+                    AND L.formationLevelId = \'' . SAGU::getParameter('ACADEMIC', 'ACD_EXTENSION_FORMATION_LEVEL_ID') . '\'';
+
+        $args = array( $data->courseId, $data->courseVersion, $data->learningPeriodId );
+
+        if ( strlen($data->personId) > 0 )
+        {
+            //apenas uma pessoa
+            $sql .= ' AND B.personId = ?';
+            $args[] = $data->personId;
+        }
+
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $data
+     * @return unknown
+     */
+    public function getAfterGraduationContractDocument($data)
+    {
+        $db = $this->getDatabase();
+
+        $sql = ' SELECT C.name as personName,
+                        TO_CHAR(C.dateBirth, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                        D.content as CPF,
+                        E.content as RG,
+                        C.location,
+                        C.number,
+                        C.complement,
+                        C.neighborhood,
+                        F.name as cityName,
+                        F.stateId,
+                        (now()::date - C.dateBirth)/365,
+                        H.learningPeriodId,
+                        I.description AS maritalStatusDescription,
+                        J.nationality
+                   FROM unit_acdContract B
+        INNER JOIN ONLY basPhysicalPerson C
+                     ON (B.personId = C.personId)
+             INNER JOIN basDocument D
+                     ON (D.personId = B.personId AND
+                         D.documentTypeId = \'' . SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF') . '\')
+             INNER JOIN basDocument E
+                     ON (E.personId = B.personId AND
+                         E.documentTypeId = \'' . SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG') . '\')
+             INNER JOIN basCity F
+                     ON (F.cityId = C.cityId)
+              LEFT JOIN  unit_acdEnroll G
+                     ON (G.contractId = B.contractId)
+          LEFT JOIN unit_acdGroup H
+                     ON (H.groupId = G.groupId)
+             INNER JOIN basMaritalStatus I
+                     ON (I.maritalStatusId = C.maritalStatusId)
+             INNER JOIN basCountry J
+                     ON (J.countryId = C.countryIdBirth)
+             INNER JOIN acdcourse L
+                     ON (B.courseId = L.courseId)
+                  WHERE B.courseId = ?
+                    AND B.courseVersion = ?
+                    AND H.learningPeriodId = ?
+                    AND L.formationLevelId = \'' . SAGU::getParameter('ACADEMIC', 'ACD_AFTER_GRADUATION_FORMATION_LEVEL_ID') . '\'';
+
+        $args = array( $data->courseId, $data->courseVersion, $data->learningPeriodId );
+
+        if ( strlen($data->personId) > 0 )
+        {
+            //apenas uma pessoa
+            $sql .= 'AND B.personId = ?';
+            $args[] = $data->personId;
+        }
+
+        $sql .= 'GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14';
+
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $data
+     * @return unknown
+     */
+    public function getMethodologyContractDocument($data)
+    {
+        $db = $this->getDatabase();
+
+        $sql = ' SELECT C.name as personName,
+                        TO_CHAR(C.dateBirth, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                        D.content as CPF,
+                        E.content as RG,
+                        C.location,
+                        C.number,
+                        C.complement,
+                        C.neighborhood,
+                        F.name as cityName,
+                        F.stateId,
+                        (now()::date - C.dateBirth)/365,
+                        H.learningPeriodId,
+                        I.description AS maritalStatusDescription,
+                        J.nationality
+                   FROM unit_acdContract B
+        INNER JOIN ONLY basPhysicalPerson C
+                     ON (B.personId = C.personId)
+             INNER JOIN basDocument D
+                     ON (D.personId = B.personId AND
+                         D.documentTypeId = \'' . SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF') . '\')
+             INNER JOIN basDocument E
+                     ON (E.personId = B.personId AND
+                         E.documentTypeId = \'' . SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG') . '\')
+             INNER JOIN basCity F
+                     ON (F.cityId = C.cityId)
+              LEFT JOIN  unit_acdEnroll G
+                     ON (G.contractId = B.contractId)
+              LEFT JOIN unit_acdGroup H
+                     ON (H.groupId = G.groupId)
+             INNER JOIN basMaritalStatus I
+                     ON (I.maritalStatusId = C.maritalStatusId)
+             INNER JOIN basCountry J
+                     ON (J.countryId = C.countryIdBirth)
+                  WHERE B.courseId = ? AND
+                        B.courseVersion = ? AND
+                        H.learningPeriodId = ?';
+
+        $args = array( $data->courseId, $data->courseVersion, $data->learningPeriodId );
+
+        if ( strlen($data->personId) > 0 )
+        {
+            //apenas uma pessoa
+            $sql .= 'AND B.personId = ?';
+            $args[] = $data->personId;
+        }
+
+        $sql .= ' GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14';
+
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $data
+     * @return unknown
+     */
+    public function getMastersContractDocument($data)
+    {
+        $db = $this->getDatabase();
+
+        $sql = ' SELECT C.name as personName,
+                        TO_CHAR(C.dateBirth, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                        D.content as CPF,
+                        E.content as RG,
+                        C.location,
+                        C.number,
+                        C.complement,
+                        C.neighborhood,
+                        F.name as cityName,
+                        F.stateId,
+                        (now()::date - C.dateBirth)/365,
+                        H.learningPeriodId,
+                        I.description AS maritalStatusDescription,
+                        J.nationality
+                   FROM unit_acdContract B
+        INNER JOIN ONLY basPhysicalPerson C
+                     ON (B.personId = C.personId)
+             INNER JOIN basDocument D
+                     ON (D.personId = B.personId AND
+                         D.documentTypeId = \'' . SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF') . '\')
+             INNER JOIN basDocument E
+                     ON (E.personId = B.personId AND
+                         E.documentTypeId = \'' . SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG') . '\')
+             INNER JOIN basCity F
+                     ON (F.cityId = C.cityId)
+              LEFT JOIN  unit_acdEnroll G
+                     ON (G.contractId = B.contractId)
+          LEFT JOIN unit_acdGroup H
+                     ON (H.groupId = G.groupId)
+             INNER JOIN basMaritalStatus I
+                     ON (I.maritalStatusId = C.maritalStatusId)
+             INNER JOIN basCountry J
+                     ON (J.countryId = C.countryIdBirth)
+             INNER JOIN acdcourse L
+                     ON (B.courseId = L.courseId)
+                  WHERE B.courseId = ?
+                    AND B.courseVersion = ?
+                    AND H.learningPeriodId = ?
+                    AND L.formationLevelId = \'' . SAGU::getParameter('ACADEMIC', 'ACD_MASTER_FORMATION_LEVEL_ID') . '\'';
+
+        $args = array( $data->courseId, $data->courseVersion, $data->learningPeriodId );
+
+        if ( strlen($data->personId) > 0 )
+        {
+            //apenas uma pessoa
+            $sql .= 'AND B.personId = ?';
+            $args[] = $data->personId;
+        }
+
+        $sql .= ' GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14';
+
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $personId
+     * @return unknown
+     */
+    public function getResponsableLegalContractDocument($personId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $db = $this->getDatabase();
+
+        $businessPerson = new BusinessBasicBusPhysicalPerson();
+        $person = $businessPerson->getPhysicalPerson($personId);
+
+        if( strlen($person->responsableLegalId) > 0 )
+        {
+
+            $sql = 'SELECT DISTINCT A.personId,
+                                    A.name,
+                                    (SELECT basProfessionalActivity.description
+                                       FROM basProfessionalActivity
+                                 INNER JOIN basProfessionalActivityPeople
+                                         ON (basProfessionalActivity.professionalActivityId = basProfessionalActivityPeople.professionalActivityId
+                                             AND basProfessionalActivityPeople.personId = A.personId)
+                                   ORDER BY basProfessionalActivityPeople.beginDate DESC
+                                      LIMIT 1),
+                                    (SELECT basDocument.content
+                                       FROM basDocument
+                                      WHERE basDocument.personId = A.personId
+                                        AND basDocument.documenttypeid = ? ),
+                                    (SELECT basDocument.content
+                                       FROM basDocument
+                                      WHERE basDocument.personId = A.personId
+                                        AND basDocument.documenttypeid = ? ),
+                                    E.description,
+                                    A.location,
+                                    A.number,
+                                    B.name,
+                                    B.stateId
+                               FROM ONLY basPhysicalPerson A
+                          LEFT JOIN basCity B
+                                 ON (B.cityId = A.cityId)
+                          LEFT JOIN basState C
+                                 ON (C.stateId = B.stateId)
+                          LEFT JOIN basCountry D
+                                 ON (D.countryId = B.countryId)
+                          LEFT JOIN basMaritalStatus E
+                                 ON (E.maritalStatusId = A.maritalStatusId)
+                              WHERE A.personId = ?';
+
+            $args[] = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF');
+            $args[] = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG');
+            $args[] = $person->responsableLegalId;
+
+            $result = $db->query(SAGU::prepare($sql, $args));
+        }
+
+        return $result;
+    }
+
+    //FIXME:
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $data
+     * @param unknown_type $companyId
+     * @return unknown
+     */
+    public function getPricePerLearningPeriodDocument($data,$companyId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $db = $this->getDatabase();
+        
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $lp = $busLearningPeriod->getLearningPeriod($data->learningPeriodId);
+
+        $sql = 'SELECT currencySymbol,
+                       SUM(price),
+                       CASE WHEN parcels > 0
+                       THEN SUM(price) / parcels END,
+                       creditValue
+                       FROM (SELECT DISTINCT (SELECT M.currencysymbol
+                                         FROM basCompanyConf I
+                               INNER JOIN ONLY basLegalPerson J
+                                           ON ( I.personId = J.personId AND I.companyId = ?)
+                                    LEFT JOIN basCity L
+                                           ON ( J.cityId = L.cityId )
+                                    LEFT JOIN basCountry M
+                                           ON ( L.countryId = M.countryId )) as currencySymbol,
+                                F.financeCredits * round( A.value, \'' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '\') as price,
+                                CASE WHEN D.parcelsNumber > 0 THEN D.parcelsNumber ELSE
+                                B.parcelsNumber END as parcels,
+                                H.name,
+                                round( A.value, \'' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '\') as creditValue
+                           FROM finPrice A
+                      LEFT JOIN unit_acdlearningperiod B
+                                ON ( A.courseId = B.courseId AND
+                                     A.courseVersion = B.courseVersion AND
+                                     A.turnId = B.turnId AND
+                                     A.unitId = B.unitId AND
+                                     B.learningperiodId = ?)
+                      LEFT JOIN unit_acdcourseoccurrence C
+                                ON ( B.courseId = C.courseId AND C.courseVersion = ? )
+                      LEFT JOIN unit_acdContract D
+                                ON ( D.personId = ? AND C.courseId = D.courseId AND C.courseVersion = D.courseVersion )
+                      LEFT JOIN unit_acdEnroll E
+                                ON ( D.contractId = E.contractId )
+                      LEFT JOIN unit_acdGroup F
+                                ON ( E.groupId = F.groupId AND F.learningPeriodId = B.learningPeriodId )
+                      LEFT JOIN unit_acdcurriculum G
+                                ON ( F.curriculumId = G.curriculumId )
+                      LEFT JOIN  acdCurricularComponent H
+                                ON  ( G.curricularComponentId = H.curricularComponentId AND         G.curricularComponentVersion = H.curricularComponentVersion )
+                          WHERE A.courseId = ? AND A.courseVersion = ? AND A.turnId = ? AND A.unitId = ?
+                            AND C.courseId = ? AND F.financeCredits > 0
+                            AND now()::date BETWEEN A.startDate AND A.endDate) as fincanceDate
+               GROUP BY currencySymbol, parcels, creditValue';
+
+        $args = array(   $companyId,
+                         $data->learningPeriodId,
+                         $data->courseVersion,
+                         $data->personId,
+                         $lp->courseId,
+                         $lp->courseVersion,
+                         $lp->turnId,
+                         $lp->unitId,
+                         $data->courseId          );
+
+        $result = $db->query(SAGU::prepare($sql,$args));
+
+        return $result;
+    }
+}
+
+?>

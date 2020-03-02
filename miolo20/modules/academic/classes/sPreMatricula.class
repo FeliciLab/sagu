@@ -1,0 +1,410 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Classe que contem funcoes relativas à funcionalidades gerais de pré-matricula.
+ * 
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 29/01/2013
+ *
+ *
+ **/
+class sPreMatricula
+{
+    /**
+     * Executa rotinas de confirmacao de pre matricula, fazendo as devidas checagens no financeiro, configuracoes e contrato.
+     * Caso haja sucesso, altera o estado das matriculas para MATRICULADO e insere movimentacao contratual.
+     * 
+     */
+    public static function confirmacaoDePreMatricula($contractId, $learningPeriodId, $tipoDeMatricula = null)
+    {
+        $tipoDeMatricula = SAGU::NVL($tipoDeMatricula, Matricula::MATRICULA_NORMAL);
+        $matricula = new Matricula($contractId, $tipoDeMatricula);
+        $enrollConf = $matricula->obterConfiguracoes();
+        $matriculaConfirmada = self::verificaConfirmacaoDeMatricula($contractId, $learningPeriodId, $tipoDeMatricula);
+        
+        $preMatriculas = sPreMatricula::obterDisciplinasPreMatriculadas($contractId, $learningPeriodId);
+        $estAtualPreMatricula = (!$enrollConf->preMatriculaConsomeVaga()) ? count($preMatriculas) > 0 : true;
+
+        if ( ( $matriculaConfirmada && $estAtualPreMatricula ) || ( self::verificaIncentivo($contractId, $tipoDeMatricula, $learningPeriodId) ) )
+        {
+            sPreMatricula::inserirMovimentacaoContratual($contractId, $learningPeriodId);
+            sPreMatricula::alterarEstadoMatriculas($preMatriculas, $enrollConf);
+            sPreMatricula::registrarPendenciaParaEmailDeConfirmacaoDeMatricula($enrollConf, $contractId, $learningPeriodId);
+         }
+    }
+    
+    
+    /**
+     * Registra pendência de e-mail
+     * 
+     * @param AcdEnrollConfig $enrollConf
+     * @param type $contractId
+     * @param type $learningPeriodId
+     */
+    public static function registrarPendenciaParaEmailDeConfirmacaoDeMatricula(AcdEnrollConfig $enrollConf, $contractId, $learningPeriodId)
+    {
+        // Carrega objeto do contrato
+        $contrato = new AcdContract($contractId);
+        
+        // Verifica se já foi registrado pendência de e-mail para o aluno
+        $pendenciaDeEmail = BasPendenciaDeEmail::verificaPendenciaDeEmail($enrollConf->emailDeConfirmacaoId, $contrato->personId);
+        
+        // Verifica se nenhuma disciplina do período está com o status de pré-matriculado
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $disciplinasDoPeriodo = $busEnroll->verificaDisciplinasPreMatriculadasNoPeriodo($contractId, $learningPeriodId);
+        
+        if ( ( $enrollConf->habilitaEmailDeConfirmacao == DB_TRUE ) && ( $pendenciaDeEmail == '0' ) && ( $disciplinasDoPeriodo == DB_TRUE ) )
+        {
+            $basPendenciaDeEmail = new BasPendenciaDeEmail();
+            $basPendenciaDeEmail->contractId = $contrato->contractId;
+            $basPendenciaDeEmail->personId = $contrato->personId;
+            $basPendenciaDeEmail->emailId = $enrollConf->emailDeConfirmacaoId;
+            $basPendenciaDeEmail->save();
+        }
+    }       
+    
+    /**
+     * Verifica se a confirmação já foi feita conforme configuração.
+     * 
+     * @param int $contractId
+     * @param int $learningPeriodId
+     * @param String $tipoDeMatricula
+     * @return boolean
+     */
+    public static function verificaConfirmacaoDeMatricula($contractId, $learningPeriodId, $tipoDeMatricula = null)
+    {
+        $tipoDeMatricula = SAGU::NVL($tipoDeMatricula, Matricula::MATRICULA_NORMAL);
+        $matricula = new Matricula($contractId, $tipoDeMatricula);
+        $enrollConf = $matricula->obterConfiguracoes();
+        $contratoAssinado = false;
+        $primeiraParcelaPaga = false;
+        $matriculaClassificada = false;
+        
+        if ( $enrollConf->preMatriculaAtivada() )
+        {
+            $contratoAssinado = sPreMatricula::contratoAssinado($enrollConf, $contractId, $learningPeriodId);
+            $primeiraParcelaPaga = sPreMatricula::primeiraParcelaPaga($enrollConf, $contractId, $learningPeriodId);
+            $matriculaClassificada = sPreMatricula::matriculaClassificada($enrollConf, $contractId, $learningPeriodId);
+            $confirmacaoPortal = sPreMatricula::confirmacaoPortal($enrollConf, $contractId, $learningPeriodId);
+        }        
+                
+        return ($contratoAssinado && $primeiraParcelaPaga && $matriculaClassificada && $confirmacaoPortal);
+    }
+    
+    public static function alterarEstadoMatriculas($preMatriculas = array(), $enrollConf)
+    {
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $acdClassificacaoDeMatricula = new AcdAlunoProcessadoNaClassificacaoDaDisciplina();
+                
+        foreach ( $preMatriculas as $enroll )
+        {
+            $disciplina = true;
+            
+            list($enrollId) = $enroll;
+            
+            $data = $busEnroll->getEnroll($enrollId);
+            
+            // Se existir configuração de classificação então verifica se nesta disciplina o aluno está classificado
+            if ( strlen($enrollConf->preMatriculaChecaClassificacao) > 0 && $enrollConf->preMatriculaChecaClassificacao != AcdEnrollConfig::PREMATRICULA_NENHUM )
+            {
+                $disciplina = $acdClassificacaoDeMatricula->verificaSeEstaClassificadoNaDisciplina($data->contractId, $data->groupId);
+            }
+
+            if ( $disciplina )
+            {
+                $data->statusId   = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED');
+                $data->dateEnroll = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+
+                $busEnroll->updateEnroll($data);
+            }
+        }
+        
+    }
+    
+    public static function inserirMovimentacaoContratual($contractId, $learningPeriodId)
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        $contract = new AcdContract();
+
+        $mc = new AcdMovementContract();
+        $mc->contractId = $contractId;
+        $mc->stateContractId = SAGU::getParameter('BASIC', 'STATE_CONTRACT_ID_ENROLLED');
+        $mc->learningPeriodId = $learningPeriodId;
+        $mc->stateTime = date(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_WITH_SECONDS_PHP'));
+
+        $busMovementContract = new BusinessAcademicBusMovementContract();
+        $busMovementContract->insertOrUpdateMovementContract($mc);
+    }
+    
+    /**
+     * @return boolean 
+     */
+    public static function contratoAssinado(AcdEnrollConfig $enrollConf, $contractId, $learningPeriodId)
+    {
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $periodoLetivo = $busLearningPeriod->getLearningPeriod($learningPeriodId);
+        
+        $alunoCalouro = AcdContract::alunoCalouro($contractId, $periodoLetivo->periodId);
+        $sistemaContratoAssinado = AcdEnrollConfirm::assinouContrato($contractId, $learningPeriodId); // Obtem como esta atualmente no sistema
+        $assinado = false;
+        
+        // Verifica assinatura de contrato
+        if ( strlen($enrollConf->preEnrollCheckSignature) > 0 )
+        {
+            if ( !$alunoCalouro && ( $enrollConf->preEnrollCheckSignature == AcdEnrollConfig::PREMATRICULA_VETERANO ) && $sistemaContratoAssinado )
+            {
+                $assinado = true;
+            }
+            else if ( $alunoCalouro && ( $enrollConf->preEnrollCheckSignature == AcdEnrollConfig::PREMATRICULA_CALOURO ) && $sistemaContratoAssinado )
+            {
+                $assinado = true;
+            }
+            else if ( ( $enrollConf->preEnrollCheckSignature == AcdEnrollConfig::PREMATRICULA_AMBOS ) && $sistemaContratoAssinado )
+            {
+                $assinado = true;
+            }
+            else if ( $enrollConf->preEnrollCheckSignature == AcdEnrollConfig::PREMATRICULA_NENHUM )
+            {
+                $assinado = true;
+            }
+        }
+        else
+        {
+            $assinado = true;
+        }
+        
+        return $assinado;
+    }
+    
+    /**
+     * @return boolean 
+     */
+    public static function confirmacaoPortal(AcdEnrollConfig $enrollConf, $contractId, $learningPeriodId)
+    {
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $periodoLetivo = $busLearningPeriod->getLearningPeriod($learningPeriodId);
+        
+        $alunoCalouro = AcdContract::alunoCalouro($contractId, $periodoLetivo->periodId);
+        $alunoConfirmouPortal = AcdEnrollConfirm::confirmouPortal($contractId, $learningPeriodId); // Obtem como esta atualmente no sistema
+        $confirmado = false;
+
+        // Verifica a confirmação do aluno no portal.
+        if ( strlen($enrollConf->preenrollwebconfirmation) > 0 )
+        {
+            if ( !$alunoCalouro && ( $enrollConf->preenrollwebconfirmation == AcdEnrollConfig::PREMATRICULA_VETERANO ) && $alunoConfirmouPortal )
+            {
+                $confirmado = true;
+            }
+            else if ( $alunoCalouro && ( $enrollConf->preenrollwebconfirmation == AcdEnrollConfig::PREMATRICULA_CALOURO ) && $alunoConfirmouPortal )
+            {
+                $confirmado = true;
+            }
+            else if ( ( $enrollConf->preenrollwebconfirmation == AcdEnrollConfig::PREMATRICULA_AMBOS ) && $alunoConfirmouPortal )
+            {
+                $confirmado = true;
+            }
+            else if ( $enrollConf->preenrollwebconfirmation == AcdEnrollConfig::PREMATRICULA_NENHUM )
+            {
+                $confirmado = true;
+            }
+        }
+        else
+        {
+            $confirmado = true;
+        }
+        
+        return $confirmado;
+    }
+    
+    
+    /**
+     * @return boolean 
+     */
+    public static function primeiraParcelaPaga(AcdEnrollConfig $enrollConf, $contractId, $learningPeriodId)
+    {
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $periodoLetivo = $busLearningPeriod->getLearningPeriod($learningPeriodId);
+        
+        $alunoCalouro = AcdContract::alunoCalouro($contractId, $periodoLetivo->periodId);
+        $pagouPrimeiraParcela = sPreMatricula::pagouPrimeiraParcela($contractId, $learningPeriodId);        
+        $paga = false;
+        
+        // Verifica parcela paga
+        if ( strlen($enrollConf->preEnrollCheckFirstPayment) > 0 )
+        {
+            if ( !$alunoCalouro && ( $enrollConf->preEnrollCheckFirstPayment == AcdEnrollConfig::PREMATRICULA_VETERANO ) && $pagouPrimeiraParcela )
+            {
+                $paga = true;
+            }
+            else if ( $alunoCalouro && ( $enrollConf->preEnrollCheckFirstPayment == AcdEnrollConfig::PREMATRICULA_CALOURO ) && $pagouPrimeiraParcela )
+            {
+                $paga = true;
+            }
+            else if ( ( $enrollConf->preEnrollCheckFirstPayment == AcdEnrollConfig::PREMATRICULA_AMBOS ) && $pagouPrimeiraParcela )
+            {
+                $paga = true;
+            }
+            else if ( $enrollConf->preEnrollCheckFirstPayment == AcdEnrollConfig::PREMATRICULA_NENHUM )
+            {
+                $paga = true;
+            }
+        }
+        else
+        {
+            $paga = true;
+        }
+        
+        return $paga;
+    }
+    
+    /**
+     * @return boolean
+     */
+    public static function pagouPrimeiraParcela($contractId, $learningPeriodId)
+    {   
+        $busReceivableInvoice = new BusinessFinanceBusReceivableInvoice();
+        $pagouPrimeiraParcela = $busReceivableInvoice->verificaSePrimeiraParcelaFoiPaga($contractId, $learningPeriodId);
+        
+        return $pagouPrimeiraParcela;
+    }
+    
+    /**
+     * Retorna se o estado atual é pre-matricula
+     * 
+     * @return boolean
+     */
+    public static function obterDisciplinasPreMatriculadas($contractId, $learningPeriodId)
+    {
+        // Busca por disciplinas pre matriculadas
+        $filters = new stdClass();
+        $filters->contractId = $contractId;
+        $filters->learningPeriodId = $learningPeriodId;
+        $rows = AcdEnroll::searchPreEnrollCurricularComponents($filters);
+        
+        return (array) $rows;
+    }
+    
+    
+    /**
+     * Função que verifica se o aluno que está sendo pré matriculado tem incentivo de 100% 
+     * caso tenha retorna true e o aluno deverá passar diretamente para o status de matriculado.
+     *
+     * @return boolean
+     */
+    public static function verificaIncentivo($contractId, $tipoDeMatricula = null, $learningPeriodId = null)
+    {
+        $tipoDeMatricula = SAGU::NVL($tipoDeMatricula, Matricula::MATRICULA_NORMAL);
+        $matricula = new Matricula($contractId, $tipoDeMatricula);
+        $enrollConf = $matricula->obterConfiguracoes();
+        
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $periodoLetivo = $busLearningPeriod->getLearningPeriod($learningPeriodId);
+        
+        $alunoCalouro = AcdContract::alunoCalouro($contractId, $periodoLetivo->periodId);
+        $return = false;
+        $somaIncentivo = 0;
+        
+        if( $enrollConf->enablePreEnroll == DB_TRUE )
+        {
+            $verificaPrimeiroPgto = ( $alunoCalouro && $enrollConf->preEnrollCheckFirstPayment == AcdEnrollConfig::PREMATRICULA_CALOURO ) ||
+                                    ( !$alunoCalouro && $enrollConf->preEnrollCheckFirstPayment == AcdEnrollConfig::PREMATRICULA_VETERANO ) ||
+                                    ( $enrollConf->preEnrollCheckFirstPayment == AcdEnrollConfig::PREMATRICULA_AMBOS );
+
+            if( $verificaPrimeiroPgto )
+            {
+                $busIncentive = new BusinessFinanceBusIncentive();
+                $incentives = $busIncentive->getIncentivesByContract($contractId, true, $learningPeriodId);
+
+                /**
+                 * Somente estão sendo contemplados incentivos concedidos com valor em percentual.
+                 * Quando for por valor fixo, ao finalizar a função enroll, é executada a confirmação de pré-matricula
+                 * que identifica se o aluno deverá ficar como matriculado ou não.
+                 */
+                foreach ( $incentives as $incentive )
+                {
+                    $incentive instanceof FinIncentive;
+
+                    if ( $incentive->valueIsPercent == DB_TRUE )
+                    {
+                        $somaIncentivo = SAGU::calcNumber("{$somaIncentivo} + {$incentive->value}");
+                    }
+                }
+
+                if ( SAGU::calcNumber("{$somaIncentivo} >= 100") == DB_TRUE )
+                {
+                    $return = true;
+                }
+            }
+        }
+        
+        return $return;
+    }
+    
+    /**
+     * 
+     * Verifica se o processo de classificação já ocorreu
+     * 
+     */
+    public function matriculaClassificada(AcdEnrollConfig $enrollConf, $contractId, $learningPeriodId)
+    {
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $periodoLetivo = $busLearningPeriod->getLearningPeriod($learningPeriodId);
+        
+        $alunoCalouro = AcdContract::alunoCalouro($contractId, $periodoLetivo->periodId);
+        $matriculaClassificada = false;
+        
+        $acdClassificacaoDeMatricula = new AcdAlunoProcessadoNaClassificacaoDaDisciplina();
+                
+        if ( strlen($enrollConf->preMatriculaChecaClassificacao) > 0 )
+        {
+            if ( $alunoCalouro && $enrollConf->preMatriculaChecaClassificacao == AcdEnrollConfig::PREMATRICULA_CALOURO  )
+            {
+                $matriculaClassificada = $acdClassificacaoDeMatricula->verificaProcessoDeClassificacaoDeMatricula($contractId, $learningPeriodId);
+            }
+            if ( (!$alunoCalouro || $alunoCalouro) && $enrollConf->preMatriculaChecaClassificacao == AcdEnrollConfig::PREMATRICULA_AMBOS )
+            {
+                $matriculaClassificada = $acdClassificacaoDeMatricula->verificaProcessoDeClassificacaoDeMatricula($contractId, $learningPeriodId);
+            }
+            if ( !$alunoCalouro && $enrollConf->preMatriculaChecaClassificacao == AcdEnrollConfig::PREMATRICULA_VETERANO )
+            {
+                $matriculaClassificada = $acdClassificacaoDeMatricula->verificaProcessoDeClassificacaoDeMatricula($contractId, $learningPeriodId);
+            }
+            if ( $enrollConf->preMatriculaChecaClassificacao == AcdEnrollConfig::PREMATRICULA_NENHUM )
+            {
+                $matriculaClassificada = true;
+            }
+        }
+        else
+        {
+            $matriculaClassificada = true;
+        }
+        
+        return $matriculaClassificada;
+    }
+}
+?>

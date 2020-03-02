@@ -1,0 +1,21 @@
+ALTER TABLE acpCurso ADD COLUMN cursoIdRepresentanteId int4;
+ALTER TABLE acpCurso ADD COLUMN grauAcademicoId int4;
+ALTER TABLE acpCurso ADD COLUMN perfilCursoId int4;
+ALTER TABLE acpCurso ADD COLUMN codigo varchar(255);
+ALTER TABLE acpCurso ADD COLUMN nome varchar(255);
+ALTER TABLE acpCurso ADD COLUMN nomeParaDocumentos varchar(255);
+ALTER TABLE acpCurso ADD COLUMN modalidade char(1) NOT NULL;
+ALTER TABLE acpCurso ADD COLUMN disciplinasADistancia bool NOT NULL;
+ALTER TABLE acpCurso ADD COLUMN percentualCargaHorariaDistancia int4 NOT NULL;
+ALTER TABLE acpCurso ADD COLUMN titulacao varchar(255);
+ALTER TABLE acpCurso ADD COLUMN numeroFormalVagas int4 NOT NULL;
+CREATE TABLE acpGrauAcademico (grauAcademicoId  SERIAL NOT NULL, nome int4, CONSTRAINT acpGrauAcademico_grauAcademicoId PRIMARY KEY (grauAcademicoId));
+ALTER TABLE acpModeloDeAvaliacao ADD CONSTRAINT acpRecuperacao_estadoDeMatriculaId_pk2 FOREIGN KEY (estadoDeMatriculaReprovacaoRecuperacaoId) REFERENCES acpEstadoDeMatricula (estadoDeMatriculaId);
+ALTER TABLE acpModeloDeAvaliacao ADD CONSTRAINT acpRecuperacao_estadoDeMatriculaId_pk FOREIGN KEY (estadoDeMatriculaAprovacaoRecuperacaoId) REFERENCES acpEstadoDeMatricula (estadoDeMatriculaId);
+ALTER TABLE acpPerfilCursoComponenteCurricular ADD CONSTRAINT acpPerfilCursoComponenteCurricular_perfilCursoId_pk FOREIGN KEY (perfilCursoId) REFERENCES acpPerfilCurso (perfilCursoId);
+ALTER TABLE acpControleDeFrequencia ADD CONSTRAINT acpModeloDeAvaliacao_controleDeFrequenciaId_modeloDeAvaliacaoId_pk FOREIGN KEY (modeloDeAvaliacaoId) REFERENCES acpModeloDeAvaliacao (modeloDeAvaliacaoId);
+ALTER TABLE acpConceitosDeAvaliacao ADD CONSTRAINT acpconjuntoDeConceitos_conceitoDeAvaliacaoId_pk FOREIGN KEY (conjuntoDeConceitosId) REFERENCES acpconjuntoDeConceitos (conjuntoDeConceitosId);
+ALTER TABLE acpCurso ADD CONSTRAINT acpPerfilCurso_cursoId_pk FOREIGN KEY (perfilCursoId) REFERENCES acpPerfilCurso (perfilCursoId);
+ALTER TABLE acpCurso ADD CONSTRAINT acpCurso_grauAcademicoId_pk FOREIGN KEY (grauAcademicoId) REFERENCES acpGrauAcademico (grauAcademicoId);
+ALTER TABLE acpCurso ADD CONSTRAINT acpCurso_cursoId_pk FOREIGN KEY (cursoIdRepresentanteId) REFERENCES acpCurso (cursoId);
+

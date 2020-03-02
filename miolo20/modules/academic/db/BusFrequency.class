@@ -1,0 +1,680 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file handles the business layer for the professor frequency register
+ *
+ * @author Armando Taffarel Neto [taffarel@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * 
+ * @since
+ * Class created on 10/09/2007
+ */
+
+/**
+ * Class to handle this business
+ **/
+class BusinessAcademicBusFrequency extends sBusiness
+{
+    public function listGroupPupilsObject($groupId, $personId = null, $periodId = null)
+    {
+        return SAGU::resultToObject($this->listGroupPupils($groupId, $personId, $periodId), array(
+            'personName',
+            'personId',
+            'enrollId',
+        ));
+    }
+
+    /**
+     * A list containing all pupils from a group
+     *
+     * @param $groupId (integer): Primary key for query
+     *
+     * @return (array): An array containing all pupils from a group
+     *
+     **/
+    public function listGroupPupils($groupId, $personId = null, $periodId = null)
+    {
+        $sql = 'SELECT D.name,
+                       D.personId,
+                       A.enrollId
+                  FROM unit_acdEnroll A
+            INNER JOIN unit_acdContract B
+                    ON (A.contractId = B.contractId)
+            INNER JOIN acdEnrollStatus C
+                    ON (C.statusId = A.statusId)
+       INNER JOIN ONLY basPhysicalPerson D
+                    ON (B.personId = D.personId)
+                 WHERE A.groupId = ? ';
+
+        $args[] = $groupId;
+
+        if ( SAGU::getParameter('BASIC', 'SHOW_CANCELLED_PUPILS_IN_GRADE_TYPING') == DB_FALSE )
+        {
+            $sql .= " AND C.statusId NOT IN (".SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_CANCELLED').")";
+        }
+
+        if (SAGU::getParameter('BASIC', 'SHOW_CANCELLED_PUPILS_IN_EXAM_ACT') == DB_FALSE)
+        {
+            $sql .= ' AND A.statusId != ? ';
+            $args[] = SAGU::getParameter('ACADEMIC','ENROLL_STATUS_CANCELLED');
+        }
+
+        if ( strlen($personId) > 0 )
+        {
+            $sql .= ' AND D.personId = ? ';
+            $args[] = $personId;
+        }
+        
+        $sql .= " AND A.statusId <> GETPARAMETER('ACADEMIC', 'ENROLL_STATUS_PRE_ENROLLED')::int ";
+        $sql .= ' AND verificaPrimeiraParcela(A.enrollId, ?) ';
+        $args[] = $periodId;
+                      
+        $sql .= "ORDER BY 1";
+
+        $db  = $this->getDatabase();
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+
+    /**
+     * Gets the curricular component name
+     *
+     * @param $groupId (integer): Primary key for query
+     *
+     * @return (array): The name of a specific curricular component
+     *
+     **/
+    public function getCurricularComponentName($groupId)
+    {
+        $sql = 'SELECT C.name
+                  FROM unit_acdGroup A
+            INNER JOIN unit_acdcurriculum B
+                    ON (A.curriculumId = B.curriculumId)
+            INNER JOIN acdCurricularComponent C
+                    ON (B.curricularComponentId = C.curricularComponentId AND
+                        B.curricularComponentVersion = C.curricularComponentVersion)
+                 WHERE A.groupId = ?';
+
+        $db  = $this->getDatabase();
+        $result = $db->query(SAGU::prepare($sql, $groupId));
+
+        return $result[0][0];
+    }
+    
+     /**
+     * A list containing all academic calendar from a group on a specified period
+     *
+     * @param $groupId (integer): group id
+     *        $periodId (integer): period id
+     *
+     * @return (array): An array containing all academic calendars from a group
+     *
+     **/
+    public function listGroupAcademicCalendar($groupId, $beginDates = null, $endDates = null, $professorId = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $krono = new MKrono();
+        
+        $busSchedule = new BusinessAcademicBusSchedule();
+        $busTimeSheet = new BusinessAcademicBusTimeSheet();
+
+        $filters = new stdClass();
+        $filters->groupId = $groupId;
+        $filters->professorId = $professorId;
+        $schedules = $busSchedule->searchSchedule($filters);
+
+        $scheduleArray = array();
+        
+        if ( count($schedules) > 0 )
+        {
+            foreach ( $schedules as $schedule )
+            {
+                list ($scheduleId,
+                      $groupId,
+                      $unitId,
+                      $unitDescription,
+                      $periodId,
+                      $beginDate,
+                      $endDate ) = $schedule;
+                
+                // obtem as datas de ocorrência e os ids dos horários em que a oferecida ocorre
+                $groupSchedule = $busSchedule->getScheduleByGroup($scheduleId);
+
+                if ( is_array($groupSchedule->occurrenceDates) )
+                {
+                    foreach ( $groupSchedule->occurrenceDates as $date )
+                    {
+                        if ( (($krono->CompareDate($date, '>=', $beginDates)) && ($krono->CompareDate($date, '<=', $endDates))) || (($beginDates == null) && ($endDates == null)) )
+                        {
+                            if ( is_array($groupSchedule->timeIds) )
+                            {
+                                foreach ( $groupSchedule->timeIds as $value1 )
+                                {
+                                    $filters = new stdClass();
+                                    $filters->timeId = $value1;
+                                    $timeSheet = $busTimeSheet->searchTime($filters);
+        
+                                    list( $timeId,
+                                          $turn,
+                                          $beginHour,
+                                          $endHour,
+                                          $numberMinutes ) = $timeSheet[0];
+        
+                                    $valor = substr ($date, -4) ."-". substr ($date, 3, 2) ."-". substr ($date, 0, 2);
+        
+                                    $count = 0;
+                                    while ( $scheduleArray[$valor.$groupId.$count] != null )
+                                    {
+                                        $count++;
+                                    }
+                                    
+                                    $simpleDate = explode('/', $date);
+                                    $simpleDate = $simpleDate[0] . '/' . $simpleDate[1];
+                                    $turnId = explode(' - ', $turn);
+                                    $turnId = $turnId[0];
+
+                                    $row = new stdClass();
+                                    $row->scheduleId = $scheduleId;
+                                    $row->simpleDate = $simpleDate;
+                                    $row->date = $date;
+                                    $row->timeId = $timeId;
+                                    $row->turnId = $turnId;
+                                    $row->beginHour = $beginHour;
+                                    $row->endHour = $endHour;
+                                    $row->numberMinutes = $numberMinutes;
+
+                                    $scheduleArray[$valor.$groupId.$count] = $row;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if ( is_array($scheduleArray) )
+            {
+                ksort($scheduleArray);
+            }
+        }
+        
+        return $scheduleArray;
+    }
+
+    /**
+     * Do a search Time on the database table handled by the class
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): An array containing the search results
+     **/
+    public function searchTime($filters)
+    {
+        $sql= 'SELECT A.timeId,
+                      A.turnId || \' - \' || B.description,
+                      TO_CHAR(A.beginHour,\'' . SAGU::getParameter('BASIC', 'MASK_TIME') .'\'),
+                      TO_CHAR(A.endHour,\'' . SAGU::getParameter('BASIC', 'MASK_TIME') .'\'),
+                      extract( epoch from A.numberMinutes::interval)/60
+                 FROM acdTime A
+            LEFT JOIN basTurn B 
+                   ON ( A.turnId = B.turnId )';
+
+        if ( strlen($filters->timeId) > 0 )
+        {
+            $where .= ' AND A.timeId = ? ';
+            $args[] = $filters->timeId;
+        }
+        if ( strlen($filters->timeSheetId) > 0 )
+        {
+            $where .= ' AND A.timeSheetId = ? ';
+            $args[] = $filters->timeSheetId;
+        }
+        if ( strlen($filters->turnId) > 0 )
+        {
+            $where .= ' AND A.turnId = ? ';
+            $args[] = $filters->turnId;
+        }
+        if ( strlen($filters->beginHour) > 0 )
+        {
+            $where .= ' AND A.beginHour = ? ';
+            $args[] = $filters->beginHour;
+        }
+        if ( strlen($filters->endHour) > 0 )
+        {
+            $where .= ' AND A.endHour = ? ';
+            $args[] = $filters->endHour;
+        }
+        if ( strlen($filters->numberMinutes) > 0 )
+        {
+            $where .= ' AND A.numberMinutes = ? ';
+            $args[] = $filters->numberMinutes;
+        }
+
+        unset($result);
+        if ( strlen($where) > 0 )
+        {
+            $sql.= ' WHERE ' . substr($where, 4) . '
+                  ORDER BY A.beginHour,
+                           A.endHour ';
+
+            $db     = $this->getDatabase();
+            $result = $db->query(SAGU::prepare($sql, $args));
+        }
+        
+        return $result;
+    }
+    
+     /**
+     * A list containing all frequencies enroll from a group
+     *
+     * @param $groupId integer group id
+     * @param $betweenDates array Filtrar data da frequencia por periodo (data inicial + final)
+     * @param $includeCancelledEnroll boolean Incluir matriculas canceladas na listagem
+     *
+     * @return (array): An array containing all frequencies enroll from a group
+     *
+     **/
+    public function listFrequenceEnroll($groupId, $professorId = null, $betweenDates = array(), $personId = null, $includeCancelledEnroll = true, $periodId = null)
+    {
+        $sql = 'SELECT A.scheduleId,
+                       B.enrollId,
+                       TO_CHAR(A.frequencyDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') AS frequencyDate,
+                       A.timeId,
+                       A.frequency,
+                       A.justifiedAbsense,
+                       A.justification
+                  FROM acdFrequenceEnroll A
+            INNER JOIN unit_acdEnroll B
+                    ON (A.enrollId = B.enrollId)
+            INNER JOIN unit_acdContract C
+                    ON (B.contractId = C.contractId)
+            INNER JOIN unit_acdGroup D
+                    ON (B.groupId = D.groupId)
+            INNER JOIN acdSchedule E
+                    ON (D.groupId = E.groupId 
+                   AND A.scheduleId = E.scheduleId
+                   AND A.frequencyDate = ANY (E.occurrencedates))';
+
+        if ( $professorId )
+        {
+            $sql .= 'INNER JOIN acdscheduleprofessor F
+                             ON (E.scheduleid = F.scheduleid
+                            AND F.professorid = ? )';
+            $params[] = $professorId;
+        }
+        
+        $sql .= ' WHERE D.groupId = ?';
+        $params[] = $groupId;
+
+        if ( strlen($personId) > 0 )
+        {
+            $sql .= ' AND C.personId = ? ';
+            $params[] = $personId;
+        }
+
+        if ( $betweenDates )
+        {
+            $sql .= ' AND A.frequencyDate BETWEEN
+                       TO_DATE(?,\'' . SAGU::getParameter('BASIC','MASK_DATE') . '\')
+                   AND TO_DATE(?,\'' . SAGU::getParameter('BASIC','MASK_DATE') . '\') ';
+            $params[] = $betweenDates[0];
+            $params[] = $betweenDates[1];
+        }
+
+        if ( ! $includeCancelledEnroll )
+        {
+            $sql .= " AND B.statusId NOT IN (".SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_CANCELLED').")";
+        }
+        
+        $sql .= ' AND verificaPrimeiraParcela(B.enrollId, ?) ';
+        $params[] = $periodId;
+        
+        $db  = $this->getDatabase();
+        
+        $result = $db->query(SAGU::prepare($sql, $params));
+
+        return SAGU::resultToObject($result, array(
+            'scheduleId',
+            'enrollId',
+            'frequencyDate',
+            'timeId',
+            'frequency',
+            'justifiedAbsense',
+            'justification',
+        ));
+    }
+    
+    public function updateOrInsertFrequenceEnroll($acdFrequenceEnroll)
+    {
+        $sql = 'SELECT UpdateOrInsertFrequenceEnroll(?, ?, ?, ?, ?, TO_DATE(?,\'' . SAGU::getParameter('basic','MASK_DATE') . '\'), ?)';
+        
+        $args = array( $acdFrequenceEnroll->userName,
+                       $acdFrequenceEnroll->ipAddress,
+                       $acdFrequenceEnroll->timeId,
+                       $acdFrequenceEnroll->enrollId,
+                       $acdFrequenceEnroll->scheduleId,
+                       $acdFrequenceEnroll->frequencyDate,
+                       $acdFrequenceEnroll->frequency );
+
+        $db  = $this->getDatabase();
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+    
+    /**
+     * Verifica se numero de horas excedeu na aula para a categoria
+     *
+     * @param int $groupId
+     * @param int $curricularComponentCategoryId
+     * 
+     * @return boolean
+     */
+    public function hasExceededHourCreditsLimit($groupId, $curricularComponentCategoryId)
+    {
+        $debugMode = false; // Marque true caso queira fazer debug
+        
+        // Obtem o total de horas ja marcadas para categorias desta disciplina
+        $sqlRegistered =
+               "SELECT SUM(T.numberminutes) 
+                  FROM acdscheduleprofessorcontent SPC
+            INNER JOIN acdscheduleprofessor SP
+                    ON SPC.scheduleProfessorId = SP.scheduleProfessorId
+            INNER JOIN acdschedule S
+                    ON S.scheduleId = SP.scheduleId
+            INNER JOIN unit_acdGroup G
+                    ON S.groupId = G.groupId
+            INNER JOIN unit_acdcurriculum C
+                    ON C.curriculumId = G.curriculumId
+            INNER JOIN acdTime T
+                    ON (T.timeId = ANY(S.timeIds))
+                 WHERE S.groupId = ?
+                   AND SPC.curricularcomponentcategoryid = ?";
+        $args[] = $groupId;
+        $args[] = $curricularComponentCategoryId;
+        
+        // Obtem ( numero de creditos academicos para categoria * numero de horas academicas da disciplina )
+        $sqlLimit =
+                 "SELECT ((CCCC.credits * CC.academicnumberhours) || ':00:00')::interval
+                    FROM acdCurricularComponent CC
+              INNER JOIN acdcurricularcomponentcategorycredit CCCC
+                      ON (CC.curricularcomponentid, CC.curricularcomponentversion) = (CCCC.curricularcomponentid, CCCC.curricularcomponentversion)
+              INNER JOIN unit_acdcurriculum _C
+                      ON (CC.curricularcomponentid, CC.curricularcomponentversion) = (_C.curricularcomponentid, _C.curricularcomponentversion)
+              INNER JOIN unit_acdGroup _G
+                      ON (_C.curriculumId = _G.curriculumId)
+                   WHERE _G.groupId = ?
+                     AND CCCC.curricularcomponentcategoryid = ?";
+        $args[] = $groupId;
+        $args[] = $curricularComponentCategoryId;
+        
+        // Faz a comparacao
+        if ( $debugMode )
+        {
+            $sql = "SELECT ({$sqlRegistered})::text||' > ' || ({$sqlLimit})::text";
+        }
+        else
+        {
+            // Se registrado for maior que limite, entao retorna true
+            $sql = "SELECT ({$sqlRegistered}) > ({$sqlLimit})";
+        }
+        
+        $db = $this->getDatabase();
+        $result = $db->query(SAGU::prepare($sql, $args));
+        
+        if ( $debugMode )
+        {
+            MIOLO::vd($result); // utilizado para debug
+        }
+        
+        return $result[0][0] == DB_TRUE;
+    }
+
+    /**
+     * Atualiza frequência sem necessidade de enviar 
+     * a mesma por parâmetro.
+     * 
+     * @param array $data
+     * @return boolean
+     */
+    public function updateFrequency($data)
+    {   
+        $exist = $this->searchFrequency($data);
+        
+        if ( count($exist) > 0 )
+        {
+            if ( SAGU::getParameter('BASIC', 'HALF_PRESENCE') == DB_TRUE )
+            {
+                $whenHalfPresence = $this->createWhenHalfPresence($data);
+            }
+
+            $sql = "UPDATE acdfrequenceenroll
+                       SET frequency = ( CASE WHEN ( SELECT frequency
+                                                       FROM acdfrequenceenroll 
+                                                      WHERE scheduleId = ? 
+                                                        AND frequencydate = TO_DATE(?, '" . SAGU::getParameter('basic','MASK_DATE') . "')
+                                                        AND timeId = ? 
+                                                        AND enrollId = ? ) = 0
+                                              THEN
+                                                   1
+                                              $whenHalfPresence
+                                              ELSE
+                                                   0
+                                         END )
+                     WHERE scheduleId = ? 
+                       AND frequencydate = TO_DATE(?, '" . SAGU::getParameter('basic','MASK_DATE') . "')
+                       AND timeId = ? 
+                       AND enrollId = ?";
+
+            $params = array(
+                $data->scheduleId,
+                $data->frequencyDate,
+                $data->timeId,
+                $data->enrollId,
+                $data->scheduleId,
+                $data->frequencyDate,
+                $data->timeId,
+                $data->enrollId
+            );
+            
+            $db  = $this->getDatabase();
+            $result = $db->Execute(SAGU::prepare($sql, $params));
+        }
+        else
+        {
+            $result = $this->insertFullFrequency($data);
+        }
+        
+        return $result;
+    }
+    
+    /**
+     * Busca pela frequência recebendo
+     * as chaves principais por párâmetro.
+     * 
+     * @param obj $data
+     * @return array
+     */
+    public function searchFrequency($data)
+    {
+        $sql = "SELECT *
+                  FROM acdfrequenceenroll A";
+        
+        // Caso a disciplina possua mais de um professor registrado para o mesmo dia e horário.
+        if ( strlen($data->groupId) > 0 )
+        {
+            $sql .= " INNER JOIN acdSchedule B
+                              ON B.groupId = ? ";
+            
+            $where .= " AND B.groupId = ?";
+            $params[] = $data->groupId;
+            $params[] = $data->groupId;
+        }
+        
+        if ( strlen($data->scheduleId) > 0 )
+        {
+            $where .= " AND A.scheduleId = ?";
+            $params[] = $data->scheduleId;
+        }
+        
+        if ( strlen($data->frequencyDate) > 0 )
+        {
+            $where .= " AND A.frequencydate = dateToDb(?)";
+            $params[] = $data->frequencyDate;
+        }
+        
+        if ( strlen($data->timeId) > 0 )
+        {
+            $where .= " AND A.timeId = ?";
+            $params[] = $data->timeId;
+        }
+        
+        if ( strlen($data->enrollId) > 0 )
+        {
+            $where .= " AND A.enrollId = ?";
+            $params[] = $data->enrollId;
+        }
+        
+        if ( $where )
+        {
+            $sql .= ' WHERE ' . substr($where, 4);
+        }
+        
+        $db  = $this->getDatabase();
+        $result = $db->query(SAGU::prepare($sql, $params));
+        
+        return $result;
+    }
+    
+    /**
+     * Cria a comparação caso esteja abilitada 
+     * opção de meia presença.
+     * 
+     * @param type $data
+     * @return type
+     */
+    public function createWhenHalfPresence($data)
+    {
+        $whenHalfPresence = "WHEN ( SELECT frequency
+                                      FROM acdfrequenceenroll 
+                                     WHERE scheduleId = ? 
+                                       AND frequencydate = TO_DATE(?, '" . SAGU::getParameter('basic','MASK_DATE') . "')
+                                       AND timeId = ? 
+                                       AND enrollId = ? ) = 1
+                             THEN
+                                  0.5 ";
+        
+        $params = array(
+            $data->scheduleId,
+            $data->frequencyDate,
+            $data->timeId,
+            $data->enrollId,
+        );
+        
+        return SAGU::prepare($whenHalfPresence, $params);
+    }
+    
+    /**
+     * Insere a frequência como cheia.
+     * 
+     * @param type $data
+     * @return type
+     */
+    public function insertFullFrequency($data)
+    {
+        $sql = "INSERT INTO acdfrequenceenroll
+                            ( enrollId,
+                              scheduleid,
+                              frequencydate,
+                              frequency,
+                              timeid )
+                      VALUES ( ?,
+                               ?,
+                               TO_DATE(?, '" . SAGU::getParameter('basic','MASK_DATE') . "'),
+                               ?,
+                               ? )";
+
+        $params = array(
+            $data->enrollId,
+            $data->scheduleId,
+            $data->frequencyDate,
+            "1",
+            $data->timeId
+        );
+
+        $db  = $this->getDatabase();
+        $result = $db->Execute(SAGU::prepare($sql, $params));
+        
+        return $result;
+    }
+    
+    /**
+     * Deleta uma frequência recebendo suas 
+     * chaves principais por parâmetro.
+     * 
+     * @param obj $args
+     * @return boolean
+     */
+    public function deleteFrequency($args)
+    {
+        $sql = "DELETE FROM acdfrequenceenroll
+                      WHERE enrollId = ?
+                        AND scheduleId = ?
+                        AND frequencydate = TO_DATE(?, '" . SAGU::getParameter('basic','MASK_DATE') . "')
+                        AND timeId = ?";
+        
+        $params = array(
+            $args->enrollId,
+            $args->scheduleId,
+            $args->frequencyDate,
+            $args->timeId
+        );
+        
+        $db  = $this->getDatabase();
+        $result = $db->Execute(SAGU::prepare($sql, $params));
+        
+        return $result;
+    }
+    
+    /**
+     * Função para ajustar registros de frequência para alunos 
+     * matrículados após o início das aulas
+     * 
+     * @return type
+     */
+    public static function ajustarMatriculadosEmDisciplinasEmAndamento()
+    {
+        $sql = " SELECT ajustarMatriculadosEmDisciplinasEmAndamento(X)
+                   FROM GETPARAMETER('BASIC', 'CURRENT_PERIOD_ID') AS X ";   
+        $result = SDatabase::execute($sql);
+        
+        return $result;
+    }
+}

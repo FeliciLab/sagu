@@ -1,0 +1,107 @@
+<?php
+class MTransaction
+{
+    var $conn; // connection identifier
+    var $commands = array(); // commands to execute
+    var $level; // a counter for the transaction level
+    var $error;
+    var $_miolo;     // MIOLO object
+
+    function __construct($conn)
+    {
+        $this->conn = $conn;
+        $this->level = 0;
+        $this->_miolo = MIOLO::GetInstance();
+    }
+
+    // Virtual methods - to be implemented by the specific drivers
+    public function _begintransaction()
+    {
+    }
+
+    public function _commit()
+    {
+    }
+
+    public function _rollback()
+    {
+    }
+
+    public function begin()
+    {
+        $this->_begintransaction();
+    }
+
+    public function commit()
+    {
+        $this->_commit();
+    }
+
+    public function rollback()
+    {
+        $this->_rollback();
+    }
+
+    public function process()
+    {
+        $this->_miolo->LogSQL("Begin Transaction", false, $this->conn->conf);
+        try
+        {
+            $transactionId = $this->conn->db->query("SELECT txid_current();");
+            $transactionId2 = $this->conn->db->query("SELECT txid_current();");
+            
+            if( $transactionId != $transactionId2 )
+            {    
+                $this->_begintransaction();
+            }
+            $this->level++;
+            $this->error = '';
+            $i = 0;
+            $n = count($this->commands);
+            try
+            {
+                $ok = true;
+                while ($i < $n)
+                {
+                    $sql = $this->commands[$i++];
+                    $ok = $ok && $this->conn->Execute($sql);
+                }
+       
+                if( $transactionId != $transactionId2 )
+                {                        
+                    $this->_commit();
+                    $this->_miolo->LogSQL("End Transaction - Commit", false, $this->conn->conf);                    
+                }                
+                $this->level--;
+            }
+            catch( Exception $e )
+            {
+                if( $transactionId != $transactionId2 )
+                {
+                    $this->_rollback();
+                    $this->_miolo->LogSQL("End Transaction - Rollback", false, $this->conn->conf);                    
+                }
+                $this->level--;
+                
+                throw new EDatabaseTransactionException($e->GetMessage());
+            }
+        }
+        catch( Exception $e )
+        {
+            throw new EDatabaseTransactionException($e->GetMessage());
+        }
+
+        return $ok;
+    }
+
+    public function addCommand($sql)
+    {
+        $this->commands[] = $sql;
+    }
+
+    public function getError()
+    {
+        return $this->error;
+    }
+}
+?>

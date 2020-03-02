@@ -1,0 +1,286 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Grid do formulário de histórico de estágios
+ *
+ * @author Arthur Lehdermann [arthur@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ * 
+ * @since
+ * Class created on 08/04/2011
+ */
+class GrdTrainingHistory extends SGrid
+{
+    private $posFichaAvaliacao;
+    private $personIdLogged;
+    
+    
+    public function __construct($filters)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        $busPerson = new BusinessBasicBusPerson();
+        $personData = $busPerson->getPersonByMioloUserName( trim($MIOLO->getLogin()->id) );
+        $this->personIdLogged = $personData->personId;
+        
+        $columns[] = new MGridColumn('requestId', 'left', true, null, false, null, false);
+        $columns[] = new MGridColumn('subscriptionId', 'left', true, null, false, null, false);
+        $columns[] = new MGridColumn(_M('Unidade', $module), 'left', true, null, true, null, false);
+        $columns[] = new MGridColumn(_M('Área', $module), 'left', true, null, true, null, false);
+        $columns[] = new MGridColumn(_M('Início', $module), 'center', true, null, true, null, false);
+        $columns[] = new MGridColumn(_M('Fim', $module), 'center', true, null, true, null, false);
+        $columns[] = new MGridColumn(_M('Data da solicitação', $module), 'center', true, null, true, null, false);
+        $columns[] = new MGridColumn(_M('Status da solicitação', $module), 'left', true, null, true, null, false);
+        $columns[] = new MGridColumn(_M('Status do estágio', $module), 'left', true, null, true, TraSubscription::listStatus(), false);
+        $columns[] = new MGridColumn(_M('Nota final', $module), 'center', true, null, true, null, false);
+        $columns[] = new MGridColumn(_M('Equipes', $module), 'center', true, null, true, null, false);
+
+        $primaryKey = array('subscriptionTeamId' => '%0%');
+
+        parent::__construct($filters, $columns, __CLASS__, $primaryKey);
+        $this->pageLength = 0;
+        $this->actions = array();
+
+        $this->setRowMethod($this, 'myRowMethod');
+
+        // Adiciona ação de visualizar termo de compromisso
+        $href = $MIOLO->getActionURL('training', 'main:document:commitmentTerm', null, array(
+                'requestId' => '%0%',
+                'reportFormat' => SReport::FILETYPE_PDF,
+                'event' => 'generateReport',
+//                    'agreementId' => 'A',
+        ));
+        
+        $href = urldecode($href);
+        $href = "javascript:doIt('{$href}')";
+        
+        // Verifica se existe registrado um link alternativo para o termo.
+        if ( SAGU::getParameter($module, 'LINK_TERMO_DE_COMPROMISSO_ESTAGIO') != 'NULL' )
+        {
+            $href = SAGU::getParameter($module, 'LINK_TERMO_DE_COMPROMISSO_ESTAGIO') . "\" target='_blank'";
+        }
+        
+        $this->addActionIcon(_M('Visualizar termo de compromisso', $module), 'doc.png', $href);
+
+        // Adiciona ação de preencher ficha de avaliação de estágio
+        $this->posFichaAvaliacao = count($this->actions);
+        $this->addActionIcon(_M('Avalie o estágio', $module), 'trainingHistory.png', null);
+        
+        // Adiciona ação de visualizar avaliações
+        $href = $MIOLO->getActionUrl('training', 'main:process:trainingEvaluation', null, array('subscriptionId' => '%1%'));
+        $this->actions[] = new GrdTrainingHistoryActionEvaluation($this, 'viewEvaluations.png', $href, _M('Visualizar avaliações', $module));
+        
+        // Adiciona ação de visualizar detalhes
+        $href = $MIOLO->getActionUrl('training', 'main:process:trainingDetails', null, array('subscriptionId' => '%1%'));
+        $this->addActionIcon(_M('Visualizar detalhes', $module), 'visualizar-16x16.png', $href);
+        
+        //Cria select com tipos de termo de compromisso
+        $selLabel = new MLabel( _M('Tipo de termo de compromisso', $module) . ':');
+        $sel = new MSelection('commitmentTermType');
+        $sel->options = TraTrainingType::listCommitmentTermTypes(TraTrainingType::TERM_TYPES_USER);
+        $sel->setJsHint(_M('Este tipo de termo de compromisso é utilizado para geração do \'Termo de compromisso\'', $module));
+        $hctSel = new MHContainer(rand(), array($selLabel, $sel));
+        
+        if ( SAGU::getParameter($module, 'LINK_TERMO_DE_COMPROMISSO_ESTAGIO') == 'NULL' )
+        {
+            $this->setControls(array($hctSel));
+        }
+    }
+
+    /**
+     * Executed before line renderization.
+     * Method to be executed before each line renderization.
+     *
+     * @param $i - line index
+     * @param $row - array containing the row data - initial index = 0
+     * @param $actions - array containing the action's data
+     * @param $columns - array containing the column's data
+     */
+    public function myRowMethod($i, $row, $actions, $columns)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);        
+
+        list($null, $subscriptionId, $null, $null, $null, $endDate) = $this->data[$i];
+        list($null, $null, $null, $null, $null, $null, $null, $null, $null, $colTeam) = $columns;
+        
+        $actionFichaAvaliacao = $actions[$this->posFichaAvaliacao];
+
+        $teamValue = '-';
+        $hasTeams = false;
+        if ( strlen($subscriptionId) > 0 )
+        {
+            $subscription = new TraSubscription($subscriptionId);
+            
+            //
+            // Cria sub-grid dentro de coluna Equipes
+            //
+            $filters = new stdClass();
+            $filters->subscriptionId = $subscriptionId;
+            $rows = TraSubscriptionTeam::search($filters);
+            $hasTeams = count($rows) > 0;
+
+            if ( $hasTeams )
+            {
+                $stData = array();
+                foreach ( (array) $rows as $row )
+                {
+                    $stData[] = array(
+                        $row->subscriptionTeamId,
+                        $row->team->description,
+                    );
+                }
+                $grid = $MIOLO->getUI()->getGrid('services', 'GrdTrainingHistoryTeam');
+                $grid->setData( $stData );
+
+                $teamValue = $grid->generate();
+            }
+            
+   
+            //
+            // Calculos de ficha de avaliacao
+            //
+            //URL's de acoes
+            $hrefFillEvaluation = $MIOLO->getActionURL('services', 'main:training:trainingEvaluation', null, array('subscriptionId' => '%1%'));
+            $hrefShowEvaluation = $MIOLO->getActionURL('training', 'main:document:evaluationForm', null, array('requestId' => '%0%', 'event' => 'generateReport'));
+
+            //Busca por ficha ja respondida
+            $filters = new stdClass();
+            $filters->subscriptionId = $subscription->subscriptionId;
+            $traTrainingEvaluationAnswer = TraTrainingEvaluationAnswer::search($filters);
+            $hasAnswer = count($traTrainingEvaluationAnswer) > 0;
+            $isTraining = (strlen($this->personIdLogged) > 0) && ($this->personIdLogged == $subscription->request->personId);
+            $trainingTypeId = MUtil::NVL($subscription->request->requestAdjustment[0]->trainingTypeId, $subscription->request->trainingTypeId);            
+
+            if ( $isTraining ) // Se pessoa logada é o proprio estagiario
+            {
+                /*
+                 * DS >= DF - DA
+                 * DS = Data do sistema
+                 * DF = Data do fim do estágio (tra.subscriptionTeam.endDate)
+                 * DA = Dias antes do fim do estágio (tra.team.daysToAnswerResearch)
+                 */
+
+                // Obtém a data do sistema
+                $dateNow = SAGU::getDateNow();
+                $diffDays = SAGU::dateDiff($endDate, $dateNow);
+
+                if ( $hasAnswer ) //Se ja foi respondida avaliacao
+                {
+                    $actionFichaAvaliacao->enabled = true;
+                    $actionFichaAvaliacao->alt = _M('Visualizar ficha de avaliação de estágio.', $module);
+                    $actionFichaAvaliacao->href = $hrefShowEvaluation;
+                    $actionFichaAvaliacao->value = 'trainingHistory.png';
+                }
+                else if ( $diffDays <= SAGU::getParameter('TRAINING', 'DAYS_TO_AVAILABLE_TRAINING_EVALUATION_FORM') ) //Se esta permitindo responder avaliacao
+                {
+                    $actionFichaAvaliacao->enabled = true;
+                    $actionFichaAvaliacao->alt = _M('Avalie seu estágio', $module);
+                    $actionFichaAvaliacao->value = 'trainingHistory.png';
+                    $actionFichaAvaliacao->href = $hrefFillEvaluation;
+                }
+                else //Se ainda nao permite responder avaliacao
+                {
+                    // Desabilita a ação
+                    $actionFichaAvaliacao->enabled = false;
+                    $actionFichaAvaliacao->alt = _M('O preenchimento da ficha de avaliação estará disponível daqui a @1 dias.', $module, abs(SAGU::getParameter('TRAINING', 'DAYS_TO_AVAILABLE_TRAINING_EVALUATION_FORM') - $diffDays));
+                    $actionFichaAvaliacao->value = 'trainingHistory-disabled.png';
+                }
+            }
+            else
+            {
+                $actionFichaAvaliacao->enabled = $hasAnswer;
+                $actionFichaAvaliacao->alt = _M('Visualizar ficha de avaliação', $module);
+                $actionFichaAvaliacao->value = $hasAnswer ? 'trainingHistory.png' : 'trainingHistory-disabled.png';
+                $actionFichaAvaliacao->href = $hrefShowEvaluation;
+            }
+        }
+        else
+        {
+            // Desabilita acao quando nao possui estagio (apenas solicitacao)
+            $actionFichaAvaliacao->enabled = false;
+            $actionFichaAvaliacao->value = 'trainingHistory-disabled.png';
+        }
+        
+        foreach ( $actions as $action )
+        {
+            if ( $action instanceof GrdTrainingHistoryActionEvaluation ) 
+            {
+                $action->setHasTeams($hasTeams);
+                
+                // Verifica se deve exibir acao Visualizar avaliacoes
+                
+                if( $trainingTypeId == TraTrainingType::TYPE_CURRICULAR ) //somente estagios de medicina
+                {
+                    $enableAction = !$hasTeams && (strlen($subscriptionId) > 0 );
+                    $action->enabled = $enableAction;
+                    $action->alt = _M('Visualizar avaliações', $module);
+                }
+                else
+                {
+                    $action->enabled = false;
+                    $action->alt = _M('Somente estágio curricular permite avaliação.', $module);
+                }
+                
+                // Se foi reprovado no estágio, não deve disponibilizar a avaliação.
+                if ( $row[7] == TraRequest::UNAPPROVED )
+                {
+                    $action->enabled = false;
+                }
+                
+                $action->value = $enableAction ? 'viewEvaluations.png' : 'viewEvaluations-disabled.png';
+            }
+            
+            // Desabilita o action 'Visualizar detalhes' caso não haja subscriptionId.
+            if ( is_null($subscriptionId) && ( $action->alt == 'Visualizar detalhes' ) )
+            {
+                $action->enabled = false;
+                $action->value = 'visualizar-disabled.png';
+            }
+        }
+        
+        $colTeam->control[$i]->setValue( $teamValue );
+    }
+}
+
+
+class GrdTrainingHistoryActionEvaluation extends MGridActionIcon
+{
+    private $hasTeams;
+    
+    public function generate()
+    {
+        return $this->hasTeams ? '' : parent::generate();
+    }
+    
+    public function setHasTeams($hasTeams)
+    {
+        $this->hasTeams = $hasTeams;
+    }
+}
+?>

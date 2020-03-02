@@ -1,0 +1,163 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Cost center handler.
+ * Contains the menus to access cost center registers
+ *
+ * @author Nataniel I. da Silva [nataniel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * @since
+ * Class created on 23/10/2014
+ *
+ **/
+
+class FrmFechamentoDePeriodoContabil extends SManagementForm
+{
+    /**
+     * Class constructor
+     */
+    public function __construct()
+    {
+        $module = MIOLO::getCurrentModule();
+        
+        parent::__construct( new AccFechamentoDePeriodoContabil(), array('fechamentoDePeriodoContabilId') );
+        
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+    }
+
+    /**
+     *  Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $function = MIOLO::_REQUEST('function');
+        
+        $info = $this->getRequestValues();
+                
+        $fechamentoDePeriodoContabilId = $info['fechamentodeperiodocontabilid'] ? $info['fechamentodeperiodocontabilid'] : $info['accfechamentodeperiodocontabil.fechamentodeperiodocontabilid'];
+        
+        $data = strlen($fechamentoDePeriodoContabilId) > 0 ? new AccFechamentoDePeriodoContabil($fechamentoDePeriodoContabilId) : null;
+        
+        $readOnly = ($function == SForm::FUNCTION_INSERT) ? false : true;
+        
+        // Data de fechamento
+        $dataDeFechamento = new MCalendarField('dataDeFechamento', $this->getFormValue('dataDeFechamento', $data->dataDeFechamento), _M('Data de fechamento',$module), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE')); 
+        $dataDeFechamento->setJsHint(_M('Data de fechamento do período contábil', $module));
+        $dataDeFechamento->setValidator(new MDATEDMYValidator('dataDeFechamento', _M('Data de fechamento', $module), 'required'));
+        $dataDeFechamento->setReadOnly($readOnly);
+        $fields[] = $dataDeFechamento;
+        $validators[] = new MRequiredValidator('dataDeFechamento', _M('Data de fechamento', $module), 'required');
+                        
+        $checked = strlen($data->estaFechado) > 0 ? ($data->estaFechado == DB_TRUE ? true : false) : true;
+        $visible = $function == SForm::FUNCTION_INSERT ? "disabled=true" : "enabled=true";
+                
+        // Esta fechado
+        $estaFechado = new MCheckBox('estaFechado', DB_TRUE, _M('Está fechado', $module), $checked, _M('Sim', $module));
+        $estaFechado->addAttribute($visible);
+        $fields[] = $estaFechado;
+        
+        if ( $function == SForm::FUNCTION_UPDATE )
+        {
+            $fields[] = $this->obtemGridDeLogs($fechamentoDePeriodoContabilId);
+        }
+                
+        parent::defineFields( $fields, $validators, $data );
+        
+        ($function == SForm::FUNCTION_INSERT) ? $MIOLO->page->onload("document.getElementById('estaFechado').checked = true;") : null;
+    }
+    
+    public function obtemGridDeLogs($fechamentoDePeriodoContabilId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $gridData = AccFechamentoDePeriodoContabilLog::obtemRegistrosDeLog($fechamentoDePeriodoContabilId);
+        
+        $grid = $MIOLO->getUI()->getGrid($module, 'GrdFechamentoDePeriodoContabilLog');
+        $grid->setData($gridData);
+        
+        $fields[] = new MSeparator();
+        $fields[] = new MDiv('divGrid', $grid);
+        
+        $baseGroup = new MBaseGroup('bgGrid', _M('Últimas alterações:', $module), $fields, 'vertical');
+        
+        return $baseGroup;
+    }
+    
+    public function getRequestValues()
+    {
+        $data = parent::getRequestValues();
+        
+        $data['estaFechado'] = ($data['function'] == SForm::FUNCTION_INSERT) ? DB_TRUE : $data['estaFechado'];
+        $data['estaFechado'] = strlen($data['estaFechado']) > 0 ? $data['estaFechado'] : DB_FALSE;
+        
+        return $data;
+    }
+    
+    public function tbBtnSave_click($sender = NULL)
+    {
+        $data = $this->getRequestValues();
+        
+        if ( $data['function'] == SForm::FUNCTION_INSERT )
+        {   
+            // Verifica se já existe um período cadastrado com a data de fechamento menor que a data informada
+            $verificacao = AccFechamentoDePeriodoContabil::verificaDataDeFechamento($data['dataDeFechamento'], $data['accfechamentodeperiodocontabil.fechamentodeperiodocontabilid']);   
+
+            if ( strlen($verificacao) > 0 )
+            {
+                $this->AddError("A data informada deve ser maior que {$verificacao}, pois já existe um período cadastro vigente nesta data.");
+                return;
+            }
+        }
+        
+        if ( $data['function'] == SForm::FUNCTION_UPDATE )
+        {
+            // Verifica se está abrindo ou fechando o período
+            $estaFechado = $data['estaFechado'] == DB_TRUE ? true : false;
+            
+            // Verifica se existem períodos anteriores a este aberto, caso esteja fechando e verifica períodos posteriores a este fechados, caso esteja abrindo.
+            $verificacao = AccFechamentoDePeriodoContabil::verificaEdicao($data['accfechamentodeperiodocontabil.fechamentodeperiodocontabilid'], $estaFechado);
+            
+            if ( $verificacao == DB_TRUE )
+            {
+                if ( !$estaFechado )
+                {
+                    $this->AddError("Para alterar este período contábil, é necessário reabrir os períodos posteriores a este que estão fechados.");
+                }
+                else
+                {
+                    $this->AddError("Este período contábil não pode ser fechado enquanto os períodos anteriores a ele estiverem abertos.");
+                }
+                
+                return;
+            }
+        }
+        
+        parent::tbBtnSave_click($sender);
+    }
+    
+}

@@ -1,0 +1,372 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ *
+ * This file handles the connection and actions to SAGU2 access Gnuteca database
+ *
+ * @author Leovan Tavares da Silva [leovan] [leovan@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Leovan Tavares da Silva [leovan@solis.coop.br]
+ *
+ * @since
+ * Class created on 23/08/2006
+ */
+
+/**
+ * Class to manipulate Gnuteca data
+ */
+class BusinessGnutecaBusGnutecaToSagu2 extends sBusiness
+{
+    public function __construct($database = NULL, $data = NULL)
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        
+        if ( SAGU::getParameter('basic', 'MODULE_GNUTECA_INSTALLED') != 'YES')
+        {
+//            throw new Exception( _M('A integração com o Gnuteca está desabilitada.', $module) );
+        }
+        
+        parent::__construct($database, $data);
+    }
+
+    /**
+     * Search bibliography data
+     * @param $filters (object): Object query filters
+     * @return (array): Return an array with query result
+     */
+    public function searchBibliographyData($filters, $returnType='list')
+    {
+        $db = $this->getDbGnuteca();
+
+        $unitTable = SAGU::getParameter('BASIC', 'DEFAULT_GNUTECA_TABLE_SEARCH');
+        $tags = SAGU::getParameter('BASIC', 'GNUTECA_TAGS_TO_USE');
+
+        $return = null;
+        if ( ((strlen($filters->controlNumber) > 0) && is_int($filters->controlNumber)) || (strlen($filters->content) > 0) )
+        {
+            $sql = " SELECT *
+                       FROM SEA_BIBLIOGRAPHY_DATA(
+                            ?,
+                            ?,
+                            NULL,
+                            ? ) ";
+            $params = array(
+                $filters->controlNumber,
+                $filters->content,
+                $tags
+            );
+
+            $ret = $db->query(SAGU::prepare($sql, $params, false));
+
+            // Organizando os dados de acordo com as etiquetas para montar uma linha contendo todos
+            // os dados referentes a determinada obra
+            if ( count($ret) > 0 )
+            {
+                foreach ( $ret as $row )
+                {
+                    // Dados do autor
+                    if ( (($row[1] == '100') || ($row[1] == '700') && ($row[2] == 'a')) )
+                    {
+                        $autorName = explode(',', $row[3]);
+                        $autorName[0] = strtoupper($autorName[0]);
+                        $row[3] = implode(',', $autorName);
+
+                        if ( strlen($books[$row[0]]->author) > 0 )
+                        {
+                            $books[$row[0]]->author .= '; ' . $row[3];
+                        }
+                        else
+                        {
+                            $books[$row[0]]->author = $row[3];
+                        }
+                    }
+                    // Dados do título
+                    if ( ($row[1] == '245') && ($row[2] == 'a') )
+                    {
+                        if ( strlen($books[$row[0]]->title) )
+                        {
+                            $books[$row[0]]->title .= '. ' . $row[3];
+                        }
+                        else
+                        {
+                            $books[$row[0]]->title = $row[3];
+                        }
+                    }
+                    // Dados da edição
+                    if ( ($row[1] == '250') && ($row[2] == 'a') )
+                    {
+                        if ( strlen($books[$row[0]]->issue) > 0 )
+                        {
+                            $books[$row[0]]->issue .= '. ' . $row[3] . '. ed';
+                        }
+                        else
+                        {
+                            $books[$row[0]]->issue = $row[3] . '. ed';
+                        }
+                    }
+                    // Local
+                    if ( ($row[1] == '260') && ($row[2] == 'a') )
+                    {
+                        if ( strlen($books[$row[0]]->local) > 0 )
+                        {
+                            $books[$row[0]]->local .= ', ' . $row[3];
+                        }
+                        else
+                        {
+                            $books[$row[0]]->local = $row[3];
+                        }
+                    }
+                    // Editora
+                    if ( ($row[1] == '260') && ($row[2] == 'b') )
+                    {
+                        if ( strlen($books[$row[0]]->publisher) > 0 )
+                        {
+                            $books[$row[0]]->publisher .= ', ' . $row[3];
+                        }
+                        if ( strlen($publisher[$row[0]]) > 0 )
+                        {
+                            $books[$row[0]]->publisher = $row[3];
+                        }
+                    }
+                    // Ano
+                    if ( ($row[1] == '260') && ($row[2] == 'c') )
+                    {
+                        if ( strlen($books[$row[0]]->year) > 0 )
+                        {
+                            $books[$row[0]]->year .= ', ' . $row[3];
+                        }
+                        else
+                        {
+                            $books[$row[0]]->year = $row[3];
+                        }
+                    }
+
+                    $books[$row[0]]->controlNumber = $row[0];
+                }
+            }
+
+            // Retorna array de objeto
+            if ( $returnType == 'get' )
+            {
+                return $books;
+            }
+
+            // Retorna array de array
+            if ( count($books) > 0 )
+            {
+                foreach ( $books as $bookData )
+                {
+                    $bookRow = array($bookData->controlNumber, $bookData->title, $bookData->author, $bookData->issue, $bookData->local, $bookData->publisher, $bookData->year);
+                    $return[$bookData->controlNumber] = $bookRow;
+                }
+            }
+        }
+
+        return $return;
+    }
+
+    /**
+     * Busca as Multas de determinada pessoa
+     * @param integer $personId - Código da pessoa
+     * @return array de objetos das multas
+     */
+    public function searchPersonOpenFines($personId)
+    {
+        $db = $this->getDbGnuteca();
+        $maskDate = SAGU::getParameter('BASIC', 'MASK_DATE');
+
+        $sql = " SELECT codigodamulta,
+                        codigodoemprestimo,
+                        valor,
+                        observacao,
+                        TO_CHAR(datahora, '" . $maskDate . "')
+                   FROM SEA_MULTAS_EM_ABERTO(?) ";
+
+        $params = array();
+        $params[] = $personId;
+
+        $result = $db->query(SAGU::prepare($sql, $params));
+
+        return $result;
+    }
+
+    /**
+     * Função para objer uma Multa
+     * @param integer $fineId - Código da multa
+     * @return Objeto com os dados da multa
+     */
+    public function getFine($fineId)
+    {
+        $db = $this->getDbGnuteca();
+        $result = $db->query(" SELECT *
+                                 FROM GET_MULTA({$fineId}) ");
+
+        $objFine = new stdClass();
+        list( $objFine->personId,
+              $objFine->codigoDoEmprestimo,
+              $objFine->dataHora,
+              $objFine->valor,
+              $objFine->observacao,
+              $objFine->foiPaga,
+              $objFine->codigoDaMulta,
+              $objFine->operador,
+              $objFine->foiAbonada,
+              $objFine->justificaAbono,
+              $objFine->dataHoraFinal,
+              $objFine->operadorFinal,
+              $objFine->viaBoleto ) = $result[0];
+
+        return $objFine;
+    }
+
+    /**
+     * Função para pagar uma multa
+     * @param integer $fineId - Código da multa
+     * @param String $user - Usuário
+     */
+    public function payFine($fineId, $user)
+    {
+        $db = $this->getDbGnuteca();
+        $sql = " SELECT *
+                   FROM UPD_PAGAR_MULTA(
+                        ?,
+                        ? ) ";
+
+        $params = array();
+        $params[] = $fineId;
+        $params[] = $user;
+
+        $result = $db->query(SAGU::prepare($sql, $params));
+
+        return $result;
+    }
+    
+    /**
+     * Verifica se existem restricoes para pessoa passada
+     *
+     * @param int $personId
+     * @return array
+     */
+    public function obterRestricoes($personId)
+    {
+        $db = $this->getDbGnuteca();
+        $sql = "SELECT * FROM gtcObterRestricoes(?)";
+        
+        $result = $db->query(SAGU::prepare($sql, array($personId)));
+        
+        return $result;
+    }
+    
+    /**
+     * Verifica se existem restricoes para pessoa passada
+     *
+     * @param int $personId
+     * @return array
+     */    
+    public function obterRestricoesParaSagu($personId)
+    {
+        $db = $this->getDbGnuteca();
+        $sql = "SELECT * FROM gtcObterRestricoesParaSagu(?) ORDER BY tipo DESC";
+        
+        $result = $db->query(SAGU::prepare($sql, array($personId)));
+        
+        return $result;
+    }
+    
+    /**
+     * Verifica se existe alguma pendencia nada consta do gnuteca
+     *
+     * @param int $personId
+     * @return boolean
+     */
+    public function possuiNadaConsta($personId)
+    {
+        $db = $this->getDbGnuteca();
+        $sql = "SELECT * FROM gtcNadaConsta(?)";
+        
+        $result = $db->query(SAGU::prepare($sql, array($personId)));
+        
+        return $result[0][0] == DB_FALSE;
+    }
+    
+    /**
+     * Verifica se o aluno possui penências com gnuteca conforme configuração.
+     * 
+     * @param char $pendenciasGnuteca 'S' = sem bloqueio, 'A' = somente aviso ou 'B' = bloqueio
+     * @param char $bloqueioEmprestimos DB_TRUE, DB_FALSE
+     * @param char $bloqueioMultas DB_TRUE, DB_FALSE
+     * @param char $bloqueioPenalidades DB_TRUE, DB_FALSE
+     * @return boolean
+     */
+    public function verificaPendenciasGnuteca($pendenciasGnuteca, $personId, $bloqueioEmprestimos = DB_FALSE, $bloqueioMultas = DB_FALSE, $bloqueioPenalidades = DB_FALSE)
+    {
+        $countPendencias = 0;
+        
+        if ( $pendenciasGnuteca != AcdEnrollConfig::SEM_BLOQUEIO )
+        {
+            $db = $this->getDbGnuteca();
+            
+            if ( $bloqueioEmprestimos == DB_TRUE )
+            {
+                $sql = "SELECT obterQuantEmprestimos(?)";
+                $result = $db->query(SAGU::prepare($sql, array($personId)));
+                
+                if ( $result[0][0] > 0 )
+                {
+                    $countPendencias++;
+                }
+            }
+            
+            if ( $bloqueioMultas == DB_TRUE )
+            {
+                $sql = "SELECT obterQuantMultas(?)";
+                $result = $db->query(SAGU::prepare($sql, array($personId)));
+                
+                if ( $result[0][0] > 0 )
+                {
+                    $countPendencias++;
+                }
+            }
+            
+            if ( $bloqueioPenalidades == DB_TRUE )
+            {
+                $sql = "SELECT obterQuantPenalidades(?)";
+                $result = $db->query(SAGU::prepare($sql, array($personId)));
+                
+                if ( $result[0][0] > 0 )
+                {
+                    $countPendencias++;
+                }
+            }
+            
+            return ($countPendencias > 0);
+        }
+        else
+        {
+            return false;
+        }
+    }
+}
+?>

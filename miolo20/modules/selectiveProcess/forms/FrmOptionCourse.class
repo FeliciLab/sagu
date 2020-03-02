@@ -1,0 +1,548 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Passo responsavel por cadastrar as opcoes de curso
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Equipe solis [sagu2@solis.coop.br]
+ *
+ * @since
+ * Class created on 20/12/2010
+ *
+ * */
+class FrmOptionCourse extends SStepByStepForm {
+
+    public function __construct($steps = null)
+    {
+        if (!$steps->disableConstruct)
+        {
+            parent::__construct(null, $steps, __CLASS__);
+            $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        }
+    }
+
+    public function createFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+        $event = MIOLO::_request('event');
+
+        //Load data
+        $stepData = $this->getStepData();
+        $selectiveProcessId = $stepData->selectiveProcessId;
+
+        //
+        $sprSP = new SprSelectiveProcess($selectiveProcessId);
+
+        if ($this->isFirstAccess())
+        {
+            MSubDetail::clearData('options');
+
+            //Limpa sessao
+            foreach ($this->getTableData() as $key => $val)
+            {
+                $MIOLO->session->set($key, null);
+            }
+
+            if (strlen($selectiveProcessId) > 0)
+            {
+                $subData = array();
+                $dbCourseOccurrences = array();
+
+                foreach ($sprSP->options as $opt)
+                {
+                    $ob = new stdClass();
+                    $ob->optionId = $opt->optionId;
+                    $ob->selectiveProcessId = $opt->selectiveProcessId;
+                    $ob->description = $opt->description;
+                    $ob->vacancies = $opt->vacancies;
+                    $ob->quotes = $opt->quotes;
+                    $ob->maximumSubstitutes = $opt->maximumSubstitutes;
+
+                    if ($stepData->destinationModule == SprSelectiveProcess::DEST_MODULE_NONE)
+                    {
+                        $subData[] = $ob;
+                    }
+                    else if ($stepData->destinationModule == SprSelectiveProcess::DEST_MODULE_RESIDENCY)
+                    {
+                        foreach ((array) $opt->optionNucleoEnfase as $optNucleoEnfase)
+                        {
+                            $_ob = clone($ob);
+                            $_ob->enfaseId = $optNucleoEnfase->enfaseId;
+                            $_ob->nucleoProfissionalId = $optNucleoEnfase->nucleoProfissionalId;
+                            $subData[] = $_ob;
+                        }
+                    }
+                    else if ($stepData->destinationModule == SprSelectiveProcess::DEST_MODULE_ACADEMIC)
+                    {
+                        foreach ($opt->optionCourses as $optCourse)
+                        {
+                            $_ob = clone($ob);
+                            $_ob->courseId = $optCourse->courseId;
+                            $_ob->courseVersion = $optCourse->courseVersion;
+                            $_ob->turnId = $optCourse->turnId;
+                            $_ob->unitId = $optCourse->unitId;
+                            $_ob->courseName = $optCourse->courseName;
+                            $_ob->turnDescription = $optCourse->turnDescription;
+                            $_ob->unitDescription = $optCourse->unitDescription;
+                            $subData[] = $_ob;
+                            $_ob->groupBy = $this->getCourseOccurrenceId($opt->optionCourses[0]); //Usa a primeira ocorrencia de curso para utilizar como agrupamento para as demais
+                            $dbCourseOccurrences[$this->getCourseOccurrenceId($optCourse)] = $_ob;
+                        }
+                    }
+                    else if ($stepData->destinationModule == SprSelectiveProcess::DEST_MODULE_PEDAGOGICO)
+                    {
+                        foreach ($opt->optionOfertaTurma as $u => $optTurma)
+                        {
+                            $_ob = clone($ob);
+                            $_ob->ofertaturmaid = $optTurma->ofertaturmaid;
+                            $_ob->codigo = $optTurma->codigo;
+                            $_ob->unitid = $optTurma->unitid;
+                            $_ob->centerid = $optTurma->centerid;
+                            $_ob->optionofertaturmaid = $optTurma->optionofertaturmaid;
+                            $subData[] = $_ob;
+                            $dbCourseOccurrences[$this->getOfertaTurmaId($_ob)] = $_ob;
+                        }
+                    }
+                }
+            }
+        }
+
+        $destinationModule = MUtil::NVL($stepData->destinationModule, $sprSP->destinationModule);
+
+        //As definicoes de destinationModule se encontram no ticket #9641
+        if ($destinationModule == SprSelectiveProcess::DEST_MODULE_ACADEMIC)
+        {
+
+            $hasActiveStep = $sprSP->hasActiveStep();
+            $hasSubscriptions = $sprSP->hasSubscriptions();
+            $isReadOnly = false;
+
+            if (($hasActiveStep || $hasSubscriptions) && ($event != 'tbBtnNew:click'))
+            {
+                $isReadOnly = true;
+
+                $this->addInfo(_M('As opções não podem ser editadas pelo(s) seguinte(s) motivo(s):', $module));
+
+                if ($hasActiveStep)
+                {
+                    $msg = _M('Existe uma etapa vigente para este processo seletivo.', $module);
+                    if (!$hasSubscriptions)
+                    {
+                        $msg .= ' ' . _M('Para permitir a edição, altere o período de vigência.', $module);
+                    }
+
+                    $this->addInfo($msg);
+                }
+
+                if ($hasSubscriptions)
+                {
+                    $this->addInfo(_M('Já existem inscrições para este processo seletivo.', $module));
+                }
+            }
+
+            $fields[] = new MSeparator();
+            $fields[] = $grid = $MIOLO->getUI()->getGrid($module, 'GrdOptionCourse');
+
+            //Dados para combo "Agrupar com"
+            $posCourseOccurrences = array();
+            $courseOccurrences = $this->getSearchCourseOccurrence();
+            $coList = array();
+            foreach ((array) $courseOccurrences as $i => $row)
+            {
+                $coList[$i] = $i + 1;
+                $posCourseOccurrences[$this->getCourseOccurrenceId($row)] = $i;
+            }
+            $grid->setGroupByOptions($coList);
+
+            $gridData = array();
+            $tableData = $this->getTableData();
+
+            foreach ((array) $courseOccurrences as $i => $row)
+            {
+                $id = $this->getCourseOccurrenceId($row);
+
+                if ($dbCourseOccurrences[$id])
+                {
+                    $tableData->_vacancies[$i] = $dbCourseOccurrences[$id]->vacancies;
+                    $tableData->_quotes[$i] = $dbCourseOccurrences[$id]->quotes;
+                    $tableData->_maximumSubstitutes[$i] = $dbCourseOccurrences[$id]->maximumSubstitutes;
+                    $tableData->_description[$i] = $dbCourseOccurrences[$id]->description;
+                    $tableData->_groupBy[$i] = $posCourseOccurrences[$dbCourseOccurrences[$id]->groupBy];
+                    $tableData->_optionId[$i] = $dbCourseOccurrences[$id]->optionId;
+                }
+
+                $gridData[] = array(
+                    ($i + 1), //numero opcao
+                    isset($tableData->_groupBy[$i]) ? $tableData->_groupBy[$i] : $i, //agrupar com
+                    $row->courseId . '/' . $row->courseVersion, //curso/versao
+                    $row->course, //nome
+                    $row->turn, //turno
+                    $row->unit, //unidade
+                    MUtil::NVL($tableData->_vacancies[$i], '0'), //vagas para classificados
+                    MUtil::NVL($tableData->_quotes[$i], '0'), //vagas para cotistas
+                    MUtil::NVL($tableData->_maximumSubstitutes[$i], '0'), //vagas para suplente
+                    MUtil::NVL($tableData->_description[$i], "{$row->course} - {$row->turn} - {$row->unit}"), //descricao
+                    $tableData->_optionId[$i], //optionId
+                    $tableData->_groupBy[$i] == $i ? $tableData->_optionId[$i] : null, //oldOptionId
+                );
+            }
+
+            $grid->setData($gridData);
+            $grid->setIsReadOnly($isReadOnly);
+        }
+        else if ($destinationModule == SprSelectiveProcess::DEST_MODULE_RESIDENCY ||
+                $destinationModule == SprSelectiveProcess::DEST_MODULE_NONE)
+        {
+            //
+            //Subdetail
+            //
+            $cols[] = new MGridColumn(_M('Opção', $module), 'left', true, '', true, 'description');
+            $cols[] = new MGridColumn(_M('Vagas para classificados', $module), 'left', true, '', true, 'vacancies');
+            $cols[] = new MGridColumn(_M('Vagas para cotistas', $module), 'left', true, '', true, 'quotes');
+            $cols[] = new MGridColumn(_M('Vagas para suplentes', $module), 'left', true, '', true, 'maximumSubstitutes');
+            $cols[] = new MGridColumn(_M('Código da opção', $module), 'left', true, '', false, 'optionId');
+            if ($stepData->destinationModule == sprSelectiveProcess::DEST_MODULE_RESIDENCY)
+            {
+                $cols[] = new MGridColumn(_M('Núcleo profissional'), 'left', true, '', true, 'nucleoProfissionalId', null, ResNucleoProfissional::listRecords());
+                $cols[] = new MGridColumn(_M('Ênfase', $module), 'left', true, '', true, 'enfaseId', null, ResEnfase::listRecords());
+            }
+
+            $subFields[] = new SHiddenField('optionId');
+
+            //Opcao
+            $descriptionLabel = new MText('descriptionLabel', _M('Opção') . ':');
+            $descriptionLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $descriptionLabel->setClass('m-caption m-caption-required');
+            $description = new MTextField('description', null, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $description->setJsHint(_M('Informe a descrição da opção de curso', $module));
+            $validators[] = new MRequiredValidator('description', _M('Opção'));
+            $subFields[] = new MHContainer('descriptionCnt', array($descriptionLabel, $description));
+
+            //Vagas
+            $vacanciesLabel = new MText('vacanciesLabel', _M('Vagas para classificados') . ':');
+            $vacanciesLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $vacanciesLabel->setClass('m-caption m-caption-required');
+            $vacancies = new MIntegerField('vacancies', null, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+            $vacancies->setJsHint(_M('Informe o número de vagas disponível para este curso', $module));
+            $validators[] = new MRequiredValidator('vacancies', _M('Vagas para classificados', $module));
+            $subFields[] = new MHContainer('vacanciesCnt', array($vacanciesLabel, $vacancies));
+
+            //Cotas
+            $quotesLabel = new MText('quotesLabel', _M('Vagas para cotistas') . ':');
+            $quotesLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $quotesLabel->setClass('m-caption m-caption-required');
+            $quotes = new MIntegerField('quotes', null, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+            $quotes->setJsHint(_M('Informe o número de vagas disponível para cotistas para este curso', $module));
+            $validators[] = new MRequiredValidator('quotes', _M('Vagas para cotistas'));
+            $subFields[] = new MHContainer('quotesCnt', array($quotesLabel, $quotes));
+
+            //Vagas para suplentes
+            $maximumSubstitutesLabel = new MText('maximumSubstitutesLabel', _M('Vagas para suplentes') . ':');
+            $maximumSubstitutesLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $maximumSubstitutesLabel->setClass('m-caption m-caption-required');
+            $maximumSubstitutes = new MIntegerField('maximumSubstitutes', null, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+            $maximumSubstitutes->setJsHint(_M('Informe o número de vagas para suplentes', $module));
+            $subFields[] = new MHContainer('hctOption', array($maximumSubstitutesLabel, $maximumSubstitutes));
+            $validators[] = new MRequiredValidator('maximumSubstitutes', _M('Vagas para suplentes', $module));
+
+            //Quando for modulo residencia
+            if ($stepData->destinationModule == sprSelectiveProcess::DEST_MODULE_RESIDENCY)
+            {
+                $subFields[] = $nucleosProfissionais = new MSelection('nucleoProfissionalId', null, _M('Núcleo profissional'), ResNucleoProfissional::listRecords());
+                $subFields[] = $enfase = new MSelection('enfaseId', null, _M('Ênfase', $module), ResEnfase::listRecords());
+            }
+
+            $fields[] = $sub = new MSubDetail('options', _M('Opções de curso', $module), $cols, null, true);
+            $sub->setValidators($validators);
+            $sub->setFields($subFields);
+            if (count($subData) > 0)
+            {
+                $sub->setData($subData);
+            }
+        }
+        else if ($destinationModule == SprSelectiveProcess::DEST_MODULE_PEDAGOGICO)
+        {
+            $hasActiveStep = $sprSP->hasActiveStep();
+            $hasSubscriptions = $sprSP->hasSubscriptions();
+            $isReadOnly = false;
+
+            if (($hasActiveStep || $hasSubscriptions) && ($event != 'tbBtnNew:click'))
+            {
+                $isReadOnly = true;
+
+                $this->addInfo(_M('As opções não podem ser editadas pelo(s) seguinte(s) motivo(s):', $module));
+
+                if ($hasActiveStep)
+                {
+                    $msg = _M('Existe uma etapa vigente para este processo seletivo.', $module);
+                    if (!$hasSubscriptions)
+                    {
+                        $msg .= ' ' . _M('Para permitir a edição, altere o período de vigência.', $module);
+                    }
+
+                    $this->addInfo($msg);
+                }
+
+                if ($hasSubscriptions)
+                {
+                    $this->addInfo(_M('Já existem inscrições para este processo seletivo.', $module));
+                }
+            }
+            $fields[] = new MSeparator();
+            $fields[] = $grid = $MIOLO->getUI()->getGrid($module, 'GrdOptionCoursePedagogico');
+
+            //Dados para combo "Agrupar com"
+            $posCourseOccurrences = array();
+            $courseOccurrences = $this->getProcurarOfertasTurma();
+
+            $coList = array();
+            foreach ((array) $courseOccurrences as $i => $row)
+            {
+                $coList[$i] = $i + 1;
+                $posCourseOccurrences[$this->getOfertaTurmaId($row)] = $i;
+            }
+            $grid->setGroupByOptions($coList);
+            $tableData = $this->getTableData();
+
+            foreach ((array) $courseOccurrences as $i => $row)
+            {
+                $id = $this->getOfertaTurmaId($row);
+
+                if ($dbCourseOccurrences[$id])
+                {
+                    $tableData->_vacancies[$i] = $dbCourseOccurrences[$id]->vacancies;
+                    $tableData->_quotes[$i] = $dbCourseOccurrences[$id]->quotes;
+                    $tableData->_maximumSubstitutes[$i] = $dbCourseOccurrences[$id]->maximumSubstitutes;
+                    $tableData->_description[$i] = $dbCourseOccurrences[$id]->description;
+                    $tableData->_optionId[$i] = $dbCourseOccurrences[$id]->optionId;
+                }
+
+                $gridData[] = array(
+                    ($i + 1), //numero opcao
+                    $row->ofertaturmaid, //turma
+                    $row->descricao, //nome
+                    $row->unidade, //unidade
+                    SAGU::NVL($tableData->_vacancies[$i], $row->maximoalunos, '0'), //vagas para classificados
+                    MUtil::NVL($tableData->_quotes[$i], '0'), //vagas para cotistas
+                    MUtil::NVL($tableData->_maximumSubstitutes[$i], '0'), //vagas para suplente
+                    MUtil::NVL($tableData->_description[$i], "{$row->codigo} - {$row->descricao}"), //descricao
+                    $tableData->_optionId[$i], //optionId
+                );
+            }
+
+            $grid->setData($gridData);
+            $grid->setIsReadOnly($isReadOnly);
+        }
+
+        $this->setFields($fields);
+    }
+
+    /**
+     * CUIDADO: Funcao utilizada em outros lugares.
+     *
+     * @return array
+     */
+    public function getSearchCourseOccurrence()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $filters = new stdClass();
+        $filters->getAll = true;
+        $filters->cursoBloqueado = DB_FALSE;
+        
+        $busCourseOccurrence = new BusinessAcademicBusCourseOccurrence();
+        $rows = $busCourseOccurrence->searchCourseOccurrence($filters, true);
+
+        return (array) $rows;
+    }
+
+    /**
+     * CUIDADO: Funcao utilizada em outros lugares.
+     * 
+     * @return stdClass
+     */
+    public function getTableData()
+    {
+        $data = new stdClass();
+        $data->_groupBy = (array) MIOLO::_REQUEST('_groupBy');
+        $data->_vacancies = (array) MIOLO::_REQUEST('_vacancies');
+        $data->_quotes = (array) MIOLO::_REQUEST('_quotes');
+        $data->_maximumSubstitutes = (array) MIOLO::_REQUEST('_maximumSubstitutes');
+        $data->_description = (array) MIOLO::_REQUEST('_description');
+        $data->_optionId = (array) MIOLO::_REQUEST('_optionId');
+
+        return $data;
+    }
+
+    /**
+     * CUIDADO: Funcao utilizada em outros lugares.
+     * Cria uma chave primaria de ocorrencia de curso
+     */
+    public function getCourseOccurrenceId($courseOccurrence)
+    {
+        return $courseOccurrence->courseId . '_' . $courseOccurrence->courseVersion . '_' . $courseOccurrence->turnId . '_' . $courseOccurrence->unitId;
+    }
+
+    /*
+     * Cria uma chave primaria de oferta de turma.
+     */
+
+    public function getOfertaTurmaId($courseOccurrence)
+    {
+        return $courseOccurrence->codigo . '_' . $courseOccurrence->ofertaturmaid;
+    }
+
+    /*
+     * Funçao que buscara as ofertas de turma em estabelecido período.
+     */
+
+    public function getProcurarOfertasTurma($data = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $filters = new stdClass();
+        $stepData = $this->getStepData();
+        $filters->periodoInicial = $stepData->periodoInicial;
+        $filters->periodoFinal = $stepData->periodoFinal;
+
+        $filters->periodoInicial = SAGU::NVL($filters->periodoInicial, $data->periodoInicial);
+        $filters->periodoFinal = SAGU::NVL($filters->periodoFinal, $data->periodoFinal);
+
+        $acpOferta = new AcpOfertaTurma();
+        $rows = $acpOferta->procurarOfertasTurmaPorPeriodo($filters);
+
+        return (array) $rows;
+    }
+
+    public function nextStepButton_click($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $allData = $this->getStepData();
+        $allDataTotal = $this->getAllStepData();
+
+        try
+        {
+            if ($allData->destinationModule == sprSelectiveProcess::DEST_MODULE_ACADEMIC ||
+                    $allData->destinationModule == SprSelectiveProcess::DEST_MODULE_PEDAGOGICO)
+            {
+                $this->checkDestAcademic();
+                $tableData = $this->getTableData();
+                $count = 0;
+                foreach ($tableData->_vacancies as $o)
+                {
+                    $o > 0 ? $count++ : null;
+                }
+                if ($count < $allDataTotal[2]['numberOfOptions'] )
+                {
+                    throw new Exception(_M("Você ofertou {$count} opção(ões) com vagas. Mas no passo anterior informou que o inscrito poderá selecionar {$allDataTotal[2]['numberOfOptions']} opção(ões)."));
+                }
+            }
+            else
+            {
+                $this->checkMinimumOptions();
+            }
+        }
+        catch (Exception $e)
+        {
+            $this->AddError($e->getMessage());
+            return;
+        }
+
+        parent::nextStepButton_click($args);
+    }
+
+    /**
+     * Verificacoes quando destination module = ACADEMIC
+     */
+    public function checkDestAcademic()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+
+        $tableData = $this->getTableData();
+        foreach ($tableData->_groupBy as $i => $val)
+        {
+            $groupByClean = $tableData->_groupBy;
+            unset($groupByClean[$i]);
+
+            //Verifica agrupamento nao permitido
+            if (( $val != $i ) && ( in_array($i, $groupByClean) ))
+            {
+                throw new Exception(_M('A opção de curso número @1 não pode conter agrupamento diferente pois ela já está sendo utilizada como agrupadora por outra.', $module, ($i + 1)));
+            }
+
+            //Validacao de numerico nos campos vaga
+            if ($tableData->_groupBy[$i] == $i)
+            {
+                if ((strlen($tableData->_vacancies[$i]) > 0) && (!is_numeric($tableData->_vacancies[$i])))
+                {
+                    throw new Exception(_M('O campo "Vagas para classificados" da opção número @1 deve ser numérico.', $module, ($i + 1)));
+                }
+                if ((strlen($tableData->_maximumSubstitutes[$i]) > 0) && (!is_numeric($tableData->_maximumSubstitutes[$i])))
+                {
+                    throw new Exception(_M('O campo "Vagas para suplentes" da opção número @1 deve ser numérico.', $module, ($i + 1)));
+                }
+                if ((strlen($tableData->_quotes[$i]) > 0) && (!is_numeric($tableData->_quotes[$i])))
+                {
+                    throw new Exception(_M('O campo "Cotas" da opção número @1 deve ser numérico.', $module, ($i + 1)));
+                }
+            }
+        }
+
+        //Seta os dados na sessao
+        foreach ($tableData as $key => $val)
+        {
+            $MIOLO->session->set($key, $val);
+        }
+    }
+
+    public function checkMinimumOptions()
+    {
+        $options = MSubDetail::getData('options');
+        $hasOption = false;
+
+        foreach ((array) $options as $opt)
+        {
+            if (!$opt->removeData)
+            {
+                $hasOption = true;
+                break;
+            }
+        }
+
+        if (!$hasOption)
+        {
+            throw new Exception(_M('Nenhuma opção de curso foi adicionada.', $module));
+        }
+    }
+
+}
+
+?>

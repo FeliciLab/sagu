@@ -1,0 +1,413 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Verificador de documentos
+ *
+ * @author Moises Heberle [moises@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.com.br]
+ *
+ * @since
+ * Class created on 15/08/2013
+ */
+class BasDocumentosPortal extends SType
+{
+    protected $_defaultOrder = 'BasDocumentosPortal.titulo';
+
+
+    protected $_utilizaMultiUnidade = false;
+    
+    protected $_utilizaNovoPadrao = true;
+        
+    const PERFIL_ALUNO = 'aluno';
+    const PERFIL_PROFESSOR = 'professor';
+    const PERFIL_COORDENADOR = 'coordenador';
+    const PERFIL_GESTOR = 'gestor';
+    
+    public $documentoportalid;
+    public $titulo;
+    public $descricao;
+    public $disponivel_usuario_basico;
+    public $disponivel_aluno;
+    public $disponivel_professor;
+    public $disponivel_coordenador;
+    public $disponivel_gestor;
+    public $habilitado;
+    public $fileid;
+    
+    public static function possuiDocumentosCadastrados($perfil = null)
+    {
+        $type = new BasDocumentosPortal();
+        $sql = $type->msql();
+        $sql->addEqualCondition('BasDocumentosPortal.habilitado', DB_TRUE);
+        if( strlen($perfil) > 0 )
+        {
+            $sql->addEqualCondition('BasDocumentosPortal.disponivel_usuario_basico', DB_FALSE);
+            if( $perfil == self::PERFIL_ALUNO )
+            {
+                $sql->addEqualCondition('BasDocumentosPortal.disponivel_aluno', DB_TRUE);
+            }
+            elseif( $perfil == self::PERFIL_PROFESSOR )
+            {
+                $sql->addEqualCondition('BasDocumentosPortal.disponivel_professor', DB_TRUE);
+            }
+            elseif( $perfil == self::PERFIL_COORDENADOR )
+            {
+                $sql->addEqualCondition('BasDocumentosPortal.disponivel_coordenador', DB_TRUE);
+            }
+            elseif( $perfil == self::PERFIL_GESTOR )
+            {
+                $sql->addEqualCondition('BasDocumentosPortal.disponivel_gestor', DB_TRUE);
+            }
+        }
+        
+        return ( $type->findCount($sql) > 0 );
+    }
+
+    /**
+     * 
+     * Retorna vetor com os documentos cadastrados no sistema aos quais o usuário
+     * em questão pode acessar.
+     * 
+     * @param (char) $perfil - Tipo de acesso.
+     * @param (int) $personId - Cód. pessoa.
+     * @param (int) $contractId - Cód. contrato.
+     * @param (int) $inscricaoId - Cód. inscricão.
+     * 
+     * @return (Array) - Documentos disponíveis ao usuário.
+     */
+    public static function listarDocumentosPortalDisponiveisParaOUsuario($perfil, $personId, $contractId = NULL, $inscricaoId = NULL)
+    {
+        $basDoc = new BasDocumentosPortal();
+        
+        $documentos = array();
+        
+        if ( $perfil == prtUsuario::USUARIO_ALUNO )
+        {
+            if ( strlen($contractId) > 0 )
+            {
+                $documentos = $basDoc->obterDocumentosDisponiveisParaContrato($contractId);
+            }
+            elseif ( strlen($inscricaoId) > 0 )
+            {
+                $documentos = $basDoc->obterDocumentosDisponiveisParaInscricao($inscricaoId, $personId);
+            }
+        }
+        elseif ( $perfil == prtUsuario::USUARIO_PROFESSOR )
+        {
+            $documentos = $basDoc->obterDocumentosDisponiveisParaProfessor($personId);
+        }
+        elseif ( $perfil == prtUsuario::USUARIO_COORDENADOR )
+        {
+            $documentos = $basDoc->obterDocumentosDisponiveisParaCoordenador($personId);
+        }
+        
+        //Url para gerar o documento
+        $busFile = new BusinessBasicBusFile();
+        $docFinais = array();
+        foreach( $documentos as $doc )
+        {
+            $docFinais[$doc->documentoPortalId] = $doc;
+            $docFinais[$doc->documentoPortalId]->url = $busFile->getUrl($doc->fileId, array('permission' => true));
+        }
+        
+        return $docFinais;
+    }
+    
+    /**
+     * Lista documentos disponíveis para o professor.
+     * 
+     * @param (int) $personId - Cód. pessoa.
+     * 
+     * @retunr (Array)
+     */
+    public function obterDocumentosDisponiveisParaProfessor($personId)
+    {
+        $todos = $this->obterTodosDocumentosHabilitados(prtUsuario::USUARIO_PROFESSOR);
+        
+        $docs = array();
+        foreach ( $todos as $documento )
+        {
+            unset($filters);
+            
+            if( $documento->idModule == SModules::MODULE_ACADEMIC &&
+                strlen($documento->courseId) > 0 )
+            {
+                BusinessBasicBusPhysicalPersonProfessor::verificaProfessorAtivoNoCurso($personId, $documento->courseId) ? $docs[] = $documento : null;
+            }
+            elseif( $documento->idModule == SModules::MODULE_PEDAGOGICO )
+            {
+                $filters = new stdClass();
+                $filters->personId = $personId;
+                
+                if ( strlen($documento->ofertaCursoId) > 0 )
+                {
+                    $filters->ofertaCursoId = $documento->ofertaCursoId;
+                    AcpCursoDocente::verificarAtivoNoCurso($personId, $filters) ? $docs[] = $documento : NULL;
+                }
+                elseif ( strlen($documento->ofertaTurmaId) > 0 )
+                {
+                    $filters->ofertaTurmaId = $documento->ofertaTurmaId;
+                    AcpCursoDocente::verificarAtivoNoCurso($personId, $filters) ? $docs[] = $documento : NULL;
+                }
+                elseif ( strlen($documento->ofertaComponenteCurricularId) > 0 )
+                {
+                    $filters->ofertaComponenteCurricularId = $documento->ofertaComponenteCurricularId;
+                    AcpCursoDocente::verificarAtivoNoCurso($personId, $filters) ? $docs[] = $documento : NULL;
+                }
+            }
+            elseif ( !(strlen($documento->idModule) > 0) )
+            {
+                $docs[] = $documento;
+            }
+        }
+        
+        return $docs;
+    }
+    
+    /**
+     * Lista documentos disponíveis para o contrato passado por parâmetro.
+     * 
+     * @param (int) $personId - Cód. pessoa.
+     * 
+     * @retunr (Array)
+     */
+    public function obterDocumentosDisponiveisParaCoordenador($personId)
+    {
+        $todos = $this->obterTodosDocumentosHabilitados(prtUsuario::USUARIO_COORDENADOR);
+        
+        $docs = array();
+        foreach ( $todos as $documento )
+        {
+            if ( $documento->idModule == SModules::MODULE_ACADEMIC && 
+                 strlen($documento->courseId) > 0 )
+            {
+                $busCourseCoordinator = new BusinessAcademicBusCourseCoordinator();
+                $busCourseCoordinator->isCourseCoordinatorInCourse(prtUsuario::obtemUsuarioLogado()->personId, $documento->courseId) ? $docs[] = $documento : null;
+            }
+            elseif ( $documento->idModule == SModules::MODULE_PEDAGOGICO )
+            {
+                if ( strlen($documento->ofertaCursoId) > 0 )
+                {
+                    $ofertaCurso = new AcpOfertaCurso($documento->ofertaCursoId);
+                    AcpCoordenadores::verificaCoordenadorDeCurso($personId, $ofertaCurso->ocorrenciacurso->cursoid) ? $docs[] = $documento : null;
+                }
+                elseif ( strlen($documento->ofertaTurmaId) > 0 )
+                {
+                    $ofertaTurma = new AcpOfertaTurma($documento->ofertaTurmaId);
+                    AcpCoordenadores::verificaCoordenadorDeCurso($personId, $ofertaTurma->ofertacurso->ocorrenciacurso->cursoid) ? $docs[] = $documento : null;
+                }
+                elseif ( strlen($documento->ofertaComponenteCurricularId) > 0 )
+                {
+                    $ofertaComp = new AcpOfertaComponenteCurricular($documento->ofertaComponenteCurricularId);
+                    AcpCoordenadores::verificaCoordenadorDeCurso($personId, $ofertaComp->ofertaturma->ofertacurso->ocorrenciacurso->cursoid) ? $docs[] = $documento : null;
+                }
+            }
+            elseif ( !(strlen($documento->idModule) > 0) )
+            {
+                $docs[] = $documento;
+            }
+        }
+        
+        return $docs;
+    }
+    
+    /**
+     * Lista documentos disponíveis para o contrato passado por parâmetro.
+     * 
+     * @param (int) $contractId - Cód. contrato.
+     * 
+     * @retunr (Array)
+     */
+    public function obterDocumentosDisponiveisParaContrato($contractId)
+    {
+        $todos = $this->obterTodosDocumentosHabilitados(prtUsuario::USUARIO_ALUNO);
+        
+        $docs = array();
+        foreach ( $todos as $documento )
+        {
+            if ( $documento->idModule == SModules::MODULE_ACADEMIC && 
+                 strlen($documento->courseId) > 0 )
+            {
+                //Nao possui contratos ativos no curso do documento, nao exibe
+                $busContract = new BusinessAcademicBusContract();
+
+                $filters = new stdClass();
+                $filters->contract = $contractId;
+                $filters->courseId = $documento->courseId;
+
+                count($busContract->getActiveContract($filters)) > 0 ? $docs[] = $documento : null;
+            }
+            elseif ( !(strlen($documento->idModule) > 0) )
+            {
+                $docs[] = $documento;
+            }
+        }
+        
+        return $docs;
+    }
+    
+    /**
+     * Lista documentos disponíveis para a inscrição passado por parâmetro.
+     * 
+     * @param (int) $inscricaoId - Cód. inscrição.
+     * @param (int) $personId - Cód. pessoa
+     * 
+     * @retunr (Array)
+     */
+    public function obterDocumentosDisponiveisParaInscricao($inscricaoId, $personId)
+    {
+        $todos = $this->obterTodosDocumentosHabilitados(prtUsuario::USUARIO_ALUNO);
+        
+        $docs = array();
+        foreach ( $todos as $documento )
+        {
+            unset($filters);
+            $filters = new stdClass();
+            
+            if ( $documento->idModule == SModules::MODULE_PEDAGOGICO )
+            {
+                if ( strlen($documento->ofertaCursoId) > 0 )
+                {
+                    $filters->ofertaCursoId = $documento->ofertaCursoId;
+                    AcpInscricao::verificaInscricaoAtiva($inscricaoId, $filters) ? $docs[] = $documento : null;
+                }
+                elseif ( strlen($documento->ofertaTurmaId) > 0 )
+                {
+                    $filters->ofertaTurmaId = $documento->ofertaTurmaId;
+                    AcpInscricao::verificaInscricaoAtiva($inscricaoId, $filters) ? $docs[] = $documento : null;
+                }
+                elseif ( strlen($documento->ofertaComponenteCurricularId) > 0 )
+                {
+                    $filters->ofertaComponenteCurricularId = $documento->ofertaComponenteCurricularId;
+                    $filters->apenasMatriculados = DB_TRUE;
+                    $filters->inscricaoId = $inscricaoId;
+                    $filters->personId = $personId;
+                    
+                    count(AcpMatricula::buscarMatriculas($filters)) > 0 ? $docs[] = $documento : null;
+                }
+            }
+            elseif ( !(strlen($documento->idModule) > 0) )
+            {
+                $docs[] = $documento;
+            }
+        }
+        
+        return $docs;
+    }
+    
+    /**
+     * Retorna todos os contratos habilitados.
+     * 
+     * @param (char) - Perfil a ser procurado.
+     * 
+     * @return (Array)
+     */
+    public function obterTodosDocumentosHabilitados($perfil = null)
+    {
+        $sql = " SELECT A.titulo,
+                        A.fileid,
+                        B.idModule,
+                        B.courseId,
+                        B.ofertaCursoId,
+                        B.ofertaTurmaId,
+                        B.ofertaComponenteCurricularId,
+                        A.documentoPortalId
+                   FROM basDocumentosPortal A
+              LEFT JOIN basDocumentosPortalCurso B
+                     ON (A.documentoPortalId = B.documentoPortalId)
+                  WHERE habilitado ";
+        
+        if ( $perfil == prtUsuario::USUARIO_ALUNO )
+        {
+            $sql .= " AND disponivel_aluno ";
+        }
+        elseif ( $perfil == prtUsuario::USUARIO_PROFESSOR )
+        {
+            $sql .= " AND disponivel_professor ";
+        }
+        elseif ( $perfil == prtUsuario::USUARIO_COORDENADOR )
+        {
+            $sql .= " AND disponivel_coordenador ";
+        }
+        
+        $return = SDatabase::query($sql);
+        
+        $docs = array();
+        foreach ( $return as $item )
+        {
+            $doc = new stdClass();
+            
+            list ( $doc->titulo,
+                   $doc->fileId,
+                   $doc->idModule,
+                   $doc->courseId,
+                   $doc->ofertaCursoId,
+                   $doc->ofertaTurmaId,
+                   $doc->ofertaComponenteCurricularId,
+                   $doc->documentoPortalId) = $item;
+            
+            $docs[] = $doc;
+        }
+
+        return $docs;
+    }
+    
+    public function delete()
+    {
+        try
+        {
+            SDatabase::beginTransaction();
+            
+            $sql = " SELECT documentosPortalCursoId
+                       FROM basDocumentosPortalCurso
+                      WHERE documentoPortalId = ?";
+            $args[] = $this->documentoportalid;
+
+            $cursos = SDatabase::query($sql, $args);
+
+            if ( count($cursos) > 0 )
+            {
+                foreach( $cursos as $curso )
+                {
+                    unset($basDocCursos);
+                    $basDocCursos = new BasDocumentosPortalCurso($curso[0]);
+                    $basDocCursos->delete();
+                }
+            }
+
+            SDatabase::commit();
+            return parent::delete();
+        } 
+        catch (Exception $ex) 
+        {
+            SDatabase::rollback();
+            
+            $this->addError($ex->getMessage());
+        }
+        
+    }
+    
+}
+?>

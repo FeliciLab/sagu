@@ -1,0 +1,934 @@
+<?php
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class definition for database entities
+ *
+ * @author Moises [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Moises [moises@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 07/04/2011
+ *
+ */
+class TraSubscription extends SType
+{
+    /**
+     * Constantes para o código do status
+     */
+    const PENDING = 'P';
+    const APPROVED = 'A';
+    const UNAPPROVED = 'N';
+    const DESISTENCE = 'D';
+    
+    private $_gerarPendencia = false;
+    
+    /**
+     * @AttributeType integer
+     *
+     */
+    protected $subscriptionId;
+    /**
+     * @AttributeType integer
+     *
+     */
+    protected $requestId;
+    /**
+     * @AttributeType date
+     *
+     */
+    protected $desistenceDate;
+    /**
+     * @AttributeType character
+     *
+     */
+    protected $status;
+    /**
+     * @AttributeType TraRequest
+     */
+    protected $request;
+    /**
+     * @AttributeType TraSubscriptionTeam
+     */
+    protected $subscriptionTeam;
+    /**
+     * @AttributeType real
+     */
+    protected $degree;
+    /**
+     * @AttributeType real
+     */
+    protected $frequency;
+    /**
+     * @AttributeType boolean
+     */
+    protected $approved;
+    /**
+     * @AttributeType boolean
+     *
+     */
+    protected $trainingEnded;
+
+    protected $evaluationComments;
+    
+    /**
+     * @AttributeType TraSubscriptionTeamEvaluation
+     *
+     */
+    protected $subscriptionTeamEvaluation = array();
+
+
+    public function __construct($subscriptionId = null)
+    {
+        if ( strlen($subscriptionId) > 0 )
+        {
+            $this->subscriptionId = $subscriptionId;
+            $this->populate();
+        }
+    }
+
+    public function __get($name)
+    {
+        if ( ($name == 'subscriptionTeamEvaluation') && (!$this->subscriptionTeamEvaluation) && (strlen($this->subscriptionId) > 0) )
+        {
+            $filters = new stdClass();
+            $filters->subscriptionId = $this->subscriptionId;
+            $this->subscriptionTeamEvaluation = TraSubscriptionTeamEvaluation::search($filters);
+        }
+        
+        //Carrega TraRequest sob demanda
+        if ( ( $name == 'request' ) && (!$this->request ) && ( strlen($this->requestId) > 0 ) )
+        {
+            $this->request = new TraRequest($this->requestId);
+        }
+
+        if ( ( $name == 'subscriptionTeam' ) && !$this->subscriptionTeam && (strlen($this->subscriptionId) > 0) )
+        {
+            $filters = new stdClass();
+            $filters->subscriptionId = $this->subscriptionId;
+            $this->subscriptionTeam = TraSubscriptionTeam::search($filters);
+        }
+
+        return parent::__get($name);
+    }
+    
+    public function __set($name, $value)
+    {
+        // Quando altera um status para APROVADO, marca flag de gerar pendencia
+        if ( $name == 'status' )
+        {
+            $this->_gerarPendencia = ( $this->status != self::APPROVED ) && ( $value == self::APPROVED );
+        }
+        
+        parent::__set($name, $value);
+    }
+    
+
+    public function search($filters)
+    {
+        $sql = '    SELECT A.subscriptionid
+                  FROM tra.subscription A
+            INNER JOIN tra.request B
+                    ON (A.requestId = B.requestId)';
+        $where = '';
+
+        foreach ( $filters as $key => $value )
+        {
+            //Filtra inscricoes que possuem documentos pendentes
+            if ( ($key == 'pendingDocument') && ($value == true) )
+            {
+                //SQL de busca de documentos entregues para esta inscricao
+                $sqlDelivered = "
+                    SELECT _DD.documentId
+                      FROM tra.deliveredDocument _DD
+                     WHERE _DD.requestId = A.requestId ";
+
+                //SQL que conta o total de documentos exigidos para esta inscricao
+                $sqlAreaDocument = "
+                    SELECT COUNT(*)
+                      FROM tra.document _D
+                INNER JOIN tra.unitArea _UA
+                        ON (_UA.unitAreaId = _D.unitAreaId)
+                INNER JOIN tra.request _R
+                        ON (_R.unitAreaId = _UA.unitAreaId)
+                     WHERE _R.requestId = A.requestId
+                       AND _D.isMandatory = TRUE
+                       AND _D.documentId NOT IN ({$sqlDelivered}) ";
+
+                $where .= " AND ({$sqlAreaDocument}) > 0 ";
+            }
+            else if ( ($key == 'pendingEvaluation') && ($value == true) ) //Filtra por inscricoes cujas notas ja deveriam ter sido digitadas, mas ainda nao foram
+            {
+                //Conta quantas avaliacoes tem
+                $sqlCountItemsSubscription = "
+                    SELECT COUNT(*)
+                      FROM tra.subscriptionTeamEvaluation _STE
+                     WHERE _STE.subscriptionId = A.subscriptionId ";
+
+                $sqlCountItemsSubscriptionTeam = "
+                    SELECT COUNT(*)
+                      FROM tra.subscriptionTeamEvaluation _STE
+                     WHERE _STE.subscriptionTeamId IN (SELECT subscriptionTeamId
+                                                         FROM tra.subscriptionTeam
+                                                        WHERE subscriptionId = A.subscriptionId)";
+                
+                $where .= " AND ( EXISTS(SELECT 1 FROM tra.subscriptionTeam WHERE subscriptionId = A.subscriptionId AND trainingEnded IS TRUE) OR
+                                  A.trainingEnded IS TRUE )";
+                $where .= " AND
+                            (CASE WHEN EXISTS(SELECT 1 FROM tra.subscriptionTeam WHERE subscriptionId = A.subscriptionId)
+                            THEN
+                                ({$sqlCountItemsSubscriptionTeam}) = 0
+                            ELSE
+                                ({$sqlCountItemsSubscription}) = 0
+                            END)";
+            }
+            else if ( (is_scalar($value)) && (strlen($value) > 0) )
+            {
+                $where.=" AND A.{$key} = '{$value}'";
+            }
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql.=' WHERE ' . substr($where, 5);
+        }
+
+        $sql.=' ORDER BY A.subscriptionid ';
+        $result = SDatabase::query($sql);
+        $retVal = array( );
+
+        for ( $i = 0; $i < count($result); $i++ )
+        {
+            $retVal[] = new TraSubscription($result[$i][0]);
+        }
+
+        return $retVal;
+    }
+    /*
+     * Busca os dados qu populam a grid no formulário de inscrições
+     */
+
+    public function searchGridSubscription($filters = null)
+    {
+        $sql = " SELECT DISTINCT 
+                        A.requestId,
+                        A.unitareaid,
+                        A.personid,
+                        B.name as personName,
+                        A.institution AS institution,
+                        CASE WHEN A.addendumcourseadminid IS NULL THEN 'NÃO' ELSE 'SIM' END as solconveniada,
+                        A.semester AS semester,
+                        TO_CHAR(A.begindate, '" . SAGU::getParameter('BASIC', 'MASK_DATE') . "') AS beginDate,
+                        TO_CHAR(A.enddate, '" . SAGU::getParameter('BASIC', 'MASK_DATE') . "') AS endDate,
+                        C.description AS area,
+                        COALESCE(D.status, 'P'),
+                        TO_CHAR(A.requestdate, '" . SAGU::getParameter('BASIC', 'MASK_DATE') . "'),
+                        B.email,
+                        B.residentialphone
+                   FROM tra.requestCurrentData A
+        INNER JOIN ONLY basphysicalPerson B
+                     ON (A.personId = B.personId)
+              LEFT JOIN tra.subscription D
+                     ON (A.requestId = D.requestId)
+              LEFT JOIN tra.unitArea UA
+                     ON UA.unitAreaId = A.unitAreaId
+              LEFT JOIN tra.area C
+                     ON UA.areaId = C.areaId";
+        
+        $args = array( );
+        
+        // Filtra apenas por APROVADOS
+        $where .= ' AND A.status = ? ';
+        $args[] = self::APPROVED;
+
+        if ( strlen($filters->statusFilter) > 0 )
+        {
+            $where.=' AND COALESCE(D.status, \'P\') = ? ';
+            $args[] = $filters->statusFilter;
+        }
+        
+        if ( strlen($filters->unitId) > 0 )
+        {
+            $where.=' AND UA.unitId = ?';
+            $args[] = $filters->unitId;
+        }
+        
+        if ( strlen($filters->requestId) > 0 )
+        {
+            $where.=' AND A.requestId = ?';
+            $args[] = $filters->requestId;
+        }
+
+        if ( strlen($filters->unitAreaId) > 0 )
+        {
+            $where.=' AND A.unitareaid = ?';
+            $args[] = $filters->unitAreaId;
+        }
+
+        if ( strlen($filters->trainingTypeId) > 0 )
+        {
+            $where.=' AND A.trainingtypeid = ?';
+            $args[] = $filters->trainingTypeId;
+        }
+
+        if ( strlen($filters->personId) > 0 )
+        {
+            $where.=' AND A.personid = ?';
+            $args[] = $filters->personId;
+        }
+        
+        if ( strlen($filters->conveniada) > 0 )
+        {
+            $where .= ' AND A.addendumcourseadminid IS NOT NULL ';
+        }
+
+        if ( strlen($filters->beginDate) > 0 )
+        {
+            $where.=' AND A.begindate >= TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $args[] = $filters->beginDate;
+        }
+
+        if ( strlen($filters->endDate) > 0 )
+        {
+            $where.=' AND A.enddate <= TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $args[] = $filters->endDate;
+        }
+
+        if ( strlen($filters->institution) > 0 )
+        {
+            $where.=' AND UNACCENT(A.institution) ILIKE UNACCENT(?) ';
+            $args[] = $filters->institution . '%';
+        }
+
+        if ( strlen($filters->semester) > 0 )
+        {
+            $where.=' AND A.semester = ?';
+            $args[] = $filters->semester;
+        }
+
+        if ( strlen($filters->courseId) > 0 )
+        {
+            $where.=' AND A.courseid = ?';
+            $args[] = $filters->courseId;
+        }
+
+        if ( strlen($filters->observation) > 0 )
+        {
+            $where.=' AND UNACCENT(A.observation) ILIKE UNACCENT(?) ';
+            $args[] = $filters->observation . '%';
+        }
+
+        if ( strlen($filters->status) > 0 )
+        {
+            $where.=' AND A.status = ?';
+            $args[] = $filters->status;
+        }
+
+        if ( strlen($filters->desistenceDate) > 0 )
+        {
+            $where.=' AND A.desistenceDate = TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $args[] = $filters->desistenceDate;
+        }
+
+        if ( strlen($filters->beginDateRequest) > 0 )
+        {
+            $where .= ' AND A.dateTime >= TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $args[] = $filters->beginDateRequest;
+        }
+
+        if ( strlen($filters->endDateRequest) > 0 )
+        {
+            $where .= ' AND A.dateTime <= TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $args[] = $filters->endDateRequest;
+        }
+
+        // lista somenta as solicitações que ainda não estão na subscriptionTeam
+        if ( $filters->notInSubscriptionTeam == DB_TRUE )
+        {
+            $where .= ' AND (SELECT COUNT(*)
+                               FROM tra.subscriptionTeam
+                              WHERE subscriptionId = D.subscriptionId) = 0';
+        }
+        
+        $notInSubscription = $filters->notInSubscription;
+        if ( in_array($notInSubscription, array(DB_TRUE, DB_FALSE)) )
+        {
+            $condition = ( $notInSubscription == DB_TRUE ) ? 'NOT' : '';
+            $where .= " AND A.requestId {$condition} IN (SELECT AA.requestId FROM tra.subscription AA)";
+        }
+
+        // Verifica se personId passado é organizador de equipe
+        if ( strlen($filters->teamOrganizerId) > 0 )
+        {
+            $where .= " AND " . TraUnitArea::getSQLExpressionIsTeamOrganizer($filters->teamOrganizerId);
+        }
+        
+        if ( strlen($where) > 0 )
+        {
+            $sql.=' WHERE ' . substr($where, 4) . '
+                   ORDER BY A.requestId';
+
+            $result = SDatabase::query(SAGU::prepare($sql, $args));
+        }
+
+        return $result;
+    }
+    
+
+    public function searchGridLocation($filters = null)
+    {
+        $sql = 'SELECT DISTINCT S.subscriptionId,
+                                ST.subscriptionteamid,
+                                PP.personId,
+                                PP.name,
+                                PP.residentialPhone,
+                                PP.email,
+                                R.institution,
+                                R.semester,
+                                TO_CHAR(R.begindate, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\'),
+                                TO_CHAR(R.enddate, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\'),
+                                TE.description,
+                                COALESCE(ST.degree,S.degree),
+                                S.status
+                           FROM tra.subscription S
+                     INNER JOIN tra.requestCurrentData R
+                             ON (S.requestId = R.requestId)
+                     INNER JOIN tra.unitArea UA
+                             ON (UA.unitAreaId = R.unitAreaId)
+                INNER JOIN ONLY basPhysicalPerson PP
+                             ON (R.personId = PP.personId)
+                      LEFT JOIN tra.subscriptionteam ST
+                             ON ST.subscriptionid = S.subscriptionid
+                      LEFT JOIN tra.team TE
+                             ON TE.teamid = St.teamid';
+        
+        $args = array();
+
+        if (strlen($filters->subscriptionId) > 0)
+        {
+            $where.=' AND S.subscriptionid = ?';
+            $args[] = $filters->subscriptionId;
+        }
+
+        if (strlen($filters->beginDate) > 0)
+        {
+            $where.=' AND R.begindate >= TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')';
+            $args[] = $filters->beginDate;
+        }
+
+        if (strlen($filters->endDate) > 0)
+        {
+            $where.=' AND R.enddate <= TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')';
+            $args[] = $filters->endDate;
+        }
+
+        if ( strlen($filters->personName) > 0 )
+        {
+            $where .= ' AND UNACCENT(PP.name) ILIKE UNACCENT(?) ';
+            $args[] = $filters->personName . '%';
+        }
+
+        if ( strlen($filters->preceptorId) > 0 )
+        {
+            // Filtra pelo preceptor substituto e seu periodo
+            $subsSQL =   '(SELECT :colname:
+                             FROM tra.preceptorSubstitution
+                            WHERE personId = ?
+                              AND ST.teamId = teamId
+                              AND now()::date BETWEEN begindate AND COALESCE(enddate, \'01-01-3000\'::date))';
+            
+            // Verifica se existe o preceptor substituto
+            $subSQLCount = str_replace(':colname:', 'COUNT(*)', $subsSQL);
+            $subSQLCount = "{$subSQLCount} > 0";
+            $args[] = $filters->preceptorId;
+
+            // Data de inicio do preceptor substituto
+            $subDateBegin = str_replace(':colname:', 'begindate', $subsSQL);
+            $args[] = $filters->preceptorId;
+
+            // Data de fim do preceptor substituto
+            $subDateEnd = str_replace(':colname:', 'COALESCE(enddate, \'01-01-3000\'::date)', $subsSQL);
+            $args[] = $filters->preceptorId;
+            
+            // Faz condicoes acima
+            $subsSQL = "( ({$subSQLCount}) AND ( (R.beginDate, R.endDate) OVERLAPS ({$subDateBegin}, {$subDateEnd}) ))";
+            
+            $where .= " AND ((TE.preceptorid = ?) OR (UA.preceptorid = ?) OR ({$subsSQL}))  ";
+            $args[] = $filters->preceptorId;
+            $args[] = $filters->preceptorId;
+        }
+
+        if ( strlen($filters->teamId) > 0 )
+        {
+            $where .= ' AND TE.teamId = ?  ';
+            $args[] = $filters->teamId;
+        }
+
+        if (strlen($where) > 0)
+        {
+            $sql .= ' WHERE '.substr($where, 4);
+            $sql .= ' ORDER BY PP.name';
+            
+            $result = SDatabase::query(SAGU::prepare($sql, $args));
+        }
+
+        return $result;
+    }
+    
+
+    public function searchGrid($filters = null)
+    {
+        $maskDate = SAGU::getParameter('BASIC', 'MASK_DATE');
+        $sql = "SELECT A.subscriptionid,
+                       B.requestId,
+                       C.personid,
+                       C.name as personName,
+                       TO_CHAR(B.requestdate, '" . SAGU::getParameter('BASIC', 'MASK_DATE') . "'),
+                       C.email,
+                       C.residentialphone,
+                       B.institution,
+                       CASE WHEN B.addendumcourseadminid IS NULL THEN 'NÃO' ELSE 'SIM' END as solconveniada,
+                       B.semester,
+                       TO_CHAR(B.begindate, '{$maskDate}') AS beginDate,
+                       TO_CHAR(B.enddate, '{$maskDate}') AS endDate,
+
+                       --Pega equipes desta inscricao e quebra informacoes por <br> para exibicao na grid
+                       ARRAY_TO_STRING(ARRAY(
+                            SELECT TO_CHAR(_ST.beginDate, '{$maskDate}') || ' - ' || TO_CHAR(_ST.endDate, '{$maskDate}') || ' - ' || _T.description
+                              FROM tra.subscriptionTeam _ST
+                        INNER JOIN tra.team _T
+                                ON (_T.teamId = _ST.teamId)
+                             WHERE _ST.subscriptionId = A.subscriptionId
+                        ), '<br>') AS teams,
+
+                       B.unitAreaId
+                 FROM tra.subscription A
+           INNER JOIN tra.requestCurrentData B
+                   ON (A.requestId = B.requestId)
+           INNER JOIN tra.unitArea UA
+                   ON UA.unitAreaId = B.unitAreaId
+      INNER JOIN ONLY basPhysicalPerson C
+                   ON (B.personId = C.personId) ";
+
+        $where = '';
+        $args = array( );
+
+        $where .= ' AND A.desistenceDate IS NULL';
+        
+        if ( strlen($filters->unitId) > 0 )
+        {
+            $where.=' AND UA.unitId = ?';
+            $args[] = $filters->unitId;
+        }
+        
+        if ( strlen($filters->subscriptionId) > 0 )
+        {
+            $where.=' AND A.subscriptionid = ?';
+            $args[] = $filters->subscriptionId;
+        }
+
+        if ( strlen($filters->requestId) > 0 )
+        {
+            $where.=' AND A.requestid = ?';
+            $args[] = $filters->requestId;
+        }
+        
+        if ( strlen($filters->conveniada) > 0 )
+        {
+            $where .= ' AND B.addendumcourseadminid IS NOT NULL ';
+        }
+
+        if ( strlen($filters->desistenceDate) > 0 )
+        {
+            $where.=' AND A.desistencedate = TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $args[] = $filters->desistenceDate;
+        }
+
+        if ( strlen($filters->status) > 0 )
+        {
+            $where.=' AND A.status = ?';
+            $args[] = $filters->status;
+        }
+
+        if ( strlen($filters->unitAreaId) > 0 )
+        {
+            $where .= ' AND B.unitAreaId = ?';
+            $args[] = $filters->unitAreaId;
+        }
+        
+        if ( ( strlen($filters->beginDate) > 0 ) || ( strlen($filters->endDate) > 0 ) )
+        {
+            $where .= " AND ( (datetodb(?), datetodb(?)) OVERLAPS (B.beginDate, B.endDate) )";
+            $args[] = $filters->beginDate;
+            $args[] = $filters->endDate;
+        }
+
+        // Verifica se personId passado é organizador de equipe
+        if ( strlen($filters->teamOrganizerId) > 0 )
+        {
+            $where .= " AND " . TraUnitArea::getSQLExpressionIsTeamOrganizer($filters->teamOrganizerId, 'B');
+        }
+        
+        if ( strlen($where) > 0 )
+        {
+            $sql.=' WHERE ' . substr($where, 4) . '
+                   ORDER BY A.subscriptionid';
+            
+            $sql = SAGU::prepare($sql, $args);
+            $result = SDatabase::query($sql);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Lista status da inscrição de estágio
+     */
+    public static function listStatus()
+    {
+        $data = array(
+            self::PENDING => _M('PENDENTE', 'basic'),
+            self::APPROVED => _M('AUTORIZADO', 'basic'),
+            self::UNAPPROVED => _M('NÃO AUTORIZADO', 'basic'),
+            self::DESISTENCE => _M('DESISTENTE', 'basic'),
+        );
+
+        return $data;
+    }
+
+    private function populate()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $sql = 'SELECT subscriptionid,
+                       requestid,
+                       TO_CHAR(desistencedate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       status,
+                       degree,
+                       approved,
+                       frequency,
+                       trainingEnded,
+                       evaluationComments,
+                       username,
+                       TO_CHAR(datetime, \'' . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . '\'),
+                       ipaddress
+                  FROM tra.subscription
+                 WHERE subscriptionid = ?';
+        $result = SDatabase::query($sql, array( $this->subscriptionId ));
+
+        if ( !strlen($result[0][0]) )
+        {
+            throw new Exception(_M('Registro inexistente. (@1)', $module, __CLASS__));
+        }
+
+        list( $this->subscriptionId,
+                $this->requestId,
+                $this->desistenceDate,
+                $this->status,
+                $this->degree,
+                $this->approved,
+                $this->frequency,
+                $this->trainingEnded,
+                $this->evaluationComments,
+                $this->username,
+                $this->datetime,
+                $this->ipaddress,
+                ) = $result[0];
+
+        // Objeto request
+        $this->request = new TraRequest($this->requestId);
+    }
+
+    public function save()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        // Objeto request
+        $this->request = new TraRequest($this->requestId);
+
+        if ( $this->status == TraSubscription::APPROVED && $this->estagiarioAprovadoNoPeriodo($this->requestId, $this->request->personId, $this->request->beginDate, $this->request->endDate) )
+        {
+            throw new Exception(_M('Este aluno já foi aceito para o mesmo período em outra área ou na mesma área.'));
+        }
+        else
+        {
+            if ( strlen($this->subscriptionId) == 0 )
+            {
+                $retVal = $this->insert();
+            }
+            else
+            {
+                $retVal = $this->update();
+            }
+
+            // Gera pendencia para estagiario
+            if ( $this->_gerarPendencia )
+            {
+                $this->geraPendenciaEstagiario();
+            }
+        }
+
+        return $retVal;
+    }
+
+    private function insert()
+    {
+        $sql = "SELECT nextval('seq_trasubscription_subscriptionid'::regclass)";
+        $result = SDatabase::query($sql);
+        $subscriptionId = $result[0][0];
+
+        $sql = 'INSERT INTO tra.subscription
+                           (subscriptionid,
+                            requestid,
+                            desistencedate,
+                            status,
+                            frequency,
+                            degree,
+                            approved,
+                            trainingEnded,
+                            evaluationComments)
+                     VALUES (?,
+                             ?,
+                             TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                             ?,
+                             ?,
+                             ?,
+                             ?,
+                             ?,
+                             ?)';
+
+        $args = array( $subscriptionId,
+            $this->requestId,
+            $this->desistenceDate,
+            $this->status,
+            $this->degree,
+            $this->approved,
+            $this->frequency,
+            $this->trainingEnded,
+            $this->evaluationComments);
+
+        $result = SDatabase::execute($sql, $args);
+
+        if ( $result )
+        {
+            $this->subscriptionId = $subscriptionId;
+        }
+
+        return $result;
+    }
+
+    private function update()
+    {
+        $sql = 'UPDATE tra.subscription
+                   SET requestid = ?,
+                       desistencedate = TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       status = ?,
+                       frequency = ?,
+                       degree = ?,
+                       approved = ?,
+                       trainingEnded = ?,
+                       evaluationComments = ?
+                 WHERE subscriptionid = ?';
+
+        $args = array( $this->requestId,
+            $this->desistenceDate,
+            $this->status,
+            $this->frequency,
+            $this->degree,
+            $this->approved,
+            $this->trainingEnded,
+            $this->evaluationComments,
+            $this->subscriptionId );
+
+        return SDatabase::execute($sql, $args);
+    }
+
+    public function delete()
+    {
+        if ( strlen($this->subscriptionId) == 0 )
+        {
+            throw new Exception(_M('Não é possível excluir um registro que ainda não foi salvo.', $module));
+        }
+
+        $this->__get('subscriptionTeam');
+        foreach ( (array) $this->subscriptionTeam as $st )
+        {
+            $st->delete();
+        }
+
+        $sql = 'DELETE FROM tra.subscription
+                  WHERE subscriptionid = ?';
+
+        $args = array( $this->subscriptionId );
+        $result = SDatabase::execute($sql, $args);
+
+        if ( $result )
+        {
+            $this->subscriptionId = null;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Notifica inscrições com documentação pendentes
+     * Chamado automaticamente pelo BasSystemTask
+     */
+    public static function notifyPendingDocument(BasSystemTask $bst)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $ok = true;
+
+        $filters = new stdClass();
+        $filters->pendingDocument = true;
+        $rows = self::search($filters);
+
+        if ( count($rows) > 0 )
+        {
+            $body = "As seguintes inscrições contém documentos pendentes:\n\n";
+            foreach ( $rows as $row )
+            {
+                $body .= sprintf("Inscrição <b>%s</b> - %s\n",
+                                $row->subscriptionId,
+                                $row->request->physicalPerson->name);
+            }
+            $body .= "\nFim da lista.";
+
+            $ok = $bst->addNotification(array(
+                'title' => _M('Inscrições com documentos pendentes', $module),
+                'description' => $body,
+            ));
+        }
+
+        return $ok;
+    }
+    
+    
+    /**
+     * Verifica se existem inscrições cujas notas já deveriam ter sido digitadas, mas ainda não foram.
+     * 
+     * Chamado automaticamente pelo BasSystemTask
+     */
+    public static function notifyPendingEvaluations(BasSystemTask $bst)
+    {        
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $ok = true;
+
+        $filters = new stdClass();
+        $filters->pendingEvaluation = true;
+        $rows = self::search($filters);
+
+        if ( count($rows) > 0 )
+        {
+            $body = "As seguintes inscrições estão com notas pendentes:\n\n";
+            foreach ( $rows as $row )
+            {
+                $body .= sprintf("Inscrição <b>%s</b> - %s\n",
+                                $row->subscriptionId,
+                                $row->request->physicalPerson->name);
+            }
+            $body .= "\nFim da lista.";
+
+            $ok = $bst->addNotification(array(
+                'title' => _M('Inscrições com notas pendentes', $module),
+                'description' => $body,
+            ));
+        }
+        
+        return $ok;
+    }
+    
+    
+    /**
+     * Gera pendencia para o estagiario
+     */
+    public function geraPendenciaEstagiario()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $this->__get('request');
+        
+        // Adiciona pendencia para o usuario
+        $task = new BasTask();
+        $task->taskConfigId = SAGU::getParameter('BASIC', 'TASK_CONFIG_ID_REQUIRED_DOCUMENTS');
+        $task->taskStatusId = BasTaskStatus::STATUS_ASSIGNED;
+        $task->assignedTo = $this->request->physicalPerson->mioloIdUser;
+        $task->details = _M('Documentos necessários para o estágio', $module) . ":\n\n" . $this->request->trainingType->requiredDocuments;
+        $task->save();
+    }
+    
+    public function estagiarioAprovadoNoPeriodo($requestId, $personId, $beginDate, $endDate)
+    {
+        if ( $requestId == NULL )
+        {
+            $sql = ' SELECT status 
+                       FROM tra.request
+                      WHERE personid = ?
+                        AND (
+                                ?::date BETWEEN begindate AND enddate 
+                                OR
+                                ?::date BETWEEN begindate AND enddate
+                            )';
+            
+            $params = array();
+            $params[] = $personId;
+            $params[] = SAGU::convertDateToDb($beginDate);
+            $params[] = SAGU::convertDateToDb($endDate);
+            
+            $result = SDatabase::query($sql, $params);
+        }
+        else
+        {
+            $sql = ' SELECT S.status 
+                       FROM tra.subscription S 
+                  LEFT JOIN tra.request R ON (S.requestid = R.requestid) 
+                      WHERE R.requestid NOT IN (?)
+                        AND R.personid = ?
+                        AND (
+                                ?::date BETWEEN R.begindate AND R.enddate 
+                                OR
+                                ?::date BETWEEN R.begindate AND R.enddate
+                            )';
+
+            $params = array();
+            $params[] = $requestId;
+            $params[] = $personId;
+            $params[] = SAGU::convertDateToDb($beginDate);
+            $params[] = SAGU::convertDateToDb($endDate);
+
+            $result = SDatabase::query($sql, $params);
+        }
+        
+        return $result[0][0] == TraSubscription::APPROVED;
+    }
+}
+?>

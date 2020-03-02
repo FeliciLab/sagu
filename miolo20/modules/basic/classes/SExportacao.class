@@ -1,0 +1,1858 @@
+<?php
+/**
+ * <--- Copyright 2005-2014 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Componente que abstrai a exportação de resultados das consultas dos relatórios
+ * genéricos para os diversos formatos possíveis
+ * 
+ * @author Luís Augusto Weber Mercado [luis_augusto@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * @author Luís Augusto Weber Mercado [luis_augusto@solis.com.br]
+ *
+ * @since Arquivo criado em 06/02/2015
+ */
+class SExportacao
+{
+    
+    /**
+     * Constantes de tipo de arquivo usadas na classe
+     * 
+     */
+    const TIPO_CSV = "csv";
+    const TIPO_HTML = "html";
+    const TIPO_JRXML = "jrxml";
+    const TIPO_PDF = "pdf";
+    const TIPO_XLS = "xls";
+    const TIPO_XML = "xml";
+    
+    /**
+     * Constantes de tipo de envio ao browser
+     * 
+     */
+    const DISPLAY_BROWSER = "browser";
+    const DISPLAY_DOWNLOAD = "download";
+    
+    /**
+     * Limite de dados
+     * 
+     */
+    const CONSULTA_LIMITE = 25000;
+        
+    /**
+     * Limite de dados por relatório (PDF)
+     * 
+     */
+    const LIMITE_REGISTROS_RELATORIO = 25000;
+    
+    /**
+     * Limite de dados por exportação (XLS, CSV, HTML)
+     * 
+     */
+    const LIMITE_REGISTROS_EXPORTACAO = 65000;
+    
+    /**
+     * Nome que aparecerá no arquivo
+     * 
+     * @var String
+     */
+    private $nome;
+    
+    /**
+     * Consulta que gera os resultados esperados
+     * 
+     * @var String
+     */
+    private $consulta;
+        
+    /**
+     * Tipo do arquivo desejado
+     * 
+     * @var String
+     */
+    private $tipoArquivo;
+        
+    /**
+     * Forma como o arquivo deve ser enviado ao browser
+     * 
+     * @var String
+     */
+    private $display;
+    
+    /**
+     * Contém a referência da classe específica do tipo de exportação
+     * 
+     * @var Object 
+     */
+    private $exportacao;
+    
+    /**
+     * Construtor da classe
+     *
+     * @param String $nome Nome que deve ser mostrado no arquivo gerado 
+     * @param String $tipoArquivo Tipo do arquivo a ser gerado
+     * @param String $consulta Consulta que traz os dados. <b>No caso específico
+     *  da exportação para PDF</b>, pode ser informado com atributos iReport, pois o
+     *  componente faz o tratamento.
+     */
+    public function __construct($nome, $tipoArquivo, $consulta)
+    {
+        $this->nome = $nome;
+        $this->consulta = $consulta;
+        $this->tipoArquivo = $tipoArquivo;
+        
+        // Se o tipo é valido
+        if( $this->testaTipo($tipoArquivo) )
+        {
+            $classe = "SExportacao" . strtoupper($this->tipoArquivo);
+            
+            // Cria a referência da classe conforme o tipo
+            $this->exportacao = new $classe($this->nome, $this->consulta);
+                        
+        }
+        
+    }
+    
+    /**
+     * Faz a exportação da consulta informada para o formato informado
+     *  
+     * @param String $display Onde deve ser mostrado o resultado
+     * @param Object $dadosRelatorio Dados específicos do relatório
+     * 
+     * @throws Exception Erros que possam vir a ocorrer durante as exportações
+     */
+    public function exporta($display = SExportacao::DISPLAY_DOWNLOAD, $dadosRelatorio = null)
+    {
+        set_time_limit(60 * 60);
+        
+        try
+        {
+            $this->testaDisplay($display);
+            
+            $this->display = $display;
+
+            $this->exportacao->exporta($dadosRelatorio);
+
+            $this->exportacao->unifica();
+            
+            $this->setArquivoNavegador($this->exportacao->getCaminhoArquivoFinal());
+            
+            $this->exportacao->limpaTemporarios();
+            
+        }
+        catch( Exception $e )
+        {
+            // Certificar-se que os arquivos temporários/visões de banco sejam
+            // excluidos
+            $this->exportacao->limpaTemporarios();
+            
+            // Para o formulário tratar o erro
+            throw new Exception($e->getMessage());
+                        
+        }
+                                
+    }
+            
+    /**
+     * Seta o arquivo no navegador
+     * 
+     * @param $caminho Caminho para o arquivo
+     * 
+     * @throws Exception Caso não tenha sido exportado
+     */
+    private function setArquivoNavegador($caminho)
+    {
+        if( file_exists($caminho) )
+        {
+            $display = $this->display === SExportacao::DISPLAY_DOWNLOAD ? "attachment" : "inline";
+
+            $tamanho = filesize($caminho);
+            $nome = basename($caminho);
+
+            header("Content-Type: {$this->exportacao->getMIME()}");
+            header("Content-Length: {$tamanho}");
+            header("Content-Disposition: {$display}; filename={$nome}");
+            header("Cache-Control: cache"); // HTTP/1.1 
+            header("Content-Transfer-Encoding: binary");
+
+            $fp = fopen($caminho, "r");
+            fpassthru ($fp);
+            fclose ($fp);
+
+            exit();
+            
+        }
+        else
+        {
+            throw new Exception(_M("Não foi possível realizar a exportação. Por favor, contate a equipe de suporte do sistema."));
+            
+        }
+                
+    }
+    
+    /**
+     * Testa o atributo display
+     * 
+     * @param String $display
+     * 
+     * @throws Exception Se o tipo de display não for reconhecido
+     */
+    private function testaDisplay($display)
+    {
+        switch( $display )
+        {
+            case SExportacao::DISPLAY_BROWSER:
+            case SExportacao::DISPLAY_DOWNLOAD:
+                return true;
+            
+            default:
+                throw new Exception(_M("Tipo de display do arquivo gerado não reconhecido"));
+                                
+        }
+        
+    }
+    
+    /**
+     * Testa o atributo tipo
+     * 
+     * @param String $tipo
+     * 
+     * @throws Exception Se o tipo de exportação não for reconhecido
+     */
+    private function testaTipo($tipo)
+    {
+        switch ( $tipo )
+        {
+            case SExportacao::TIPO_CSV:
+            case SExportacao::TIPO_HTML:
+            case SExportacao::TIPO_PDF:
+            case SExportacao::TIPO_XLS:
+            case SExportacao::TIPO_JRXML:
+                return true;
+                
+            default:
+                throw new Exception(_M("Tipo de exportação não reconhecido"));
+        
+        }
+        
+    }
+    
+    /**
+     * Baseado nos dados informados, gera uma consulta para a exportação
+     * 
+     * @param Array $dadosGrid Array com os dados da grid no formato retornado
+     * pelo método MForm::getGridData(); posição 0 do Array com as colunas
+     * 
+     * @see MForm::getGridData()
+     */
+    public static function getConsultaPeloArray($dadosGrid)
+    {
+        $colunas = $dadosGrid[0];
+        $dados = array_slice($dadosGrid, 1);
+        $tempo = gettimeofday();
+        $nomeTemp = "tmptabelasexportacao{$tempo["sec"]}";
+        $rows = array();
+
+        $colunasTabela = array();
+        $colunasAlias = array();
+        
+        for( $i = 1; $i <= count($colunas); $i++ )
+        {
+            $colunasTabela[] = "coluna{$i} TEXT";
+            $colunasAlias[] = "coluna{$i} AS \"{$colunas[$i-1]}\"";
+        }
+        
+        $campos = implode(", ", $colunasTabela);
+        
+        $sqlCriacao = "CREATE TABLE IF NOT EXISTS {$nomeTemp}({$campos});";
+        
+        SDatabase::execute($sqlCriacao);
+        
+        // Cria as rows a serem adicionadas no INSERT
+        foreach( $dados as $row )
+        {
+            foreach( $row as $i => $dado )
+            {
+                // Faz o scape das aspas simples (') se houver
+                $row[$i] = str_replace("'", "\'", $dado);
+                
+            }
+            
+            $rows[] = "(" . SDatabase::arrayToSQL($row) . ")";
+                        
+        }
+        
+        $sqlInsercao = "INSERT INTO {$nomeTemp} VALUES" . implode(",", $rows) . ";";
+        
+        // Necessário por que o SDatabase tenta adicionar valores às colunas
+        // username, ipaddress etc
+        MIOLO::getInstance()->GetDatabase()->Execute($sqlInsercao);
+        
+        $alisDasColunas = implode(", ", $colunasAlias);
+        
+        return "SELECT {$alisDasColunas} FROM {$nomeTemp}";
+        
+    }
+    
+    /**
+     * A partir de um exemplo, cria a declaração das dadas colunas com seu tipo
+     * 
+     * @param Array $colunas Colunas da tabela
+     * @param Array $rowExemplo "Linha" com dados que serão adicionados
+     * @return String Declaracao das colunas da tabela
+     */
+    private static function getDeclaracaoColunasTabela($colunas, $rowExemplo)
+    {
+        $campos = array();
+        
+        // Pega os dados e verifica o tipo
+        foreach( $rowExemplo as $i => $dado )
+        {
+            /*$tipo = "text";
+            
+            if( is_numeric($dado) )
+            {
+                $numero = $dado + 0;
+                
+                $tipo = is_int($numero) ? "integer" : "double precision"; 
+                
+            }
+            else
+            {
+                $tipo = SAGU::isDate($dado) ? "date" : "text";
+
+            }*/
+            
+            $tipo = SAGU::isDate($dado) ? "date" : "text";
+            
+            $campos[$i] = SAGU::removeAcentuacao(utf8_encode(str_replace(" ", "_", $colunas[$i]))) . " {$tipo}";
+            
+        }
+        
+        return implode(", ", $campos);
+                
+    }
+    
+}
+
+/**
+ * Classe referente a exportação para CSV
+ * 
+ * @see STipoExportacao
+ */
+class SExportacaoCSV extends STipoExportacao implements ISTipoExportacao
+{
+    
+    const TIPO = "csv";
+    const MIME = "text/csv";
+    
+    /**
+     * Gera o arquivo baseado nos dados
+     * 
+     */
+    public function geraArquivo()
+    {
+        if( $this->ehPrimeiroArquivo() )
+        {
+            $this->dados = array_merge($this->colunas, $this->dados);
+            
+        }
+        
+        // Corrige problemas de codificação
+        $CSVData = utf8_encode(MUtil::getArrayAsCSV($this->dados));
+        
+        $caminho = $this->getNomeArquivoTemporario();
+        
+        $this->escreveArquivo($caminho, $CSVData);
+        
+    }
+    
+    /**
+     * Retorna o tipo da exportação
+     * 
+     * @return String
+     */
+    public function getTipo()
+    {
+        return SExportacaoCSV::TIPO;
+        
+    }
+    
+    /**
+     * Unifica os arquivos gerados
+     * 
+     */
+    public function unifica()
+    {
+        $caminho = $this->getArquivoDestino();
+        
+        $destino = fopen($caminho, "w+");
+        
+        foreach($this->arquivos as $arquivo)
+        {
+            // Lê o arquivo
+            $bufferLeitura = fopen($arquivo, "r");
+            
+            while( !feof($bufferLeitura) )
+            {
+                fwrite($destino, fgets($bufferLeitura));
+                
+            }
+            
+            fclose($bufferLeitura);
+            unset($bufferLeitura);
+                        
+        }
+        
+        fclose($destino);
+        unset($destino);
+                
+    }
+    
+    /**
+     * Escreve determinados dados num arquivo e adiciona este a lista de
+     * de arquivos para serem unidos
+     * 
+     * @param String $caminho Onde deve ser escrito
+     * @param Variable $data Dados a serem escritos
+     * @return Boolean True se foi escrito corretamente
+     */
+    private function escreveArquivo($caminho, $data)
+    {
+        // Se foi escrito alguma coisa
+        if( file_put_contents($caminho, $data) )
+        {
+            $this->arquivos[] = $caminho;
+            
+            return true;
+            
+        }
+        
+        return false;
+        
+    }
+
+    /**
+     * Retorna o MIME type correspondente à classe
+     * 
+     * @return String
+     */
+    public function getMIME()
+    {
+        return SExportacaoCSV::MIME;
+        
+    }
+
+}
+
+/**
+ * Classe referente a exportação para HTML
+ * 
+ * @see STipoExportacao
+ */
+class SExportacaoHTML extends STipoExportacao implements ISTipoExportacao
+{
+    
+    const TIPO = "html";
+    const MIME = "text/html";
+    
+    /**
+     * Gera o arquivo baseado nos dados
+     * 
+     */
+    public function geraArquivo()
+    {
+        $html = "";
+        
+        if( $this->ehPrimeiroArquivo() )
+        {
+            $html .= $this->geraCabecalho();
+            
+        }
+        
+        for( $i = 0; $i < count($this->dados); $i++ )
+        {
+            $style = "";
+            
+            if ( $i % 2 === 0 )
+            {
+                $style="style=\"background:#DFEFFF;\"";
+                
+            }
+
+            $html .= "<tr {$style}>";
+            
+            foreach ( $this->dados[$i] as $cell )
+            {
+                $html .= "<td style=\"padding:2px 4px;\">$cell</td>";
+                
+            }
+            
+            $html .= "</tr>";
+            
+        }
+        
+        $this->escreveArquivo($this->getNomeArquivoTemporario(), $html);
+        
+    }
+    
+    /**
+     * Retorna o MIME type correspondente à classe
+     * 
+     * @return String
+     */
+    public function getMIME()
+    {
+        return SExportacaoHTML::MIME;
+        
+    }
+    
+    /**
+     * Retorna o tipo da exportação
+     * 
+     * @return String
+     */
+    public function getTipo()
+    {
+        return SExportacaoHTML::TIPO;
+        
+    }
+    
+    /**
+     * Unifica os arquivos gerados
+     * 
+     */
+    public function unifica()
+    {
+        $caminho = $this->getArquivoDestino();
+        
+        $destino = fopen($caminho, "w+");
+        
+        foreach($this->arquivos as $arquivo)
+        {
+            // Lê o arquivo
+            $bufferLeitura = fopen($arquivo, "r");
+            
+            while( !feof($bufferLeitura) )
+            {
+                fwrite($destino, fgets($bufferLeitura));
+                
+            }
+            
+            fclose($bufferLeitura);
+            unset($bufferLeitura);
+                        
+        }
+        
+        fclose($destino);
+        unset($destino);
+        
+    }
+    
+    /**
+     * Gera o cabeçalho para o arquivo HTML
+     * 
+     * @return String HTML do cabeçalho
+     */
+    private function geraCabecalho()
+    {
+        $html = "<div style=\"font-family:arial;color:#333;font-weight:400;\">";
+        $html .= "<h4>{$this->nome}</h4>";
+        $html .= "<table style=\"font-size:12px;\"><tr>";
+
+        foreach ( $this->colunas[0] as $coluna )
+        {
+            $html .= "<th style=\"background:#1F72BF;color:#fff;padding:2px 4px;\">{$coluna}</th>";
+
+        }
+
+        $html .= "</tr>";
+        
+        return $html;
+        
+    }
+    
+    /**
+     * Escreve determinados dados num arquivo e adiciona este a lista de
+     * de arquivos para serem unidos
+     * 
+     * @param String $caminho Onde deve ser escrito
+     * @param Variable $data Dados a serem escritos
+     * @return Boolean True se foi escrito corretamente
+     */
+    private function escreveArquivo($caminho, $data)
+    {
+        // Se foi escrito alguma coisa
+        if( file_put_contents($caminho, $data) )
+        {
+            $this->arquivos[] = $caminho;
+            
+            return true;
+            
+        }
+        
+        return false;
+        
+    }
+    
+}
+
+/**
+ * Classe referente a exportação para JRXML
+ * 
+ * @see STipoExportacao
+ */
+class SExportacaoJRXML extends STipoExportacao implements ISTipoExportacao
+{
+    
+    const TIPO = "jrxml";
+    const MIME = "text/xml";
+    
+    /**
+     * Gera o arquivo baseado nos dados
+     * 
+     */
+    public function geraArquivo($dadosRelatorio = null)
+    {
+        $relatorio = $this->criaRelatorio($dadosRelatorio);
+                
+        $relatorio->gerarArquivoXML(true);
+        
+        $this->arquivos[] = $relatorio->findCurrentReport();
+                
+    }
+    
+    /**
+     * Cria o relatório com as propriedades informadas
+     * 
+     * @param Object $dados
+     * 
+     * @return sRelatorioPDF Instância do relatório com as propriedades informadas
+     */
+    private function criaRelatorio($dados)
+    {
+        $relatorio = new sRelatorioPDF();
+        $relatorio->setGridData($this->dados);
+        $relatorio->setTotalRegistros($this->totalRegistros);
+        $relatorio->setSql($this->consultaCompleta);
+        $relatorio->setSqlFiltrado($this->consulta);
+        $relatorio->setNomeRelatorio($this->nome);
+        $relatorio->setParameter("PAGINA_INICIAL", (int) $this->contadorPaginas);
+        
+        if( $dados )
+        {
+            if( property_exists($dados, "reportInfo") )
+            {
+                $relatorio->setReportInfo($dados->reportInfo);
+                $relatorio->setPossuiModoAlternativo( $dados->reportData->hasGrouping == DB_TRUE );
+                
+            }
+            
+            if ( $dados->sintetico == DB_TRUE )
+            {
+                $relatorio->setTipoRelatorio( sRelatorioPDF::TIPO_RELATORIO_SINTETICO );
+                
+            }
+            
+        }
+        
+        return $relatorio;
+        
+    }
+    
+    /**
+     * Retorna o MIME type correspondente à classe
+     * 
+     * @return String
+     */
+    public function getMIME()
+    {
+        return SExportacaoJRXML::MIME;
+        
+    }
+    
+    /**
+     * Retorna o tipo da exportação
+     * 
+     * @return String
+     */
+    public function getTipo()
+    {
+        return SExportacaoJRXML::TIPO;
+        
+    }
+    
+    /**
+     * Unifica os arquivos gerados
+     * 
+     */
+    public function unifica()
+    {
+        $caminho = $this->getArquivoDestino();
+        
+        rename($this->arquivos[ ( count($this->arquivos) - 1 ) ], $caminho);
+        
+    }
+        
+}
+
+/**
+ * Classe referente a exportação para PDF (utilizando Jasper)
+ * 
+ * @uses classes/PDFMerger/PDFMerger.php API PDFMerger - Juntar PDFs
+ * 
+ * @see STipoExportacao
+ */
+class SExportacaoPDF extends STipoExportacao implements ISTipoExportacao
+{
+    
+    const TIPO = "pdf";
+    const MIME = "application/pdf";
+        
+    private $consultaCompleta;
+    private $contadorPaginas;
+    private $ehModoZip;
+    private $visao;
+    
+    /**
+     * Construtor da classe
+     * 
+     * @param String $nome
+     * @param String $consulta
+     */
+    public function __construct($nome, $consulta)
+    {
+        MIOLO::getInstance()->Uses("classes/PDFMerger/PDFMerger.php", "basic");
+        
+        $consultaVisao = $this->abstraiConsulta($consulta);
+        
+        parent::__construct($nome, SExportacaoPDF::filtraSQL($consultaVisao));
+        
+        // Apenas para remover o ';' se houver
+        $this->consultaCompleta = $consultaVisao;
+        
+        $this->contadorPaginas = 0;
+        $this->ehModoZip = false;
+        
+    }
+    
+    /**
+     * Dada uma consulta, transforma essa em um visão
+     * 
+     * @param String $consulta SQL que será transformado em visão
+     * @return String Consulta na visão
+     */
+    private function abstraiConsulta($consulta)
+    {
+        $visao = "tmpvisaosexportacao{$this->getSegundos()}";
+        
+        $totalColunas = count(SDatabase::getQueryColumns($consulta));
+        
+        $colunasVisao = array();
+        
+        for( $i = 1; $i <= $totalColunas; $i++ )
+        {
+            $colunasVisao[] = "coluna{$i}";
+            
+        }
+        
+        $filtrada = $this->normalizaConsulta(SExportacaoPDF::filtraSQL($consulta));
+        
+        $sql = "CREATE VIEW {$visao} (" . implode(", ", $colunasVisao) . ") AS ({$filtrada})";
+        
+        SDatabase::execute($sql);
+        
+        $this->visao = $visao;
+        
+        $colunas = $this->getColunasVisao($visao, $consulta);
+        
+        return "SELECT " . implode(", ", $colunas) . " FROM {$visao}";
+        
+    }
+    
+    /**
+     * Formata a lista de colunas de uma visão para o relatório
+     * 
+     * @param String $visao Nome da visão
+     * @param String $consultaCompleta Consulta completa (com operações iReports)
+     * @return Array Colunas da consulta formatadas para o relatório
+     */
+    private function getColunasVisao($visao, $consultaCompleta)
+    {
+        $queryFiltrada = "SELECT * FROM {$visao}";
+        
+        $colunas = array();
+        $aliases = SDatabase::getQueryColumns($consultaCompleta);
+        $nomes = SDatabase::getQueryColumns($queryFiltrada);
+        $tipos = SDatabase::getQueryTypes($queryFiltrada);
+        
+        foreach( $nomes as $i => $nome )
+        {
+            $coluna = "{$nome} as \"{$aliases[$i]}\"";
+            
+            // $tipos[$i] pega o tipo correspondente ao nome da coluna
+            if( strpos($tipos[$i], "varchar") !== false || $tipos[$i] === "text" )
+            {
+                $coluna = "stripTags(validaValorParaRelatorio({$nome}::text)) as \"{$aliases[$i]}\"";
+                
+            }
+            
+            $colunas[] = $coluna;
+            
+        }
+        
+        return $colunas;
+        
+    }
+    
+    /**
+     * Gera o arquivo baseado nos dados
+     * 
+     */
+    public function geraArquivo($dadosRelatorio = null)
+    {
+        $relatorio = $this->criaRelatorio($dadosRelatorio);
+        
+        $gerarCabecalho = false;
+        
+        if( $this->ehUltimoArquivo() )
+        {
+            $gerarCabecalho = true;
+            
+        }
+        
+        $relatorio->generate($gerarCabecalho, false);
+        
+        $arquivo = $relatorio->getArquivoRecemGerado();
+        
+        $this->arquivos[] = $arquivo;
+        
+        $this->atualizaContadorPaginas($arquivo);
+        
+    }
+    
+    /**
+     * Cria o relatório com as propriedades informadas
+     * 
+     * @param Object $dados
+     * 
+     * @return sRelatorioPDF Instância do relatório com as propriedades informadas
+     */
+    private function criaRelatorio($dados)
+    {
+        $relatorio = new sRelatorioPDF();
+        $relatorio->setGridData($this->dados);
+        $relatorio->setTotalRegistros($this->totalRegistros);
+        $relatorio->setSql($this->getConsultaPeloOffset($this->consultaCompleta));
+        $relatorio->setSqlFiltrado($this->getConsultaPeloOffset($this->consulta));
+        $relatorio->setNomeRelatorio($this->nome);
+        $relatorio->setParameter("PAGINA_INICIAL", (int) $this->contadorPaginas);
+        
+        if( $dados )
+        {
+            if( property_exists($dados, "reportInfo") )
+            {
+                $relatorio->setReportInfo($dados->reportInfo);
+                $relatorio->setPossuiModoAlternativo( $dados->reportData->hasGrouping == DB_TRUE );
+                
+            }
+            
+            if ( $dados->sintetico == DB_TRUE )
+            {
+                $relatorio->setTipoRelatorio( sRelatorioPDF::TIPO_RELATORIO_SINTETICO );
+                
+            }
+            
+        }
+        
+        return $relatorio;
+        
+    }
+    
+    /**
+     * Retorna o MIME type correspondente à classe
+     * 
+     * @return String
+     */
+    public function getMIME()
+    {
+        $mime = SExportacaoPDF::MIME;
+        
+        if( pathinfo($this->arquivoFinal, PATHINFO_EXTENSION) === "zip" )
+        {
+            $mime = "application/zip";
+            
+        }
+        
+        return $mime;
+        
+    }
+
+    /**
+     * Retorna o tipo da exportação
+     * 
+     * @return String
+     */
+    public function getTipo()
+    {
+        $tipo = SExportacaoPDF::TIPO;
+        
+        if( $this->ehModoZip )
+        {
+            $tipo = "zip";
+            
+        }
+        
+        return $tipo;
+        
+    }
+
+    /**
+     * Unifica os arquivos gerados
+     * 
+     */
+    public function unifica()
+    {
+        if( $this->totalRegistros > SExportacao::LIMITE_REGISTROS_RELATORIO )
+        {
+            $limite = $this->getMaxPorArquivo();
+            $totalArquivos = count($this->arquivos);
+            $arquivosGerados = array();
+            
+            for( $i = 0; $i < $totalArquivos; $i += $limite )
+            {
+                $arquivos = array_slice($this->arquivos, $i, $limite);
+                
+                $arquivosGerados[] = $this->geraPDFUnico($arquivos);
+                                
+            }
+            
+            $this->geraArquivoZip($arquivosGerados);
+                        
+        }
+        else
+        {
+            $this->geraPDFUnico($this->arquivos);
+            
+        }
+                                
+    }
+
+    /**
+     * Unfica uma dada lista de arquivos PDFs
+     * 
+     * @param Array $arquivos Arquivos a serem unificados
+     * @return String Caminho do arquivo gerado
+     */
+    private function geraPDFUnico($arquivos)
+    {
+        $caminho = $this->getArquivoDestino();
+        
+        $pdfMerger = new PDFMerger();
+        
+        foreach( $arquivos as $arquivo )
+        {
+            $pdfMerger->addPDF($arquivo);
+
+        }
+
+        $pdfMerger->merge("file", $caminho);
+        
+        return $caminho;
+        
+    }
+    
+    /**
+     * Gera um arquivo .zip com os arquivos especificados
+     * 
+     * @param Array $arquivosGerados Arquivos que devem ser adicionados ao .zip
+     */
+    private function geraArquivoZip($arquivosGerados)
+    {
+        $this->ehModoZip = true;
+        
+        $zip = new ZipArchive();
+        $zip->open($this->getArquivoDestino($this->ehModoZip), ZipArchive::CREATE);
+        $parte = null;
+        
+        foreach( $arquivosGerados as $i => $arquivoGerado )
+        {
+            $parte = $i + 1;
+            
+            $zip->addFile($arquivoGerado, "relatorio_parte_{$parte}." . SExportacaoPDF::TIPO);
+
+        }
+
+        $zip->close();
+        
+    }
+    
+    /**
+     * Atualiza o contador de páginas para geração de futuros arquivos
+     * 
+     * @param String $arquivo Caminho do arquivo
+     */
+    private function atualizaContadorPaginas($arquivo)
+    {
+        $this->contadorPaginas += SExportacaoPDF::getNumeroPaginas($arquivo);
+                
+    }
+    
+    /**
+     * OVERRIDE do método inicialmente escrito na classe STipoExportacao
+     * 
+     * No caso da exportação PDF, não é necessária a consulta dos dados, pois o 
+     * Jasper já faz isso internamente
+     * 
+     * @see STipoExportacao::exporta()
+     * 
+     */
+    public function exporta($dadosRelatorio = null)
+    {
+        $dados = $this->getDadosConsulta();
+        $this->dados = $dados["dados"];
+                
+        $this->totalRegistros = $this->getQuantidadeTotalDados();
+                
+        do
+        {
+            $this->geraArquivo($dadosRelatorio);
+            
+            $this->offset++;
+            
+        } while( ( $this->offset * SExportacao::CONSULTA_LIMITE ) < $this->totalRegistros );
+                
+    }
+    
+    /**
+     * OVERRIDE do método inicialmente escrito na classe STipoExportacao
+     * 
+     * No caso da exportação PDF, é necessária a exclusão das visões criadas
+     * 
+     * @see STipoExportacao::limpaTemporarios()
+     * 
+     */
+    public function limpaTemporarios() {
+        parent::limpaTemporarios();
+        
+        // Remove a visão criada
+        $sql = "DROP VIEW {$this->visao}";
+        
+        SDatabase::execute($sql);
+        
+    }
+        
+    /**
+     * Pega o número de páginas de um arquivo PDF
+     * 
+     * @param String $arquivo Caminho do arquivo
+     * @return Integer Número de páginas do arquivo especificado
+     */
+    private static function getNumeroPaginas($arquivo)
+    {
+        $texto = file_get_contents($arquivo);
+        $matches = null;
+	$num = preg_match_all("/\/Page\W/", $texto, $matches);
+        
+        return $num;
+        
+    }
+    
+    /**
+     * Normaliza a string SQL informada
+     * 
+     * @param String $consulta SQL a ser filtrado
+     * @return String SQL filtrado
+     */
+    public static function filtraSQL($consulta)
+    {
+        return sRelatorioPDF::retiraValoresNulos(preg_replace("/\@.+?(?=\")/", "", $consulta));
+        
+    }
+    
+}
+
+/**
+ * Classe referente a exportação para arquivos XLS
+ * 
+ * @uses classes/PHPExcel/PHPExcel.php API PHPExcel - Criação de arquivos XLS
+ * 
+ * @see STipoExportacao
+ */
+ini_set('memory_limit', '1024M');
+
+class SExportacaoXLS extends STipoExportacao implements ISTipoExportacao
+{
+    
+    const TIPO = "xls";
+    const MIME = "application/vnd.ms-excel";
+    
+    private $destino;
+    
+    /**
+     * Construtor da classe
+     * 
+     * @param String $nome
+     * @param String $consulta
+     */
+    public function __construct($nome, $consulta)
+    {
+        MIOLO::getInstance()->Uses("classes/PHPExcel/PHPExcel.php", "basic");
+        
+        $this->destino = new PHPExcel();
+        
+        // Corrige o bug na codificação
+        parent::__construct(utf8_encode($nome), $consulta);
+        
+    }
+    
+    /**
+     * Gera o arquivo baseado nos dados
+     * 
+     */
+    public function geraArquivo()
+    {
+        if( $this->ehPrimeiroArquivo() )
+        {
+            $this->dados = array_merge($this->colunas, $this->dados);
+            
+        }
+        
+        $excelGenerate = new SExcelGenerate($this->nome, $this->dados);
+        
+        $this->arquivos[] = $excelGenerate->gera(false);
+        
+    }
+    
+    /**
+     * Retorna o MIME type correspondente à classe
+     * 
+     * @return String
+     */
+    public function getMIME()
+    {
+        return SExportacaoXLS::MIME;
+        
+    }
+    
+    /**
+     * Retorna o tipo da exportação
+     * 
+     * @return String
+     */
+    public function getTipo()
+    {
+        return SExportacaoXLS::TIPO;
+        
+    }
+    
+    /**
+     * Unifica os arquivos gerados
+     * 
+     */
+    public function unifica()
+    {
+        set_time_limit(8 * 60);
+        
+        $caminho = $this->getArquivoDestino();
+        
+        $sheet = $this->destino->getActiveSheet();
+        
+        // Adiciona o título
+        $sheet->setCellValueExplicit("A1", $this->nome, PHPExcel_Cell_DataType::TYPE_STRING);
+        
+        foreach( $this->arquivos as $arquivo )
+        {
+            $arquivoXLS = PHPExcel_IOFactory::load($arquivo);
+            
+            $sheetArquivo = $arquivoXLS->getActiveSheet();
+            
+            // Procura a última célula da spreadsheet
+            $ultimaCelulaRow = $sheetArquivo->getHighestRow();
+            $ultimaCelulaColuna = $sheetArquivo->getHighestColumn();
+                        
+            // Lê os dados da spreadsheet para um array PHP
+            $conteudo = $sheetArquivo->rangeToArray("A1:" . $ultimaCelulaColuna . $ultimaCelulaRow);
+            
+            // Identifica a linha que deve-se começar a adicionar o conteúdo do arquivo
+            $sheet->fromArray($conteudo, null, "A" . ($sheet->getHighestRow() + 1));
+
+            unset($conteudo);
+            unset($arquivoXLS);
+            
+        }
+        
+        $this->estiliza($sheet);
+                
+        $writer = new PHPExcel_Writer_Excel5($this->destino);
+        $writer->save($caminho);
+        
+    }
+    
+    /**
+     * Retorna o estilo das colunas no formato compativel com o PHPExcel
+     * 
+     * @return Array Estilo das colunas
+     */
+    private function getEstiloTitulo()
+    {
+        return array(
+            "alignment" => array(
+                "horizontal" => PHPExcel_Style_Alignment::HORIZONTAL_CENTER,
+                "vertical" => PHPExcel_Style_Alignment::VERTICAL_CENTER
+              
+            ),
+            "font" => array(
+                "bold" => true,
+                "size" => 12
+                
+            )
+            
+        );
+        
+    }
+    
+    /**
+     * Retorna o estilo das colunas no formato compativel com o PHPExcel
+     * 
+     * @return Array Estilo das colunas
+     */
+    private function getEstiloColunas()
+    {
+        return array(
+            "alignment" => array(
+                "horizontal" => PHPExcel_Style_Alignment::HORIZONTAL_CENTER,
+                "vertical" => PHPExcel_Style_Alignment::VERTICAL_CENTER
+              
+            ),
+            "font" => array(
+                "bold" => true,
+                "color" => array("rgb" => "FFFFFFF")
+                
+            ),
+            "fill" => array(
+                "type"  => PHPExcel_Style_Fill::FILL_SOLID,
+                "color" => array("rgb" => "1F72BF")
+            )
+
+            
+        );
+                
+    }
+    
+    /**
+     * Aplica os estilos definidos à folha informada
+     * 
+     * @param PHPExcel Sheet $sheet
+     */
+    private function estiliza($sheet)
+    {
+        $ultimaColuna = $sheet->getHighestDataColumn();
+                
+        PHPExcel_Shared_Font::setAutoSizeMethod(PHPExcel_Shared_Font::AUTOSIZE_METHOD_APPROX);
+        
+        // Seta o autosize para as colunas
+        for( $i = 0; $i < PHPExcel_Cell::columnIndexFromString($ultimaColuna); $i++ )
+        {
+            $sheet->getColumnDimension(PHPExcel_Cell::stringFromColumnIndex($i))->setAutoSize(true);
+                
+        }
+        
+        // Junta a célula de título
+        $sheet->mergeCells("A1:" . $ultimaColuna . "1");
+        
+        // Formatada a linha de título
+        $sheet->getStyle("A1")->applyFromArray($this->getEstiloTitulo());
+                
+        // Estiliza as colunas
+        $sheet->getStyle("A2:" . $ultimaColuna . "2")->applyFromArray($this->getEstiloColunas());
+                
+        // Seta a altura default das linhas
+        $sheet->getDefaultRowDimension()->setRowHeight(20);
+                
+    }
+        
+}
+
+/**
+ * Classe que contém os métodos "core" para todos os tipos de exportação
+ * 
+ * <b>É a classe pai de todos os tipos de exportação</b>
+ * 
+ */
+class STipoExportacao
+{
+    protected $nome;
+    protected $offset;
+    protected $colunas;
+    protected $dados;
+    protected $arquivos;
+    protected $totalRegistros;
+    protected $arquivoFinal;
+    
+    /**
+     * Construtor da classe
+     * 
+     * @param String $nome Nome do relatório/exportação
+     * @param String $consulta Consulta que retorna os dados do relatório
+     */
+    public function __construct($nome, $consulta)
+    {
+        $this->nome = $nome;
+        $this->consulta = $this->normalizaConsulta($consulta);
+        $this->offset = 0;
+        $this->arquivoFinal = "";
+        
+    }
+    
+    /**
+     * Verifica se é o primeiro arquivo sendo gerado
+     * 
+     * @return Boolean
+     */
+    protected function ehPrimeiroArquivo()
+    {
+        return count($this->arquivos) === 0;
+        
+    }
+    
+    /**
+     * Verifica se é o último arquivo sendo gerado
+     * 
+     * @return Boolean
+     */
+    protected function ehUltimoArquivo()
+    {
+        $numeroMaximoArquivos = ceil($this->totalRegistros / SExportacao::CONSULTA_LIMITE);
+        
+        return count($this->arquivos) == ($numeroMaximoArquivos - 1);
+        
+    }
+    
+    /**
+     * Pega o caminho para o arquivo de destino
+     * 
+     * @return String Caminho para o arquivo
+     */
+    public function getCaminhoArquivoFinal()
+    {
+        return $this->arquivoFinal;
+        
+    }
+    
+    /**
+     * Cria o nome do arquivo de destino em função do tipo da exportação
+     * 
+     * @return String Caminho para o arquivo
+     */
+    protected function getArquivoDestino()
+    {
+        $nome = "relatorio_{$this->getOperadorId()}_" . $this->getSegundos() . "." . $this->getTipo();
+        $caminho = SAGU::getTmpFile($nome);
+        
+        $this->arquivoFinal = $caminho;
+        
+        return $caminho;
+        
+    }
+    
+    /**
+     * Retorna um nome temporário para um arquivo
+     * 
+     */
+    protected function getNomeArquivoTemporario()
+    {
+        // Adiciona o login do usuário que está gerando o arquivo, para evitar confiltos
+        $nome = "exportacao_arquivo_{$this->getOperadorId()}_" . $this->getSegundos() . "." . $this->getTipo();
+        
+        return SAGU::getTmpFile($nome);
+        
+    }
+    
+    /**
+     * Retorna o id do operador logado no sistema
+     * 
+     * @return String
+     */
+    private function getOperadorId()
+    {
+        return MIOLO::getInstance()->GetLogin()->id;
+        
+    }
+    
+    /**
+     * Limpa os arquivos temporários gerados
+     * 
+     * @return Boolean True se a operação foi realizada, False caso contrário
+     */
+    private function limpaArquivosGerados()
+    {
+        foreach( $this->arquivos as $arquivo )
+        {
+            if( !unlink($arquivo) )
+            {
+                return false;
+                
+            }
+            
+        }
+        
+        $this->arquivos = array();
+        
+        return true;
+        
+    }
+    
+    /**
+     * Responsável por fazer a limpeza dos dados temporários
+     * 
+     */
+    public function limpaTemporarios()
+    {
+        $this->limpaArquivosGerados();
+        
+    }
+    
+    /**
+     * Pega os dados da consulta e exporta o arquivo conforme o tipo
+     * 
+     * @throws Exception Se o limite de dados for além do suportado
+     */
+    public function exporta()
+    {
+        $length = 0; // Quantidade de dados
+        $resultado = null;
+        
+        $this->totalRegistros = $this->getQuantidadeTotalDados();
+        
+        // Notar que não é necessário o tratamento do tipo PDF, que exporta um
+        // um volume maior de dados, pois este método é sobrescrito na classe
+        // SExportacaoPDF.
+        if( $this->totalRegistros > SExportacao::LIMITE_REGISTROS_EXPORTACAO && $this->getTipo() !== SExportacao::TIPO_JRXML )
+        {
+            $tipo = strtoupper($this->getTipo());
+            
+            throw new Exception(_M("<p>Volume de dados não suportado para a exportação do tipo"
+                 . " <b>{$tipo}</b>. Por favor, se julgares necessário "
+                 . "este recurso em específico para essa quantidade de dados, entre em"
+                 . " contato com a equipe de suporte do SAGU.</p>"));
+            
+        }
+        
+        do
+        {
+            $resultado = $this->getDadosConsulta($this->offset);
+
+            $this->colunas = $resultado["colunas"];
+            $this->dados = $resultado["dados"];
+            
+            // Contador que, dependendo so seu valor, termina a busca por itens
+            $length = count($this->dados);
+            
+            $this->geraArquivo();
+            
+            $this->offset++;
+                        
+        } while( $length === SExportacao::CONSULTA_LIMITE );
+                
+    }
+    
+    /**
+     * Retorna os dados da consulta informada no construtor
+     *
+     * @return Array com as informações de coluna e os dados
+     */
+    protected function getDadosConsulta()
+    {
+        $sql = $this->getConsultaPeloOffset($this->consulta);
+        
+        $query = SDatabase::query($sql);
+        
+        return array(
+            "colunas" => $this->getColunasComoLinha(SDatabase::getQueryColumns($sql)),
+            "dados" => $query
+            
+        );
+        
+    }
+    
+    /**
+     * Retorna a dada consulta com a operação OFFSET
+     * 
+     * @param String $consulta
+     * @return String
+     */
+    protected function getConsultaPeloOffset($consulta)
+    {
+        $compl = "";
+        
+        // Se a quantidade de dados não extrapola o limite estabelecido, não há
+        // por que adicionar o LIMIT/OFFSET
+        if( !($this->totalRegistros <= SExportacao::CONSULTA_LIMITE) )
+        {
+            $compl = " LIMIT " . SExportacao::CONSULTA_LIMITE . " OFFSET " . $this->offset * SExportacao::CONSULTA_LIMITE;
+            
+        }
+                    
+        $sql = $consulta . $compl;
+        
+        return $sql;
+        
+    }
+    
+    /**
+     * Normaliza um dado SQL
+     * 
+     * @param String $consulta
+     * @param Boolean $removerAspasDuplas TRUE para remover as aspas duplas
+     * @return String SQL normalizado
+     */
+    protected function normalizaConsulta($consulta)
+    {
+        // Retira espaços e ';' do SQL e retorna a consulta normalizada 
+        return rtrim($consulta, "; ");
+        
+    }
+    
+    /**
+     * Total de registros da consulta
+     * 
+     * @return Integer
+     */
+    protected function getQuantidadeTotalDados()
+    {
+        $query = SDatabase::query("SELECT COUNT(*) FROM ($this->consulta) as dadosconsulta");
+        
+        return intval($query[0][0]);
+        
+    }
+    
+    /**
+     * Retorna o tempo decorrido até agora em segundos
+     * 
+     * @return String
+     */
+    protected function getSegundos()
+    {
+        $tempo = gettimeofday();
+        
+        return $tempo["sec"];
+        
+    }
+    
+    /**
+     * Retorna as colunas em forma de row
+     * 
+     * @param Array $colunas Colunas da consulta
+     * @return Array Colunas na forma de dados
+     */
+    protected function getColunasComoLinha($colunas)
+    {
+        return array(array_values($colunas));
+        
+    }
+    
+    /**
+     * Retorna o máximo de dados por arquivo
+     * 
+     */
+    protected function getMaxPorArquivo()
+    {
+        return ceil(SExportacao::LIMITE_REGISTROS_RELATORIO / SExportacao::CONSULTA_LIMITE);
+        
+    }
+            
+}
+
+/**
+ * Interface que contém os métodos obrigatórios que um tipo de exportação deve
+ * implementar
+ *  
+ */
+interface ISTipoExportacao
+{
+    /**
+     * Método que (deve) gerar um arquivo conforme o tipo
+     * 
+     */
+    function geraArquivo();
+    
+    /**
+     * Método que (deve) retornar o tipo de exportação
+     * 
+     */
+    function getTipo();
+    
+    /**
+     * Método que (deve) retornar o MIME-Type do tipo de arquivo da exportação
+     * 
+     */
+    function getMIME();
+    
+    /**
+     * Método que (deve) unificar os arquivos gerados
+     * 
+     */
+    function unifica();
+    
+}
+ 
+/**
+ * Classe referente a exportação para arquivos XML
+ * 
+ * @see STipoExportacao
+ */
+class SExportacaoXML extends STipoExportacao implements ISTipoExportacao
+{
+    const TIPO = "xml";
+    const MIME = "application/zip"; // para o browser não renderizar o arquivo e sim fazer o download
+    
+    private $schema = 'public';
+    private $tabela;
+    private $tabelaRelacionada;
+    private $identificador;
+    private $colunaIdentificador;
+    private $removeCamposBasLog = true;
+    private $arquivo;
+    private $locate;
+    
+    public function __construct($tabela, $identificador = null)
+    {
+        $this->tabela = $tabela;
+        $this->identificador = $identificador;
+    }
+    
+    /**
+     * Gera arquivo xml com os itens encontrados
+     * 
+     */
+    public function geraXML()
+    {
+        $this->arquivo = $this->getNomeArquivoTemporario();
+        
+        $data = $this->obtemDadosTabela();
+        $data = $this->obtemDadosTabelaRelacionada($data);
+        $data = $this->normalizaConsulta($data);
+        
+        $this->geraArquivo($data);
+    }
+    
+    /**
+     * Remove tags, e padroniza para o sagu
+     * 
+     * @param type $data
+     * @return type
+     */
+    protected function normalizaConsulta($data)
+    {
+        $data = str_replace(array("<row>", "</row>"), array("<item>", "</item>"), $data);
+        $data = str_replace(array("<table xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">", "</table>"), "", $data);
+        
+        return html_entity_decode(trim($data));
+    }
+    
+    /**
+     * Obtém schema para o xml da tabela principal
+     * 
+     * @return string
+     */
+    private function obtemDadosTabela()
+    {
+        $sql = $this->obtemConsulta($this->tabela);
+        
+        $result = SDatabase::query($sql);
+        
+        return $result[0][0];
+    }
+    
+    /**
+     * Monta consulta que irá gerar o schema xml 
+     * 
+     * @param type $tabela
+     * @return string
+     */
+    private function obtemConsulta($tabela)
+    {
+        $where = "";
+        if ( $this->identificador )
+        {
+            $chavePrimaria = $this->getColunaIdentificador();
+            
+            if ( !strlen($chavePrimaria) > 0 )
+            {
+                $chavePrimaria = SDatabase::getTablePrimaryKey($this->schema . '.' . $tabela);
+            }
+            
+            $where = " WHERE {$chavePrimaria} = {$this->identificador} ";
+        }
+        
+        $colunas = " * ";
+        if ( $this->getRemoveCamposBasLog() )
+        {
+            $colunas = SDatabase::obterColunasDaTabela($this->schema, $tabela);
+            
+            unset($colunas['username']);
+            unset($colunas['datetime']);
+            unset($colunas['ipaddress']);
+            
+            $colunas = implode(', ', array_keys($colunas));
+        }
+        
+        $sql = " SELECT * FROM query_to_xml('SELECT {$colunas} FROM {$tabela} {$where}', false, false, '') ";
+        
+        return $sql;
+    }
+    
+    /**
+     * Obtém schema para o xml para a tabela relacionada
+     * 
+     * @return string
+     */
+    public function obtemDadosTabelaRelacionada($data)
+    {
+        if ( $this->getTabelaRelacionada() )
+        {
+            $sql = $this->obtemConsulta($this->getTabelaRelacionada());
+            $result = SDatabase::query($sql);
+            
+            if ( is_array($this->getLocate()) )
+            {
+                $locate = "";
+                foreach ( $this->getLocate() as $locates )
+                {
+                    $locate .= "\n<locate>{$locates}</locate>";
+                }
+            }
+            
+            $consultaTabelaRelacionada = trim($result[0][0]);
+                        
+            if ( strlen($this->normalizaConsulta($consultaTabelaRelacionada)) > 0 )
+            {
+                $consulta = "<{$this->getTabelaRelacionada()}>{$locate}{$consultaTabelaRelacionada}</{$this->getTabelaRelacionada()}>";
+                $consulta .= "\n</row>";
+
+                $data = str_replace("</row>", $consulta, $data);
+            }
+        }
+        
+        return $data;
+    }
+    
+    /**
+     * Gera o arquivo e download
+     * 
+     * @param type $data
+     */
+    public function geraArquivo($data = null)
+    {
+        file_put_contents($this->arquivo, $data);
+        
+        if ( file_exists($this->arquivo) )
+        {
+            $tamanho = filesize($this->arquivo);
+            $nome = basename($this->arquivo);
+
+            header("Content-Type: {$this->getMIME()}");
+            header("Content-Length: {$tamanho}");
+            header("Content-Disposition: attachment; filename={$nome}");
+            header("Cache-Control: cache"); // HTTP/1.1 
+            header("Content-Transfer-Encoding: binary");
+
+            $fp = fopen($this->arquivo, "r");
+            fpassthru($fp);
+            fclose($fp);
+
+            exit();
+        }
+        else
+        {
+            throw new Exception(_M("Não foi possível realizar a exportação. Por favor, contate a equipe de suporte do sistema."));
+        }
+            
+    }
+    
+    public function getRemoveCamposBasLog()
+    {
+        return $this->removeCamposBasLog;
+    }
+
+    public function setRemoveCamposBasLog($removeCamposBasLog)
+    {
+        $this->removeCamposBasLog = $removeCamposBasLog;
+    }
+    
+    public function getSchema()
+    {
+        return $this->schema;
+    }
+
+    public function setSchema($schema)
+    {
+        $this->schema = $schema;
+    }
+    
+    public function getColunaIdentificador()
+    {
+        return $this->colunaIdentificador;
+    }
+
+    public function setColunaIdentificador($colunaIdentificador)
+    {
+        $this->colunaIdentificador = $colunaIdentificador;
+    }
+    
+    public function getTabelaRelacionada()
+    {
+        return $this->tabelaRelacionada;
+    }
+
+    public function setTabelaRelacionada($tabelaRelacionada)
+    {
+        $this->tabelaRelacionada = $tabelaRelacionada;
+    }
+    
+    public function getLocate()
+    {
+        return $this->locate;
+    }
+    public function setLocate($locate)
+    {
+        $this->locate = $locate;
+    }
+            
+    public function getMIME()
+    {
+        return SExportacaoXML::MIME;
+    }
+        
+    public function unifica()
+    {
+    }
+    
+    public function getTipo()
+    {
+        return SExportacaoXML::TIPO;
+    }
+    
+}
+
+?>

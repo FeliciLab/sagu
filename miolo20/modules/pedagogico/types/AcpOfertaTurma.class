@@ -1,0 +1,1026 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2013 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Database model
+ *
+ * @author Moises Heberle [moises@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.com.br]
+ * Luís Felipe Wermann [luis_felipe@solis.com.br]
+ *
+ * @since
+ * Class created on 29/08/2013
+ */
+class AcpOfertaTurma extends SType {
+
+    protected $_utilizaMultiUnidade = true;
+    protected $_utilizaMultiCentro = true;
+    protected $_tableViewName = 'unit_acpofertaturma';
+    protected $_utilizaNovoPadrao = true;
+    protected $_defaultOrder = 'acpofertaturma.descricao';
+    protected $_associations = array(
+        'ofertacurso' => array(
+            'mode' => 'one',
+            'typeClass' => 'AcpOfertaCurso',
+            'joinColumnLeft' => 'ofertacursoid',
+            'joinColumnRight' => 'ofertacursoid',
+        ),
+        'gradehorario' => array(
+            'mode' => 'one',
+            'typeClass' => 'AcpGradeHorario',
+            'joinColumnLeft' => 'gradehorarioid',
+            'joinColumnRight' => 'gradehorarioid',
+        ),
+    );
+    protected $_descriptionColumn = 'curso.nome || \' - \' || acpofertaturma.descricao';
+    protected $_virtualFields = array(
+        '_descricao' => 'curso.nome || \' - \' || acpofertaturma.descricao',
+    );
+
+    const SITUACAO_ABERTA = 'A';
+    const SITUACAO_FECHADA = 'F';
+
+    /**
+     * @var AcpOfertaCurso
+     */
+    public $ofertacurso;
+
+    /**
+     * @var AcpGradeHorario
+     */
+    public $gradehorario;
+
+    public $ofertaturmaid;
+    public $codigo;
+    public $descricao;
+    public $ofertacursoid;
+    public $habilitada;
+    public $situacao;
+    public $minimoalunos;
+    public $maximoalunos;
+    public $ofertaturmaanteriorid;
+    public $gradehorarioid;
+    public $dataencerramento;
+    public $datainicialoferta;
+    public $datafinaloferta;
+    public $datainicialaulas;
+    public $datafinalaulas;
+    public $datainicialinscricao;
+    public $datafinalinscricao;
+    public $datainicialmatricula;
+    public $datafinalmatricula;
+    public $periodofinal;
+    public $periodoinicial;
+    public $buscaturmaid;
+    public $ativos;
+    public $encerradas;
+    public $localid;
+    public $concatenardescricaogrupo;
+    public $buscaofertacurso;
+
+
+    public $buscaFechamentoTurma = false;
+
+    public function __construct($id = null, $disableAssociations = false)
+    {
+        if (in_array(MIOLO::_REQUEST('action'), array('main:process:inscricaoturmaexterna', 'main:process:inscricaopagamentoexterna', 'main:process:inscricaoexterna', 'main:process:termodeinscricao')))
+        {
+            $this->_utilizaMultiUnidade = false;
+            $this->_utilizaMultiCentro = false;
+            $this->_tableViewName = null;
+        }
+
+        if ($disableAssociations)
+        {
+            $this->_associations = array();
+            $this->_virtualFields = array();
+            $this->_defaultOrder = null;
+            $this->_descriptionColumn = null;
+        }
+
+        parent::__construct($id);
+    }
+
+
+    public static function retornaTurmasDaOfertaDeCurso($ofertaDeCursoId, $somenteVigente = FALSE)
+    {
+        $ofertaDeTurma = new AcpOfertaTurma();
+        $msql = $ofertaDeTurma->msql();
+        $msql->setColumns('ofertaturmaid');
+
+        if ( is_array($ofertaDeCursoId) && count($ofertaDeCursoId) > 0 )
+        {
+            $msql->addWhereIn('AcpOfertaTurma.ofertacursoid', $ofertaDeCursoId);
+        }
+        else
+        {
+            $msql->addEqualCondition('AcpOfertaTurma.ofertacursoid', $ofertaDeCursoId);
+        }
+
+        if ( $somenteVigente )
+        {
+            $msql->setWhere('
+               (CASE WHEN
+                    acpofertaturma.datainicialinscricao IS NOT NULL AND acpofertaturma.datafinalinscricao IS NOT NULL
+                THEN
+                    NOW()::date BETWEEN acpofertaturma.datainicialinscricao AND acpofertaturma.datafinalinscricao
+                ELSE
+                    FALSE
+                END)
+            ');
+        }
+        $searchOfertaDeTurma = $ofertaDeTurma->findList($msql);
+
+        if (count($searchOfertaDeTurma) > 0)
+        {
+            $turmas = array();
+            foreach ($searchOfertaDeTurma as $cod => $linha)
+            {
+
+                $sql = 'SELECT A.ofertaturmaid, A.descricao, A.habilitada, A.datainicialaulas, A.datafinaloferta, A.codigo
+                  FROM acpofertaturma A
+                 WHERE A.ofertaturmaid = ' . $cod;
+
+                $query = SDatabase::query($sql);
+
+                $turma = new AcpOfertaTurma();
+                $turma->habilitada = $query[0][2];
+                $turma->ofertaturmaid = $query[0][0];
+                $turma->descricao = $query[0][1];
+                $turma->datainicialaulas = $query[0][3];
+                $turma->datafinaloferta = $query[0][4];
+                $turma->codigo = $query[0][5];
+
+                $turmas[] = $turma;
+            }
+        }
+
+        return $turmas;
+    }
+
+    public function searchGrid($filters)
+    {
+        $cols[] = 'acpofertaturma.ofertaturmaid';
+        $cols[] = 'ofertacurso.descricao';
+        $cols[] = 'acpofertaturma.descricao';
+        $cols[] = 'acpofertaturma.datainicialaulas';
+        $cols[] = 'acpofertaturma.datafinalaulas';
+        $cols[] = 'matriculados';
+        $cols[] = 'cancelados';
+        $cols[] = 'aprovados';
+        $cols[] = 'reprovados';
+        $cols[] = 'pendenciafrequencia';
+        $cols[] = 'frequencias_pendentes';
+        $cols[] = 'acpofertaturma.situacao';
+        $cols[] = 'codigo';
+
+
+        $sqlQtdTurmaMatriculados = "SELECT TT.ofertaturmaid, COUNT(DISTINCT GG.inscricaoid) as total
+                                    FROM acpmatricula MM
+                                    INNER JOIN acpinscricaoturmagrupo GG ON (MM.inscricaoturmagrupoid = GG.inscricaoturmagrupoid)
+                                    INNER JOIN acpofertaturma TT ON (GG.ofertaturmaid = TT.ofertaturmaid)
+                                    AND (SELECT acp_obtersituacaopedagogicadainscricao(GG.inscricaoid)) = 'Matriculado'
+                                    GROUP BY 1";
+
+        $sqlQtdTurmaCancelados = "SELECT TT.ofertaturmaid, COUNT(DISTINCT GG.inscricaoid) as total
+                                    FROM acpmatricula MM
+                                    INNER JOIN acpinscricaoturmagrupo GG ON (MM.inscricaoturmagrupoid = GG.inscricaoturmagrupoid)
+                                    INNER JOIN acpofertaturma TT ON (GG.ofertaturmaid = TT.ofertaturmaid)
+                                    AND (SELECT acp_obtersituacaopedagogicadainscricao(GG.inscricaoid)) = 'Cancelado'
+                                    GROUP BY 1";
+
+        $sqlQtdTurmaReprovados = "SELECT TT.ofertaturmaid, COUNT(DISTINCT GG.inscricaoid) as total
+                                    FROM acpmatricula MM
+                                    INNER JOIN acpinscricaoturmagrupo GG ON (MM.inscricaoturmagrupoid = GG.inscricaoturmagrupoid)
+                                    INNER JOIN acpofertaturma TT ON (GG.ofertaturmaid = TT.ofertaturmaid)
+                                    AND (SELECT acp_obtersituacaopedagogicadainscricao(GG.inscricaoid)) = 'Reprovado'
+                                    GROUP BY 1";
+
+        $sqlQtdTurmaAprovados = "SELECT TT.ofertaturmaid, COUNT(DISTINCT GG.inscricaoid) as total
+                                    FROM acpmatricula MM
+                                    INNER JOIN acpinscricaoturmagrupo GG ON (MM.inscricaoturmagrupoid = GG.inscricaoturmagrupoid)
+                                    INNER JOIN acpofertaturma TT ON (GG.ofertaturmaid = TT.ofertaturmaid)
+                                    AND (SELECT acp_obtersituacaopedagogicadainscricao(GG.inscricaoid)) = 'Aprovado'
+                                    GROUP BY 1";
+
+
+        if ($this->buscaFechamentoTurma) {
+            $sqlBuscaQuantitativo = "coalesce(matriculados.total, 0) as matriculados,
+                       coalesce(cancelados.total,0) as cancelados,
+                       -- (coalesce(matriculados.total,0) - coalesce(cancelados.total,0) - coalesce(reprovados.total,0)) as aprovados,
+                       coalesce(aprovados.total,0) as aprovados,
+                       coalesce(reprovados.total,0) as reprovados,";
+        }
+
+        $sql = "SELECT DISTINCT acpofertaturma.ofertaTurmaId,
+                       ofertacurso.descricao,
+                       acpofertaturma.descricao,
+                       TO_CHAR(acpofertaturma.dataInicialAulas, getParameter('BASIC', 'MASK_DATE')) as datainicial,
+                       TO_CHAR(acpofertaturma.dataFinalAulas, getParameter('BASIC', 'MASK_DATE')) as datafinal,
+		       		   $sqlBuscaQuantitativo
+                       '' AS pendenciafrequencia,
+                       '' AS frequecias_pendentes,
+                       acpofertaturma.situacao,
+                       acpofertaturma.codigo as codigo
+                  FROM unit_acpOfertaTurma acpofertaturma
+            INNER JOIN acpOfertaCurso ofertacurso
+                    ON (acpofertaturma.ofertaCursoId = ofertacurso.ofertaCursoId)
+             LEFT JOIN acpInscricaoTurmaGrupo C
+                    ON (acpofertaturma.ofertaTurmaId = C.ofertaTurmaId)
+
+           ";
+
+
+        if ($this->buscaFechamentoTurma) {
+            $sql .= "LEFT JOIN ($sqlQtdTurmaMatriculados) AS matriculados
+                    ON matriculados.ofertaturmaid = acpofertaturma.ofertaTurmaId
+
+             LEFT JOIN ($sqlQtdTurmaCancelados) AS cancelados
+                    ON cancelados.ofertaturmaid = acpofertaturma.ofertaTurmaId
+
+             LEFT JOIN ($sqlQtdTurmaAprovados) AS aprovados
+                    ON aprovados.ofertaturmaid = acpofertaturma.ofertaTurmaId
+
+             LEFT JOIN ($sqlQtdTurmaReprovados) AS reprovados
+                    ON reprovados.ofertaturmaid = acpofertaturma.ofertaTurmaId";
+        }
+
+        $where = array();
+
+        if ( strlen($filters->matriculaid) > 0 )
+        {
+            $where[] = 'CC.matriculaid = ?';
+            $args[] = $filters->matriculaid;
+        }
+        if ( strlen($filters->buscaocorrenciacursoid) > 0 )
+        {
+            $where[] = 'ofertacurso.ocorrenciacursoid = ?';
+            $args[] = $filters->buscaocorrenciacursoid;
+        }
+
+        if ( strlen($filters->buscaofertacurso) > 0 )
+        {
+            $where[] = 'ofertacurso.ofertacursoid = ?';
+            $args[] = $filters->buscaofertacurso;
+        }
+
+        if ( strlen($filters->buscaturmaid) > 0 )
+        {
+            $where[] = 'AcpOfertaTurma.ofertaturmaid = ?';
+            $args[] = $filters->buscaturmaid;
+        }
+
+        //Filtro pela situacao da turma
+        if ( $filters->encerradas == 'N' || (MIOLO::_REQUEST('action') == 'main:process:ofertaturma') )
+        {
+            $where[] = '(
+                        ( AcpOfertaTurma.dataencerramento IS NULL )
+                        )';
+        }
+        else if ( $filters->encerradas == 'X' )
+        {
+            $where[] = ' (
+                ( AcpOfertaTurma.dataencerramento IS NOT NULL )
+                AND ( NOW()::date > AcpOfertaTurma.dataencerramento )
+                    )';
+        }
+
+        if( count($where) > 0 )
+        {
+            $sql  .= ' WHERE ';
+            $sql  .= implode(' AND ', $where);
+        }
+
+        if(!$this->gridmatriculacurso)
+        {
+            $sql .= " ORDER BY 3";
+        }
+
+        if( count($where) > 0 )
+        {
+            return SAGU::resultToArray(SDatabase::query($sql, $args), $cols);
+        }
+
+    }
+
+    public function beforeFind(MSQL $sql)
+    {
+        if ( strlen($this->buscaocorrenciacursoid) > 0 )
+        {
+            $sql->addEqualCondition('ofertacurso.ocorrenciacursoid', $this->buscaocorrenciacursoid);
+        }
+
+        if ( strlen($this->buscaturmaid) > 0 )
+        {
+            $sql->addEqualCondition('AcpOfertaTurma.ofertaturmaid', $this->buscaturmaid);
+        }
+
+        if ( strlen($this->buscaofertacurso) > 0 )
+        {
+            $sql->addEqualCondition('AcpOfertaTurma.ofertacurso', $this->buscaofertacurso);
+        }
+
+        // filtro da tela FrmFrequenciasENotas
+        if ($this->ativos == 'E')
+        {
+            $sql->setWhere(' (
+                    ( AcpOfertaTurma.datainicialoferta IS NULL AND AcpOfertaTurma.datafinaloferta IS NULL )
+                 OR ( NOW()::date BETWEEN AcpOfertaTurma.datainicialoferta AND AcpOfertaTurma.datafinaloferta )
+                ) ');
+        }
+        else if ($this->ativos == 'P')
+        {
+            $sql->setWhere(' (
+                    ( AcpOfertaTurma.datainicialoferta IS NOT NULL AND AcpOfertaTurma.datafinaloferta IS NOT NULL )
+                AND ( NOW()::date < AcpOfertaTurma.datainicialoferta )
+                ) ');
+        }
+        else if ($this->ativos == 'C')
+        {
+            $sql->setWhere(' (
+                    ( AcpOfertaTurma.datainicialoferta IS NOT NULL AND AcpOfertaTurma.datafinaloferta IS NOT NULL )
+                AND ( NOW()::date > AcpOfertaTurma.datafinaloferta )
+                ) ');
+        }
+
+
+        if ($this->encerradas == 'N')
+        {
+            $sql->setWhere('(
+                            ( AcpOfertaTurma.dataencerramento IS NULL )
+                            )');
+        }
+        else if ($this->encerradas == 'X')
+        {
+            $sql->setWhere(' (
+                    ( AcpOfertaTurma.dataencerramento IS NOT NULL )
+                        )');
+        }
+
+
+        if (! $this->buscaFechamentoTurma ) {
+            $matriculado = AcpMatricula::SITUACAO_MATRICULA;
+            $inscrito = AcpInscricao::SITUACAO_INSCRITO;
+            $pendente = AcpInscricao::SITUACAO_PENDENTE;
+            $cancelado = AcpInscricao::SITUACAO_CANCELADO;
+
+            // Total de matriculados
+            $sql->setColumns("(SELECT COUNT(DISTINCT personid || situacao)
+                            FROM acpmatricula
+                           WHERE inscricaoturmagrupoid IN
+                               ( SELECT inscricaoturmagrupoid
+                                   FROM acpinscricaoturmagrupo
+                                  WHERE ofertaturmaid = AcpOfertaTurma.ofertaturmaid )
+                             AND situacao = '{$matriculado}') AS totaldematriculados ");
+
+            // Total de inscritos
+            $sql->setColumns("(SELECT COUNT(DISTINCT B.inscricaoid)
+                            FROM acpinscricaoturmagrupo A
+                       LEFT JOIN acpinscricao B
+                              ON (A.inscricaoid = B.inscricaoid)
+                           WHERE B.situacao = '{$inscrito}' AND A.ofertaturmaid = AcpOfertaTurma.ofertaturmaid) AS totaldeinscritos");
+
+            // Total de pendentes
+            $sql->setColumns("(SELECT COUNT(DISTINCT B.inscricaoid)
+                             FROM acpinscricaoturmagrupo A
+                        LEFT JOIN acpinscricao B
+                               ON (A.inscricaoid = B.inscricaoid)
+                            WHERE B.situacao = '{$pendente}' AND A.ofertaturmaid = AcpOfertaTurma.ofertaturmaid) AS totaldependentes");
+
+            // Total de cancelados
+            $sql->setColumns("(SELECT COUNT(DISTINCT B.inscricaoid)
+                             FROM acpinscricaoturmagrupo A
+                        LEFT JOIN acpinscricao B ON (A.inscricaoid = B.inscricaoid)
+                            WHERE B.situacao = '{$cancelado}' AND A.ofertaturmaid = AcpOfertaTurma.ofertaturmaid) AS totaldecancelados");
+        }
+    }
+    public function addDefaultColumnConditionBusca(MSQL $sql, $column, $value)
+    {
+        // busca filtros extras para tela de busca Frequencias e notas
+        if ( !$sql->adicionouFiltrosExtras && strlen($value) > 0 )
+        {
+            $sql->adicionouFiltrosExtras = true;
+
+            $sql->setWhereOr('ofertadeturma.descricao ILIKE ?', array('%'.$value.'%'));
+            $sql->setWhereOr('ofertacurso.descricao ILIKE ?', array('%'.$value.'%'));
+        }
+
+        parent::addDefaultColumnConditionBusca($sql, $column, $value);
+    }
+
+
+    public static function obterTurmasDaOfertaDeCurso($ofertaDeCursoId, $somenteVigente = FALSE)
+    {
+        $ofertaDeTurma = new AcpOfertaTurma();
+        $msql = $ofertaDeTurma->msql();
+        $msql->setColumns('ofertaturmaid');
+
+        if ( is_array($ofertaDeCursoId) && count($ofertaDeCursoId) > 0 )
+        {
+            $msql->addWhereIn('AcpOfertaTurma.ofertacursoid', $ofertaDeCursoId);
+        }
+        else
+        {
+            $msql->addEqualCondition('AcpOfertaTurma.ofertacursoid', $ofertaDeCursoId);
+        }
+
+        if ( $somenteVigente )
+        {
+            $msql->setWhere('
+               (CASE WHEN
+                    acpofertaturma.datainicialinscricao IS NOT NULL AND acpofertaturma.datafinalinscricao IS NOT NULL
+                THEN
+                    NOW()::date BETWEEN acpofertaturma.datainicialinscricao AND acpofertaturma.datafinalinscricao
+                ELSE
+                    FALSE
+                END)
+            ');
+        }
+        $searchOfertaDeTurma = $ofertaDeTurma->findList($msql);
+
+        if (count($searchOfertaDeTurma) > 0)
+        {
+            foreach ($searchOfertaDeTurma as $cod => $linha)
+            {
+                $return[] = new AcpOfertaTurma($cod);
+            }
+        }
+
+        return $return;
+    }
+
+    public function delete()
+    {
+        $searchOfertaComponenteCurricular = AcpOfertaComponenteCurricular::obterOfertaComponenteCurricularDaOfertaTurma($this->ofertaturmaid);
+        if (count($searchOfertaComponenteCurricular) > 0)
+        {
+            foreach ($searchOfertaComponenteCurricular as $cod => $ofertaComponente)
+            {
+                $ofertaComponente->delete();
+            }
+        }
+
+        return parent::delete();
+    }
+
+    public static function listarSituacoes()
+    {
+        return array(self::SITUACAO_ABERTA => _M('Aberta'), self::SITUACAO_FECHADA => _M('Fechada'));
+    }
+
+    /**
+     * Obtém lista de turmas de determinado grupo da matriz
+     */
+    public static function listarTurmasDoGrupo($matrizcurriculargrupoid)
+    {
+        $ofertaturma = new AcpOfertaTurma();
+        $sql = $ofertaturma->msql();
+        $sql->setColumns('AcpOfertaTurma.ofertaturmaid, AcpOfertaTurma.descricao, AcpGradeHorario.descricao as gradehorario');
+        $sql->addInnerJoin('AcpOfertaCurso', 'AcpOfertaTurma.ofertacursoid = AcpOfertaCurso.ofertacursoid');
+        $sql->addInnerJoin('AcpOcorrenciaCurso', 'AcpOfertaCurso.ocorrenciacursoid = AcpOcorrenciaCurso.ocorrenciacursoid');
+        $sql->addInnerJoin('AcpMatrizCurricular', 'AcpMatrizCurricular.cursoid = AcpOcorrenciaCurso.cursoid');
+        $sql->addInnerJoin('acpMatrizcurricularGrupo', 'acpMatrizcurricularGrupo.matrizcurricularid = AcpMatrizCurricular.matrizcurricularid');
+        $sql->addInnerJoin('AcpGradeHorario', 'AcpGradeHorario.gradehorarioid = AcpOfertaTurma.gradehorarioid');
+        $sql->addInnerJoin('AcpOfertaComponenteCurricular', 'AcpofertaTurma.ofertaturmaid = AcpOfertaComponenteCurricular.ofertaturmaid');
+        $sql->addInnerJoin('AcpComponenteCurricularMatriz', 'AcpComponenteCurricularMatriz.componentecurricularmatrizid = AcpOfertaComponenteCurricular.componentecurricularmatrizid AND AcpComponenteCurricularMatriz.matrizcurriculargrupoid = acpMatrizcurricularGrupo.matrizcurriculargrupoid');
+        $sql->setGroupBy('1,2,3');
+        $sql->addEqualCondition('acpMatrizcurricularGrupo.matrizcurriculargrupoid', $matrizcurriculargrupoid);
+        return $ofertaturma->findManyAsArray($sql);
+    }
+
+    /**
+     * @return AcpPerfilCurso
+     */
+    public function obterPerfil()
+    {
+        return $this->ofertacurso->ocorrenciacurso->curso->perfilcurso;
+    }
+
+    public function getChoiceComponentSQL($argument = null, $id = null)
+    {
+        $sql = parent::getChoiceComponentSQL($argument, $id);
+
+        $args = $this->getAjaxArgs();
+
+        $ofertacursoid = SAGU::NVL($args->ofertacursoid, $args->ofertaCursoId, $args->buscaofertacursoidS, $args->str_ofertacursoid);
+        $ocorrenciacursoid = SAGU::NVL($args->ocorrenciacursoid, $args->buscaocorrenciacursoidS);
+        $curso = SAGU::NVL($args->cursoid, $args->buscacursoidS);
+        $centro = SAGU::NVL($args->buscacentroidS, $args->centroid);
+
+        if (strlen($ofertacursoid) > 0)
+        {
+            $sql->addEqualCondition('AcpOfertaTurma.ofertacursoid ', $ofertacursoid);
+        }
+
+        if (strlen($ocorrenciacursoid) > 0)
+        {
+            $sql->addEqualCondition('ocorrenciacurso.ocorrenciacursoid ', $ocorrenciacursoid);
+        }
+        if( strlen($args->situacao) > 0 )
+        {
+            $sql->addEqualCondition('AcpOfertaTurma.situacao ', $args->situacao);
+        }
+        $sql->addEqualCondition('AcpOfertaTurma.habilitada', DB_TRUE);
+
+        if ( strlen($curso) > 0 )
+        {
+            $sql->addInnerJoin('acpofertacurso', 'acpofertacurso.ofertacursoid = acpofertaturma.ofertacursoid');
+            $sql->addInnerJoin('acpocorrenciacurso', 'acpocorrenciacurso.ocorrenciacursoid = acpofertacurso.ocorrenciacursoid');
+            $sql->addEqualCondition('acpocorrenciacurso.cursoid', $curso);
+        }
+
+        if ( strlen($centro) > 0 )
+        {
+            $sql->addEqualCondition('acpofertaturma.centerid', $centro);
+        }
+
+        return $sql;
+    }
+
+    public function save()
+    {
+        //Valida se a data da oferta da turma está dentro do intervalo de data do curso
+        if (strlen($this->datainicialoferta) > 0 && strlen($this->datafinaloferta) > 0)
+        {
+            $ofertacurso = new AcpOfertaCurso($this->ofertacursoid);
+
+            $this->validarDatas($ofertacurso);
+        }
+
+        $save = parent::save();
+
+        if ( $save )
+        {
+            // Se o perfil de curso for livre e não tiver cadastro de matriz curricular, efetua
+            // a oferta do componente curricular automaticamante.
+            $perfilcurso = $ofertacurso->ocorrenciacurso->curso->perfilcurso;
+            if ( $perfilcurso->formadeoferta == AcpPerfilCurso::OFERTA_LIVRE && $perfilcurso->cadastromatrizcurricular == DB_FALSE )
+            {
+                $acpMatrizCurricular = AcpMatrizCurricular::obterMatrizesCurricularesDoCurso($ofertacurso->ocorrenciacurso->curso->cursoid);
+                $acpMatrizCurricular = $acpMatrizCurricular[0];
+                $acpMatrizCurricular instanceof AcpMatrizCurricular;
+
+                $acpMatrizCurricularGrupo = AcpMatrizCurricularGrupo::obterGruposDaMatrizCurricular($acpMatrizCurricular->matrizcurricularid);
+                $acpMatrizCurricularGrupo = $acpMatrizCurricularGrupo[0];
+                $acpMatrizCurricularGrupo instanceof AcpMatrizCurricularGrupo;
+
+                $acpComponenteCurricularMatriz = AcpComponenteCurricularMatriz::obterComponentesCurricularesMatrizDoGrupo($acpMatrizCurricularGrupo->matrizcurriculargrupoid);
+                $acpComponenteCurricularMatriz = $acpComponenteCurricularMatriz[0];
+                $acpComponenteCurricularMatriz instanceof AcpComponenteCurricularMatriz;
+
+                $ofertacomponentecurricular = new AcpOfertaComponenteCurricular();
+                $ofertacomponentecurricular->ofertaTurmaId = $this->ofertaturmaid;
+                $ofertacomponentecurricular->componenteCurricularMatrizId = $acpComponenteCurricularMatriz->componentecurricularmatrizid;
+                $ofertacomponentecurricular->save();
+            }
+        }
+
+        return $save;
+    }
+
+    public function validarDatas(AcpOfertaCurso $ofertacurso)
+    {
+        $cursoini = SAGU::dateToUser($ofertacurso->ocorrenciacurso->curso->datainicio);
+        $cursofim = SAGU::dateToUser($ofertacurso->ocorrenciacurso->curso->datafim);
+
+        if ($this->datainicialoferta != SType::NULL_VALUE && $this->datafinaloferta != SType::NULL_VALUE)
+        {
+            $checkInicial = SAGU::compareTimestamp($this->datainicialoferta, '<', $cursoini, SAGU::getParameter('BASIC', 'MASK_DATE'));
+
+            //Se o curso tem data de fim, checa, senao nao precisa
+            if ( strlen($cursofim) > 0 )
+            {
+                $checkFinal = SAGU::compareTimestamp($this->datafinaloferta, '>', $cursofim, SAGU::getParameter('BASIC', 'MASK_DATE'));
+            }
+            else
+            {
+                $checkFinal = false;
+            }
+
+            if ( $checkFinal || $checkInicial )
+            {
+                throw new Exception(_M('O período de oferta da turma deve pertencer ao período do curso. ( de @1 até @2 )', $module, SAGU::dateToUser($ofertacurso->ocorrenciacurso->curso->datainicio), SAGU::dateToUser($ofertacurso->ocorrenciacurso->curso->datafim)));
+            }
+        }
+
+        //Valida se o restante das datas respeita a data da oferta da turma
+        $datas[] = array($this->datainicialaulas, $this->datafinalaulas, _M('Aulas'));
+        $datas[] = array($this->datainicialinscricao, $this->datafinalinscricao, _M('Inscrições'));
+        $datas[] = array($this->datainicialmatricula, $this->datafinalmatricula, _M('Matrículas'));
+
+        foreach ($datas as $cod => $data)
+        {
+            list($inicio, $fim, $label) = $data;
+
+            //verificar se os 2 campos foram preenchidos
+            if ( $this->datainicialoferta != SType::NULL_VALUE && $this->datafinaloferta != SType::NULL_VALUE )
+            {
+                if ( ( $inicio != SType::NULL_VALUE && $fim != SType::NULL_VALUE ) &&
+                    ( strlen($inicio) > 0 && strlen($fim) > 0 ) &&
+                    ( SAGU::compareTimestamp($inicio, '<', $this->datainicialoferta) ||
+                        SAGU::compareTimestamp($fim, '>', $this->datafinaloferta) ))
+                {
+                    throw new Exception(_M('O período de @3 deve pertencer ao período do curso. ( de @1 até @2 )', $module, $this->datainicialoferta, $this->datafinaloferta, $label));
+                }
+            }
+        }
+    }
+
+    public static function permiteInscricaoPorGrupo($ofertaTurmaId)
+    {
+        $oferta = new AcpOfertaCurso();
+        $sql = $oferta->msql()
+            ->setColumns('pc.permiteinscricaoporgrupo')
+            ->setTables('AcpOfertaTurma ot')
+            ->addInnerJoin('AcpOfertaCurso oc', 'oc.ofertacursoid = ot.ofertacursoid')
+            ->addInnerJoin('acpocorrenciacurso o', 'o.ocorrenciacursoid = oc.ocorrenciacursoid')
+            ->addInnerJoin('acpcurso c', 'c.cursoid = o.cursoid')
+            ->addInnerJoin('acpperfilcurso pc', 'pc.perfilcursoid = c.perfilcursoid')
+            ->addEqualCondition('ot.ofertaTurmaId', $ofertaTurmaId)
+        ;
+
+        $rows = SDatabase::query($sql->select());
+
+        return $rows[0][0] == DB_TRUE;
+    }
+
+    /**
+     * Realiza o fechamentos de todas disciplinas da turma e todos as suas ofertas de componentes curriculares, definindo sua situação como fechada
+     */
+    public function fecharTurma()
+    {
+        $return = true;
+        $ofertacomponentecurricularsearch = AcpOfertaComponenteCurricular::obterOfertaComponenteCurricularDaOfertaTurma($this->ofertaturmaid);
+
+        //Se possui comp. curriculares passa por eles primeiro
+        //Se nao possui nenhum comp. curricular, fecha direto
+        $i = 0;
+        $count = count($ofertacomponentecurricularsearch);
+        if( count($ofertacomponentecurricularsearch) > 0 )
+        {
+            foreach ($ofertacomponentecurricularsearch as $cod => $ofertacomponentecurricular)
+            {
+                $calculaMediasDoCurso = DB_FALSE;
+                $i ++; //Numero da linha
+                if( $i == $count ) //Caso for o ultimo componente da turma
+                {
+                    $calculaMediasDoCurso = DB_TRUE;
+                }
+
+                $return = $ofertacomponentecurricular->fecharOfertaComponenteCurricular($calculaMediasDoCurso);
+            }
+        }
+        else
+        {
+            $sql = "UPDATE acpOfertaTurma
+                       SET situacao = ?,
+                           dataEncerramento = NOW()::DATE
+                     WHERE ofertaTurmaId = ?";
+
+            $args[] = self::SITUACAO_FECHADA;
+            $args[] = $this->ofertaturmaid;
+
+            $return = SDatabase::execute($sql, $args);
+        }
+
+        return $return;
+    }
+
+    /**
+     * Reabre a turma e todas suas ofertas de componentes curriculares
+     */
+    public function reabrirTurma()
+    {
+        $return = true;
+
+        //Se possui comp. curriculares, passa por eles, senao reabre
+        $ofertacomponentecurricularsearch = AcpOfertaComponenteCurricular::obterOfertaComponenteCurricularDaOfertaTurma($this->ofertaturmaid);
+
+        $i = 0;
+        $count = count($ofertacomponentecurricularsearch);
+        if( count($ofertacomponentecurricularsearch) > 0 )
+        {
+            foreach ($ofertacomponentecurricularsearch as $cod => $ofertacomponentecurricular)
+            {
+                $calculaMediasDoCurso = DB_FALSE;
+                $i ++; //Numero da linha
+                if( $i == $count ) //Caso for o ultimo componente da turma
+                {
+                    $calculaMediasDoCurso = DB_TRUE;
+                }
+
+                $return = $ofertacomponentecurricular->reabrirOfertaComponenteCurricular($calculaMediasDoCurso);
+            }
+        }
+        else
+        {
+            $sql = "UPDATE acpOfertaTurma
+                       SET situacao = ?,
+                           dataEncerramento = NULL
+                     WHERE ofertaTurmaId = ?";
+
+            $args[] = self::SITUACAO_ABERTA;
+            $args[] = $this->ofertaturmaid;
+
+            $return = SDatabase::execute($sql, $args);
+        }
+
+
+        return $return;
+    }
+
+    /*
+     * Procura por todas as turmas oferecidas em certo período de tempo.
+     */
+
+    public function procurarOfertasTurmaPorPeriodo($data)
+    {
+        $sql = "SELECT A.codigo,
+                       A.descricao,
+                       B.description as unidade,
+                       A.ofertaturmaid,
+                       A.maximoalunos,
+                       B.unitid
+                  FROM acpofertaturma A
+             LEFT JOIN basunit B
+                    ON (a.unitid = b.unitid)
+                 WHERE ( ? IS NULL
+                           OR A.datainicialoferta >= datetodb( ? ))
+                   AND ( ? IS NULL
+                           OR A.datafinaloferta <= datetodb( ? ))
+                   AND A.habilitada = true
+              ORDER BY A.descricao";
+
+        $params[] = $data->periodoInicial;
+        $params[] = $data->periodoInicial;
+        $params[] = $data->periodoFinal;
+        $params[] = $data->periodoFinal;
+
+        $result = SDatabase::query($sql, $params);
+
+        foreach ($result as $array)
+        {
+            $turma = new stdClass();
+            list ($turma->codigo,
+                $turma->descricao,
+                $turma->unidade,
+                $turma->ofertaturmaid,
+                $turma->maximoalunos,
+                $turma->unitid) = $array;
+
+            $ob[] = $turma;
+        }
+
+        return $ob;
+    }
+
+    /**
+     * @return boolean
+     */
+    public static function possuiTurmasAbertas($ofertaCursoId)
+    {
+        $sql = new MSQL();
+        $sql->setColumns('COUNT(*)');
+        $sql->setTables('acpofertaturma');
+        $sql->addEqualCondition('ofertacursoid', $ofertaCursoId);
+        $sql->addEqualCondition('situacao', AcpOfertaCurso::SITUACAO_ATIVO);
+
+        $rows = SDatabase::query($sql->select());
+
+        return $rows[0][0] > 0;
+    }
+
+    public static function possuiPendenciaFrequencia($turmaid)
+    {
+        $result = SDatabase::query("SELECT * FROM acp_verificafrequenciasregistradasdaturma(?)", array($turmaid));
+
+        return $result[0][0];
+    }
+    //utilizado na grid action
+    public static function possuiPendenciaNota($turmaid)
+    {
+        $result = SDatabase::query("SELECT COUNT(*) FROM acp_obternotaspendentesdaturma(?)", array($turmaid));
+
+        return $result[0][0] > 0;
+    }
+
+    //obter email dos professores
+    public static function obterEmailProfessorPendenteNota($turmaid)
+    {
+        $result = SDatabase::query("SELECT DISTINCT email FROM acp_obternotaspendentesdaturma(?)", array($turmaid));
+
+        return $result;
+    }
+
+    public static function obterEmailProfessorPendenteFrequencia($turmaid)
+    {
+        $result = SDatabase::query("SELECT DISTINCT email FROM acp_obterfrequenciaspendentesdaturma(?)", array($turmaid));
+
+        return $result;
+    }
+
+    public static function obterNomeProfessorPendentePorEmailNota($turmaid, $email)
+    {
+        $params[] = $turmaid;
+        $params[] = $email;
+
+        $result = SDatabase::query("SELECT DISTINCT professorname FROM acp_obternotaspendentesdaturma(?) WHERE email ilike ?", $params);
+
+        return $result[0][0];
+    }
+
+    public static function obterNomeProfessorPendentePorEmailFrequencia($turmaid, $email)
+    {
+        $params[] = $turmaid;
+        $params[] = $email;
+
+        $result = SDatabase::query("SELECT DISTINCT professorname FROM acp_obterfrequenciaspendentesdaturma(?) WHERE email ilike ?", $params);
+
+        return $result[0][0];
+    }
+
+    public static function obterDisciplinaPendentePorEmailFrequencia($turmaid, $email)
+    {
+        $params[] = $turmaid;
+        $params[] = $email;
+
+        $result = SDatabase::query("SELECT DISTINCT disciplina FROM acp_obterfrequenciaspendentesdaturma(?) WHERE email ilike ?", $params);
+
+        return $result[0][0];
+    }
+
+    public static function obterDisciplinaPendentePorEmailNota($turmaid, $email)
+    {
+        $params[] = $turmaid;
+        $params[] = $email;
+
+        $result = SDatabase::query("SELECT DISTINCT disciplina FROM acp_obternotaspendentesdaturma(?) WHERE email ilike ?", $params);
+
+        return $result[0][0];
+    }
+
+    public static function obterPendenciasFrequencia($turmaid)
+    {
+        $result = SDatabase::query("SELECT * FROM acp_obterfrequenciaspendentesdaturma(?)", array($turmaid));
+
+        return $result;
+    }
+
+    public static function obterPendenciasNotas($turmaid)
+    {
+        $result = SDatabase::query("SELECT * FROM acp_obternotaspendentesdaturma(?)", array($turmaid));
+
+        return $result;
+    }
+
+    public static function verificaAlunoDaTurma($personId, $turmaId)
+    {
+        $ofertaturma = new AcpOfertaTurma();
+        $sql = $ofertaturma->msql();
+        $sql->setColumns('COUNT(*) > 0');
+        $sql->setTables('acpofertaturma');
+        $sql->addInnerJoin('AcpInscricaoTurmaGrupo', 'AcpOfertaTurma.ofertaturmaid = AcpInscricaoTurmaGrupo.ofertaturmaid');
+        $sql->addInnerJoin('AcpInscricao', 'AcpInscricaoTurmaGrupo.inscricaoid = AcpInscricao.inscricaoid');
+        $sql->addEqualCondition('AcpOfertaTurma.ofertaturmaid', $turmaId);
+        $sql->addEqualCondition('AcpInscricao.personId', $personId);
+
+        $rows = SDatabase::query($sql->select());
+
+        return $rows[0][0];
+    }
+
+    /**
+     * Utilizado no formulario de Definir aulas
+     *
+     * @return array
+     */
+    public function obterIntervalosParaCombo()
+    {
+        $sql = "SELECT EXTRACT(year FROM data) || '_' || EXTRACT(month FROM data),
+                       OBTERMESEXTENSO(EXTRACT(month FROM data)::int) || '/' || EXTRACT(year FROM data)
+                  FROM GENERATE_SERIES(?::timestamp, ?::timestamp, '1 month') AS data";
+
+        $strDataFinal = strtotime($this->datafinaloferta);
+        $final = date("Y-m-d", strtotime("+15 days", $strDataFinal));
+
+        $result = SDatabase::query($sql, array($this->datainicialoferta, $final));
+
+        return SAGU::convertListToAssociative($result);
+    }
+
+    /**
+     * @return array
+     */
+    public static function gerarIntervaloDeDatas($ano, $mes, $dias = array(), $inverter = false)
+    {
+        $msql = new MSQL();
+        $diasSQL = $msql->convertArrayToIn(array_keys($dias));
+
+        $sql = "SELECT datetouser(data::date), datetouser(data::date)
+                  FROM GENERATE_SERIES(dateToDb(?)::timestamp, (dateToDb(?)::timestamp + INTERVAL '1 month -1 day'), '1 day') AS data
+                 WHERE 1=1";
+
+        if ( $inverter )
+        {
+            $sql .= ' AND EXTRACT(DOW FROM data) NOT IN ' . $diasSQL;
+        }
+        else
+        {
+            $sql .= ' AND EXTRACT(DOW FROM data) IN ' . $diasSQL;
+        }
+
+        if ( strlen($mes) < 2 )
+        {
+            $mes = ( '0' . $mes );
+        }
+
+        $inicio = "01/{$mes}/{$ano}";
+        $result = SDatabase::query($sql, array($inicio, $inicio));
+
+        return SAGU::convertListToAssociative($result);
+    }
+
+    /**
+     * @return string
+     */
+    public static function obterDataIni($ano, $mes)
+    {
+        if ( strlen($mes) < 2 )
+        {
+            $mes = ( '0' . $mes );
+        }
+
+        $data = "{$ano}-{$mes}-01";
+
+        return $data;
+    }
+
+    /**
+     * @return string
+     */
+    public static function obterDataFim($ano, $mes)
+    {
+        if ( strlen($mes) < 2 )
+        {
+            $mes = ( '0' . $mes );
+        }
+
+        $data = "{$ano}-{$mes}-01";
+        $sql = "SELECT TO_CHAR(?::date + INTERVAL '1 month -1 day', 'yyyy-mm-dd')";
+        $result = SDatabase::query($sql, array($data));
+
+        return $result[0][0];
+    }
+
+    /**
+     * Retorna a quantidade de alunos.
+     *
+     * @param (object) $filters - Filtros da função.
+     *
+     * @return (int) - Contagem de alunos
+     */
+    public static function contarAlunosNaTurma($filters)
+    {
+        $sql = " SELECT COUNT(DISTINCT acpInscricao.inscricaoId)
+                   FROM acpInscricao
+             INNER JOIN acpInscricaoTurmaGrupo
+                     ON (acpInscricao.inscricaoId = acpInscricaoTurmaGrupo.inscricaoId)
+                  WHERE acpInscricaoTurmaGrupo.ofertaTurmaId = ? ";
+
+        $args[] = $filters->ofertaTurmaId;
+
+        // Situação da inscrição
+        if ( strlen($filters->situacao) > 0 )
+        {
+            $sql .= " AND acpInscricao.situacao = ? ";
+            $args[] = $filters->situacao;
+        }
+
+        $return = SDatabase::query($sql, $args);
+
+        return $return[0][0];
+    }
+
+}

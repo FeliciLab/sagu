@@ -1,0 +1,1337 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Augusto A. Silva [augusto@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Augusto A. Silva
+ *
+ * @since
+ * Class created on 02/07/2013
+ *
+ **/
+
+class FrmControleCheques extends SManagementForm
+{
+    /**
+     *
+     * @var String
+     */
+    public $currentEminente;
+    
+    /**
+     *
+     * @var int
+     */
+    public $statuschequeid;
+    
+    /**
+     *
+     * @var type 
+     */
+    public $personId;
+    
+    /**
+     * Class constructor
+     **/
+    public function __construct($isTest = FALSE)
+    {
+        if ( !$isTest || is_array($isTest) )
+        {
+            $MIOLO = MIOLO::getInstance();
+            $MIOLO->uses('/ui/controls/msubdetail.class');
+            $MIOLO->uses('forms/FrmChequesPopup.class', 'finance');
+
+            parent::__construct(new FinCheque(), array('chequeId'), null, _M('Controle do cheque'));
+
+            $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        }
+    }
+
+    /**
+     * Default method to define fields
+     **/
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+        $chequeId = MIOLO::_REQUEST('chequeid') ? MIOLO::_REQUEST('chequeid') : MIOLO::_REQUEST('chequeId');
+        $fields[] = new SHiddenField('chequeid', $chequeId);
+        
+        // Types
+        $finCheque = new FinCheque($chequeId);
+        $finCounterMovements = $this->getCounterMovements($chequeId);
+        
+        // Caixa aberto
+        $finOpenCounter = new FinOpenCounter($finCounterMovements[0]->openCounterId);        
+        $finCounter = new FinCounter($finOpenCounter->counterId);
+
+        // Operador do caixa.
+        $busPerson = new BusinessBasicBusPerson();
+        $operator = $busPerson->getPerson($finOpenCounter->operatorId);
+
+        $dataInvoices = $this->obterDadosDosTitulos($finCounterMovements);
+        $personId = (count($dataInvoices) == 1) ? $dataInvoices[0]->personId : null;
+        $fields[] = new SHiddenField('personId', $personId);
+
+        $actionGoto = $this->getFormValue('actionGoto', $MIOLO->_REQUEST('actionGoto'));
+        $fields[] = new SHiddenField('actionGoto', $actionGoto);
+
+        // Dados do título (utilizado pelos campos do RESGATADO)
+        $fields[] = new SHiddenField('policyIdHidden' , $dataInvoices[0]->policyId);
+        $fields[] = new SHiddenField('costCenterIdHidden', $dataInvoices[0]->costCenterId);
+        $fields[] = new SHiddenField('bankAccountIdHidden', $dataInvoices[0]->bankAccountId);
+        
+        // Número do cheque.
+        $numeroChequeLabel = new MText('numeroChequeLabel', _M('Nº do cheque', $module) . ':');
+        $numeroChequeLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $numeroChequeLabel->setClass('m-caption');
+        $numeroCheque = new MText('numeroDoCheque', $finCheque->numeroCheque);
+        $numeroCheque->addAttribute('style', 'margin-top:3px; font-weight:bold;');
+        $fields[] = new SHiddenField('numeroCheque', $finCheque->numeroCheque);
+        $fields[] = new MHContainer('numeroChequeHCS', array($numeroChequeLabel, $numeroCheque));
+
+        // Títulos referentes.
+        $titulosReferentesValue = $this->getTitulosReferentesValue($dataInvoices);
+        $titulosReferentesLabel = new MText('titulosReferentesLabel', _M('Títulos referentes ao cheque', $module) . ':');
+        $titulosReferentesLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $titulosReferentesLabel->setClass('m-caption');
+        $titulosReferentesCheque = new MText('titulosReferentesCheque', $titulosReferentesValue[0]);
+        $titulosReferentesCheque->addAttribute('style', 'margin-top:3px; font-weight:bold;');
+        $fields[] = new MHContainer('titulosReferentesHCS', array($titulosReferentesLabel, $titulosReferentesCheque));
+
+        // Vencimento dos títulos.
+        $vencimentoLabel = new MText('vencimentoLabel', _M('Vencimento dos títulos', $module) . ':');
+        $vencimentoLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $vencimentoLabel->setClass('m-caption');
+        $vencimento = new MText('vencimento', $titulosReferentesValue[1]);
+        $vencimento->addAttribute('style', 'margin-top:3px; font-weight:bold;');
+        $fields[] = new MHContainer('vencimentoHCS', array($vencimentoLabel, $vencimento));
+
+        // Caixa.
+        $caixaValue = $finCounter->description . ': ' . $operator->personId . ' - ' . $operator->name;
+        $caixaLabel = new MText('caixaLabel', _M('Caixa que recebeu o cheque', $module) . ':');
+        $caixaLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $caixaLabel->setClass('m-caption');
+        $caixa = new MText('caixa', $caixaValue);
+        $caixa->addAttribute('style', 'margin-top:3px; font-weight:bold;');
+        $fields[] = new MHContainer('caixaHCS', array($caixaLabel, $caixa));
+
+        // Data.
+        $dataLabel = new MText('dataLabel', _M('Data de vencimento do cheque', $module) . ':');
+        $dataLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $dataLabel->setClass('m-caption');
+        $data = new MCalendarField('data', $this->GetFormValue('data', $finCheque->data));
+        $fields[] = new MHContainer('dataHCS', array($dataLabel, $data));
+
+        // Emitente.
+        $this->currentEminente = $this->getFormValue('eminenteField', $finCheque->eminente);
+        $eminenteLabel = new MText('eminenteLabel', _M('Emitente', $module) . ':');
+        $eminenteLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $eminenteLabel->setClass('m-caption');
+        $eminente = new MText('eminenteField', $this->currentEminente, _M('Emitente', $module));
+        $eminente->addAttribute('style', 'margin-top:3px; font-weight:bold;');
+        $fields[] = $eminenteHC = new MHContainer('eminenteHC', array($eminenteLabel, $eminente));
+        $eminenteHC->setShowLabel(false);
+        
+        // CPF
+        $cpfLabel = new MText('cpfLabel', _M('CPF', $module) . ':');
+        $cpfLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $cpfLabel->setClass('m-caption');
+        $cpf = new MText('cpfField', SAGU::NVL($finCheque->cpf, '-'));
+        $cpf->addAttribute('style', 'margin-top:3px; font-weight:bold;');
+        $fields[] = $cpfHC = new MHContainer('cpfHC', array($cpfLabel, $cpf));
+        
+        $fields[] = new MSeparator("<br>");
+
+        // Banco.
+        $busBank = new BusinessFinanceBusBank();
+        $bankLabel = new MText('bankLabel', _M('Banco', $module) . ':');
+        $bankLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $bankLabel->setClass('m-caption m-caption-required');
+        $bankId = new MComboBox('bankId', $this->getFormValue('bankId', $finCheque->bankId), _M('Banco', $module), $busBank->listBank());
+        $fields[] = $bankHC = new MHContainer('bankHC', array($bankLabel, $bankId));
+        $bankHC->setShowLabel(false);
+        $validators[] = new MRequiredValidator('bankId', _M('Banco', $module));
+
+        // Agência.
+        $agenciaLabel = new MText('agenciaLabel', _M('Agência', $module) . ':');
+        $agenciaLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $agenciaLabel->setClass('m-caption m-caption-required');
+        $agencia = new MTextField('agencia', $this->GetFormValue('agencia', $finCheque->agencia), _M('Agência', $module));
+        $fields[] = $agenciaHC = new MHContainer('agenciaHC', array($agenciaLabel, $agencia));
+        $agenciaHC->setShowLabel(false);
+        $validators[] = new MRequiredValidator('agencia', _M('Agência', $module));
+
+        // Valor.
+        $valorLabel = new MText('valorLabel', _M('Valor', $module) . ':');
+        $valorLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $valorLabel->setClass('m-caption m-caption-required');
+        $valor = new MFloatField('valorCheque', $this->GetFormValue('valorCheque', $finCheque->_valorformatado), _M('Valor', $module));
+        //$valor->setReadOnly(true);
+        $fields[] = $valorHC = new MHContainer('valorHC', array($valorLabel, $valor));
+        $valorHC->setShowLabel(false);
+        $validators[] = new MFloatValidator('valor', _M('Valor', $module));
+        $validators[] = new MRequiredValidator('valor', _M('Valor', $module));
+
+        // Tipo
+        $tipoLabel = new MText('tipoLabel', _M('Tipo', $module) . ':');
+        $tipoLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $tipoLabel->setClass('m-caption m-caption-required');
+        $tipo = new MSelection('tipo', null, _M('Tipo', $module), $finCheque->listTiposCheque());
+        $fields[] = $tipoHC = new MHContainer('tipoHC', array($tipoLabel, $tipo));
+        $tipoHC->setShowLabel(false);
+        $validators[] = new MRequiredValidator('tipo', _M('Tipo', $module));
+
+        // Subdetail
+        $fields[] = $this->obterMovimentacoesDoCheque($chequeId);
+        
+        parent::defineFields($fields, $validators, $data);
+    }
+    
+    /**
+     * Retorna as movimentações do cheque.
+     * 
+     * @return \MSubDetail
+     */
+    private function obterMovimentacoesDoCheque($chequeId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $event = $MIOLO->_REQUEST('event');
+        
+        if ( $event != 'tbBtnSave:click' )
+        {
+            MSubDetail::clearData('movimentacoesCheque');
+        }
+        
+        // Obtem a ultima movimentacao do cheque.
+        $finMovimentacaoCheque = new FinMovimentacaoCheque();
+        $ultimaMovimentacaoDoCheque = $finMovimentacaoCheque->obterUltimaMovimentacaoDoCheque($chequeId);
+        
+        $flds[] = new MDiv('divError', '');
+        
+        $flds[] = new SHiddenField('movimentacaochequeid');
+        $flds[] = new SHiddenField('chequeid', $chequeId);
+        $flds[] = new SHiddenField('acao');
+        
+        // Status.
+        $finStatusCheque = new FinStatusCheque();
+        $statusLabel = new MText('statusLabel', _M('Status', $module) . ':');
+        $statusLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $statusLabel->setClass('m-caption m-caption-required');
+        
+        // Obtem estados possiveis conforme a ultima movimentacao.
+        $estadosPossiveis = $finStatusCheque->obterEstadosPossiveis($ultimaMovimentacaoDoCheque->statusChequeId);
+        
+        $status = new MSelection('statuschequeid', null, _M('Status', $module), $estadosPossiveis);
+        $status->addAttribute('onchange', $this->getAjaxAction('verificarStatus', 'divNovosCampos', false, array('currentEminente' => $this->currentEminente)));
+        $flds[] = $statusHC = new MHContainer('statusHC', array($statusLabel, $status));
+        $statusHC->setShowLabel(false);
+        //$valids[] = new MRequiredValidator('statuschequeid', _M('Status', $module));
+        //$valids[] = new MIntegerValidator('statuschequeid', _M('Status', $module));
+        
+        // Repasse
+        $flds[] = $div = new MDiv('divNovosCampos', '');
+        $valids[] = new MCPFValidator('cpf', _M('CPF', $module));
+        $valids[] = new MCNPJValidator('cnpj', _M('CNPJ', $module));
+        
+        // Data
+        $dataStatusLabel = new MText('dataStatusLabel', _M('Data', $module) . ':');
+        $dataStatusLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $dataStatusLabel->setClass('m-caption m-caption-required');
+        $dataStatus = new MCalendarField('datastatus');
+        $flds[] = $dataStatusHCS = new MHContainer('dataStatusHCS', array($dataStatusLabel, $dataStatus));
+        //$valids[] = new MRequiredValidator('datastatus', _M('Data do status', $module));
+        
+        // Observacão
+        $obsLabel = new MTextLabel('obsLabel', _M('Observação'));
+        $obsLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $obsLabel->setClass('m-caption');
+        $obs = new MMultiLineField('observacao', null, null, 20, 5);
+        $flds[] = new MHContainer('obsHC', array($obsLabel, $obs));
+        
+        $flds[] = new MSeparator("<br>");
+        
+        $cols[] = new MGridColumn(_M('Código da movimentação', $module), 'right', true, '', false, 'movimentacaochequeid');
+        $cols[] = new MGridColumn(_M('Código do cheque', $module), 'right', true, '', false, 'chequeid');
+        $cols[] = new MGridColumn(_M('Código do status', $module), 'center', true, '', false, 'statuschequeid');
+        $cols[] = new MGridColumn(_M('Status', $module), 'left', true, '', true, 'statuscheque');
+        $cols[] = new MGridColumn(_M('Data da movimentação', $module), 'center', true, '', true, 'datastatus');
+        $cols[] = new MGridColumn(_M('Conta bancária', $module), 'left', true, '', true, 'bankAccountDescription');
+        $cols[] = new MGridColumn(_M('Observação', $module), 'left', true, '', true, 'observacao');
+        $cols[] = new MGridColumn(_M('Valor', $module), 'right', true, '', false, 'statusValor');
+        $cols[] = new MGridColumn(_M('Novo emitente', $module), 'center', true, '', false, 'eminente');
+        $cols[] = new MGridColumn(_M('CPF', $module), 'center', true, '', false, 'cpf');
+        $cols[] = new MGridColumn(_M('CNPJ', $module), 'center', true, '', false, 'cnpj');
+        $cols[] = new MGridColumn(_M('Operação', $module), 'center', true, '', false, 'operationId');
+        $cols[] = new MGridColumn(_M('Centro de custo', $module), 'center', true, '', false, 'costCenterId');
+        $cols[] = new MGridColumn(_M('Política', $module), 'center', true, '', false, 'policyId');
+        $cols[] = new MGridColumn(_M('Conta bancária código', $module), 'center', true, '', false, 'bankAccountId');
+        
+        $sub = new MSubDetail('movimentacoesCheque', _M('Movimentações do cheque'), $cols, $flds, array());
+        $sub->setValidators($valids); 
+        $sub->addActionEvent(MSubDetail::EVENT_ADD, 'aoAdicionarMovimentacao', __CLASS__);
+        
+        $finMovimentacaoCheque = new FinMovimentacaoCheque();
+        $movimentacoes = $finMovimentacaoCheque->buscarMovimentacoesPeloCheque($chequeId, true);
+        
+        if ( count($movimentacoes) > 0 && $event != 'tbBtnSave:click' )
+        {
+            $sub->setData($movimentacoes, 'movimentacoesCheque');
+        }
+        
+        return $sub;
+    }
+    
+    public function camposDepositadoOuReapresentado($args = NULL )
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        // Conta bancária
+        $business = new BusinessFinanceBusBankAccount();
+        $bankAccountLabel = new MText('bankAccountLabel', _M('Conta bancária',$module).':');
+        $bankAccountLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $bankAccountLabel->setClass('m-caption m-caption-required');
+        $bankAccountsList = $business->listBankAccount();    
+        $bankAccountId = new MComboBox('bankAccountId', null, '', $bankAccountsList, '', '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $bankAccountId->setJsHint(_M('Informe a conta bancária para a qual serão gerados os títulos originados a partir da negociação.', $module));
+        $hctBankAccount = new MHContainer('hctBankAccount', array($bankAccountLabel, $bankAccountId));
+        $hctBankAccount->setShowLabel(true);
+        $hctBankAccount->addAttribute('style', 'margin-top:5px;');
+        $flds[]   = $hctBankAccount;
+        
+        return $flds;
+    }
+    
+    public function camposSobCustodia($args = NULL )
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        // Conta bancária
+        $business = new BusinessFinanceBusBankAccount();
+        $bankAccountLabel = new MText('bankAccountLabel', _M('Conta bancária',$module).':');
+        $bankAccountLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $bankAccountLabel->setClass('m-caption m-caption-required');
+        $bankAccountsList = $business->listBankAccount();    
+        $bankAccountId = new MComboBox('bankAccountId', null, '', $bankAccountsList, '', '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $bankAccountId->setJsHint(_M('Informe a conta bancária para a qual serão gerados os títulos originados a partir da negociação.', $module));
+        $hctBankAccount = new MHContainer('hctBankAccount', array($bankAccountLabel, $bankAccountId));
+        $hctBankAccount->setShowLabel(true);
+        $hctBankAccount->addAttribute('style', 'margin-top:5px;');
+        $flds[]   = $hctBankAccount;
+        
+        return $flds;
+    }
+    
+    /**
+      * Retorna os campos necessários para registro de status 'Devolvido'.
+      *
+      * @return array - Campos necessários para registro de status 'Devolvido'.
+     */
+    public function camposDevolvido($args = NULL)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        // Obtem a ultima movimentacao do cheque.
+        $finMovimentacaoCheque = new FinMovimentacaoCheque();
+        $ultimaMovimentacaoDoCheque = $finMovimentacaoCheque->obterUltimaMovimentacaoDoCheque($args->chequeid);
+        
+        // Conta bancária
+        $business = new BusinessFinanceBusBankAccount();
+        $bankAccountLabel = new MText('bankAccountLabel', _M('Conta bancária',$module).':');
+        $bankAccountLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $bankAccountLabel->setClass('m-caption m-caption-required');
+        $fieldsBk[] = $bankAccountLabel;
+        $bankAccountsList = $business->listBankAccount();
+        
+        // Se última movimentação for REAPRESENTADO, só pode ser DEVOLVIDO, então
+        // seta readOnly na conta bancária, não pode mudar mais - ticket #38867
+        $idBankAccount = 'bankAccountId';
+        $readOnly = false;
+        if ( $ultimaMovimentacaoDoCheque->statusChequeId == FinStatusCheque::REAPRESENTADO )
+        {
+            $readOnly = true;
+            $idBankAccount = 'bankAccountDescription';
+            $fieldsBk[] = new SHiddenField('bankAccountId', $ultimaMovimentacaoDoCheque->bankAccountId);
+        }
+        
+        $bankAccountId = new MComboBox($idBankAccount, $ultimaMovimentacaoDoCheque->bankAccountId, '', $bankAccountsList, '', '', ($readOnly ? SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE') : SAGU::getParameter('BASIC', 'FIELD_ID_SIZE')));        
+        $bankAccountId->setJsHint(_M('Informe a conta bancária para a qual serão gerados os títulos originados a partir da negociação.', $module));
+        $bankAccountId->setReadOnly($readOnly);
+        $fieldsBk[] = $bankAccountId;
+        $hctBankAccount = new MHContainer('hctBankAccount', $fieldsBk);
+        $hctBankAccount->setShowLabel(true);
+        $hctBankAccount->addAttribute('style', 'margin-top:5px;');
+        $flds[]   = $hctBankAccount;
+        
+        return $flds;
+    }
+    
+    /**
+     * Retorna os campos necessário para registro de repasse.
+     * 
+     * @return array
+     */
+    public function camposRepasse($args = null)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $focoEminente = "var eminente = document.getElementById('eminente'); eminente.value = ' '; eminente.focus();";
+        
+        // CPF.
+        $cpfLabel = new MText('cpfLabel', _M('CPF', $module) . ':');
+        $cpfLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $cpfLabel->setClass('m-caption');
+        $cpf = new MTextField('cpf', null, null, 19, _M('A máscara deve ser digitada manualmente.'));
+        $cpf->addAttribute('onBlur', $focoEminente . $this->getAjaxAction('obterEminentePeloCpf', 'divError'));
+        $flds[] = $hctCpf = new MHContainer('cpfHC', array($cpfLabel, $cpf));
+        $hctCpf->addAttribute('style', 'margin-top:5px;');
+        
+        // CNPJ.
+        $cnpjLabel = new MText('cnpjLabel', _M('CNPJ', $module) . ':');
+        $cnpjLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $cnpjLabel->setClass('m-caption');
+        $cnpj = new MTextField('cnpj', null, null, 19, _M('A máscara deve ser digitada manualmente.'));
+        $cnpj->addAttribute('onBlur', $focoEminente . $this->getAjaxAction('obterEminentePeloCnpj', 'divError'));
+        $flds[] = $hctCnpj = new MHContainer('cnpjHC', array($cnpjLabel, $cnpj));
+        $hctCnpj->addAttribute('style', 'margin-top:5px;');
+        
+        // Novo eminente.
+        $eminenteLabel = new MText('newEminenteLabel', _M('Novo emitente', $module) . ':');
+        $eminenteLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $eminenteLabel->setClass('m-caption');
+        $eminente = new MTextField('eminente', null, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));        
+        $flds[] = $hctEminente = new MHContainer('newEminenteHC', array($eminenteLabel, $eminente));
+        $hctEminente->addAttribute('style', 'margin-top:5px;');
+        
+        // Valor
+        $valorLabel = new MTextLabel('valorLabel', _M('Valor de repasse') . ':');
+        $valorLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $valorLabel->setClass('m-caption');
+        $valor = new MTextField('statusValor', null, null, 10, _M('0.0'));
+        $flds[] = $hctValor = new MHContainer('valorHC', array($valorLabel, $valor));
+        $hctValor->addAttribute('style', 'margin-top:5px;');
+        
+        return $flds;
+    }
+    
+    /**
+     * Retorna os campos necessário para registro de resgate.
+     * 
+     * @return array
+     */
+    public function camposResgate($args = null)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+
+        // Pessoa
+        $pessoaLabel = new MText('pessoaLabel', _M('Pessoa', $module) . ':');
+        $pessoaLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $pessoaLabel->setClass('m-caption');
+        $hint = _M('Será gerado um novo título no valor do cheque para esta pessoa.');
+        $pessoa = new MTextField('pessoa', $args->currentEminente, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'), $hint);        
+        $pessoa->setReadOnly(true);
+        $flds[] = $hctPessoa = new MHContainer('pessoaHC', array($pessoaLabel, $pessoa));
+        $hctPessoa->addAttribute('style', 'margin-top:5px;');
+        
+        // Conta bancária
+        $business = new BusinessFinanceBusBankAccount();
+        $bankAccountLabel = new MText('bankAccountLabel', _M('Conta bancária',$module).':');
+        $bankAccountLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $bankAccountLabel->setClass('m-caption m-caption-required');
+        $bankAccountsList = $business->listBankAccount();    
+        $bankAccountId = new MComboBox('bankAccountId', $args->bankAccountIdHidden, '', $bankAccountsList, '', '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $bankAccountId->setJsHint(_M('Informe a conta bancária para a qual serão gerados os títulos originados a partir da negociação.', $module));
+        $hctBankAccount = new MHContainer('hctBankAccount', array($bankAccountLabel, $bankAccountId));
+        $hctBankAccount->setShowLabel(true);
+        $hctBankAccount->addAttribute('style', 'margin-top:5px;');
+        $flds[]   = $hctBankAccount;
+        
+        // Operação
+        $operationLabel = new MText('operationLabel', _M('Operação', $module).':');
+        $operationLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $operationLabel->setClass('m-caption m-caption-required');
+        
+        $operationId = new MLookupTextField('operationId', 
+                                            null,
+                                            '', 
+                                            SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), 
+                                            null, 
+                                            null, 
+                                            'operationDescription', 
+                                            $module, 
+                                            'Operation', 
+                                            null, 
+                                            null, 
+                                            true);
+        
+        $operationId->setJsHint(_M('Informe a operação que será utilizada nos lançamentos dos títulos originados a partir da negociação.',$module));
+        $operationDescription = new MTextField('operationDescription', $this->getFormValue('operationDescription',$data->operationDescription), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $operationDescription->setReadOnly(true);
+        $operationDescription->setJsHint(_M('Descrição da operação', $module));
+        $flds[] = $hctOperation = new MHContainer('hctOperation', array($operationLabel, $operationId, $operationDescription));
+        $hctOperation->addAttribute('style', 'margin-top:5px;');
+        
+        // Centro de custo
+        $costCenterLabel = new MText('costCenterLabel', _M('Centro de custo',$module).':');
+        $costCenterLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $costCenterLabel->setClass('m-caption m-caption-required');
+
+        $costCenterId = new MLookupTextField('costCenterId', 
+                                             $args->costCenterIdHidden, 
+                                             null,
+                                             SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), 
+                                             null, 
+                                             null, 
+                                             'costCenterDescription', 
+                                             'accountancy', 
+                                             'CostCenter', 
+                                             null, 
+                                             array('costCenterId' => 'costCenterIdHidden'), 
+                                             true);
+        $busCostCenter = new BusinessAccountancyBusCostCenter();
+        $centroCusto = $busCostCenter->getCostCenter($args->costCenterIdHidden);
+        
+        $costCenterId->setJsHint(_M('Informe o centro de custo para o qual serão gerados os títulos originados a partir da negociação.', $module));
+        $costCenterDescription = new MTextField('costCenterDescription', SAGU::NVL($centroCusto->description, ($this->getFormValue('costCenterDescription',$data->costCenterDescription))), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $costCenterDescription->setReadOnly(true);
+        $costCenterDescription->setJsHint(_M('Descrição do centro de custo', $module));
+        $hctCostCenter = new MHContainer('hctCostCenter', array($costCenterLabel, $costCenterId, $costCenterDescription));
+        $hctCostCenter->setShowLabel(true);
+        $hctCostCenter->addAttribute('style', 'margin-top:5px;');
+        $flds[]   = $hctCostCenter;
+        
+        //Política
+        $policyLabel = new MText('policyLabel', _M('Política', $module). ':');
+        $policyLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $policyLabel->setClass('m-caption m-caption-required');
+        
+        $busPolicy = new BusinessFinanceBusPolicy();
+        $politica = $busPolicy->getPolicy($args->policyIdHidden);
+        
+        $policyId    = new MLookupTextField('policyId', 
+                                            $args->policyIdHidden, 
+                                            null, 
+                                            SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), 
+                                            null, 
+                                            null, 
+                                            'policyDescription', 
+                                            'finance', 
+                                            'Policy', 
+                                            null, 
+                                            array('policyId' => 'policyIdHidden'), 
+                                            true);                                         
+        
+        $policyId->setJsHint(_M('Informe a política para o qual serão gerados os títulos originados a partir da negociação.', $module));
+        $policyDescription = new MTextField('policyDescription', SAGU::NVL($politica->description, ($this->getFormValue('policyDescription',$data->policyDescription))), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $policyDescription->setReadOnly(true);
+        $policyDescription->setJsHint(_M('Descrição da política', $module));
+        $hctPolicy = new MHContainer('hctPolicy', array($policyLabel, $policyId, $policyDescription));
+        $hctPolicy->setShowLabel(true);
+        $hctPolicy->addAttribute('style', 'margin-top:5px;');
+        $flds[]   = $hctPolicy;
+        
+        return $flds;
+    }
+    
+    /**
+     * Ação ao adicionar movimentação do cheque.
+     * 
+     * @param type $args
+     * @return type
+     */
+    public function aoAdicionarMovimentacao($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $movimentacoes = MSubDetail::getData('movimentacoesCheque');
+        $alert = '';
+        $statusChequeIds = array();
+        $cont = 0;
+        
+        if ( strlen($args->bankAccountId) > 0 )
+        {
+            $busBankAccount = new BusinessFinanceBusBankAccount();
+            $contaBancariaDados = $busBankAccount->getBankAccount($args->bankAccountId);
+            $args->bankAccountDescription = $contaBancariaDados->description;
+        }
+        
+        if ( strlen($args->statuschequeid) == 0 )
+        {
+            $alert = _M('Preencha corretamente o campo "Status".');
+        }
+        elseif ( strlen($args->datastatus) == 0 )
+        {
+            $alert = _M('Preencha corretamente o campo "Data".');
+        }
+        else
+        {
+            foreach ( $movimentacoes as $movimentacao )
+            {
+                // Verifica se já adicionou nova movimentação.
+                if ( is_null($movimentacao->movimentacaochequeid) && !$movimentacao->removeData )
+                {
+                    $alert = _M('Somente deve inserir uma movimentação por vez, salve e efetue o novo registro.');
+                }
+                
+                if ( !$movimentacao->removeData )
+                {
+                    $statusChequeIds[] = $movimentacao->statuschequeid;
+                    $cont ++;
+                }
+            }
+
+            if ( $args->statuschequeid == FinStatusCheque::RESGATADO )
+            {
+                if ( is_null($args->bankAccountId) || is_null($args->operationId) || is_null($args->costCenterId) || is_null($args->policyId) )
+                {
+                    $alert = _M('Preencha corretamente todos os campos indicados.');
+                }
+            }
+            
+            if ( $args->statuschequeid == FinStatusCheque::DEPOSITADO || $args->statuschequeid == FinStatusCheque::REAPRESENTADO || $args->statuschequeid == FinStatusCheque::SOB_CUSTODIA )
+            {
+                if ( is_null($args->bankAccountId) )
+                {
+                    $alert = _M('Preencha corretamente todos os campos indicados.');
+                }
+            }
+
+            // Verifica se o valor da movimentação é maior que o do cheque.
+            if ( strlen($args->statusValor) > 0 && ( (double)$args->statusValor > (double)$args->valorCheque ) )
+            {
+                $alert = _M('Valor da movimentação não pode ser maior que o valor do cheque.');
+            }
+            
+            // Verifica se a data da movimentação é menor que a última movimentação
+            $finMovimentacaoCheque = new FinMovimentacaoCheque();
+            $ultimaMovimentacaoDoCheque = $finMovimentacaoCheque->obterUltimaMovimentacaoDoCheque($args->chequeid);
+            if ( SAGU::compareTimestamp($args->datastatus, '<', $ultimaMovimentacaoDoCheque->data) )
+            {
+                $alert = _M('A data da movimentação não pode ser menor que a data da última movimentação.');
+            }
+        }
+        
+        if ( $args->acao != MSubDetail::EVENT_EDIT )
+        {
+            // Verifica se a movimentação adicionada não é igual a última.
+            if ( $args->statuschequeid == $statusChequeIds[$cont - 1] )
+            {
+                $alert = _M('O status da movimentação adicionada é igual a anterior.');
+            }
+        }
+        
+        // Se ocorreu algum erro.
+        if ( strlen($alert) > 0 )
+        {
+            $MIOLO->page->addAjaxJsCode("alert('{$alert}');");
+            $args->removeData = true;
+            
+            return $args;
+        }
+        
+        $MIOLO->page->addAjaxJsCode("document.getElementById('divNovosCampos').innerHTML = ' ';");
+        $MIOLO->page->addAjaxJsCode("document.getElementById('statuschequeid').disabled = false;");
+        
+        $finStatusCheque = new FinStatusCheque($args->statuschequeid);
+        $args->statuscheque = $finStatusCheque->descricao;
+        
+        return $args;
+    }
+    
+    /**
+     * Retorna as movimentações de caixa referentes ao cheque.
+     * 
+     * @param int $chequeId
+     * @return array
+     */
+    public function getCounterMovements($chequeId)
+    {   
+        $counterMovements = NULL;
+        
+        if ( strlen($chequeId) > 0 )
+        {
+            $finCounterMovementCheque = new FinCounterMovementCheque();
+            $finCounterMovementCheque->chequeId = $chequeId;
+
+            $counterMovementIdS = $finCounterMovementCheque->obterCounterMovementIdS();
+            $counterMovements = array();
+
+            foreach ( $counterMovementIdS as $counterMovementId )
+            {
+                $counterMovements[] = new FinCounterMovement($counterMovementId[0]);
+            }
+        }
+        
+        return $counterMovements;
+    }
+    
+    /**
+     * Retorna os dados do título.
+     * 
+     * @param array
+     * @return stdClass
+     */
+    public function obterDadosDosTitulos($finCounterMovements)
+    {
+        foreach ( $finCounterMovements as $finCounterMovement )
+        {
+            $busReceivableInvoice = new BusinessFinanceBusReceivableInvoice();
+            $receivableInvoices[] = $busReceivableInvoice->getReceivableInvoice($finCounterMovement->invoiceId);
+        }
+        
+        return $receivableInvoices;
+    }
+    
+    /**
+     * Retorna os códigos e as datas de validade dos títulos referentes ao cheque.
+     * 
+     * @param array $dataInvoices
+     * @return string
+     */
+    public function getTitulosReferentesValue($dataInvoices)
+    {        
+        $invoices = array();
+        
+        foreach ( $dataInvoices as $invoice )
+        {
+            $invoices[0] .= (strlen($invoices[0]) > 0) ? ' - ' . $invoice->invoiceId : $invoice->invoiceId;
+            $invoices[1] .= (strlen($invoices[1]) > 0) ? ' - ' . $invoice->maturityDate : $invoice->maturityDate;
+        }
+        
+        return $invoices;
+    }
+    
+    /**
+     * Caso esteja nas consultas diversas voltar para as consultas diversas.
+     * 
+     * @return type
+     */
+    public function getUpdateGoto()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $action = MIOLO::getCurrentAction();
+        $module = MIOLO::getCurrentModule();
+        
+        $personId   = $this->getFormValue('personId');
+        $actionGoto = $this->getFormValue('actionGoto');
+        
+        if ( strlen($personId) > 0 )
+        {
+            $goto = $MIOLO->getActionURL($module, $actionGoto, null, array('personId' => $personId, 'event' => 'btnSearch_click'));            
+            return $goto;
+        }
+        else
+        {
+            parent::getUpdateGoto();
+        }
+    }
+    
+    /**
+     * Necessário salvar as movimentações do cheque.
+     * 
+     * @param FinCheque $objFinCheque
+     */
+    public function beforeSave(FinCheque $objFinCheque)
+    {
+        $this->salvarMovimentacoesDoCheque();
+        
+        // Para se caso foi modificado o eminente.
+        $finCheque = new FinCheque($objFinCheque->chequeId);
+        $objFinCheque->eminente = $finCheque->eminente;
+        $this->currentEminente = $finCheque->eminente;
+        $objFinCheque->cpf = $finCheque->cpf;
+        $objFinCheque->cnpj = $finCheque->cnpj;
+        
+        return $objFinCheque;
+    }
+    
+    /**
+     * Exibe a mensagem de registro atualizado com sucesso.
+     */
+    public function displayMessageUpdate()
+    {
+        if ( $this->statuschequeid == SAGU::getParameter('FINANCE', 'STATUS_CHEQUE_ID_REPASSADO') )
+        {
+            $msg = _M("O cheque foi repassado para " . $this->currentEminente);
+        }
+        else if ( $this->statuschequeid == SAGU::getParameter('FINANCE', 'STATUS_CHEQUE_ID_RESGATADO') )
+        {
+            $msg = _M("Gerado título no valor do cheque para a pessoa " . $this->personId . " - " . $this->currentEminente . ", referente ao resgate.");
+        }
+        else
+        {
+            $msg = _M("Registro atualizado com sucesso.");
+        }
+        
+        SAGU::information($msg, $this->getUpdateGoTo());
+    }
+    
+    /**
+     * Salva as movimentações do cheque.
+     * 
+     * @return boolean
+     */
+    private function salvarMovimentacoesDoCheque()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $data = $this->getTypesData();
+        $movimentacoes = MSubDetail::getData('movimentacoesCheque');
+        
+        foreach ( $movimentacoes as $movimentacao )
+        {
+            // Salva a nova movimentação registrada.
+            if ( !$movimentacao->removeData && is_null($movimentacao->movimentacaochequeid) )
+            {
+                $this->verificarStatus($movimentacao, false);
+            }
+            elseif (MUtil::getBooleanValue($movimentacao->removeData) )
+            {
+                if ( $movimentacao->movimentacaochequeid )
+                {
+                    $movimentacao->foiExcluido = TRUE;
+                    $this->salvarMovimentacao($movimentacao);
+                }
+            }
+            elseif ( $movimentacao->movimentacaochequeid && $movimentacao->acao == MSubDetail::EVENT_EDIT )
+            {
+                $this->salvarMovimentacao($movimentacao);
+            }
+        }
+    }
+    
+    /**
+     * Verifica qual o status da movimentação.
+     * 
+     * @param stdClass $movimentacao
+     * @return boolean
+     */
+    public function verificarStatus($args, $fields = true)
+    {
+        $return = ($fields) ? '' : false;
+        
+        if ( strlen($args->statuschequeid) > 0 )
+        {
+            try
+            {
+                SDatabase::beginTransaction();
+                
+                if ( $args->statuschequeid == FinStatusCheque::REPASSADO )
+                {
+                    $return = ($fields) ? $this->camposRepasse($args) : $this->salvarMovimentacaoDeRepasse($args);
+                }
+                else if ( $args->statuschequeid == FinStatusCheque::RESGATADO )
+                {
+                    $return = ($fields) ? $this->camposResgate($args) : $this->salvarMovimentacaoDeResgate($args);
+                }
+                else if ( $args->statuschequeid == FinStatusCheque::DEPOSITADO || $args->statuschequeid == FinStatusCheque::REAPRESENTADO )
+                {
+                    $return = ($fields) ? $this->camposDepositadoOuReapresentado($args) : $this->salvarMovimentacaoDeDeposito($args);
+                }
+                else if ( $args->statuschequeid == FinStatusCheque::DEVOLVIDO )
+                {
+                    $return = ($fields) ? $this->camposDevolvido($args) : $this->salvarMovimentacaoDeDevolucao($args);
+                }
+                else if ( $args->statuschequeid == FinStatusCheque::SOB_CUSTODIA )
+                {
+                    $return = ($fields) ? $this->camposSobCustodia() : $this->salvarMovimentacao($args);;
+                }
+                else
+                {
+                    $return = ($fields) ? '' : $this->salvarMovimentacao($args);
+                }
+                
+                SDatabase::commit();
+            }
+            catch ( Exception $error )
+            {
+                $MIOLO = MIOLO::getInstance();
+                
+                SDatabase::rollback();
+                $MIOLO->error($error->getMessage(), $this->getPreviousURL());
+                
+                return;
+            }
+        }
+        
+        return $return;
+    }
+    
+    /**
+      * Salva a movimentação do cheque e registra uma movimentação bancária de crédito.
+      *
+      * @param Object $movimentacao - Dados da movimentação
+      * @return boolean - Retorna verdadeiro caso sucesso na operação
+     */
+    public function salvarMovimentacaoDeDeposito($movimentacao)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $ok = $this->salvarMovimentacao($movimentacao);
+        
+        if ( $ok )
+        {
+            $busBankAccount = new BusinessFinanceBusBankAccount();
+            $infoBancoAccount = $busBankAccount->getBankAccount($movimentacao->bankAccountId);
+            
+            $href = $MIOLO->GetActionURL('finance', 'main:register:bankAccount', null, array('bankAccountIdS' => $movimentacao->bankAccountId));
+            $link = new MLink('link_', null, $href, 'clicando aqui', '_new');
+            
+            if ( is_null($infoBancoAccount->branchNumberDigit) )
+            {
+                throw new Exception(_M('Não foi possível inserir uma movimentação bancária para a conta selecionada. Por favor, verifique o cadastro da conta bancária.', $module));
+            }
+            else if ( !strlen($infoBancoAccount->wallet) > 0 )
+            {
+                throw new Exception(_M('Não foi possível inserir uma movimentação bancária para a conta selecionada. Por favor, verifique o campo carteira no cadastro da conta bancária ' . $link->generate() . '.', $module));
+            }
+
+            $finBankMovement = new FinBankMovement();
+            $finBankMovement->bankId = $infoBancoAccount->bankId;
+            $finBankMovement->value = $movimentacao->valorCheque;
+            $finBankMovement->valuePaid = $movimentacao->valorCheque;
+            $finBankMovement->branch = $infoBancoAccount->branchNumberDigit;
+            $finBankMovement->branchNumber = $infoBancoAccount->branchNumber;
+            $finBankMovement->wallet = $infoBancoAccount->wallet;
+            $finBankMovement->occurrencedate = $movimentacao->datastatus;
+            $finBankMovement->bankMovementStatusId = 4;
+
+            $return = $finBankMovement->save();
+        }
+    }
+    
+    /**
+      * Salva a movimentação e registra uma movimentação bancária de débito.
+      *
+      * @param Object $movimentacao - Dados da movimentação
+      * @return boolean - Retorna verdadeiro caso sucesso na operação
+     */
+    public function salvarMovimentacaoDeDevolucao($movimentacao)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $ok = $this->salvarMovimentacao($movimentacao);
+     
+        if ( $ok )
+        {
+            $busBankAccount = new BusinessFinanceBusBankAccount();
+            $infoBancoAccount = $busBankAccount->getBankAccount($movimentacao->bankAccountId);
+
+            $href = $MIOLO->GetActionURL('finance', 'main:register:bankAccount', null, array('bankAccountIdS' => $movimentacao->bankAccountId));
+            $link = new MLink('link_', null, $href, 'clicando aqui', '_new');
+            
+            if ( is_null($infoBancoAccount->branchNumberDigit) )
+            {
+                throw new Exception(_M('Não foi possível inserir uma movimentação bancária para a conta selecionada. Por favor, verifique o cadastro da conta bancária.', $module));
+            }
+            else if ( !strlen($infoBancoAccount->wallet) > 0 )
+            {
+                throw new Exception(_M('Não foi possível inserir uma movimentação bancária para a conta selecionada. Por favor, verifique o campo carteira no cadastro da conta bancária ' . $link->generate() . '.', $module));
+            }
+
+            $finBankMovement = new FinBankMovement();
+            $finBankMovement->bankId = $infoBancoAccount->bankId;
+            $finBankMovement->value = $movimentacao->valorCheque * (-1); // Valor negativo pois é movimentação de débito.
+            $finBankMovement->valuePaid = $movimentacao->valorCheque * (-1);
+            $finBankMovement->branch = $infoBancoAccount->branchNumberDigit;
+            $finBankMovement->branchNumber = $infoBancoAccount->branchNumber;
+            $finBankMovement->wallet = $infoBancoAccount->wallet;
+            $finBankMovement->occurrencedate = $movimentacao->datastatus;
+            $finBankMovement->bankMovementStatusId = 4;
+
+            $return = $finBankMovement->save();
+        }
+    }
+    
+    /**
+     * Salva a movimentação de repasse do cheque.
+     * 
+     * @param stdClass $movimentacao
+     * @return boolean
+     */
+    public function salvarMovimentacaoDeRepasse($movimentacao)
+    {
+        $ok = $this->salvarMovimentacao($movimentacao);
+        
+        // Salva os dados do novo eminente.
+        if ( $ok )
+        {
+            $finCheque = new FinCheque($movimentacao->chequeid);
+            $finCheque->eminente = $movimentacao->eminente;
+            $finCheque->cpf = $movimentacao->cpf;
+            $finCheque->cnpj = $movimentacao->cnpj;
+            
+            $ok = $finCheque->save();
+        }
+        
+        return $ok;
+    }
+    
+    /**
+     * Salva a movimentação de resgate do cheque.
+     * 
+     * @param stdClass $movimentacao
+     * @return boolean
+     */
+    public function salvarMovimentacaoDeResgate($movimentacao)
+    {
+        $ok = false;
+
+        // Obtém a pessoa de destino (dados do eminente) para o título
+        $pessoa = $this->obterDadosDoEminente($movimentacao);
+        $dataPessoa = $pessoa;
+                
+        if ( $dataPessoa )
+        {
+            if ( is_array($dataPessoa) )
+            {
+                $this->personId = $pessoa[0][0];
+                $dataPessoa = new stdClass();
+                $dataPessoa->personId = $this->personId;
+            }
+            else
+            {
+                $this->personId = $dataPessoa->personId;
+            }
+            
+            // Insere o título referente ao cheque.
+            if ( $this->inserirTituloReferenteAoCheque($movimentacao, $dataPessoa) )
+            {
+                $ok = $this->salvarMovimentacao($movimentacao);
+            }
+        }
+
+        return $ok;
+    }
+    
+    /**
+     * 
+     * @param stdClass $movimentacao
+     * @return type
+     */
+    private function obterDadosDoEminente($movimentacao)
+    {
+        $finCheque = new FinCheque($movimentacao->chequeid);
+
+        // Se o cpf ou cnpj foram registrados.
+        if ( !is_null($finCheque->cpf) || !is_null($finCheque->cnpj) )
+        {
+            $pessoa = $this->obterEminentePeloCpf($finCheque, true);
+
+            // Se nao existir cpf procura por cnpj
+            if ( is_null($pessoa) )
+            {
+                $pessoa = $this->obterEminentePeloCnpj($finCheque, true);
+
+                // Se não existir o cnpj insere nova pessoa.
+                if ( is_null($pessoa) )
+                {
+                    $pessoa = $this->inserirNovaPessoaParaEminente($finCheque);
+                }
+            }
+        }
+        else
+        {
+            throw new Exception(_M("Eminente não possui CPF ou CNPJ registrado."));
+        }
+
+        return $pessoa;
+    }
+    
+    /**
+     * Seta o nome da pessoa no campo eminente, caso encontre pelo cpf.
+     * 
+     * @param type $args
+     */
+    public function obterEminentePeloCpf($args = null, $dadosPessoa = false)
+    {
+        if ( $dadosPessoa )
+        {
+            $pessoa = null;
+            
+            if ( !is_null($args->cpf) )
+            {
+                $filters = new stdClass();
+                $filters->content = $args->cpf;
+                $filters->documentTypeId = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF');
+
+                $basDocument = new BusinessBasicBusDocument();
+                $pessoa = $basDocument->searchDocument($filters);
+            }
+            
+            return $pessoa;
+        }
+        
+        FrmChequesPopup::obterEminentePeloCpf($args);
+    }
+    
+    /**
+     * Seta o nome da pessoa jurídica no campo eminente, caso encontre pelo cnpj.
+     * 
+     * @param type $args
+     */
+    public function obterEminentePeloCnpj($args = null, $dadosPessoa = false)
+    {
+        if ( $dadosPessoa )
+        {
+            $pessoa = null;
+            
+            if ( !is_null($args->cnpj) )
+            {
+                $filters = new stdClass();
+                $filters->cnpj = $args->cnpj;
+
+                $basLegalPerson = new BusinessBasicBusLegalPerson();
+                $pessoa = $basLegalPerson->searchLegalPerson($filters);
+            }
+            
+            return $pessoa;
+        }
+        
+        return FrmChequesPopup::obterEminentePeloCnpj($args);
+    }
+    
+    /**
+     * 
+     * @param type $args
+     * @return type
+     */
+    private function inserirNovaPessoaParaEminente($args)
+    {
+        $data = new stdClass();
+        $data->name = $args->eminente;
+        
+        if ( !is_null($args->cpf) )
+        {
+            $basPerson = new BusinessBasicBusPerson();
+            $pessoa = $basPerson->insertPerson($data);
+        
+            $data = new stdClass();
+            $data->personId = $pessoa->personId;
+            $data->documentTypeId = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF');
+            $data->content = $args->cpf;
+            $data->isDelivered = DB_TRUE;
+            $data->isExcused = DB_FALSE;
+            
+            $basDocument = new BusinessBasicBusDocument();
+            $basDocument->insertDocument($data);
+        }
+        else
+        {
+            $data->cnpj = $args->cnpj;
+            $basLegalPerson = new BusinessBasicBusLegalPerson();
+            $pessoa = $basLegalPerson->insertLegalPerson($data);
+        }
+        
+        return $pessoa;
+    }
+    
+    /**
+     * Insere o título a receber referente ao cheque resgatado.
+     * 
+     * @param stdClass $movimentacao
+     * @param stdClass $dataPessoa
+     * @return type
+     */
+    private function inserirTituloReferenteAoCheque($movimentacao, $dataPessoa)
+    {
+        $ok = false;
+        
+        $busReceivableInvoice = new BusinessFinanceBusReceivableInvoice();
+        $busEntry = new BusinessFinanceBusEntry();
+        
+        // Insere o titulo referente a negociação
+        $invoice = new FinReceivableInvoice();
+        $invoice->personId = $dataPessoa->personId;
+        $invoice->costCenterId = $movimentacao->costCenterId;
+        $invoice->policyId = $movimentacao->policyId;
+        $invoice->parcelNumber = 1;
+        $invoice->emissionDate = SAGU::getDateNow();
+        $invoice->isCanceled = DB_FALSE;
+        $invoice->isImported = DB_FALSE;
+        $invoice->incomeSourceId = SAGU::getParameter('FINANCE', 'ACCORD_INCOME_SOURCE_ID');
+        $invoice->emissionTypeId = SAGU::getParameter('BASIC', 'DEFAULT_EMISSION_TYPE_ID');
+        $invoice->maturityDate = $movimentacao->data; //Data de vencimento
+        $invoice->referenceMaturityDate = $movimentacao->datastatus;
+        $invoice->bankAccountId = $movimentacao->bankAccountId;
+        $invoice->value = $this->getFormValue('valorCheque') ? $this->getFormValue('valorCheque') : $movimentacao->valorCheque; //valor nominal do titluo
+        $invoiceId = $busReceivableInvoice->insertReceivableInvoice($invoice);
+
+        if ( $invoiceId )
+        {
+            // Insere o lancamento referente a negociação
+            $entry = new FinEntry();
+            $entry->invoiceId = $invoiceId;
+            $entry->isAccounted = DB_FALSE;
+            $entry->creationType = 'A'; // gerado automaticamente pelo sistema
+            $entry->costCenterId = $movimentacao->costCenterId;
+            $entry->entryDate = SAGU::getDateNow();
+            $entry->operationId = $movimentacao->operationId;
+            $entry->value = $this->getFormValue('valorCheque') ? $this->getFormValue('valorCheque') : $movimentacao->valorCheque;
+            
+            $ok = $busEntry->insertEntry($entry);
+        }
+        
+        return $ok;
+    }
+    
+    /**
+     * Salva a movimentação do cheque.
+     * 
+     * @param stdClass $movimentacao
+     * @return boolean
+     */
+    private function salvarMovimentacao($movimentacao)
+    {
+        $finMovimentacaoCheque = new FinMovimentacaoCheque();
+        $finMovimentacaoCheque->movimentacaoChequeId = $movimentacao->movimentacaochequeid ? $movimentacao->movimentacaochequeid : NULL;
+        $finMovimentacaoCheque->chequeId = $movimentacao->chequeid;
+        $finMovimentacaoCheque->statusChequeId = $movimentacao->statuschequeid;
+        $this->statuschequeid = $movimentacao->statuschequeid;
+        $finMovimentacaoCheque->data = $movimentacao->datastatus;
+        $finMovimentacaoCheque->observacao = $movimentacao->observacao;
+        $finMovimentacaoCheque->valor = $movimentacao->statusValor;
+        $finMovimentacaoCheque->bankAccountId = $movimentacao->bankAccountId;
+        if ( $movimentacao->foiExcluido )
+        {
+            $finMovimentacaoCheque->foiExcluido = DB_TRUE;
+        }
+        
+        return $finMovimentacaoCheque->save();
+    }
+    
+    public function getTypesData($args = null)
+    {
+        $data = parent::getTypesData($args);        
+        $data = FinFluxoSolicitacaoRegistro::obterDadosDoRegistro($data);
+
+        $data->movimentacoesCheque = ( !is_null($data->movimentacoesCheque) ) ? $data->movimentacoesCheque : MSubDetail::getData('movimentacoesCheque');
+
+        return $data;
+    }
+    
+    public function tbBtnSave_click($sender = NULL)
+    {
+        // Data do formulário
+        $data = $this->getTypesData();
+        
+        // Registro atual do cheque
+        $cheque = new FinCheque($data->chequeId);
+        
+        $modificou = $cheque->bankId != $data->bankId ||
+                     $data->data != $cheque->data ||
+                     $data->agencia != $cheque->agencia ||
+                     $data->valorCheque != $cheque->valorCheque ||
+                     $data->tipo != $cheque->tipo;
+        
+        if ( !$modificou )
+        {
+            $sdData = array();
+            foreach ($data->movimentacoesCheque as $movimentacao )
+            {
+                if ( !MUtil::getBooleanValue($movimentacao->removeData) )
+                {
+                    $sdData[] = $movimentacao;
+                }
+            }
+
+            $finMovimentacao = new FinMovimentacaoCheque();
+            $finMovimentacao->chequeId = $data->chequeId;
+            $movimentacoes = $finMovimentacao->findMany();        
+            $dbData = array();
+            foreach ( $movimentacoes as $movimentacao )
+            {
+                if ( !MUtil::getBooleanValue($movimentacao->foiExcluido) )
+                {
+                    $dbData[] = $movimentacao;
+                }
+            }
+            
+            $modificou = count($sdData) != count($dbData);
+
+            if ( !$modificou )
+            {
+                foreach ( $sdData as $sdLine )
+                {
+                    foreach ( $dbData as $dbLine )
+                    {
+                        if ( $sdLine->movimentacaochequeid == $dbLine->movimentacaochequeid )
+                        {
+                            if ( $sdLine->datastatus != $dbLine->data ||
+                                 $sdLine->observacao != $dbLine->observacao )
+                            {
+                                $modificou = TRUE;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if ( $modificou )
+        {
+            FinFluxoAprovacaoConfiguracao::checarAcessoDoUsuarioAoProcesso(FinFluxoAprovacaoProcesso::EDICAO_DE_CHEQUES, $data->chequeId, $data);
+        }        
+        
+        $finCheque = $this->beforeSave($cheque);
+        $finCheque->chequeId = $data->chequeId;
+        $finCheque->numeroCheque = $data->numeroCheque;
+        $finCheque->data = $data->data;
+        $finCheque->agencia = $data->agencia;
+        $finCheque->valorCheque = $data->valorCheque;
+        $finCheque->tipo = $data->tipo;
+        $finCheque->bankId = $data->bankId;
+        if ( $finCheque->save() )
+        {
+            $MIOLO = MIOLO::getInstance();
+            $goto = $MIOLO->getActionURL('finance', 'main:process:controleCheques', null, array('chequeId' => $finCheque->chequeId));
+            $this->messageSuccess(SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED'), $goto);
+        }
+        else
+        {
+            $msg = _M('Erro executando a operação solicitada.', $module);
+            $errors = $this->busObject ? $this->busObject->getErrors() : array();
+
+            for ( $i=0; $i<count($errors); $i++ )
+            {
+                $msg .= '<br />' . $errors[$i];
+            }
+
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Erro', $module);
+            SAGU::error($msg, $goto, $caption);
+        }
+    }    
+}
+?>

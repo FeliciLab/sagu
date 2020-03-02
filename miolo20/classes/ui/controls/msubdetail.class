@@ -1,0 +1,1917 @@
+<?php
+session_start();
+
+/**
+ * This class implements the repetitive field using tableraw, session and ajax.
+ *
+ * @author Eduardo Bonfandini [eduardo@solis.coop.br]
+ * @author Jader Fiegenbaum [jader@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * @since
+ * Class created on 29/07/2008
+ *
+ * \b Organization: \n
+ * SOLIS - Cooperativa de Soluções Livres \n
+ *
+ * \b Copyright: \n
+ * Copyright (c) 2010 SOLIS - Cooperativa de Soluções Livres \n
+ *
+ * \b License: \n
+ * Licensed under GPLv2 (for further details read the COPYING file or http://www.gnu.org/licenses/gpl.html)
+ */
+
+global $MIOLO;
+$MIOLO->page->addScript('m_util_validate.js');
+
+class MSubDetail extends MBaseGroup
+{
+    private $item = 'item';
+    private $tableItem = '';
+    private $actions = '';
+    public $title = '';   // table Title
+    private $table = NULL;
+    private $fields = NULL;
+    private $showButtons = true;
+    private $hideButtonsOnAdd = false;
+    private $overflowWidth = NULL;
+    private $overflowType = NULL;
+    public $cleanFields = true;
+    public $cleanHiddenF = false;
+    public $actionCelWidth = false;
+    public $transaction = NULL;
+    protected $updateButton = false;
+    public $gValidator;
+    private $namesArray;
+    public $TotalFields;
+    public $defaultValueFields = array();
+
+    const jsGetFieldValues = "
+// get all data from form (the data is cleaned with getAjaxFields from class MTableRawSession)
+// ir uses escape, that convert characters to html entities
+function getFieldValues()
+{
+    var temp ='';
+    for (i=0; i<document.forms[0].elements.length; i++)
+    {
+        var field = document.forms[0].elements[i];
+
+        if ( field.type == 'checkbox' || field.type == 'radio' )
+        {
+            if ( field.checked )
+            {
+                temp += field.id + '|' + field.value + '#';
+            }
+        }
+        else if ( field.className == 'select m-multitext' )
+        {
+            temp += field.id + '|type_select-multiple';
+            for ( var j = 0; j < field.options.length; j++ )
+            {
+                if ( j != 0 )
+                {
+                    temp += '@';
+                }
+                temp += escape(field.options[j].value);
+            }
+            temp += '#';
+        }
+        else if ( field.className == 'm-multiline-field m-editor' )
+        {
+            eval('value = CKEDITOR.instances.' + field.id + '.getData();');
+            temp += field.id + '|' + escape(value) + '#';
+        }
+        else
+        {
+            temp += field.id + '|' + escape(field.value) + '#';
+        }
+    }
+    return temp;
+}
+";
+
+    const HIDDEN_FIELD_PREFIX_NAME = "MSubDetail";
+    const EVENT_ADD = 'add';
+    const EVENT_EDIT = 'edit';
+    const EVENT_REMOVE = 'remove';
+
+    /**
+     * MSubDetail constructor.
+     *
+     * @global MIOLO $MIOLO MIOLO instance.
+     * @param string $item Id.
+     * @param string $title Title.
+     * @param array $columns Array of MGridColumn.
+     * @param array $fields Array of MControl.
+     * @param array $opts Array of options.
+     * @param string $checkTransaction Transaction name.
+     */
+    public function __construct($item, $title, $columns=NULL, $fields=NULL, $opts=array('edit','remove'), $checkTransaction=NULL)
+    {
+        global $MIOLO;
+
+        parent::__construct($item, $title, null, $align);
+        $this->formMode = MControl::FORM_MODE_SHOW_SIDE;
+        $this->title = $title;
+        $module = MIOLO::getCurrentModule();
+        $this->item = $item;
+        $this->gValidator = new MSubDetailValidators();
+        // adds default column
+        $this->addColumn(_M('Actions'), 'left', true, '10%', true, '');
+
+        $jsGetFieldValues = self::jsGetFieldValues;
+        $code = <<<JS
+if ( document.getElementById('$item') )
+{
+    campos = new Array();
+    campos[0] = 'MSubDetail';
+    campos[1] = 'arrayItemTemp';
+    campos[2] = 'divResponse';
+
+    for ( i=0; i < 3; i++ )
+    {
+        if ( !document.getElementById(campos[i]) )
+        {
+            var input = document.createElement('input');
+            input.setAttribute('type', 'hidden');
+            input.setAttribute('id', campos[i]);
+            document.getElementById('$item').appendChild(input);
+        }
+    }
+}
+
+$jsGetFieldValues
+
+// Converts + => and make unescape (to receive data from server...
+function decode(str)
+{
+    if (str)
+    {
+        return unescape(str.replace(/\+/g, ' '));
+    }
+    else
+    {
+        return '';
+    }
+}
+
+function mioloDoAjax(phpFunction, responseElement)
+{
+    args = getFieldValues();
+    if (responseElement)
+    {
+        document.getElementById('divResponse').value = responseElement;
+    }
+    MIOLO_ajaxCall('$url ', 'POST', phpFunction, args, ajaxResponse, 'TEXT');
+}
+
+function ajaxResponse( result )
+{
+    MIOLO_parseAjaxJavascript(result);
+    divResponse = document.getElementById('divResponse').value;
+    document.getElementById(divResponse).innerHTML = result;
+}
+
+JS;
+        $this->page->addJsCode($code);
+
+        if ( $columns )
+        {
+            $this->setColumns($columns);
+        }
+
+        //FIXME Forces default value
+        $this->setHideButtonsOnAdd(false);
+
+        // FIXME: this was added to change the default $opts value to prevent
+        // session problems on some environments (with unknown reasons)
+        if ( $opts === true )
+        {
+            $opts = array('edit','remove');
+        }
+
+        $allowUpdate = TRUE;
+        $allowDelete = TRUE;
+        $allowInsert = TRUE;
+
+        if ( strlen($checkTransaction) )
+        {
+            $isAdmin = $MIOLO->checkAccess($checkTransaction, A_ADMIN, FALSE, TRUE);
+
+            if ( !$isAdmin )
+            {
+                $allowUpdate = $MIOLO->checkAccess($checkTransaction, A_UPDATE, FALSE, TRUE);
+                $allowDelete = $MIOLO->checkAccess($checkTransaction, A_DELETE, FALSE, TRUE);
+                $allowInsert = $MIOLO->checkAccess($checkTransaction, A_INSERT, FALSE, TRUE);
+
+                if ( !$allowInsert && !$allowUpdate )
+                {
+                    $this->setHideButtonsOnAdd(TRUE);
+                    $fields = array(new MDiv(NULL, NULL));
+                }
+                elseif ( !$allowInsert )
+                {
+                    $this->setHideButtonsOnAdd(TRUE);
+                }
+            }
+        }
+
+        if ( $fields )
+        {
+            $this->setFields($fields);
+        }
+
+        if ( $opts && is_array($opts) )
+        {
+            if ( in_array('edit', $opts) && $allowUpdate )
+            {
+                $this->addAction('editFromTable', 'table-edit.png', $module);
+            }
+
+            if ( in_array('duplicate', $opts) && $allowInsert )
+            {
+                $this->addAction('duplicateFromTable', 'table-duplicate.png', $module);
+            }
+
+            if ( in_array('remove', $opts) && $allowDelete )
+            {
+                $this->addAction('removeFromTable', 'table-delete.png', $module);
+            }
+
+            if ( in_array('up', $opts) )
+            {
+                $this->addAction('upFromTable', 'table-up.png', $module);
+            }
+
+            if ( in_array('down', $opts) )
+            {
+                $this->addAction('downFromTable', 'table-down.png', $module);
+            }
+
+            if ( in_array('noButtons', $opts) )
+            {
+                $this->showButtons = false;
+            }
+
+            if ( in_array('updateButton', $opts) )
+            {
+                $this->setUpdateButton(true);
+            }
+            if ( in_array('hideButtonsOnAdd', $opts) )
+            {
+                $this->setHideButtonsOnAdd(true);
+            }
+        }
+    }
+
+    /**
+     * @param boolean $show Set update button visibility
+     */
+    public function setUpdateButton($show)
+    {
+        $this->updateButton = $show;
+        $this->setSessionValue('updateButton', $show);
+    }
+    
+    /**
+     * @param boolean $show Set update button visibility
+     */
+    public function setHideButtonsOnAdd($hide)
+    {
+        $this->hideButtonsOnAdd = $hide;
+        $this->setSessionValue('hideButtonsOnAdd', $hide);
+        
+        if ( $hide )
+        {
+            $this->page->addJsCode("document.getElementById('divButtons').style.display = 'none';");
+        }
+    }
+
+    public function setSessionValue($var, $value, $itemForce = null)
+    {
+        if ( $this )
+        {
+            $item = $this->item;
+        }
+        if ( $itemForce )
+        {
+            $item = $itemForce;
+        }
+        $session = new MSession('CLASSNAME');
+        $object = $session->getValue($item);
+        $object->$var = $value;
+        $session->setValue($item, $object);
+    }
+
+    public function getSessionValue($var, $itemForce = null)
+    {
+        if ( $this )
+        {
+            $item = $this->item;
+        }
+        if ( $itemForce )
+        {
+            $item = $itemForce;
+        }
+        $session = new MSession('CLASSNAME');
+
+        $object = $session->getValue($item);
+
+        return $object->$var;
+    }
+
+    public function getUpdateButton($itemForce = null)
+    {
+        $value = self::getSessionValue('updateButton', $itemForce);
+        return $value;
+    }
+    
+    public function getHideButtonsOnAdd($itemForce = null)
+    {
+        $value = self::getSessionValue('hideButtonsOnAdd', $itemForce);
+        return $value;
+    }
+
+    public function setShowButtons($showButtons)
+    {
+        $this->showButtons = $showButtons;
+    }
+
+    public function getShowButtons()
+    {
+        return $this->showButtons();
+    }
+
+    /**
+     * Make the table flow inside a div.
+     *
+     * @param integer $width in pixels (without 'px');
+     * @param string  $type the type of overflow, see CSS overflow declaration
+     */
+    public function setOverFlowWidth($width, $type = 'auto')
+    {
+        $this->overflowWidth = $width;
+        $this->overflowType = $type;
+    }
+
+    protected function processNamesArray($field)
+    {
+        if ( is_array($field) )
+        {
+            foreach ( $field as $value )
+            {
+                $this->processNamesArray($value);
+            }
+        }
+        elseif ( $field instanceof MDiv )
+        {
+            $this->processNamesArray($field->getInner());
+        }
+        elseif ( $field instanceof MContainer )
+        {
+            $this->processNamesArray($field->getControls());
+        }
+        elseif ( $field->name )
+        {
+            $this->namesArray[] = $field->name;
+        }
+        return $this->namesArray;
+    }
+
+    /**
+     * Store the default values of the fields on defaultValueFields attributes (recursive).
+     *
+     * @param array $fields Fields array.
+     */
+    public function setDefaultValueFields($fields)
+    {
+        foreach ( (array) $fields as $field )
+        {
+            if ( $field instanceof MRadioButton || $field instanceof MCheckBox )
+            {
+                $this->defaultValueFields[] = $dvField = new MTextField("MSubDetail_defaultValue_$field->id", $field->checked ? $field->value : NULL);
+                $dvField->addBoxStyle('display', 'none');
+            }
+            elseif ( $field instanceof MDiv )
+            {
+                $this->setDefaultValueFields($field->getInner());
+            }
+            elseif ( $field instanceof MContainer )
+            {
+                $this->setDefaultValueFields($field->getControls());
+            }
+            elseif ( $field instanceof MControl && strlen($field->id) )
+            {
+                $this->defaultValueFields[] = $dvField = new MTextField("MSubDetail_defaultValue_$field->id", $field->value);
+                $dvField->addBoxStyle('display', 'none');
+            }
+        }
+    }
+
+    public function setFields($fields)
+    {
+        if ( $fields )
+        {
+            $this->setDefaultValueFields($fields);
+            $fields = array_merge($fields, $this->defaultValueFields);
+
+            $this->fields = $fields;
+            $container = new MVContainer(NULL, $fields);
+            $container->width = '100%';
+            $this->setControls(array( $container ));
+            $fieldNames = $this->processNamesArray($fields);
+            $this->setSessionValue('fieldNames', $fieldNames);
+        }
+    }
+
+    public function setColumns($columns)
+    {
+        unset($tempColumns);
+        if ( $columns && is_array($columns) )
+        {
+            foreach ( $columns as $line => $info )
+            {
+                if ( $info->visible == true )
+                {
+                    $titles[] = $info->title;
+                    unset($temp);
+                    $temp->align = $info->align;
+                    $temp->title = $info->title;
+                    $temp->width = $info->width;
+                    $temp->visible = $info->visible;
+                    $temp->options = $info->options;
+                    $temp->replace = $info->replace;
+                    $tempColumns[] = $temp;
+                }
+            }
+        }
+        $this->setSessionValue('titles', $titles);
+        $this->setSessionValue('columns', $tempColumns);
+    }
+
+    private function addColumn($title, $align='left', $nowrap='notImplemented', $width = NULL, $visible = TRUE, $options = NULL, $order = 'notImplemented', $filter='notImplemented')
+    {
+        //Inserir na sessão tambem
+        $this->columns[] = new MGridColumn($title, $align, $nowrap, $width, $visible, $options, $order, $filter);
+
+        if ( $visible == true )
+        {
+            $this->titles[] = $title;
+        }
+    }
+
+    /**
+     * Iterate through the fields to generate their validator to make the masks 
+     * work.
+     *
+     * @param array $fields Array of MIOLO components.
+     * @param array $validators Array of MIOLO validators.
+     */
+    public function setFieldValidators($fields, $validators)
+    {
+        foreach ( (array) $fields as $field )
+        {
+            if ( $field instanceof MContainer )
+            {
+                $this->setFieldValidators($field->getControls(), $validators);
+            }
+            elseif ( $field instanceof MDiv )
+            {
+                $this->setFieldValidators($field->getInner(), $validators);
+            }
+            elseif ( is_object($field) && !$field->validator )
+            {
+                $validator = $this->getFieldValidator($field->name, $validators);
+
+                if ( $validator )
+                {
+                    if ( $validator->mask )
+                    {
+                        $field->addAttribute('onkeypress', "return MUtil_Validate_Mask('$validator->mask', event)");
+                        $field->addAttribute('onkeyup', "MUtil_Apply_Mask('$field->name', '$validator->mask', event)");
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Set the validators
+     *
+     * @param $validators
+     */
+    public function setValidators($validators = null)
+    {
+        if ( is_null($validators) )
+        {
+            $this->setSessionValue('validators', '', $this->item);
+            return;
+        }
+
+        $this->setFieldValidators($this->fields, $validators);
+
+        $this->gValidator->setValidators($validators);
+        $valids = $this->gValidator->transformToStdClasses();
+        $this->setSessionValue('validators', $valids, $this->item);
+    }
+
+    /**
+     * Set validators on Ajax calls.
+     *
+     * @param array $validators Validators array.
+     * @param string $item SubDetail id.
+     */
+    public static function setValidatorsAjax($validators, $item)
+    {
+        $gValidator = new MSubDetailValidators();
+        $gValidator->setValidators($validators);
+        $valids = $gValidator->transformToStdClasses();
+        self::setSessionValue('validators', $valids, $item);
+    }
+
+    /**
+     * Get validators
+     *
+     * @return $validators (Array)
+     */
+    public function getValidators($itemForce = null)
+    {
+        if ( $this )
+        {
+            $item = $this->item;
+        }
+        if ( $itemForce )
+        {
+            $item = $itemForce;
+        }
+        $validators = self::getSessionValue('validators', $item);
+        return MSubDetailValidators::transformToMValidators($validators);
+    }
+
+    /**
+     * Get the field validator.
+     *
+     * @param string $name Field name.
+     * @param array $validators Array of validators.
+     * @return object MValidator
+     */
+    public function getFieldValidator($name, $validators)
+    {
+        $fieldValidator = NULL;
+
+        foreach ( $validators as $validator )
+        {
+            if ( $validator && $validator->field == $name )
+            {
+                $fieldValidator = $validator;
+                break;
+            }
+        }
+
+        return $fieldValidator;
+    }
+
+    public function addAction($phpFunction, $img, $imgModule)
+    {
+        if ( $this )
+        {
+            $action->event = "AddTableResult" . $this->item;
+            $action->jsFunction = "AddTableResult" . $this->item;
+            $action->phpFunction = $phpFunction;
+            $action->img = $img;
+            $action->imgModule = $imgModule;
+            $actions = $this->getSessionValue('actions');
+            $actions[$phpFunction] = $action;
+            $this->setSessionValue('actions', $actions);
+        }
+    }
+
+    protected function generateActionString($i, $itemForce=NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $url = str_replace('&amp;', '&', $MIOLO->getCurrentURL());
+
+        if ( $this )
+        {
+            $item = $this->item;
+        }
+        if ( $itemForce )
+        {
+            $item = $itemForce;
+        }
+
+        $actions = self::getSessionValue('actions', $item);
+
+        unset($tempString);
+        unset($result);
+
+        if ( $actions )
+        {
+            foreach ( $actions as $line => $info )
+            {
+                unset($link);
+                unset($linkImg);
+                $tempString = "arrayItem|$i#sessionItem|$item#";
+                $link = 'javascript:document.getElementById(\'MSubDetail\').value=\'' . $item . '\';document.getElementById(\'arrayItemTemp\').value=\'' . $i . '\';mioloDoAjax(\'' . $info->phpFunction . '\')';
+                $linkImg = new MImageLink("link$i", null, $link, $MIOLO->getUI()->getImage('', $info->img));
+                $result .= $linkImg->generate();
+            }
+        }
+        return $result;
+    }
+
+    /**
+     * getDataItem all itens of table/session, organized with arrayItem
+     * Each time you call this function the session is cleanned up and rewritten
+     */
+    public function getData($item = NULL)
+    {
+        if ( $this && !$item )
+        {
+            $item = $this->item;
+        }
+        $itens = $_SESSION['MSubDetail'][$item];
+        if ( !$itens )
+        {
+            $itens = $_SESSION['MSubDetail'][$item][0]; //bug??/
+        }
+        unset($_SESSION['MSubDetail'][$item]); //clearData
+        // rewrite the session with correct arrayItem values
+        unset($itens['event']);
+        if ( $itens )
+        {
+            $x = 0;
+            foreach ( $itens as $line )
+            {
+                $line->arrayItem = $x;
+                $x++;
+                $_SESSION['MSubDetail'][$item][] = $line;
+            }
+        }
+        return $_SESSION['MSubDetail'][$item];
+    }
+
+    /**
+     * getDataItem one item from table
+     *
+     * @param arrayItem the index of the item you wanna take
+     */
+    public function getDataItem($arrayItem, $itemForce=NULL)
+    {
+        if ( $this )
+        {
+            $item = $this->item;
+        }
+        else
+        {
+            $item = $itemForce;
+        }
+
+        $itens = $_SESSION['MSubDetail'][$item];
+
+        if ( $itens )
+        {
+            foreach ( $itens as $line => $info )
+            {
+                if ( $info->arrayItem == $arrayItem )
+                {
+                    return $info;
+                }
+            }
+        }
+    }
+
+    /**
+     * Set one item to table
+     *
+     * @param arrayItem the index to be seted
+     * @param $obj the object to put into table
+     */
+    public function defineData($arrayItem, $obj, $item=NULL)
+    {
+        if ( $this && !$item )
+        {
+            $item = $this->item;
+        }
+        $_SESSION['MSubDetail'][$item][$arrayItem] = $obj;
+    }
+
+    /**
+     * addData some item to session/Table (You can pass an array or one item)
+     * It is a recursive function.
+     */
+    public function addData($data, $itemForce = NULL)
+    {
+        if ( $this )
+        {
+            $item = $this->item;
+        }
+        if ( $itemForce )
+        {
+            $item = $itemForce;
+        }
+        if ( $data )
+        {
+            if ( is_array($data) )
+            {
+                foreach ( $data as $line => $info )
+                {
+                    MSubDetail::addData($info, $item);
+                }
+            }
+            else
+            {
+                $_SESSION['MSubDetail'][$item][] = $data;
+            }
+        }
+    }
+
+    /**
+     * Define the Data of the field.
+     * It will clearData e add the passed data
+     *
+     * @param (array) the array of objects with all data
+     */
+    public function setData($data, $itemForce=NULL)
+    {
+        if ( $itemForce )
+        {
+            MSubDetail::clearData($itemForce);
+            MSubDetail::addData($data, $itemForce);
+            MSubDetail::getData($itemForce);
+        }
+        else
+        {
+            $this->clearData();
+            $this->addData($data);
+            $this->getData();
+        }
+    }
+
+    /**
+     * clearData all itens of the table session
+     */
+    public function clearData($itemForce=NULL)
+    {
+        if ( $this )
+        {
+            $item = $this->item;
+        }
+        if ( $itemForce )
+        {
+            $item = $itemForce;
+        }
+        unset($_SESSION['MSubDetail'][$item]);
+    }
+
+    /**
+     *  removeData some item from Table, you need an Id.
+     *  This id can be found is $item->arrayItem
+     */
+    public function removeData($arrayItem)
+    {
+        unset($_SESSION['MSubDetail'][$this->item][$arrayItem]);
+    }
+
+    public function generateRequiredLabels($requireds, $fields=NULL)
+    {
+        if ( !$fields )
+        {
+            foreach ( $this->fields as $field )
+            {
+                if ( $field instanceof MContainer )
+                {
+                    $this->generateRequiredLabels($requireds, $field->getControls());
+                    continue;
+                }
+
+                if ( in_array($field->id, $requireds) )
+                {
+                    $label = new MFieldLabel($field->id, $field->label);
+                    $label->setClass(MControl::CLASS_CAPTION_REQUIRED);
+                    $field->label = $label->generate();
+                }
+            }
+        }
+        else
+        {
+            foreach ( $fields as $field )
+            {
+                if ( in_array($field->id, $requireds) )
+                {
+                    $label = new MFieldLabel($field->id, $field->label);
+                    $label->setClass(MControl::CLASS_CAPTION);
+                    $label->setClass(MControl::CLASS_CAPTION_REQUIRED);
+                    $field->label = $label->generate();
+                }
+            }
+        }
+    }
+
+    public function generate($doNothing=false, $itemForce = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $url = str_replace('&amp;', '&', $MIOLO->getCurrentURL());
+        $MIOLO->getRequiredJS4Ajax();
+
+        // add a '*' to required labels
+        if ( $this )
+        {
+            $validators = $this->getValidators();
+            
+            $requireds = array();
+            if ( is_array($validators) )
+            {
+                foreach ( $validators as $validator )
+                {
+                    if ( $validator->type == 'required' )
+                    {
+                        $requireds[] = $validator->field;
+                    }
+                }
+            }
+
+            $this->generateRequiredLabels($requireds);
+        }
+
+        if ( $this )
+        {
+            $item = $this->item;
+        }
+        if ( $itemForce )
+        {
+            $item = $itemForce;
+        }
+        if ( !$item )
+        {
+            return '';
+        }
+
+        $jsGetFieldValues = self::jsGetFieldValues;
+
+        $code = <<<SCRIPT
+<script>
+$jsGetFieldValues
+
+// Converts + => and make unescape (to receive data from server...
+function decode(str)
+{
+    if (str)
+    {
+        return unescape(str.replace(/\+/g, ' '));
+    }
+    else
+    {
+        return '';
+    }
+}
+function mioloDoAjax(phpFunction, responseElement)
+{
+    args = getFieldValues();
+    if (responseElement)
+    {
+        document.getElementById('divResponse').value = responseElement;
+    }
+    MIOLO_ajaxCall('$url', 'POST', phpFunction, args, ajaxResponse, 'TEXT');
+}
+
+function ajaxResponse( result )
+{
+    MIOLO_parseAjaxJavascript(result);
+    divResponse = document.getElementById('divResponse').value;
+    document.getElementById(divResponse).innerHTML = result;
+
+}
+
+</script>
+SCRIPT;
+
+
+        $titles = MSubDetail::getSessionValue('titles', $item);
+        $actions = MSubDetail::getSessionValue('actions', $item);
+        $columns = MSubDetail::getSessionValue('columns', $item);
+
+        if ( $actions )
+        {
+            $titles = array_merge(array( _M('Actions') ), $titles);
+
+            unset($temp);
+            $temp->align = 'left';
+            $temp->title = _M('Actions');
+            $temp->width = '';
+            $temp->visible = true;
+            $temp->options = '';
+
+            $columns = array_filter($columns);
+            $columns = array_merge(array( $temp ), $columns); //limpa
+        }
+
+        $itens = self::getData($item);
+
+        $table = new MTableRaw('', array(), $titles);
+        $table->setAlternate(true);
+        $table->addAttribute('width', '100%');
+        $table->addBoxStyle('width', '100%');
+        $table->addStyle('width', '100%');
+        $table->addAttribute("style", "width:100%");
+        $table->addAttribute("cellspacing", "0");
+        $table->setCellAttribute(0, 0, "width", 100);
+
+        if ( $this )
+        {
+            if ( $this->showButtons )
+            {
+                $addTitle = _M('Add');
+                if ( $this->updateButton )
+                {
+                    $js = "document.getElementById( 'MSubDetail' ).value = '$item';
+					                mioloDoAjax( 'forceAddToTable' )";
+                    $buttons[] = new MButton('addData' . $item, $addTitle, $js);
+                    $js = "document.getElementById( 'MSubDetail' ).value = '$item';
+					                 mioloDoAjax( 'addToTable' )";
+                    $buttons[] = new MButton('updateData' . $item, _M('Update'), $js);
+                }
+                else
+                {
+                    $js = "document.getElementById( 'MSubDetail' ).value = '$item'; mioloDoAjax('addToTable');";
+                    $buttons[] = new MButton('addData' . $item, $addTitle, $js);
+                }
+                $js = "document.getElementById('MSubDetail').value = '$item'; mioloDoAjax( 'clearTableFields'); document.getElementById('addData$item').innerHTML = '$addTitle'";
+                $buttons[] = new MButton('clearData' . $item, _M('Clear'), $js);
+                $divButtons = new MDIV('divButtons', $buttons);
+                $divButtons->addBoxStyle('width', '100%');
+                $divButtons->addBoxStyle('text-align', 'center');
+
+                $this->addControl($divButtons);
+            }
+        }
+
+        if ( $itens )
+        {
+            $tablePos = 0;
+
+            foreach ( $itens as $i => $info )
+            {
+                if ( !$info->removeData )
+                {
+                    unset($encodedInfo);
+                    foreach ( $info as $l => $i )
+                    {
+                        if ( is_string($i) )
+                        {
+                            $encodedInfo->$l = urlencode($i);
+                            $encodedInfo->$l = str_replace("\n", '\n', $encodedInfo->$l);
+                        }
+                        else
+                        {
+                            $encodedInfo->$l = $i;
+                        }
+                    }
+
+                    unset($args);
+
+                    if ( $actions )
+                    {
+                        $actions[$i] = self::generateActionString($i, $item);
+                        $args[] = $actions[$info->arrayItem];
+                    }
+
+                    foreach ( $columns as $line => $column )
+                    {
+                        if ( $column->visible == true )
+                        {
+                            if ( $column->options )
+                            {
+                                $opt = $column->options;
+
+                                if ( $column->replace )
+                                {
+                                    $args[] = $column->replace[$info->$opt];
+                                }
+                                elseif ( strpos($info->$opt, 'type_select-multiple') !== false )
+                                {
+                                    $value = substr($info->$opt, strlen('type_select-multiple'));
+                                    $itens[$i]->$opt = explode('@', $value);
+                                    $args[] = str_replace('@', '<br/>', $value);
+                                }
+                                else
+                                {
+                                    $args[] = $info->$opt;
+                                }
+
+                                if ( $column->align )
+                                {
+                                    $table->setCellAttribute($tablePos, $line, 'align', $column->align);
+                                }
+                                if ( $column->width )
+                                {
+                                    $table->setCellAttribute($tablePos, $line, 'width', $column->width);
+                                }
+                            }
+                        }
+                        
+                        $table->setCellAttribute($i, $line, 'id', 'MTableRow-' . $i . '-' . $line);
+                    }
+                    
+                    $tableData[] = $args;
+                    
+                    $tablePos ++;
+                }
+            }
+        }
+        $table->array = $tableData;
+        $temp = $table->generate();
+
+        $tempData = self::getData($item);
+        if ( $tempData )
+        {
+            foreach ( $tempData as $line => $info )
+            {
+                unset($stringTemp);
+
+                foreach ( $columns as $l => $i )
+                {
+                    $options = $i->options;
+                    if ( $options )
+                    {
+                        if ( strpos($info->$options, 'type_select-multiple') !== false )
+                        {
+                            $value = implode('@', $info->$options);
+                            $stringTemp .= empty($value) ? "$options=$value&" : "$options=&";
+                        }
+                        else
+                        {
+                            $stringTemp .= $options . '=' . urlencode($info->$options) . '&';
+                        }
+                    }
+                }
+                unset($tempField);
+                $name = get_class($this);
+                $tempField = new MHiddenField(self::HIDDEN_FIELD_PREFIX_NAME . "_{$item}[]", $stringTemp);
+                $temp .= $code;
+                $temp .= $tempField->generate();
+            }
+        }
+
+        if ( !$itemForce )
+        {
+            $div = new MDiv('div' . $item, $temp);
+
+            if ( $this->overflowWidth )
+            {
+                $div->addBoxStyle('overflow-x', $this->overflowType);
+                $div->addBoxStyle('width', $this->overflowWidth . 'px');
+            }
+            else
+            {
+                $div->addBoxStyle('width', '100%');
+            }
+            $this->controls->add($div);
+            return parent::generate();
+        }
+        else
+        {
+            return $temp;
+        }
+    }
+
+    /**
+     * Update the visual Component with some data. Make a ajax response
+     *
+     * @param array $data array of object
+     * @param string $itemForce the name of the table
+     */
+    public function update($data = NULL, $itemForce)
+    {
+        $MIOLO = MIOLO::getInstance();
+        MSubDetail::setData($data, $itemForce);
+        $generate = MSubDetail::generate(false, $itemForce);
+        SdsetResponse($generate, 'div' . $itemForce);
+    }
+
+    public function checkRemovedItem($field, $line)
+    {
+        return (isset($_SESSION['MSubDetail'][$field][$line]->removeData) && $_SESSION['MSubDetail'][$field][$line]->removeData == 1);
+    }
+
+    public function prepareArgs($formData)
+    {
+        $f = null;
+
+        foreach ( $formData as $index => $fullValue )
+        {
+            if ( ereg(self::HIDDEN_FIELD_PREFIX_NAME . "_", $index) )
+            {
+                $fieldIndex = str_replace(self::HIDDEN_FIELD_PREFIX_NAME . "_", "", $index);
+
+                if ( !is_array($fullValue) )
+                {
+                    continue;
+                }
+
+                foreach ( $fullValue as $x => $content )
+                {
+                    $values = explode("&", urldecode($content));
+
+                    if ( !is_array($values) )
+                    {
+                        continue;
+                    }
+
+                    foreach ( $values as $fieldContent )
+                    {
+                        list($fieldName, $fieldValue) = explode("=", $fieldContent);
+
+                        if ( !strlen($fieldName) )
+                        {
+                            continue;
+                        }
+                        $fieldValue = strlen($fieldValue) ? $fieldValue : null;
+
+                        if ( !MSubDetail::checkRemovedItem($fieldIndex, $x) )
+                        {
+                            eval("\$f->{$fieldIndex}[{$x}]->{$fieldName} = \$fieldValue;");
+                        }
+                    }
+                }
+            }
+            else
+            {
+                $f->$index = $fullValue;
+            }
+        }
+
+        return $f;
+    }
+
+    function sumFields($fields, $float=false)
+    {
+        if ( is_array($fields) )
+        {
+            $_SESSION['MSubDetail']['field_' . $this->item] = $fields;
+        }
+        $_SESSION['MSubDetail']['type_' . $this->item] = $float;
+        return true;
+    }
+
+    public function addActionEvent($action, $function, $class = null)
+    {
+        $_SESSION[$this->item]->event[$action]->function = $function;
+        $_SESSION[$this->item]->event[$action]->class = $class;
+    }
+    
+    
+    public static function parseMultiTextValue($value)
+    {
+        $codeValue = array();
+        $data = explode('<br/>', $value);
+
+        foreach ( (array) $data as $line )
+        {
+            $string = trim($line, '[]');
+            $codeValue[] = explode('] [', $string);
+        }
+
+        return $codeValue;
+    }
+}
+
+/**
+ * Beginning of function declarations which make subdetail works with ajax
+ */
+function autoRemoveAction($data)
+{
+    $MIOLO = MIOLO::getInstance();
+    $object = $data->MSubDetail;
+    $_SESSION['MSubDetail'][$object][$data->arrayItemTemp]->removeData = true;
+    SdsetResponse(MSubDetail::generate(false, $object), 'div' . $object, "document.getElementById('arrayItemTemp').value = '';");
+}
+
+function autoForceAddAction($args)
+{
+    $args->arrayItemTemp = null;
+    autoAddAction($args);
+}
+
+function autoAddAction($data, $object = NULL, $errors = NULL)
+{
+    if ( $_SESSION['MSubDetail']['type_' . $data->MSubDetail] == 'TRUE' )
+    {
+        formatFieldToFloat($data, $data->MSubDetail);
+    }
+
+    unset($temp);
+    $validators = MSubDetail::getValidators($data->MSubDetail);
+    
+    $hideButtonsOnAdd = MSubDetail::getHideButtonsOnAdd($data->MSubDetail);
+
+    $gValidator = new MSubDetailValidators();
+    $_errors = $gValidator->validate($data, $validators);
+    if ( $_errors )
+    {
+        $errors = ($errors) ? array_merge($errors, $_errors) : $_errors;
+    }
+
+    if ( $errors )
+    {
+        $temp.= '<span style="color: red;">';
+        $temp.= '<b>' . _M('The following errors were found') . ':</b>';
+        $temp.= '<ul>';
+        foreach ( $errors as $value )
+        {
+            $temp.= '<li>' . $value . '</li>';
+        }
+        $temp.= '</ul>';
+        $temp.= '</span>';
+    }
+    else
+    {
+        foreach ( $data as $id => $value )
+        {
+            if ( substr($value, 0, strlen('type_select-multiple')) == 'type_select-multiple' )
+            {
+                $multiples[$id] = str_replace('@', '<br/>', substr($value, strlen('type_select-multiple')));
+            }
+        }
+
+        if ( !empty($multiples) )
+        {
+            foreach ( $multiples as $id => $value )
+            {
+                $data->$id = $value;
+            }
+        }
+
+        if ( $data->arrayItemTemp || $data->arrayItemTemp === '0' )
+        {
+            MSubDetail::defineData($data->arrayItemTemp, $data, $data->MSubDetail);
+        }
+        else
+        {
+            MSubDetail::addData($data, $data->MSubDetail);
+        }
+        $fieldNames = MSubDetail::getSessionValue('fieldNames', $data->MSubDetail);
+
+        foreach ( $fieldNames as $value )
+        {
+            $script .= <<<JS
+var element = document.getElementById('{$value}');
+var defaultValue = '';
+var defaultValueField = document.getElementById('MSubDetail_defaultValue_{$value}');
+
+if ( defaultValueField )
+{
+    defaultValue = defaultValueField.value;
+}
+
+if ( element && '{$value}'.substr(0, 24) != 'MSubDetail_defaultValue_' )
+{
+    if ( element.type == 'checkbox' || element.type == 'radio' )
+    {
+        if ( defaultValueField )
+        {
+            element.checked = defaultValueField.value != '';
+        }
+        else
+        {
+            element.checked = false;
+        }
+    }
+    else if ( element.type != 'hidden' && element.className != 'm-readonly' )
+    {
+        if ( element.className == 'select m-multitext' )
+        {
+            element.innerHTML = defaultValue;
+        }
+        else if ( element.className == 'm-multiline-field m-editor' )
+        {
+            eval('value = CKEDITOR.instances.' + element.id + '.setData("");');
+            element.value = defaultValue;
+        }
+        else if ( element.tagName == 'SELECT' && defaultValue == '' && element.options && element.options[0] )
+        {
+            element.value = element.options[0].value;
+        }
+        else
+        {
+            element.value = defaultValue;
+        }
+    }
+}
+
+if ( document.getElementById('{$value}_sel') )
+{
+    document.getElementById('{$value}_sel').value = defaultValue;
+}
+JS;
+        }
+        $script .= "document.getElementById('arrayItemTemp').value='';";
+        $addTitle = _M('Add');
+        $script .= "document.getElementById('addData{$data->MSubDetail}').innerHTML = '$addTitle';";
+
+        if ( $hideButtonsOnAdd )
+        {
+            $script .= "document.getElementById('divButtons').style.display = 'none';";
+        }
+
+    }
+    $MIOLO = MIOLO::getInstance();
+    //$MIOLO->page->onload($script);
+    $temp .= MSubDetail::generate(false, $data->MSubDetail);
+    SdsetResponse($temp, 'div' . $data->MSubDetail, $script);
+}
+
+/**
+ * Clean field values
+ *
+ * @param object $args
+ */
+function autoClearAction($args)
+{
+    $fieldNames = MSubDetail::getSessionValue('fieldNames', $args->MSubDetail);
+
+    if ( is_array($fieldNames) )
+    {
+        foreach ( $fieldNames as $line => $info )
+        {
+            $temp.= <<<JS
+var element = document.getElementById('{$info}');
+
+if( element.type != 'hidden' &&
+    element.className != 'm-readonly' &&
+    element.type != 'checkbox' &&
+    element.type != 'radio' )
+{
+    element.value = '';
+
+    if ( element.className == 'm-multiline-field m-editor' )
+    {
+        eval('value = CKEDITOR.instances.$info.setData("");');
+    }
+}
+else if ( element.className == 'select m-multitext' )
+{
+    element.innerHTML = '';
+}
+JS;
+
+            // MComboBox
+            $temp.= "
+		if( document.getElementById('{$info}_sel') )
+		{
+		document.getElementById('{$info}_sel').value = '';
+		}";
+        }
+    }
+
+    $temp .= "document.getElementById('arrayItemTemp').value='';";
+
+    if ( MSubDetail::getHideButtonsOnAdd($args->MSubDetail) )
+    {
+        $temp .= "document.getElementById('divButtons').style.display = 'none';";
+    }
+
+    SdsetResponse(MSubDetail::generate(false, $args->MSubDetail), 'div' . $args->MSubDetail, $temp);
+}
+
+function autoUpAction($data)
+{
+    $object = $data->MSubDetail;
+    $data->sessionItem = $data->MSubDetail;
+    $nivel = $data->arrayItem;
+    if ( !$nivel )
+    {
+        $nivel = $data->arrayItemTemp;
+    }
+    if ( $nivel != 0 )
+    {
+        $tempObjAtual = MSubDetail::getDataItem($nivel, $object);
+        $tempObjSuperior = MSubDetail::getDataItem($nivel - 1, $object);
+        MSubDetail::defineData($nivel - 1, $tempObjAtual, $object);
+        MSubDetail::defineData($nivel, $tempObjSuperior, $object);
+    }
+    $MIOLO = MIOLO::getInstance();
+    SdsetResponse(MSubDetail::generate(false, $object), 'div' . $data->MSubDetail);
+}
+
+function autoDownAction($data)
+{
+    $object = $data->MSubDetail;
+    $data->sessionItem = $data->MSubDetail;
+    $nivel = $data->arrayItem;
+    if ( !$nivel )
+    {
+        $nivel = $data->arrayItemTemp;
+    }
+    $item = MSubDetail::getData($object);
+    if ( $nivel < count($item) - 1 )
+    {
+        $tempObjAtual = MSubDetail::getDataItem($nivel, $object);
+        $tempObjInferior = MSubDetail::getDataItem($nivel + 1, $object);
+        MSubDetail::defineData($nivel + 1, $tempObjAtual, $object);
+        MSubDetail::defineData($nivel, $tempObjInferior, $object);
+    }
+    $MIOLO = MIOLO::getInstance();
+    SdsetResponse(MSubDetail::generate(false, $object), 'div' . $data->MSubDetail);
+}
+
+function getMultipleSelectData($args)
+{
+    $multiples = array();
+
+    foreach ( $args as $id => $a )
+    {
+        if ( $a == 'type_select-multiple' )
+        {
+            $value = '';
+            $url = $args->{"MSubDetail_personellData[]"};
+
+            $data = explode('&', $url);
+
+            foreach ( $data as $param )
+            {
+                if ( strpos($param, $id) !== false )
+                {
+                    list($param, $value) = explode('=', $param);
+                    break;
+                }
+            }
+
+            $multiples[$id] = $value;
+        }
+    }
+
+    return $multiples;
+}
+
+/**
+ * Edit function
+ *
+ * @param object $data ajax miolo object
+ */
+function autoEditAction($args, $values=NULL)
+{
+    if ( !$values )
+    {
+        $values = MSubDetail::getDataItem($args->arrayItemTemp, $args->MSubDetail);
+    }
+    
+    $updateButton = MSubDetail::getUpdateButton($args->MSubDetail);
+    $hideButtonsOnAdd = MSubDetail::getHideButtonsOnAdd($args->MSubDetail);
+    $fieldNames = MSubDetail::getSessionValue('fieldNames', $args->MSubDetail);
+    if ( is_array($fieldNames) )
+    {
+
+        foreach ( $fieldNames as $line => $info )
+        {
+            $value = $values->$info;
+            $value = str_replace("\n", '\n', $value);
+            $value = str_replace("\r", '\r', $value);
+            $value = str_replace("'", "\'", $value);
+            $value = str_replace('"', '\"', $value);
+
+            if ( is_array($value) )
+            {
+                $value = implode('<br/>', $value);
+            }
+
+            $temp .= <<<JS
+
+var field = document.getElementById('$info');
+
+try
+{
+    if ( field.type == 'checkbox' )
+    {
+        field.checked = field.value == '$value';
+    }
+    else if ( field.type == 'radio' )
+    {
+        var radios = document.getElementsByName('$info');
+
+        for ( i = 0; i < radios.length; i++ )
+        {
+            radios[i].checked = radios[i].value == '$value';
+        }
+    }
+    else if ( field.className == 'm-multiline-field m-editor' )
+    {
+        eval('var editor = CKEDITOR.instances.' + field.id + ';');
+        editor.setData('$value');
+        field.value = '$value';
+    }
+    else if ( field.className == 'select m-multitext' )
+    {
+        var v = '$value'.split('<br/>');
+
+        field.innerHTML = '';
+        for ( i=0; i<v.length; i++)
+        {
+            if ( !v[i] )
+            {
+                continue;
+            }
+
+            option = document.createElement('option');
+            option.value = v[i];
+            option.innerHTML = v[i];
+
+            field.appendChild(option);
+        }
+        
+    }
+    else
+    {
+        field.value = '$value';
+    }
+}
+catch ( err )
+{
+}
+
+var radio;
+for (i=0; i < 10; i++)
+{
+    radio = document.getElementById('{$info}_' + i);
+    if ( radio && radio.value == '{$value}' )
+    {
+        radio.checked = true;
+    }
+}
+if( document.getElementById('{$info}_sel') )
+{
+    document.getElementById('{$info}_sel').value='{$value}';
+}
+JS;
+
+            if ( !$updateButton )
+            {
+                $update = _M('Update');
+                $temp .= "document.getElementById('addData$args->MSubDetail').innerHTML = '$update';\n";
+            }
+            if ( $hideButtonsOnAdd )
+            {
+                $temp .= "document.getElementById('divButtons').style.display = 'block';\n";
+            }
+            SdsetResponse(MSubDetail::generate(false, $object), 'div' . $object, $temp);
+        }
+    }
+
+    $MIOLO = MIOLO::getInstance();
+    SdsetResponse(MSubDetail::generate(false, $args->MSubDetail), 'div' . $args->MSubDetail, $temp);
+}
+
+function autoDuplicateAction($args)
+{
+    $multiples = getMultipleSelectData($args);
+
+    $values = MSubDetail::getDataItem($args->arrayItemTemp, $args->MSubDetail);
+    $fieldNames = MSubDetail::getSessionValue('fieldNames', $args->MSubDetail);
+    if ( is_array($fieldNames) )
+    {
+
+        foreach ( $fieldNames as $line => $info )
+        {
+            $value = $values->$info;
+            $value = str_replace("\n", '\n', $value);
+            $value = str_replace("\r", '\r', $value);
+            $value = str_replace("'", "\'", $value);
+            $value = str_replace('"', '\"', $value);
+
+            if ( !empty($multiples) && $multiples[$info] )
+            {
+                $value = $multiples[$info];
+            }
+
+
+            $temp .= <<<JS
+
+var field = document.getElementById('$info');
+
+if ( field.type == 'checkbox' )
+{
+    field.checked = field.value == '$value';
+}
+else if ( field.type == 'radio' )
+{
+    var radios = document.getElementsByName('$info');
+
+    for ( i = 0; i < radios.length; i++ )
+    {
+        radios[i].checked = radios[i].value == '$value';
+    }
+}
+else if ( field.className == 'm-multiline-field m-editor' )
+{
+    eval('var editor = CKEDITOR.instances.' + field.id + ';');
+    editor.setData('$value');
+    field.value = '$value';
+}
+else if ( field.className == 'select m-multitext' )
+{
+    var v = '$value'.split('@');
+
+    for ( i=0; i<v.length; i++)
+    {
+        if ( !v[i] )
+        {
+            continue;
+        }
+
+        option = document.createElement('option');
+        option.value = v[i];
+        option.innerHTML = v[i];
+
+        field.appendChild(option);
+    }
+}
+else
+{
+    field.value = '$value';
+}
+
+var radio;
+for (i=0; i < 10; i++)
+{
+    radio = document.getElementById('{$info}_' + i);
+    if ( radio && radio.value == '{$value}' )
+    {
+        radio.checked = true;
+    }
+}
+if( document.getElementById('{$info}_sel') )
+{
+    document.getElementById('{$info}_sel').value='{$value}';
+}
+JS;
+
+            SdsetResponse(MSubDetail::generate(false, $object), 'div' . $object, $temp);
+        }
+    }
+
+    $temp .= "document.getElementById('arrayItemTemp').value = '';";
+
+    $MIOLO = MIOLO::getInstance();
+    SdsetResponse(MSubDetail::generate(false, $args->MSubDetail), 'div' . $args->MSubDetail, $temp);
+}
+
+function sumValue($table)
+{
+    if ( $_SESSION['MSubDetail']['field_' . $table] )
+    {
+        foreach ( array_keys($_SESSION['MSubDetail']['field_' . $table]) as $field )
+        {
+            if ( $_SESSION['MSubDetail'][$table] )
+            {
+                foreach ( $_SESSION['MSubDetail'][$table] as $f )
+                {
+                    if ( $f->removeData != 'TRUE' )
+                    {
+                        $total[] = $f->$field;
+                    }
+                }
+                if ( is_array($total) && array_sum($total) )
+                {
+                    $t = array_sum($total);
+                }
+                else
+                {
+                    $t = '0';
+                }
+                if ( $_SESSION['MSubDetail']['type_' . $table] == 'TRUE' )
+                {
+                    $js = '<script>
+                               document.getElementById("' . $_SESSION['MSubDetail']['field_' . $table][$field] . '").value = (' . $t . ').toFixed(2);
+                               </script>';
+                }
+                else
+                {
+                    $js = '<script>
+                               document.getElementById("' . $_SESSION['MSubDetail']['field_' . $table][$field] . '").value = ' . $t . ';
+                               </script>';
+                }
+                echo $js;
+                unset($total);
+            }
+            else
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+function removeFromTable($args)
+{
+    $data = SdAjaxFields($args);
+    
+    if ( ($event = $_SESSION[$data->MSubDetail]->event[MSubDetail::EVENT_REMOVE] ) )
+    {
+        $class = $event->class;
+        $function = $event->function;
+        $values = MSubDetail::getDataItem($data->arrayItemTemp, $data->MSubDetail);
+
+        if ( $class )
+        {
+            eval("{$class}::{$function}(\$values);");
+        }
+        else
+        {
+            eval("{$function}(\$values);");
+        }
+    }
+    
+    autoRemoveAction($data);
+    sumValue($data->MSubDetail);
+}
+
+function upFromTable($args)
+{
+    $data = sdAjaxFields($args);
+    if ( ($event = $_SESSION['MSubDetail']['event']['add'] ) )
+    {
+        $class = $event->class;
+        $function = $event->function;
+        if ( $class )
+        {
+            eval("\$data = {$class}::{$function}(\$data);");
+        }
+        else
+        {
+            eval("\$data = {$function}(\$data);");
+        }
+    }
+    autoUpAction($data);
+}
+
+function downFromTable($args)
+{
+    $data = sdAjaxFields($args);
+    {
+        $class = $event->class;
+        $function = $event->function;
+        if ( $class )
+        {
+            eval("\$data = {$class}::{$function}(\$data);");
+        }
+        else
+        {
+            eval("\$data = {$function}(\$data);");
+        }
+    }
+    autoDownAction($data);
+}
+
+function addToTable($args)
+{
+    $data = SdAjaxFields($args);
+
+    if ( $event = $_SESSION[$data->MSubDetail]->event[MSubDetail::EVENT_ADD] )
+    {
+        $class = $event->class;
+        $function = $event->function;
+        if ( $class )
+        {
+            eval("\$data = {$class}::{$function}(\$data);");
+        }
+        else
+        {
+            eval("\$data = {$function}(\$data);");
+        }
+    }
+    autoAddAction($data);
+    sumValue($data->MSubDetail);
+}
+
+function editFromTable($args)
+{
+    $data = SdAjaxFields($args);
+    
+    $values = clone MSubDetail::getDataItem($data->arrayItemTemp, $data->MSubDetail);
+
+    if ( ($event = $_SESSION[$data->MSubDetail]->event[MSubDetail::EVENT_EDIT] ) )
+    {
+        $class = $event->class;
+        $function = $event->function;
+        
+        if ( $class )
+        {
+            eval("\$values = {$class}::{$function}(\$values);");
+        }
+        else
+        {
+            eval("\$values = {$function}(\$values);");
+        }
+        
+    }
+    
+    autoEditAction($data, $values);
+    sumValue($data->MSubDetail);
+    
+     
+}
+
+function duplicateFromTable($args)
+{
+    $data = SdAjaxFields($args);
+
+    if ( $event = $_SESSION[$data->MSubDetail]->event[MSubDetail::EVENT_EDIT] )
+    {
+        $class = $event->class;
+        $function = $event->function;
+        $values = MSubDetail::getDataItem($data->arrayItemTemp, $data->MSubDetail);
+        if ( $class )
+        {
+            eval("\$values = {$class}::{$function}(\$values);");
+        }
+        else
+        {
+            eval("\$values = {$function}(\$values);");
+        }
+        MSubDetail::defineData($data->arrayItemTemp, $values, $data->MSubDetail);
+    }
+
+    autoDuplicateAction($data);
+    sumValue($data->MSubDetail);
+}
+
+function clearTableFields($args)
+{
+    $data = SdAjaxFields($args);
+    autoClearAction($data);
+}
+
+function SdsetResponse($fields, $divResponse, $js=null)
+{
+    if ( is_array($fields) )
+    {
+        foreach ( $fields as $line => $field )
+        {
+            echo $field->generate();
+        }
+    }
+    else if ( is_object($fields) )
+    {
+        echo $fields->generate();
+    }
+    else
+    {
+        echo $fields;
+    }
+    $MIOLO = MIOLO::getInstance();
+
+    if ( $divResponse )
+    {
+        $js .="document.getElementById('divResponse').value = '$divResponse'; ";
+    }
+
+    echo "<script type='text/javascript'>$js</script>";
+}
+
+/**
+ * get fields from javascript function (static)
+ * You cannot use # or | in your string
+ */
+function SdAjaxFields($args)
+{
+    $args = explode('#', urldecode($args[0])); //converts from the "escape" javascript function
+    foreach ( $args as $line => $info )
+    {
+        $temp = explode('|', $info);
+        if ( ($temp[1] && $temp[1] != 'undefined') || $temp[1] === 0 || $temp[1] == '0' )
+        {
+            $data[$temp[0]] = $temp[1];
+        }
+    }
+    $data = (object) $data;
+    return $data;
+}
+
+function formatFieldToFloat($data, $table)
+{
+    $sKey = array_keys($_SESSION['MSubDetail']['field_' . $table]);
+    foreach ( $data as $key => $value )
+    {
+        if ( $key == $sKey[0] )
+        {
+            $data->$key = number_format(str_replace(',', '.', $value), 2, '.', '');
+        }
+    }
+    return $data;
+}
+
+$MIOLO = MIOLO::getInstance();
+if ( ($f = $MIOLO->page->request('cpaint_function')) != '' )
+{
+    if ( function_exists($f) )
+    {
+        die($f($MIOLO->page->request('cpaint_argument')));
+    }
+}
+?>

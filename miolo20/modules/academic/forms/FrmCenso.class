@@ -1,0 +1,191 @@
+<?php
+
+/*
+ * To change this template, choose Tools | Templates
+ * and open the template in the editor.
+ */
+
+/**
+ * Description of FrmExportacaoTitulosEmAberto
+ *
+ * @author augusto
+ */
+set_time_limit(0);
+
+class FrmCenso extends SForm
+{
+    /**
+     * Class constructor
+     */
+    public $_columns;
+    
+    public function __construct()
+    {
+        $module = MIOLO::getCurrentModule();
+        parent::__construct(_M('Exportar dados para o censo', $module), null, null, true, "|");
+        
+        $this->toolbar->disableButton( MToolBar::BUTTON_NEW );
+        $this->toolbar->disableButton( MToolBar::BUTTON_SAVE );
+        $this->toolbar->disableButton( MToolBar::BUTTON_DELETE );
+        $this->toolbar->disableButton( MToolBar::BUTTON_SEARCH );
+        $this->toolbar->disableButton( MToolBar::BUTTON_PRINT );
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $fields[] = new MSeparator();
+        
+        $sreport = new SReport();
+        $reports = $sreport->listAllReports(SReport::TYPE_ALL);
+
+        $anos = array();
+        
+        foreach ( $reports as $report )
+        {
+            if ( preg_match('/censo_([0-9]{4})_(.*)/', $report['name']) )
+            {
+                list($censo, $ano, $tipo) = explode('_', $report['name']);
+
+                $anos[$ano] = $ano;
+            }
+        }
+        
+        $fields[] = $ano = new MSelection('ano', $this->GetFormValue('ano'), _M('Ano'), $anos);
+        $ano->addAttribute('onchange', SForm::getAjaxAction('respTipo', 'divTipo', false));
+        
+        $fields[] = new MDiv('divTipo');
+        
+        $fields[] = new MSeparator();
+                
+        $fields[] = new MSeparator();
+        
+        $fields[] = $this->genericFields()->labelDica(_M('Caso queira sobrescrever algum arquivo de CENSO do sistema, pode ser feito o upload na tela <b>Gerenciador de relatórios</b>, que deve ter, obrigatoriamente, o seguinte padrão de nomenclatura:<br>
+            <b>censo_[ANO]_[TIPO].jrxml</b><br><br>
+            Ex. 1: <b>censo_2014_docente.jrxml</b><br>
+            Ex. 2: <b>censo_2014_aluno.jrxml</b><br>
+            Ex. 3: <b>censo_2014_curso.jrxml</b><br>
+            <br>
+            <b>Atenção:</b> O módulo do relatório deve ser <i>Acadêmico</i>
+        '));
+        
+        parent::defineFields(array( 'fields' => $fields, 'validators' => $validators ));
+    }
+    
+    public function respTipo($args)
+    {
+        $sreport = new SReport();
+        $reports = $sreport->listAllReports(SReport::TYPE_ALL);
+
+        $tipos = array();
+        
+        $tipos[0] = ':Selecione:';
+        foreach ( $reports as $report )
+        {
+            if ( preg_match('/censo_([0-9]{4})_(.*)/', $report['name']) )
+            {
+                list($censo, $ano, $tipo) = explode('_', $report['name']);
+
+                if ( $ano == $args->ano )
+                {
+                    $tipos[$tipo] = ucfirst($tipo);
+                }
+            }
+        }
+        
+        $flds[] = $tipo = new MSelection('tipo', $this->GetFormValue('tipo'), _M('Tipo'));
+        $tipo->addAttribute('onchange', SForm::getAjaxAction('pendenciasClick', 'divPend', false));        
+        $flds[] = new MDiv('divPend');
+        
+        $tipo->options = $tipos;
+        
+        return $flds;
+    }
+    
+    /**
+     * Pega a aç?o do button submit_button.
+     * 
+     * @param type $sender
+     */
+    public function btnGenerate_click($sender = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $ano = $this->getFormValue('ano');
+        $tipo = $this->getFormValue('tipo');
+        
+        try
+        {
+            if ( strlen($ano) == 0 || strlen($tipo) == 0 )
+            {
+                throw new Exception(_M('Deve ser informado o Ano e o Tipo do CENSO.'));
+            }
+            
+            if(strlen(SAGU::getParameter('BASIC', 'ID_IES_INEP')) == 0)
+            {
+               throw new Exception(_M('ID da IES no INEP não está cadastrado na base de dados. Verifique o parâmetro ID_IES_INEP do módulo BÁSICO na tabela de parâmetros.'));
+            }
+            
+                $report = new SReport(array(
+                    'module' => 'academic',
+                    'reportName' => "censo_{$ano}_{$tipo}",
+                    'fileType' => 'TXT'
+                ));
+                    
+                $report->generate();
+        }
+        catch (Exception $e)
+        {
+            $this->AddError($e->getMessage());
+        }
+    }
+    
+    public function pendenciasClick($args)
+    {
+        $module = MIOLO::getCurrentModule();
+        $tipo = $this->getFormValue('tipo');
+        $args = $_REQUEST['cpaint_argument'];
+        $args = explode('&', $args[0]);
+        $args = explode('=', $args[4]);
+
+        if($args[1] == 'aluno')
+        {
+            $sql = 'SELECT * from view_censo_aluno_pendencia()';
+            $pendencias = SDatabase::query($sql, null);
+        }
+        if($args[1] == 'docente')
+        {
+            $sql = 'SELECT * from view_censo_docente_pendencia()';
+            $pendencias = SDatabase::query($sql, null); 
+        }
+        // tipo cursos sem nenhuma irregularidade para pendencia
+        
+        foreach ( $pendencias as $ind => $pendencia )
+        {
+            $dataTable[] = array($pendencia[0], $pendencia[1], $pendencia[2]);                
+        }
+        if(count($dataTable) != 0)
+        {
+            $this->_columns = array(
+            _M('Código', $module),
+            _M('Nome', $module),
+            _M('Pendencia', $module)
+            );
+
+            $table = new MTableRaw('<font style="font-size: 15px">' ._M('Pendências', $module). '</font>', $dataTable, $this->_columns);
+            $flds[] = $divTable = new MDiv('divTable', $table);
+            $dataTable = null;
+        }
+        
+        $flds[] = new MButton('btnGenerate', _M("Gerar arquivo"));
+
+        return $flds;
+    }
+}
+?>

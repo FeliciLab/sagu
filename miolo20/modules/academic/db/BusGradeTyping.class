@@ -1,0 +1,834 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ *
+ * This file handles the connection and actions for basPupilListing table
+ *
+ * @author Leovan Tavares da Silva [leovan] [leovan@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Leovan Tavares da Silva [leovan@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ *
+ * @since
+ * Class created on 20/01/2006
+ *
+ * */
+
+/**
+ * Class to manipulate the basPupilListing table
+ * */
+class BusinessAcademicBusGradeTyping extends sBusiness
+{
+    /**
+     *  Return the curricular component list
+     *
+     * @param $periodId (int): Identification of period
+     * @param $courseId (int): Identification of course
+     * @param $courseVersion (int): Identification of courseVersion
+     * @param $turnId: Identification of turn
+     * @param $classId: Class code to be filtered
+     *
+     * @return (array): Array containing the results.
+     */
+    public function listCurricularComponentGroups( $periodId, $courseId, $courseVersion, $turnId, $classId=NULL, $groupId=NULL, $professorId=NULL )
+    {
+        $module = MIOLO::getCurrentModule();
+        $db = $this->getDatabase();
+
+        $sql = 'SELECT DISTINCT A.groupId,
+                                D.name,
+                                NULL,
+                                E.name,
+                                A.isClosed,
+                                B.evaluationcontrolmethodid,
+                                ( ( NOW()::DATE > B.limitregisterdate ) OR (SELECT COUNT(*) FROM acdGroupUnblock WHERE groupId = A.groupId) > 0 ) AS habilitaAcaoDesbloqueio
+                           FROM unit_acdGroup A
+                     INNER JOIN unit_acdlearningperiod B
+                             ON (B.learningPeriodId = A.learningPeriodId)
+                     INNER JOIN unit_acdcurriculum C
+                             ON (C.curriculumId = A.curriculumId)
+                     INNER JOIN acdCurricularComponent D
+                             ON (D.curricularComponentId = C.curricularComponentId AND
+                                 D.curricularComponentVersion = C.curricularComponentVersion)
+                      LEFT JOIN unit_acdclass E
+                             ON (E.classId = A.classId)
+                      LEFT JOIN acdSchedule F
+                             ON (A.groupId = F.groupId)
+                      LEFT JOIN acdScheduleProfessor G
+                             ON (F.scheduleId = G.scheduleId)
+                          WHERE B.periodId       = ?
+                            AND B.courseId       = ?
+                            AND B.courseVersion  = ?
+                            AND B.turnId         = ?
+                            AND A.iscancellation = FALSE
+                            AND C.curriculumTypeId IN (' . SAGU::getParameter( 'ACADEMIC', 'CURRICULUM_TYPE_NON_OPTIONAL' ) . ')';
+
+        $args = array ( $periodId, $courseId, $courseVersion, $turnId );
+
+        if ( strlen( $classId ) > 0 )
+        {
+            $sql .= ' AND A.classId = ? ';
+            $args[] = $classId;
+        }
+        
+        if( strlen($groupId) > 0 )
+        {
+            $sql .= ' AND A.groupId = ? ';
+            $args[] = $groupId;
+        }
+        
+        if( strlen($professorId) > 0 )
+        {
+            $sql .= ' AND G.professorId = ? ';
+            $args[] = $professorId;
+        }
+
+        $sql .= ' ORDER BY 2';
+
+        $result = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+
+        return $result;
+    }
+
+    /**
+     * Função que retorna um boolean indicando se o periodo cujo
+     * groupId especificado está fechado ou não.
+     *
+     * @param int $groupId
+     * @return boolean
+     */
+    public function periodIsClosed($groupId)
+    {
+        $db = $this->getDatabase();
+
+        $sql = "SELECT isClosed
+                  FROM unit_acdGroup
+                 WHERE groupId = ?";
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $groupId));
+
+        return ($result[0][0] == DB_TRUE);
+    }
+
+    public function listGroupEnrolledPupilsObject($groupId)
+    {
+        return SAGU::resultToObject($this->listGroupEnrolledPupils($groupId), array(
+            'enrollId',
+            'personId',
+            'personName',
+            'courseId',
+            'enrollStatusId',
+            'enrollStatus',
+            'isClosed',
+            'contractId',
+        ));
+    }
+
+    /**
+     * Return the list of pupils enrolled in a group
+     *
+     * @param $groupId (int): Identification of group
+     *
+     * @return (array): Array containing the results.
+     */
+    public function listGroupEnrolledPupils( $groupId, $isWebServices = false )
+    {
+        $busFrequencyGradeTyping = new BusinessAcademicBusGradeTyping();
+        $group = $busFrequencyGradeTyping->getGroupData($groupId, $isWebServices);
+        
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $learningPeriod = $busLearningPeriod->getLearningPeriod($group->learningPeriodId, $isWebServices);
+        
+        $acdEnroll = "unit_acdEnroll";
+        $acdContract = "unit_acdContract";
+        $acdGroup = "unit_acdGroup";
+        
+        // Para webservices.
+        if ( $isWebServices )
+        {
+            $acdEnroll = "acdEnroll";
+            $acdContract = "acdContract";
+            $acdGroup = "acdGroup";
+
+        }  
+        
+        // selecionar apenas os status de matrícula mais recentes
+        // da lista de alunos da oferecida
+        $sql = "     SELECT A.enrollId,
+                            D.personId,
+                            D.name,
+                            B.courseId,
+                            A.statusId,
+                            C.description,
+                            E.isClosed,
+                            B.contractId
+                       FROM {$acdEnroll} A
+                 INNER JOIN {$acdContract} B
+                         ON (A.contractId = B.contractId)
+                 INNER JOIN acdEnrollStatus C
+                         ON (C.statusId = A.statusId)
+            INNER JOIN ONLY basphysicalperson D
+                         ON (B.personId = D.personId)
+                 INNER JOIN {$acdGroup} E
+                         ON (E.groupId = A.groupId)
+                 INNER JOIN (SELECT A.contractId,
+                                    MAX(TO_TIMESTAMP(A.dateEnroll || ' ' || A.hourEnroll, 'yyyy-mm-dd hh24:mi')) AS dateTime
+                               FROM {$acdEnroll} A
+                              WHERE A.groupId = ?
+                              
+                              -- Trata configuracao de exibir cancelados
+                                AND (
+                                    CASE WHEN GETPARAMETER('BASIC', 'SHOW_CANCELLED_PUPILS_IN_GRADE_TYPING') = 'f'
+                                    THEN
+                                        A.statusId != GETPARAMETER('ACADEMIC','ENROLL_STATUS_CANCELLED')::int
+                                    ELSE
+                                        1=1
+                                    END
+                                )
+                                
+                           GROUP BY A.contractId) F
+                         ON F.contractId = A.contractId
+                        AND F.dateTime = TO_TIMESTAMP(A.dateEnroll || ' ' || A.hourEnroll, 'yyyy-mm-dd hh24:mi')
+                      WHERE A.groupId = ?
+                        AND A.statusId <> GETPARAMETER('ACADEMIC', 'ENROLL_STATUS_PRE_ENROLLED')::int
+                        AND verificaPrimeiraParcela(A.enrollId, ?)
+                        AND NOT EXISTS (SELECT transferenciaId
+                                          FROM acdTransferencia
+                                         WHERE contratoDeOrigemId = B.contractId
+                                           AND aproveitouDisciplinasEncerradas) ";
+
+        $args = array(
+            $groupId, 
+            $groupId,
+            $learningPeriod->periodId
+        );
+
+        $sql .= ' ORDER BY 3';
+        
+        $result = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+
+        return $result;
+    }
+
+    /**
+     *  Sets the grades and frequency data
+     *
+     * @param $enrollId (int): Identification of enroll
+     * @param $note (int): pupil note
+     * @param $examNote (int): pupil exam note
+     * @param $finalNote (int): pupil final note
+     * @param $frequency (double): pupil frequency
+     * @param $desisting (boolean): flag to inform if pupil gives up
+     *
+     * @return (boolean): true if the query is executed with success and false if not
+     */
+    public function setEnrollGradeFrequency( $enrollId, $note, $examNote = null, $finalNote = null, $frequency = null, $desisting = null, $status = null )
+    {
+        $db = $this->getDatabase();
+
+        $args = array ( $note );
+
+        $sql = "UPDATE acdEnroll
+                   SET note = ?";
+
+        if ( strlen( $examNote ) > 0 )
+        {
+            $sql .= " , examNote = ? ";
+            $args[] = $examNote;
+        }
+        else
+        {
+            $sql .= " , examNote = null ";
+        }
+        if ( strlen( $finalNote ) > 0 )
+        {
+            $sql .= " , finalNote = ? ";
+            $args[] = $finalNote;
+        }
+        else
+        {
+            $sql .= " , finalNote = null ";
+        }
+        if ( strlen( $frequency ) > 0 )
+        {
+            $sql .= " , frequency = ? ";
+            $args[] = $frequency;
+        }
+        else
+        {
+            $sql .= " , frequency = null ";
+        }
+
+        if ( $desisting )
+        {
+            $sql .= " , statusId = " . SAGU::getParameter( 'ACADEMIC', 'ENROLL_STATUS_DESISTING' );
+        }
+        elseif ( $status != null )
+        {
+            $sql .= " , statusId = ? ";
+            $args[] = $status;
+        }
+
+        $sql .= " WHERE enrollId = ?";
+
+        $args[] = $enrollId;
+
+        $result = $db->execute( SAGU::prepare( $sql, $args ) );
+
+        return $result;
+    }
+
+    /**
+     *  Get the grades data for the specified enroll id
+     *
+     * @param $enrollId (int): Enroll unique id
+     *
+     * @return (array): an array of records
+     */
+    public function getEnrollGradesData( $enrollId )
+    {
+        $db = $this->getDatabase();
+
+        $args = array ( $enrollId );
+
+        $sql = "SELECT note,
+                       examNote,
+                       finalNote,
+                       frequency,
+                       statusId
+                  FROM unit_acdEnroll
+                 WHERE enrollId = ? ";
+
+        $result = $db->query( SAGU::prepare( $sql, $args ) );
+
+        return $result;
+    }
+
+    /**
+     *  Get useful information to define if a pupil can be approved
+     *
+     * @param $enrollId (int): Enroll unique id
+     *
+     * @return (array): an array of records
+     */
+    public function getEnrollLearningPeriodReqs( $enrollId )
+    {
+        $db = $this->getDatabase();
+
+        $args = array ( $enrollId );
+        $serialCourseTypes = SAGU::getParameter( 'ACADEMIC', 'ACD_COURSE_TYPE_ID_SERIAL' );
+
+        $sql = 'SELECT D.learningPeriodId,
+                       G.periodId,
+                       G.average,
+                       G.finalAverage,
+                       F.lessonNumberHours * G.minimumFrequency / 100 AS minimumFrequencyInHours,
+                       C.courseVersionTypeId IN (' . $serialCourseTypes . ') AS isSerial
+                  FROM unit_acdEnroll A
+            INNER JOIN unit_acdContract B
+                    ON (B.contractId = A.contractId)
+            INNER JOIN acdCourseVersion C
+                    ON (C.courseId = B.courseId
+                        AND C.courseVersion = B.courseVersion)
+            INNER JOIN unit_acdGroup D
+                    ON (D.groupId = A.groupId)
+            INNER JOIN unit_acdcurriculum E
+                    ON (E.curriculumId = D.curriculumId)
+            INNER JOIN acdCurricularComponent F
+                    ON (F.curricularComponentId = E.curricularComponentId
+                        AND F.curricularComponentVersion = E.curricularComponentVersion)
+            INNER JOIN unit_acdlearningperiod G
+                    ON (G.learningPeriodId = D.learningPeriodId)
+                 WHERE A.enrollId = ?';
+
+        $result = $db->query( SAGU::prepare( $sql, $args ) );
+
+        list ($return->learningPeriodId,
+            $return->periodId,
+            $return->average,
+            $return->finalAverage,
+            $return->minimumFrequencyInHours,
+            $return->isSerial) = $result[0];
+
+        return $return;
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $groupId
+     * @return unknown
+     */
+    public function getGroupData( $groupId, $isWebServices = false )
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $module = 'academic';
+
+        $busGroup = new BusinessAcademicBusGroup();
+
+        $return = $busGroup->getGroup( $groupId, $isWebServices  );
+        
+        $acdGroup = "unit_acdGroup";
+        $acdLearningPeriod = "unit_acdlearningperiod";
+        $acdCurriculum = "unit_acdCurriculum";
+        
+        // Para webservices.
+        if ( $isWebServices )
+        {
+            $acdGroup = "acdGroup";
+            $acdLearningPeriod = "acdlearningperiod";
+            $acdCurriculum = "acdCurriculum";            
+        }        
+
+        $db = $this->getDatabase();
+
+        $sql = "SELECT DISTINCT  B.groupId,
+                                 F.curricularComponentId || ' - ' || F.name,
+                                 C.periodId,
+                                 M.description AS unitDescription,
+                                 F.academicCredits,
+                                 round(CAST ((C.minimumFrequency * F.lessonNumberHours / 100) AS numeric), 2),
+                                 C.finalAverage,
+                                 C.learningPeriodId,
+                                 NULL,
+                                 B.useConcept,
+                                 B.isClosed,
+                                 B.gradesTypingFinished
+                                 --COALESCE(getprofessorstext(B.groupId, ', '), '" . _M('Professor não definido', $module ) . "') as professor
+                           FROM  {$acdGroup} B
+                     INNER JOIN  {$acdLearningPeriod} C
+                             ON  (B.learningPeriodId = C.learningPeriodId)
+                     INNER JOIN  {$acdCurriculum} E
+                             ON  (B.curriculumId = E.curriculumId)
+                     INNER JOIN  acdCurricularComponent F
+                             ON  (E.curricularComponentId = F.curricularComponentId AND
+                                  E.curricularComponentVersion = F.curricularComponentVersion)
+                     INNER JOIN  basUnit M
+                             ON  (C.unitId = M.unitId)
+                          WHERE  B.groupId = ?";
+
+        $args = array ( $groupId );
+
+        $result = $db->query( SAGU::prepare( $sql, $args ) );
+
+        list ($return->groupId,
+            $return->curricularComponent,
+            $return->periodId,
+            $return->unit,
+            $return->credits,
+            $return->minimumFrequency,
+            $return->finalAverage,
+            $return->learningPeriodId,
+            $return->professor,
+            $return->useConcept,
+            $return->isClosed,
+            $return->gradesTypingFinished) = $result[0];
+
+        return $return;
+    }
+    
+    /**
+     * @return boolean
+     */
+    public function deveFazerExame($degreeId, $enrollId)
+    {
+        $busDegree = new BusinessAcademicBusDegree();
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $busDegreeEnroll = new BusinessAcademicBusDegreeEnroll();
+        
+        $degree = $busDegree->getDegreeCache($degreeId);
+        $degreeIdExame = $this->getDegreeIdExame($degree->learningPeriodId);
+        $statusId = $busEnroll->getFutureStatusIdCache($enrollId);
+        
+        $notaValida = true;
+        if ( $degree->isExam == DB_TRUE )
+        {
+            // Obter a média atual e verificar se está entre a nota mínima e máxima para realizar o exame.
+            $degreeIdMedia = $this->getDegreeIdMedia($degree->learningPeriodId);
+            
+            $degreeEnrollMedia = $busDegreeEnroll->getDegreeEnrollCurrentGrade($degreeIdMedia, $enrollId);
+            
+            $notaValida = $degreeEnrollMedia >= $degree->examMinimumNote && $degreeEnrollMedia < $degree->examMaximumNote;
+        }
+        
+        $deveFazerExame =
+            ( $degreeIdExame == $degreeId ) &&
+//            ( $statusId == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_DISAPPROVED') ) &&
+            $notaValida;
+
+        return $deveFazerExame || ( $degreeId != $degreeIdExame );
+    }
+    
+    /**
+     * Retorna se nota é especial (MEDIA, NOTA FINAL)
+     *
+     * @return boolean
+     */
+    public function eNotaEspecial($degreeId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        static $cache = array();
+
+        if ( !isset($cache[$degreeId]) )
+        {
+            $db = $this->getDatabase();
+            $sql = " SELECT count(*) FROM acddegree WHERE parentdegreeid = ? ";
+            $args = array ($degreeId);
+            $result = $db->query(SAGU::prepare($sql, $args));
+            $count = $result[0][0];
+            
+            if ( $count > 0 )
+            {
+                $cache[$degreeId] = TRUE;
+            }
+            else
+            {
+                $busDegree = new BusinessAcademicBusDegree();
+                $busGradeTyping = new BusinessAcademicBusGradeTyping();
+
+                $degree = $busDegree->getDegree($degreeId);
+                $learningPeriodId = $degree->learningPeriodId;
+                
+                if(SAGU::getParameter('ACADEMIC', 'SPECIAL_NOTE_MEDIA') == DB_TRUE)
+                {
+                    $notas = array($busGradeTyping->getDegreeIdMedia($learningPeriodId),
+                                   $busGradeTyping->getDegreeIdNotaFinal($learningPeriodId));
+                }
+                else
+                {
+                    $notas = array($busGradeTyping->getDegreeIdNotaFinal($learningPeriodId));
+                }            
+            
+                $notaEspecial = in_array($degreeId, $notas);
+                $cache[$degreeId] = $notaEspecial;
+            }
+        }
+        
+        return $cache[$degreeId];
+    }
+    
+    /**
+     * Obtem o degreeId correspondende ao EXAME
+     */
+    public function getDegreeIdExame( $learningPeriodId )
+    {
+        static $cache = array();
+        
+        if ( !isset($cache[$learningPeriodId]) )
+        {
+            $sql = "SELECT degreeId
+                    FROM acdDegree
+                    WHERE learningPeriodId = ?
+                    AND isExam IS TRUE";
+            
+            $query = SDatabase::query($sql, array($learningPeriodId));
+            $id = $query[0][0];
+            
+            $cache[$learningPeriodId] = $id;
+        }
+        
+        return $cache[$learningPeriodId];
+    }
+    
+    /**
+     * Obtem o degreeId correspondende a MEDIA
+     */
+    public function getDegreeIdMedia( $learningPeriodId )
+    {
+        $sql = "SELECT degreeId
+                  FROM acdDegree
+                 WHERE parentDegreeId IN ( SELECT degreeId
+                                             FROM acdDegree
+                                            WHERE learningPeriodId = ?
+                                              AND parentDegreeId IS NULL )
+                   AND isExam IS FALSE";
+        
+        $query = SDatabase::query($sql, array($learningPeriodId));
+        
+        return $query[0][0];
+    }
+
+    /**
+     * Obtem o degreeId correspondende a NOTA FINAL
+     */
+    public function getDegreeIdNotaFinal( $learningPeriodId )
+    {
+        $sql = "SELECT degreeId
+                  FROM acdDegree
+                 WHERE learningPeriodId = ?
+                   AND parentDegreeId IS NULL";
+        $query = SDatabase::query($sql, array($learningPeriodId));
+        
+        return $query[0][0];
+    }
+    
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $learningPeriodId
+     * @param array $groupSelect Array contendo valores do MMultiTextField3 (do form FrmProfessorGradesTyping)
+     * @return unknown
+     */
+    public function getLearningPeriodDegrees( $learningPeriodId, $groupSelect = null )
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'academic';
+
+        $busDegree = new BusinessAcademicBusDegree();
+        $degreeData = $busDegree->getLearningPeriodFinalDegree( $learningPeriodId );
+
+        $return = array();
+        if ( $degreeData )
+        {
+            $return = $busDegree->getChildDegrees( $degreeData->degreeId );
+
+            $return[] = $degreeData;
+
+            if ( count($groupSelect) > 0 )
+            {
+                $groupSelect = str_replace(array('[', ']'), array('', ''), $groupSelect);
+                foreach ( $return as $key => $val )
+                {
+                    if ( ! in_array($val->description, array_values($groupSelect)) )
+                    {
+                        unset($return[$key]);
+                    }
+                }
+            }
+        }
+
+        return $return;
+    }
+
+    /**
+     *  Get the the note value of the specified degree and enroll id
+     *
+     * @param $degreeId (int): Identification of degree
+     * @param $enrollId (int): Identification of enroll
+     *
+     * @return (boolean): enroll degree note
+     */
+    public function getEnrollDegreeIdNote( $degreeId, $enrollId, $useConcept = FALSE )
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $db = $this->getDatabase();
+        
+        $field = $useConcept ? 'concept' : 'note';
+
+        $sql = "SELECT {$field}
+                  FROM acdDegreeEnroll
+                 WHERE degreeId = ?
+                   AND enrollId = ?";
+
+        $args = array ( $degreeId,
+            $enrollId );
+
+        $result = $db->query( SAGU::prepare( $sql, $args ) );
+
+        return $result[0][0];
+    }
+
+    /**
+     *  Get the the note value of the specified evaluation and enroll id
+     *
+     * @param $evaluationId (int): Identification of evaluation
+     * @param $enrollId (int): Identification of enroll
+     *
+     * @return (boolean): enroll degree note
+     */
+    public function getEnrollEvaluationIdNote( $evaluationId, $enrollId )
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $db = $this->getDatabase();
+
+        $sql = 'SELECT note
+                  FROM acdEvaluationEnroll
+                 WHERE evaluationId = ?
+                   AND enrollId = ?';
+
+        $args = array ( $evaluationId,
+            $enrollId );
+
+        $result = $db->query( SAGU::prepare( $sql, $args ) );
+
+        return $result[0][0];
+    }
+
+    //FIXME: Add comment
+    /**
+     * Enter description here...
+     *
+     * @param unknown_type $evaluations
+     * @param unknown_type $degrees
+     * @param unknown_type $averages
+     * @param unknown_type $exams
+     * @param unknown_type $finalNotes
+     */
+    public function setGrades( $evaluations, $degrees, $averages, $exams, $finalNotes )
+    {
+        if ( count( $finalNotes ) > 0 )
+        {
+            $this->beginTransaction();
+
+            foreach ( $finalNotes as $enrollId => $finalNote )
+            {
+                unset( $sqls );
+                $sql = 'UPDATE acdEnroll
+                           SET finalNote = ?,
+                               examNote = ?,
+                               note = ?
+                         WHERE enrollId = ?';
+
+                $args = array (
+                    $finalNote,
+                    $exams[$enrollId], // exam note
+                    $averages[$enrollId], // average note
+                    $enrollId
+                );
+
+                $sqls[] = SAGU::prepare( $sql, $args );
+
+                if ( count( $degrees[$enrollId] ) > 0 )
+                {
+                    foreach ( $degrees[$enrollId] as $degreeId => $degreeNote )
+                    {
+                        // delete all records for the current degreeId and enrollId
+                        $sql = 'DELETE FROM acdDegreeEnroll
+                                      WHERE degreeId = ?
+                                        AND enrollId = ?';
+
+                        $args = array (
+                            $degreeId,
+                            $enrollId
+                        );
+
+                        $sqls[] = SAGU::prepare( $sql, $args );
+
+                        // insert records again
+                        $sql = 'INSERT INTO acdDegreeEnroll
+                                            (degreeId,
+                                             enrollId,
+                                             note)
+                                     VALUES (?, ?, ?)';
+
+                        $args = array (
+                            $degreeId,
+                            $enrollId,
+                            $degreeNote
+                        );
+
+                        $sqls[] = SAGU::prepare( $sql, $args );
+
+                        if ( count( $evaluations[$enrollId][$degreeId] ) > 0 )
+                        {
+                            foreach ( $evaluations[$enrollId][$degreeId] as $evaluationId => $evaluationNote )
+                            {
+                                // delete all records for the current evaluationId and enrollId
+                                $sql = 'DELETE FROM acdEvaluationEnroll
+                                              WHERE evaluationId = ?
+                                                AND enrollId = ?';
+
+                                $args = array (
+                                    $evaluationId,
+                                    $enrollId
+                                );
+
+                                $sqls[] = SAGU::prepare( $sql, $args );
+
+                                // insert records again
+                                $sql = 'INSERT INTO acdEvaluationEnroll
+                                                    (evaluationId,
+                                                     enrollId,
+                                                     note)
+                                             VALUES (?, ?, ?)';
+
+                                $args = array (
+                                    $evaluationId,
+                                    $enrollId,
+                                    $evaluationNote
+                                );
+
+                                $sqls[] = SAGU::prepare( $sql, $args );
+                            }
+                        }
+                    }
+                }
+
+                for ( $i = 0; $i < count( $sqls ); $i++ )
+                {
+                    if ( !$this->getDatabase()->execute( $sqls[$i] ) )
+                    {
+                        $this->rollback();
+                    }
+                }
+            }
+            // if no errors occurred during execution, commit changes
+            $this->commit();
+        }
+    }
+
+    /**
+     *  Return the list of professors for a group
+     *
+     * @param $groupId (int): Search key
+     *
+     * @return (array): The list (unidimensional array) of professor for the specified group. If
+     *                  the group has no professor, NULL is returned.
+     */
+    public function getGroupProfessors( $groupId )
+    {
+        $sql = 'SELECT A.professorId
+                  FROM acdScheduleProfessor A
+            INNER JOIN acdSchedule B
+                    ON (B.scheduleId = a.scheduleId)
+                 WHERE B.groupId = ?';
+
+        $args = array ( $groupId );
+
+        $db = $this->getDatabase();
+        $result = $db->query( SAGU::prepare( $sql, $args ) );
+
+        unset( $profs );
+        for ( $i = 0; $i < count( $result ); $i++ )
+        {
+            $profs[] = $result[$i][0];
+        }
+
+        return $profs;
+    }
+}
+?>

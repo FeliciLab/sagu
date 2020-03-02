@@ -1,0 +1,602 @@
+<?php
+session_start();
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Sector form
+ *
+ * @author Eduardo Bonfandini [eduardo@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ *
+ * @since
+ * Class created on 12/05/2008
+ *
+ **/
+
+/**
+ * Form to manipulate a Copy
+ **/
+class FrmSectorControlCopies extends MForm
+{
+    public $table;
+    public $table2;
+    public $table3;
+    public $MIOLO;
+    public $function;
+    public $business;
+    public $busPersonSector;
+    public $busSectorPrinter;
+    public $busPrinter;
+    public $busCcpPeriod;
+    public $busSectorPeriod;
+
+    /**
+     * Class constructor
+     **/
+    public function __construct()
+    {
+        $this->MIOLO    = MIOLO::getInstance();
+        $module         = MIOLO::getCurrentModule();
+        $this->function  = MIOLO::_REQUEST('function');
+
+        $tableColumns = array(
+         new MGridColumn( _M('Ações',   $module),    'left', true, null, true, ''),
+         new MGridColumn( _M('Código da pessoa', $module), 'left', true, null, false, 'personId'),
+         new MGridColumn( _M('Pessoa'   , $module), 'left', true, null, true, 'personName'),
+         new MGridColumn( _M('Hora inicial',$module), 'right', true, null, true, 'beginTime'),
+         new MGridColumn( _M('Hora final' , $module), 'right', true, null, true, 'endTime')
+                        );
+
+        $this->table    = new MAjaxTableRaw('person',_M('Lista de pessoa','controlCopies'), $tableColumns, 'divTable' );
+        $this->table ->addAction('removeFromTable','table-delete.png', $module);
+        $printerColumns = array(
+         new MGridColumn( _M('Ações',   $module),    'left', true, null, true, ''),
+         new MGridColumn( _M('Código da impressora', $module), 'left', true, null, false, 'printerId'),
+         new MGridColumn( _M('Impressora'   , $module), 'left', true, null, true, 'printerName'),
+        );
+        $this->table2   = new MAjaxTableRaw('printer', _M('Lista de impressora','controlCopies'), $printerColumns, 'divTable2' );
+        $this->table2 ->addAction('removeFromTable2','table-delete.png', $module);
+        $this->business         = new BusinessControlCopiesBusSectorCcp();
+        $this->busPersonSector  = new BusinessControlCopiesBusPersonSector();
+        $this->busSectorPrinter = new BusinessControlCopiesBusSectorPrinter();
+        $this->busPrinter       = new BusinessControlCopiesBusPrinter();
+        $this->busCcpPeriod        = new BusinessControlCopiesBusCcpPeriod();
+        $this->busSectorPeriod  = new BusinessControlCopiesBusSectorPeriod();
+        parent::__construct( _M('Inserir', 'controlCopies'));
+        if (($f = $this->page->request('cpaint_function')) != '')
+        {
+            $this->manager->getTheme()->clearContent();
+            $this->$f($this->page->request('cpaint_argument'));
+            $this->page->generateMethod = 'generateAjax';
+        }
+        else
+        {
+            if ( $this->function == 'insert' )
+            {
+                $this->defineFields();
+            }
+            elseif ( $this->function == 'update' && ( MIOLO::_REQUEST('event') != 'tbBtnSave:click' ) )
+            {
+                $this->defineFields();
+                $this->loadFields();
+            }
+            $this->setHelp(get_class($this), 'controlCopies', $this->action);
+            $this->eventHandler();
+            $this->setIcon($this->MIOLO->getUI()->getImage('controlCopies','printer-16x16.png') ) ;
+        }
+    }
+
+
+    /**
+     * Default method to define fields
+     **/
+    public function defineFields()
+    {
+        if ( MIOLO::_REQUEST('event') != 'tbBtnSave:click' && $this->function == 'insert' )
+        {
+            $this->table->clear();
+            $this->table2->clear();
+        }
+        if ( MIOLO::_REQUEST('event') != 'tbBtnSave:click')
+        {
+            unset($_SESSION['sectorPeriod']);
+        }
+        $MIOLO          = MIOLO::getInstance();
+        $module         = MIOLO::getCurrentModule();
+        $action         = MIOLO::getCurrentAction();
+        $function       = MIOLO::_request('function');
+        $toolBar        = new MToolBar('toolBar',$MIOLO->getActionURL($module,$action));
+        $toolBar        ->disableButton('tbBtnPrint');
+        $toolBar        ->disableButton('tbBtnDelete');
+        $fields[]       = $toolBar;
+        $sectorLabel    = new MLabel( _M('Código do setor',$module).':');
+        $sectorLabel    ->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $sectorLabel    ->setClass('m-caption m-caption-required');
+        $sectorID       = new MLookupTextField('sectorId', $this->getFormValue('sectorId',$data->sectorId), '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), null, null, 'description, email, isCoordinatorsSector', $module,'Sector', null, null, true);
+        $sectorName     = new MTextField('description', $this->getFormValue('description',$data->description), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $sectorName     ->setReadOnly(true);
+        $hctSector      = new MHContainer('hctSector1', array($sectorLabel, $sectorID, $sectorName));
+        $fields[]       = $hctSector;
+        $fields[]       = new MHiddenField('email');
+        $fields[]       = new MHiddenField('isCoordinatorsSector');
+        $validators[]   = new MRequiredValidator('sectorId', _M('Código do setor',$module));
+        if ($this->function == 'update')
+        {
+            $sectorID->setReadOnly(true);
+        }
+        $fields[]       = new MCheckBox('canExceed', $data->canExceed, _M('Pode exceder', $module));
+        $fields[]       = new MSeparator('');
+        $personLabel    = new MLabel( _M('Código da pessoa','controlCopies').':');
+        $personLabel    ->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $personLabel    ->setClass('m-caption m-caption-required');
+        $personID       = new MLookupTextField('personId', $this->getFormValue('personId',$data->personId), '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), null, null, 'personName', 'controlCopies','ccpPerson', null, null, true);
+        $personName     = new MTextField('personName', $this->getFormValue('personName',$data->personName), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $hctPerson      = new MHContainer('hctPerson1', array($personLabel, $personID, $personName));
+        $personName     ->setReadOnly(true);
+        $pControls[]    = $hctPerson;
+        $labelBT        = new MLabel(_M('Hora inicial', 'controlCopies').':' );
+        $labelBT        ->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $fieldBT        = new MTextField('beginTime', null, '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $validators[]   = new MTimeValidator('beginTime');
+        $labelET        = new MLabel(_M('Hora final', 'controlCopies') .':');
+        $fieldET        = new MTextField('endTime', null, '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $validators[]   = new MTimeValidator('endTime');
+        $pControls[]    = new MHContainer('timesContainer', array($labelBT, $fieldBT, $labelET, $fieldET) );
+        $pControls[]    = new MButton('add', _M('Adicionar', 'controlCopies') , 'addTable()');
+        if ( $this->function == 'update' )
+        {
+            $searchData ->sectorId = MIOLO::_REQUEST('_sectorId');
+            if ( $itemData = $this->busPersonSector->searchPersonSector( $searchData , true) )
+            {
+                $this->table->clear();
+                $this->table->add($itemData);
+            }
+        }
+        $pControls[]    = new MDiv('divTable', $this->table);
+        $fields[]       = new MBaseGroup('panel', _M('Pessoa', 'controlCopies'), $pControls,'vertical');
+
+        $printerLabel   = new MLabel( _M('Impressora', 'controlCopies').':' );
+        $printerLabel   ->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $printerLabel   ->setClass('m-caption m-caption-required');
+        $printerData    = $this->busPrinter->searchPrinter(null);
+        $printeField    = new MSelection('printerId', '', null, $printerData);
+        $controls[]     = new MHiddenField('printerName');
+        $controls[]     = new MHContainer('printerContainer', array($printerLabel, $printeField) );
+        if ( $this->function == 'update' )
+        {
+            $searchData2 ->sectorId = MIOLO::_REQUEST('_sectorId');
+            if ( $itemData2 = $this->busSectorPrinter->searchSectorPrinter( $searchData2 , true) )
+            {
+                $this->table2->clear();
+                $this->table2->add($itemData2);
+            }
+        }
+        $controls[]     = new MButton('add2', _M('Adicionar', 'controlCopies') , 'addTable2()');
+        $controls[]     = new MDiv('divTable2', $this->table2);
+        $fields[]       = new MBaseGroup('panel2', _M('Impressora', 'controlCopies'), $controls,'vertical');
+        $periodLabel    = new MLabel(_M('Período', 'controlCopies').':' );
+        $periodLabel    ->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $periodLabel    ->setClass('m-caption m-caption-required');
+        $periodOptions  = $this->busCcpPeriod->searchPeriod();
+        $periodId       = new MSelection('periodId', null,null, $periodOptions );
+        $periodId       ->addAttribute('onChange', 'createPeriodFields();');
+        $periodDiv      = new MDiv('divPeriod');
+        $periodContainer= new MHContainer('periodContainer', array($periodLabel, $periodId, $periodDiv) );
+        $nControls[]    = $periodContainer;
+        $panelPeriod    = new MBaseGroup('panelPeriod', _M('Período', 'controlCopies'), $nControls, 'vertical');
+        $fields[]       = $panelPeriod;
+        $fields[]       = new MSeparator('<br>');
+        $this->setFields($fields);
+        $this->setValidators($validators);
+        $this->setLabelWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $this->setShowPostButton(false);
+        $this->setClose($MIOLO->getActionURL($module,substr($action,0,strrpos($action,':'))));
+        $this->MIOLO->getRequiredJS4Ajax();
+        $url            = str_replace('&amp;', '&',$this->manager->getCurrentURL());
+        $personIdMessage= _M('Por favor informe os dados da pessoa corretamente.', 'controlCopies');
+        $printerIdMessage= _M('Por favor selecione uma impressora!', 'controlCopies');
+        $this->addJSCode(
+        "
+        //
+        function createPeriodFields()
+        {
+            MIOLO_ajaxCall('$url', 'POST', 'mountPeriod', getFieldValues(), resultPeriod, 'TEXT');
+        }
+
+        // the return of ajax
+        function resultPeriod(result)
+        {
+            xGetElementById('divPeriod').innerHTML = result;
+            MIOLO_parseAjaxJavascript(result);
+        }
+
+        //send copiesNumber to session
+        function saveCopiesNumber(sectorPeriodId, sectorId, periodId)
+        {
+            copiesNumber = document.getElementById('copiesNumber').value;
+            var args = 'sectorPeriodId|'+sectorPeriodId+'#sectorId|'+sectorId+'#periodId|'+periodId+'#copiesNumber|'+copiesNumber;
+            MIOLO_ajaxCall('$url', 'POST', 'saveCopiesNumber', args, resultPeriod, 'TEXT');
+        }
+
+        // Add some item to table using ajax
+        function addTable()
+        {
+            var personId     = document.getElementById('personId').value;
+            var personName   = document.getElementById('personName').value;
+            if (personId != '' && personName != '')
+            {
+                MIOLO_ajaxCall('$url', 'POST', 'callAddTable', getFieldValues(), callAddTable, 'TEXT');
+                document.getElementById('personId').value           = '';
+                document.getElementById('personName').value         = '';
+                document.getElementById('beginTime').value          = '';
+                document.getElementById('endTime').value            = '';
+            }
+            else
+            {
+                alert('$personIdMessage');
+            }
+        }
+
+        // the return of ajax
+        function callAddTable(result)
+        {
+            xGetElementById('divTable').innerHTML = result;
+            MIOLO_parseAjaxJavascript(result);
+        }
+
+        // Add some item to table using ajax
+        function addTable2()
+        {
+            var option=document.getElementById('printerId').options;
+            for (x=0;x<option.length; x++)
+            {
+                if (option[x].selected)
+                {
+                    document.getElementById('printerName').value=(option[x].text);
+                }
+            }
+            var printerId     = document.getElementById('printerId').value;
+            if (printerId != '')
+            {
+                MIOLO_ajaxCall('$url', 'POST', 'callAddTable2', getFieldValues(), callAddTable2, 'TEXT');
+            }
+            else
+            {
+                alert('$printerIdMessage');
+            }
+        }
+
+        // the return of ajax
+        function callAddTable2(result)
+        {
+            xGetElementById('divTable2').innerHTML = result;
+            MIOLO_parseAjaxJavascript(result);
+        }
+        "
+        );
+    }
+
+
+    /**
+    * Mount the period Part
+    */
+    public function mountPeriod($args)
+    {
+        $Args = getAjaxFields($args);
+        $searchArgs->sectorPeriodId = $Args->sectorPeriodId;
+        $searchArgs->periodId       = $Args->periodId;
+        $searchArgs->sectorId       = $Args->sectorId;
+        if ($searchArgs->sectorId)
+        {
+            $periodData = $this->busSectorPeriod->searchSectorPeriod($searchArgs, true);
+        }
+        $fields[]   = new MLabel(_M('Número de cópias', 'controlCopies'));
+        $copiesNumber   = $periodData[0]->copiesNumber;
+        $sectorPeriodId = $periodData[0]->sectorPeriodId;
+        $periodId       = $Args->periodId;
+        $sectorId       = $Args->sectorId;
+        if ($_SESSION['sectorPeriod'][$Args->periodId])
+        {
+            $copiesNumber = $_SESSION['sectorPeriod'][$Args->periodId]->copiesNumber;
+        }
+        $fields[]   = new MTextField('copiesNumber', $copiesNumber);
+        $fields[]   = new MButton('send', _M('Enviar', 'controlCopies'), "saveCopiesNumber('$sectorPeriodId' , $sectorId, $periodId);");
+        $this->manager->getTheme()->setContent($fields);
+    }
+
+
+    /**
+    * Send copiesNumber to session
+    */
+    public function saveCopiesNumber($args)
+    {
+        $Args = getAjaxFields($args);
+        $_SESSION['sectorPeriod'][$Args->periodId] = $Args;
+        $string  = _M('Informação sobre period enviada com sucesso');
+        echo "<b>$string</b";
+    }
+
+
+    /**
+    * Function called when user clicks add
+    *
+    */
+    public function callAddTable($args)
+    {
+        $this->table->add(getAjaxFields($args));
+        $this->table->generate(true);
+    }
+
+
+    /**
+    * Response to the ajax call updateFromTable
+    *
+    */
+    public function removeFromTable($data)
+    {
+        $info = $this->table->get($data[0]);
+        if ($info->sectorPersonId)
+        {
+            $info->remove = true;
+            $this->table->set($data[0],$info);
+        }
+        else
+        {
+            $this->table->remove($data[0]);
+        }
+        $this->table->generate(true);
+    }
+
+
+   /**
+    * Function called when user clicks add
+    *
+    */
+    public function callAddTable2($args)
+    {
+        $this->table2->add(getAjaxFields($args));
+        $this->table2->generate(true);
+    }
+
+
+    /**
+    * Response to the ajax call updateFromTable
+    *
+    */
+    public function removeFromTable2($data)
+    {
+        $info = $this->table2->get($data[0]);
+        if ($info->personSectorId)
+        {
+            $info->remove = true;
+            $this->table2->set($data[0],$info);
+        }
+        else
+        {
+            $this->table2->remove($data[0]);
+        }
+        $this->table2->generate(true);
+    }
+
+
+     /**
+     * Event triggered when user chooses Delete from the toolbar
+     **/
+    public function tbBtnDelete_click($sender=NULL)
+    {
+        $MIOLO      = MIOLO::getInstance();
+        $module     = MIOLO::getCurrentModule();
+        $action     = MIOLO::getCurrentAction();
+        $data       = $this->getTypesData();
+        $opts       = array('event'            => 'tbBtnDelete_confirm',
+                        'function'         => 'delete',
+                        '_sectorId' => MIOLO::_request('_sectorId') );
+        $gotoYes    = $MIOLO->getActionURL( $module, $action, null, $opts );
+        $goto       = SAGU::getStackBackUrl();
+        $gotoNo     = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+        $msg        = SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE');
+        $caption    = _M('Questão',$module);
+        $MIOLO      ->question($msg, $gotoYes, $gotoNo);
+    }
+
+
+    /**
+     * Event triggered when user chooses Yes from the Delete prompt dialog
+     **/
+    public function tbBtnDelete_confirm($sender=NULL)
+    {
+        $MIOLO      = MIOLO::getInstance();
+        $module     = MIOLO::getCurrentModule();
+        $action     = MIOLO::getCurrentAction();
+        $business   = new BusinessControlCopiesBusSectorCcp();
+        $ok         = $business->deleteSector(MIOLO::_request('_sectorId'));
+        if ( $ok )
+        {
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Informação',$module);
+            $MIOLO->information(SAGU::getParameter('BASIC', 'MSG_RECORD_DELETED'), $goto);
+        }
+        else
+        {
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Erro',$module);
+            $MIOLO->error(_M('Erro executando a operação solicitada.',$module), $goto, $caption );
+        }
+    }
+
+
+    /**
+    * add an error to screen
+    */
+    public function error()
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $msg      = _M('Erro executando a operação solicitada.',$module);
+        $goto     = SAGU::getStackBackUrl();
+        $goto     = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action, null, opts);
+        $caption  = _M('Erro',$module);
+        $MIOLO    ->error( $msg, $goto, $caption );
+    }
+
+
+    /**
+     * Event triggered when user chooses Save from the toolbar
+     **/
+    public function tbBtnSave_click($sender=NULL)
+    {
+        $MIOLO      = MIOLO::getInstance();
+        $module     = MIOLO::getCurrentModule();
+        $action     = MIOLO::getCurrentAction();
+        $function   = MIOLO::_request('function');
+        $data       = $this->getTypesData();
+        $business   = new BusinessControlCopiesBusSectorCcp();
+        $itens      = $this->table->getItens();
+        $action     = MIOLO::getCurrentAction();
+        $function   = MIOLO::_request('function');
+        $data       = $this->getTypesData();
+        $goto       = SAGU::getStackBackUrl();
+        $goto       = strlen($goto)>0 ? $goto : $this->MIOLO->getActionURL($module, $action, null, $opts);
+        $opts       = array('event' => 'tbBtnNew_click', 'function' => 'insert');
+        $gotoYes    = $this->MIOLO->getActionURL('controlCopies', $action, null, $opts);
+        $temp       = $this->table->getItens();
+        $temp2      = $this->table2->getItens();
+        $temp3      = $_SESSION['sectorPeriod'];
+        try
+        {
+            if ( $this->function == 'update' )
+            {
+                if ($ok   = $this->business->updateSector( $data ))
+                {
+                    if ($temp)
+                    {
+                        $ok = $this->busPersonSector->updatePersonSector($temp);
+                    }
+                    if ($temp2)
+                    {
+                        $ok = $this->busSectorPrinter->updateSectorPrinter($temp2);
+                    }
+                    if ($temp3)
+                    {
+                        $ok = $this->busSectorPeriod->updateSectorPeriod($temp3);
+                    }
+                }
+                if ( $ok )
+                {
+                    $this->MIOLO->information(SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED'),$goto);
+                }
+                else
+                {
+                    $goto = $this->MIOLO ->getActionURL('controlCopies', $this->action);
+                    $caption = _M('Erro','controlCopies');
+                    $this->MIOLO ->error( MSG_RECORD_ERROR, $goto, $caption );
+                }
+            }
+            else
+            {
+
+                if( $ok = $this->business->insertSector( $data ) )
+                {
+                    if ($temp)
+                    {
+                        $ok = $this->busPersonSector->insertPersonSector($temp,$data->sectorId);
+                    }
+                    if ($temp2)
+                    {
+                        $ok = $this->busSectorPrinter->insertSectorPrinter($temp2,null, $data->sectorId);
+                    }
+                    if ($temp3)
+                    {
+                        $ok = $this->busSectorPeriod->updateSectorPeriod($temp3);
+                    }
+                }
+                if ( $ok )
+                {
+                    $this->MIOLO->question(SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED'), $gotoYes, $goto);
+                }
+                else
+                {
+                    $goto = $this->MIOLO ->getActionURL('controlCopies', $this->action);
+                    $caption = _M('Erro','controlCopies');
+                    $this->MIOLO ->error( MSG_RECORD_ERROR, $goto, $caption );
+                }
+            }
+        }
+        catch( EDatabaseException $e )
+        {
+            $this->addError( $e->getMessage() );
+        }
+    }
+
+
+    /**
+    * Method that loads the fields, called when is Update
+    **/
+    protected function loadFields()
+    {
+        $business   = new BusinessControlCopiesBusSectorCcp();
+        $data       =$business->getSector( MIOLO::_REQUEST('_sectorId') );
+        $this       ->setData( $data );
+        if ($data->canExceed == 't')
+        {
+            $this->canExceed->checked = true;
+        }
+    }
+
+
+    /**
+     * Method to gather all information from the form fields
+     * and put them on a database compatible object
+     **/
+    public function getTypesData()
+    {
+        $data = new ccpSector();
+        $vars = get_object_vars($data);
+        foreach ( $vars as $var => $value )
+        {
+            if ( $this->$var && $var != 'name' )
+            {
+                eval('$data->' . $var . ' = $this->' . $var . '->value;');
+            }
+        }
+        $canExceed = MIOLO::_REQUEST('canExceed');
+        if (isset($canExceed))
+        {
+            $data->canExceed = 't';
+        }
+        else
+        {
+            $data->canExceed = 'f';
+        }
+        return $data;
+    }
+}
+
+?>

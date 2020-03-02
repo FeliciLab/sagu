@@ -1,0 +1,794 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulário para consultar as residências feitas pelo aluno
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 21/07/2011
+ */
+class FrmConsultaDoResidente extends SForm
+{
+    /*
+     * Armazena os dados da pessoa (do aluno logado)
+     */
+    public $personData;
+
+    private $corSituacaoAguardandoAvaliacao = '#9DDBFB';
+    private $corSituacaoValido = '#2F8F4F';
+    private $corSituacaoInvalido = '#FF0000';
+
+    /**
+     * Class constructor
+     */
+    public function __construct()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+
+        parent::__construct(_M('Consulta do Residente', $module), null, null);
+
+        //Acessado pelo módulo de serviços
+        if ( SAGU::userIsFromServices() )
+        {
+            // Desabilita a Toolbar
+            $this->disableToolbar();
+        }
+        else
+        {
+            // Desabilita alguns botões da toolbar
+            $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+            $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+            $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+            $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+            $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+
+
+
+        }
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        try
+        {
+            //Acessado pelo módulo de serviços
+            if ( SAGU::userIsFromServices() )
+            {
+                // Instancia os bussines
+                $busPerson = new BusinessBasicBusPerson();
+                // Pega os dados do aluno logado
+                $this->personData = $busPerson->getPersonByMioloUserName(trim($MIOLO->getLogin()->id));
+                // Verifica se não encontrou uma pessoa
+                if ( !is_object($this->personData) )
+                {
+                    throw new Exception(_M('O usuário logado não está relacionado a uma pessoa', $module) . '.');
+                }
+                $filters = new stdClass();
+                $filters->personId = $this->personData->personId;
+            }
+            //Acessado pelo módulo de residência
+            else
+            {
+                if ( !strlen($residenteId = $this->getFormValue('residenteId')) > 0 )
+                {
+                    throw new Exception(_M('Residente não informado', $module) . '.');
+                }
+                //Residente
+                $residente = new MedResidente($residenteId);
+                //Pessoa
+                $this->personData = $residente->physicalPerson;
+                //Filtros da grid de residências
+                $filters = new stdClass();
+                $filters->personId = $residente->personId;
+            }
+        }
+        catch ( Exception $e )
+        {
+            $MIOLO->error($e->getMessage());
+        }
+
+        $fields[] = new MDiv('divPopup', null);
+
+        //Acessado pelo módulo de serviços
+        if ( SAGU::userIsFromServices() )
+        {
+            $fields[] = new MTextLabel('nomePessoa', $this->personData->name,  SAGU::userIsFromServices()?_M('Residências de',$module):_M('Residente',$module));
+            // Monta um array com os dados da grid
+            $filters->residente = DB_TRUE;
+            $gridData = MedResidente::searchGrid($filters);
+            // Grid Consulta de Residências
+            $fields[] = $grdResidencias = $MIOLO->getUI()->getGrid($module, 'GrdConsultaDeResidencias');
+            $grdResidencias->setData($gridData);
+        }
+        $residenteId = MIOLO::_REQUEST('residenteId');
+
+        if ( strlen($residenteId) > 0 )
+        {
+            $residente = new MedResidente($residenteId);
+
+            $options = array(
+                 SAGU::userIsFromServices()?_M('Residências de',$module):_M('Residente',$module) => $this->personData->name,
+                _M('Especialidade') => $residente->enfase->descricao,
+                _M('Núcleo') => $residente->nucleoProfissional->descricao,
+                _M('Início', $module) => $residente->inicio,
+                _M('Fim', $module) => $residente->fimPrevisto);
+
+            $fields[] = new SInformationField(array('value' => $options,'columns' => 1));
+            $fields[] = new MSeparator();
+            //Cria a aba de frequências
+            $filters2 = new stdClass();
+            $filters2->residenteId = $residente->residenteId;
+            $searchOfertaDoResidente = MedOfertaDoResidente::search($filters2);
+
+            $especialidadeDoResidente = $residente->enfaseid;
+
+            $periodosDoResidenteArray = array();
+            $ofertasRodizioDoResidente = array();
+            for ( $i = 0; $i < count($searchOfertaDoResidente); $i++ )
+            {
+                //Array de objetos das Unidades Temáticas da residência selecionada
+                $ofertaDeUnidadeTematica = $searchOfertaDoResidente[$i]->ofertaDeUnidadeTematica;
+
+                $avaliadaPorNota = strlen($ofertaDeUnidadeTematica->notaMinimaParaAprovacao) > 0;
+
+
+                $periodosDoResidenteArray[] = str_replace('P', '', $ofertaDeUnidadeTematica->unidadeTematica->periodo);
+                $ofertasRodizioDoResidente[] = $ofertaDeUnidadeTematica;
+
+                //Unidade temática
+                $dataGridUnidade[$i][] = $ofertaDeUnidadeTematica->ofertaDeUnidadeTematicaId; //Código da oferta de unidade temática
+                $dataGridUnidade[$i][] = $ofertaDeUnidadeTematica->unidadeTematicaId; //Código da unidade temática
+                $dataGridUnidade[$i][] = $ofertaDeUnidadeTematica->unidadeTematica->descricao; //Descrição
+                $dataGridUnidade[$i][] = $ofertaDeUnidadeTematica->unidadeTematica->periodo; //Período
+                $dataGridUnidade[$i][] = $ofertaDeUnidadeTematica->unidadeTematica->tipo; //Tipo
+                $dataGridUnidade[$i][] = $ofertaDeUnidadeTematica->unidadeTematica->cargaHoraria .'h'; //Carga horária prevista
+                $dataGridUnidade[$i][] = $ofertaDeUnidadeTematica->unidadeTematica->frequenciaMinima .'%'; //Frequência mínima
+                $dataGridUnidade[$i][] = $searchOfertaDoResidente[$i]->cargaHorariaNaUnidadeTematica. 'h'; //Carga horária realizada
+                $dataGridUnidade[$i][] = $searchOfertaDoResidente[$i]->percentualCargaHorariaRealizada . '%'; //Percentual carga horária realizada
+                $dataGridUnidade[$i][] = $avaliadaPorNota ? $ofertaDeUnidadeTematica->notaMaxima : _M('Não avaliada por nota'); //Nota máxima da unidade
+                $dataGridUnidade[$i][] = $avaliadaPorNota ? $ofertaDeUnidadeTematica->notaMinimaParaAprovacao : _M('Não avaliada por nota'); //Nota mínima para aprovação da unidade
+                $dataGridUnidade[$i][] = $avaliadaPorNota ? MedOfertaDoResidente::obtemNotaDoResidenteNaOfertaDeUnidadeTematica($residente->residenteId, $ofertaDeUnidadeTematica->ofertaDeUnidadeTematicaId) : _M('Não avaliada por nota'); //Nota atual do residente
+            }
+
+            //Cria grid de unidades temáticas
+            $grdUnidadesTematicas = $MIOLO->getUI()->getGrid($module, 'GrdConsultaDeUnidadesTematicas');
+            // Desabilita botão CSV
+            $grdUnidadesTematicas->showExportAsCSV = false;
+            // Desabilita paginação
+            $grdUnidadesTematicas->pageLength = 0;
+
+            $grdUnidadesTematicas->setData($dataGridUnidade);
+            $tabFrequenciasFlds[] = new MDiv('divFrequencias', array($grdUnidadesTematicas));
+
+            //Aba de Notas
+            $quantidadeDePeriodo = strlen($resTurma->quantidadePeriodo) > 0 ? $resTurma->quantidadePeriodo : 2;
+
+            // Monta dinamicamente a quantidad de períodos
+            for ( $i = 1; $i <= $quantidadeDePeriodo; $i++ )
+            {
+                $ano = SAGU::numerosOrdinais($i);
+                $tabNotasFlds[] = new MLabel('<b>' . _M("$ano ano") . ':' . '</b>');
+
+                $filters = new stdClass();
+                $filters->residenteId = $residenteId;
+                $filters->periodoId = MedNotaDoResidenteNoTrimestreDoPeriodo::obtemPeriodo("P$i");
+                $filters->trimestre = '1';
+                $filters->tipoDeNota = MedNotaDoResidenteNoTrimestreDoPeriodo::NOTA_TRIMESTRAL;
+                $nota1 = MedNotaDoResidenteNoTrimestreDoPeriodo::obtemNotaDoResidente($filters);
+
+                //Nota do primeiro trimestre
+                $nota1Label = new MLabel(_M('Nota 1º trimestre', $module) . ':');
+                $nota1Label->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                $nota1 = new MTextField("nota1_P$i", $nota1, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), '', null, true);
+                $tabNotasFlds[] = new MHContainer("hctNota1_P$i", array($nota1Label, $nota1));
+
+                $filters->trimestre = '2';
+                $nota2 = MedNotaDoResidenteNoTrimestreDoPeriodo::obtemNotaDoResidente($filters);
+
+                //Nota do segundo trimestre
+                $nota2Label = new MLabel(_M('Nota 2º trimestre', $module) . ':');
+                $nota2Label->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                $nota2 = new MTextField("nota2_P$i", $nota2, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), '', null, true);
+                $tabNotasFlds[] = new MHContainer("hctNota2_P$i", array($nota2Label, $nota2));
+
+                $filters->trimestre = '3';
+                $nota3 = MedNotaDoResidenteNoTrimestreDoPeriodo::obtemNotaDoResidente($filters);
+
+                //Nota do terceiro trimestre
+                $nota3Label = new MLabel(_M('Nota 3º trimestre', $module) . ':');
+                $nota3Label->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                $nota3 = new MTextField("nota3_P$i", $nota3, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), '', null, true);
+                $tabNotasFlds[] = new MHContainer("hctNota3_P$i", array($nota3Label, $nota3));
+
+                $filters->trimestre = '4';
+                $nota4 = MedNotaDoResidenteNoTrimestreDoPeriodo::obtemNotaDoResidente($filters);
+
+                //Nota do quarto trimestre
+                $nota4Label = new MLabel(_M('Nota 4º trimestre', $module) . ':');
+                $nota4Label->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                $nota4 = new MTextField("nota4_P$i", $nota4, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), '', null, true);
+                $tabNotasFlds[] = new MHContainer("hctNota4_P$i", array($nota4Label, $nota4));
+
+                $filters->trimestre = '5';
+                $filters->tipoDeNota = MedNotaDoResidenteNoTrimestreDoPeriodo::NOTA_MEDIA;
+                $media = MedNotaDoResidenteNoTrimestreDoPeriodo::obtemNotaDoResidente($filters);
+
+                //Média do trimestre
+                $mediaLabel = new MLabel(_M('Média dos trimestres', $module) . ':');
+                $mediaLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                $media = new MTextField("media_P$i", $media, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), '', null, true);
+                $tabNotasFlds[] = new MHContainer("hctMedia_P$i", array($mediaLabel, $media));
+            }
+
+            $tabNotasFlds[] = new MSpacer();
+
+            //Avaliação final
+            $tabNotasFlds[] = new MLabel('<b>' . _M('Avaliação final', $module).':' . '</b>');
+
+            //Média final
+            $finalMediaLabel = new MLabel(_M('Média', $module).':');
+            $finalMediaLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $finalMedia = new MTextField('mediaFinal', $residente->notaFinal, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), '', null, true);
+            $tabNotasFlds[] = new MHContainer('ctnFinalMedia', array( $finalMediaLabel, $finalMedia ));
+
+            //Quando for o conceito da turma for por NOTA, mostrar
+            strlen ( $residente->turmaId ) > 0 ? $tipoAv = $resTurma->tipoAvaliacaoTCR : $tipoAv = MedTurma::TCR_POR_CONCEITO;
+
+            if ($tipoAv == MedTurma::TCR_POR_NOTA)
+            {
+                //Avaliação final
+                $tabNotasFlds[] = new MLabel('<b>' . _M('Nota do TCR', $module) . ':' . '</b>');
+
+                //Média final
+                $TCRLabel = new MLabel(_M('Nota', $module) . ':');
+                $TCRLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                $TCR = new MTextField('TCR', $residente->trabalhoDeConclusao->nota, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), '', null, true);
+                $tabNotasFlds[] = new MHContainer('ctnTCR', array($TCRLabel, $TCR));
+            }
+
+            $MIOLO->page->addScript(SAGU::ABSOLUTE_URL_JS_FILES . 'jquery.js');
+            $this->AddJsCode("
+                function esconderIntervalos() {
+                    $('#m_intervaloDeDataSemanaContainer').hide();
+                    $('#m_intervaloDeDataMesContainer').hide();
+                    $('#m_intervaloDeDataBimestreContainer').hide();
+                    $('#m_intervaloDeDataProgramaContainer').hide();
+                }
+
+                function mostrarIntervalosSemana() {
+                    $('#m_intervaloDeDataSemanaContainer').show('slice');
+                    $('#m_intervaloDeDataMesContainer').hide('slice');
+                    $('#m_intervaloDeDataBimestreContainer').hide('slice');
+                    $('#m_intervaloDeDataProgramaContainer').hide('slice');
+                }
+
+                function mostrarIntervalosMes() {
+                    $('#m_intervaloDeDataMesContainer').show('slice');
+                    $('#m_intervaloDeDataSemanaContainer').hide('slice');
+                    $('#m_intervaloDeDataBimestreContainer').hide('slice');
+                    $('#m_intervaloDeDataProgramaContainer').hide('slice');
+                }
+
+                function mostrarIntervalosBimestre() {
+                    $('#m_intervaloDeDataBimestreContainer').show('slice');
+                    $('#m_intervaloDeDataSemanaContainer').hide('slice');
+                    $('#m_intervaloDeDataMesContainer').hide('slice');
+                    $('#m_intervaloDeDataProgramaContainer').hide('slice');
+                }
+
+                function mostrarIntervalosPrograma() {
+                    $('#m_intervaloDeDataProgramaContainer').show('slice');
+                    $('#m_intervaloDeDataBimestreContainer').hide('slice');
+                    $('#m_intervaloDeDataSemanaContainer').hide('slice');
+                    $('#m_intervaloDeDataMesContainer').hide('slice');
+                }
+
+                esconderIntervalos();
+
+                // espaço
+                $('#periodicidade').css('margin-bottom', '30px');
+                $('.bloco_indicadores').css('margin-top', '15px');
+
+                // executado ao alterar o campo com os intervalos de datas por semana
+                $('#intervaloDeData').change(function () {
+                    $('.bloco_indicadores').hide('slice');
+                    $('#'+$(this).val()).show('slice');
+                });
+
+                // executado ao alterar o campo com os intervalos de datas por mÊs
+                $('#intervaloDeDataMes').change(function () {
+                    $('.bloco_indicadores').hide('slice');
+                    $('#'+$(this).val()).show('slice');
+                });
+
+                // executado ao alterar o campo com os intervalos de datas por bimestre
+                $('#intervaloDeDataBimestre').change(function () {
+                    $('.bloco_indicadores').hide('slice');
+                    $('#'+$(this).val()).show('slice');
+                });
+
+                // executado ao alterar o campo com os intervalos de datas por programa completo
+                $('#intervaloDeDataPrograma').change(function () {
+                    $('.bloco_indicadores').hide('slice');
+                    $('#'+$(this).val()).show('slice');
+                });
+
+                // executado quando alterado qual o tipo de periodicidade escolhida
+                $('#periodicidade').change(function () {
+                    var periodicidade = $(this).val();
+
+                    $('[class^=indicadores_periodicidade_]').hide('slice');
+                    $('.indicadores_periodicidade_'+periodicidade).show('slice');
+
+                    if (periodicidade == 'S') {
+                        mostrarIntervalosSemana();
+                    } else if (periodicidade == 'M') {
+                        mostrarIntervalosMes();
+                    } else if (periodicidade == 'B') {
+                        mostrarIntervalosBimestre();
+                    } else if (periodicidade == 'P') {
+                        mostrarIntervalosPrograma();
+                    } else {
+                        esconderIntervalos();
+                    }
+                });
+
+
+            ");
+
+
+            $periodicidadeLabel = new MLabel('<b>' . _M('Periodicidade de avaliação', $module) . ':' . '</b>');
+            $periodicidadeSelect = new MSelection('periodicidade', $this->GetFormValue('periodicidade'), null, MedIndicador::listarPeriodicidades());
+            $periodicidadeContainer = new MHContainer('periodicidadeContainer', array($periodicidadeLabel, $periodicidadeSelect));
+            $tabIndicadoresFields[] = $periodicidadeContainer;
+
+
+            // $periciocidadeLabel = new MSelection('periodicidade', $this->GetFormValue('periodicidade'), _M('Periodicidade de avaliação', $module), MedIndicador::listarPeriodicidades());
+            // $tabIndicadoresFields[] = $periciocidadeLabel;
+
+            //----------------------------------------------------- SEMANA ---------------------------------------------------------------------
+            $datasIntervalos = $this->retornaDatasIntervaloDoResidente($residente->inicio, MedIndicador::PERIODICIDADE_SEMANA, null, $ofertasRodizioDoResidente);
+            $intervaloDeDataSemanaLabel = new MLabel('<b>' . _M('Intervalo de data', $module) . ':' . '</b>');
+            $intervaloDeDataSemanaSelect = new MSelection('intervaloDeData', $this->GetFormValue('intervaloDeData'), null, $datasIntervalos);
+            $intervaloDeDataSemanaContainer = new MHContainer('intervaloDeDataSemanaContainer', array($intervaloDeDataSemanaLabel, $intervaloDeDataSemanaSelect));
+            $tabIndicadoresFields[] = $intervaloDeDataSemanaContainer;
+            $indicadores = MedIndicador::retornaIndicadoresPorEspecialidadeEPeriodoEPeriodicidade($especialidadeDoResidente, $periodosDoResidenteArray, MedIndicador::PERIODICIDADE_SEMANA);
+            $tabIndicadoresFieldsArray = $this->camposIndicadores($datasIntervalos, $indicadores, $residenteId, $ofertasRodizioDoResidente);
+            foreach ($tabIndicadoresFieldsArray as $tabIndicadoresFieldsA) {
+                $tabIndicadoresFields[] = $tabIndicadoresFieldsA;
+            }
+
+            //----------------------------------------------------- MÊS ---------------------------------------------------------------------
+            /*$datasIntervalos = $this->retornaDatasIntervaloDoResidente($residente->inicio, MedIndicador::PERIODICIDADE_MES);
+            $intervaloDeDataMesLabel = new MLabel('<b>' . _M('Intervalo de data', $module) . ':' . '</b>');
+            $intervaloDeDataMesSelect = new MSelection('intervaloDeDataMes', $this->GetFormValue('intervaloDeDataMes'), null, $datasIntervalos);
+            $intervaloDeDataMesContainer = new MHContainer('intervaloDeDataMesContainer', array($intervaloDeDataMesLabel, $intervaloDeDataMesSelect));
+            $tabIndicadoresFields[] = $intervaloDeDataMesContainer;
+            $indicadores = MedIndicador::retornaIndicadoresPorEspecialidadeEPeriodoEPeriodicidade($especialidadeDoResidente, $periodosDoResidenteArray, MedIndicador::PERIODICIDADE_MES);
+            $tabIndicadoresFieldsArray = $this->camposIndicadores($datasIntervalos, $indicadores, $residenteId);
+            foreach ($tabIndicadoresFieldsArray as $tabIndicadoresFieldsA) {
+                $tabIndicadoresFields[] = $tabIndicadoresFieldsA;
+            }*/
+
+
+            //----------------------------------------------------- BIMESTRE ---------------------------------------------------------------------
+            /*$datasIntervalos = $this->retornaDatasIntervaloDoResidente($residente->inicio, MedIndicador::PERIODICIDADE_BIMESTRE);
+            $intervaloDeDataBimestreLabel = new MLabel('<b>' . _M('Intervalo de data', $module) . ':'  . '</b>');
+            $intervaloDeDataBimestreSelect = new MSelection('intervaloDeDataBimestre', $this->GetFormValue('intervaloDeDataBimestre'), null, $datasIntervalos);
+            $intervaloDeDataBimestreContainer = new MHContainer('intervaloDeDataBimestreContainer', array($intervaloDeDataBimestreLabel, $intervaloDeDataBimestreSelect));
+            $tabIndicadoresFields[] = $intervaloDeDataBimestreContainer;
+            $indicadores = MedIndicador::retornaIndicadoresPorEspecialidadeEPeriodoEPeriodicidade($especialidadeDoResidente, $periodosDoResidenteArray, MedIndicador::PERIODICIDADE_BIMESTRE);
+            $tabIndicadoresFieldsArray = $this->camposIndicadores($datasIntervalos, $indicadores, $residenteId);
+            foreach ($tabIndicadoresFieldsArray as $tabIndicadoresFieldsA) {
+                $tabIndicadoresFields[] = $tabIndicadoresFieldsA;
+            }*/
+
+            //----------------------------------------------------- POR PROGRAMA ---------------------------------------------------------------------
+            /*$datasIntervalos = $this->retornaDatasIntervaloDoResidente($residente->inicio, MedIndicador::PERIODICIDADE_POR_PROGRAMA, $residente->fimPrevisto);
+            $intervaloDeDataProgramaLabel = new MLabel('<b>' . _M('Intervalo de data', $module) . ':'  . '</b>');
+            $intervaloDeDataProgramaSelect = new MSelection('intervaloDeDataPrograma', $this->GetFormValue('intervaloDeDataPrograma'), null, $datasIntervalos);
+            $intervaloDeDataProgramaContainer = new MHContainer('intervaloDeDataProgramaContainer', array($intervaloDeDataProgramaLabel, $intervaloDeDataProgramaSelect));
+            $tabIndicadoresFields[] = $intervaloDeDataProgramaContainer;
+            $indicadores = MedIndicador::retornaIndicadoresPorEspecialidadeEPeriodoEPeriodicidade($especialidadeDoResidente, $periodosDoResidenteArray, MedIndicador::PERIODICIDADE_POR_PROGRAMA);
+            $tabIndicadoresFieldsArray = $this->camposIndicadores($datasIntervalos, $indicadores, $residenteId);
+            foreach ($tabIndicadoresFieldsArray as $tabIndicadoresFieldsA) {
+                $tabIndicadoresFields[] = $tabIndicadoresFieldsA;
+            }*/
+
+            $legendas = MMessage::getStaticMessage(null, 'LEGENDA DA AVALIAÇÃO DO PRECEPTOR: <b><span style="color: '.$this->corSituacaoValido.';">(+) VÁLIDO</span> / <span style="color: '.$this->corSituacaoInvalido.';">(-) INVÁLIDO </span></b>', MMessage::TYPE_INFORMATION);
+            $tabIndicadoresFields[] = $legendas;
+
+            $div = new MDiv('divFieldset', $tabIndicadoresFields);
+            $div->addBoxStyle("width", '100%');
+            $fieldsetIndi[] = new MBaseGroup('grupoIndicadores', _M('Indicadores do residente'), array($div));
+
+
+            $tab = new MTabbedBaseGroup('tabResidencia');
+            $tab->createTab('tabFrequencias', _M('Frequências e notas'), $tabFrequenciasFlds);
+            $tab->createTab('tabNotas', _M('Notas do período'), $tabNotasFlds);
+            $tab->createTab('tabIndicadores', _M('Indicadores'), $fieldsetIndi);
+
+            $fields[] = $tab;
+        }
+
+        //Botão voltar
+        $fields[] = new MButton('btnBack', _M('Voltar', $module), $MIOLO->GetActionURL('services', 'main'));
+
+        $this->SetValidators($validators);
+        $this->SetFields($fields);
+        parent::defineFields();
+    }
+
+    private function camposIndicadores ($datasIntervalos, $indicadores, $residenteId, $ofertasRodizioDoResidente) {
+
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $tabIndicadoresFields[] = new MDiv('divVazia', null);
+        $nomeContainerPadrao = 'hctIndicador_';
+        foreach ($datasIntervalos as $chave => $valor) {
+            $divIndicadoresPeriocidade = array();
+
+            $this->AddJsCode("
+                $('#" . $chave . "').hide();
+            ");
+
+            foreach ($indicadores as $indicador) {
+
+                $this->AddJsCode("
+                    $('.indicadores_periodicidade_{$indicador['periodicidade']}').hide();
+                ");
+
+                $indicadorLabel = new MLabel(_M('<b>'.$indicador['descricao'], $module) . ':</b>');
+                $indicadorLabel->setWidth(500);
+                $campo = "indicador_" . $indicador['indicadorId'] . '_' . $chave;
+
+                $periodoArray = explode('_', $chave);
+                $periodoInicio = $periodoArray[0];
+                $periodoFim = $periodoArray[1];
+
+                foreach ($ofertasRodizioDoResidente as $ofertaResidente) {
+                    if ($periodoInicio >= SAGU::convertDateToDb($ofertaResidente->inicio) && $periodoFim <= SAGU::convertDateToDb($ofertaResidente->fim)) {
+
+                        $periodoInt = str_replace('P', '', $ofertaResidente->unidadeTematica->periodo);
+                        if ($periodoInt == $indicador['periodoid']) {
+                            $residenteIndicador = new MedResidenteIndicador();
+                            $residenteIndicador->retornaIndicadorPorResidenteIndicadorEPeriodo($indicador['indicadorId'], $residenteId, $periodoInicio, $periodoFim);
+
+                            $situacaoHint = null;
+                            $quantidade = null;
+                            $bloquearCampoQuantidade = false;
+                            if ($residenteIndicador->getResidenteIndicadorId() != null) {
+                                $quantidade = $residenteIndicador->getQuantidade();
+
+                                if ($residenteIndicador->getSituacao() != MedResidenteIndicador::SITUACAO_AGUARDANDO_AVALIACAO) {
+                                    $bloquearCampoQuantidade = true;
+                                    if ($residenteIndicador->getJustificativa() != '') {
+                                        if ($residenteIndicador->getSituacao() == MedResidenteIndicador::SITUACAO_AVALIACAO_INVALIDA) {
+                                            $situacao = '(-)';
+                                        } else if ($residenteIndicador->getSituacao() == MedResidenteIndicador::SITUACAO_AVALIACAO_VALIDA) {
+                                            $situacao = '(+)';
+                                        }
+                                        $situacaoHint = _M($situacao . ' AVALIAÇÃO DO PRECEPTOR:<b> ' . $residenteIndicador->getJustificativa() . '</b>', $module);
+                                    }
+                                }
+                            }
+
+                            $indiField = new MTextField($campo, $quantidade, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), $situacaoHint, null, false);
+                            if ($bloquearCampoQuantidade) {
+                                $indiField->addAttribute('disabled', 'disabled');
+                                if ($residenteIndicador->getSituacao() == MedResidenteIndicador::SITUACAO_AVALIACAO_INVALIDA) {
+                                    $indiField->addAttribute('style', 'border-color: '.$this->corSituacaoInvalido.';');
+                                } else if ($residenteIndicador->getSituacao() == MedResidenteIndicador::SITUACAO_AVALIACAO_VALIDA) {
+                                    $indiField->addAttribute('style', 'border-color: '.$this->corSituacaoValido.';');
+                                }
+                            }
+
+                            $indiField->addAttribute('onchange', $this->getAjaxAction('salvarIndicadorDoResidente', 'divVazia', false, array('indicadorId' => $indicador['indicadorId'], 'residenteId' => $residenteId, 'campo' => $campo), true, true));
+
+                            $tabIndicadores = new MHContainer($nomeContainerPadrao . $indicador['indicadorId'], array($indicadorLabel, $indiField));
+
+                            $divIndicadoresPeriocidade[] = new MDiv('div', $tabIndicadores, 'indicadores_periodicidade_' . $indicador['periodicidade']);
+                        }
+                    }
+                }
+            }
+            $tabIndicadoresFields[] = new MDiv($chave, $divIndicadoresPeriocidade, 'bloco_indicadores');
+        }
+
+        return $tabIndicadoresFields;
+    }
+
+    private function retornaDatasIntervaloDoResidente($inicio, $tipoDeIntervalo = MedIndicador::PERIODICIDADE_SEMANA, $fim = null, $ofertasRodizioDoResidente) {
+        $hoje = date('Y-m-d');
+        $inicioResidente = SAGU::dateToDb($inicio);
+        $datas = array();
+
+        if ($tipoDeIntervalo == MedIndicador::PERIODICIDADE_SEMANA) {
+            $intervalo = '+1 week';
+        } elseif ($tipoDeIntervalo == MedIndicador::PERIODICIDADE_MES) {
+            $intervalo = '+1 month';
+        } elseif ($tipoDeIntervalo == MedIndicador::PERIODICIDADE_BIMESTRE) {
+            $intervalo = '+2 month';
+        } elseif ($tipoDeIntervalo == MedIndicador::PERIODICIDADE_POR_PROGRAMA) {
+            $intervalo = null;
+        }
+
+        if (!is_null($intervalo)) {
+            while ($inicioResidente <= $hoje) {
+
+                $date = new DateTime($inicioResidente);
+
+                $diaInicioSemanaResidente = $date->format('d');
+
+                // se o dia iniciado for menor que 7, então deverá começar do dia 01 do mês para preencher
+                if ($diaInicioSemanaResidente <= 7) {
+                    $inicioSemanaResidente = $date->format('Y-m-01');
+                } else {
+                    $inicioSemanaResidente = $date->format('Y-m-d');
+                }
+
+                $date = new DateTime($inicioSemanaResidente);
+
+                $date->modify($intervalo);
+
+                $inicioResidente  = ($date->format('Y-m-d') >= $date->format('Y-m-28') ? $date->format('Y-m-t') : $date->format('Y-m-d'));
+                $diaFimSemanaResidente = $date->format('d');
+                $fimSemanaResidente = $inicioResidente;
+
+                if ($diaInicioSemanaResidente < $diaFimSemanaResidente) {
+                    foreach ($ofertasRodizioDoResidente as $ofertaResidente) {
+                        if ($inicioResidente >= SAGU::convertDateToDb($ofertaResidente->inicio) && $fimSemanaResidente <= SAGU::convertDateToDb($ofertaResidente->fim)) {
+                            $datas[$inicioSemanaResidente . '_' . $fimSemanaResidente] = SAGU::dateToUser($inicioSemanaResidente) . ' a ' . SAGU::dateToUser($fimSemanaResidente);
+                        }
+                    }
+                }
+            }
+        } else {
+            $datas[$inicioResidente . '_' . SAGU::dateToDb($fim)] = SAGU::dateToUser($inicioResidente) . ' a ' . SAGU::dateToUser($fim);
+        }
+
+
+        return $datas;
+    }
+
+    public function salvarIndicadorDoResidente ($args) {
+
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $args = (array) $args;
+
+        $residenteId = $args['residenteId'];
+        $indicadorId = $args['indicadorId'];
+        $campo = $args['campo'];
+
+        $intervaloDeDataArray = explode('_', $campo);
+        $dataInicial = $intervaloDeDataArray[2];
+        $dataFim = $intervaloDeDataArray[3];
+
+        $quantidade = $args[$campo];
+
+        // verifica se já existe o registro
+        $residenteIndicador1 = new MedResidenteIndicador();
+        $residenteIndicador1->retornaIndicadorPorResidenteIndicadorEPeriodo($indicadorId, $residenteId, $dataInicial, $dataFim);
+
+        $residenteIndicador = new MedResidenteIndicador();
+
+        if ($residenteIndicador1->getResidenteIndicadorId() != null) {
+            $residenteIndicador->setResidenteIndicadorId($residenteIndicador1->getResidenteIndicadorId());
+        }
+
+        $residenteIndicador->setIndicadorId($indicadorId);
+        $residenteIndicador->setResidenteId($residenteId);
+        $residenteIndicador->setPeriodoInicio($dataInicial);
+        $residenteIndicador->setPeriodoFim($dataFim);
+        $residenteIndicador->setQuantidade(!empty($quantidade) ? $quantidade : 0);
+        $residenteIndicador->setSituacao(MedResidenteIndicador::SITUACAO_AGUARDANDO_AVALIACAO);
+        $residenteIndicador->save();
+    }
+
+    /**
+     * Exibe informacoes diversas
+     * Ticket #10275
+     *
+     * @param stdClass $args
+     */
+    public function showInformation($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $filters = new stdClass();
+        $filters->ofertaDeUnidadeTematicaId = $this->getRequestValue('ofertaDeUnidadeTematicaId');
+        $ut = current(MedOfertaDeUnidadeTematica::searchGrid($filters));
+
+        // FIXME Obter dados via posicao de array nao e uma boa pratica
+        $periodos = MedUnidadeTematica::listPeriodos();
+        $tipos = MedUnidadeTematica::listTipos();
+        $options = array(
+            _M('Unidade temática', $module) => $ut[2],
+            _M('Período', $module) => $periodos[$ut[3]],
+            _M('Tipo', $module) => $tipos[$ut[4]],
+            _M('Carga horária', $module) => $ut[5],
+            _M('Frequência mínima', $module) => $ut[6],
+            _M('Núcleos profissionais') => $ut[7],
+            _M('Especialidades') => $ut[8],
+            _M('Início', $module) => $ut[9],
+            _M('Fim', $module) => $ut[10]
+        );
+        $fields[] = new SInformationField(array(
+            'value' => $options,
+            'columns' => 1,
+        ));
+
+        // Get grid
+        $fields[] = new MSeparator();
+
+        $filters = new stdClass();
+        $filters->ofertaDeUnidadeTematicaId = $this->getRequestValue('ofertaDeUnidadeTematicaId');
+
+        $grdData = new stdClass();
+        $grdData->readOnly = true;
+        $grid = $MIOLO->getUI()->getGrid($module, 'GrdTemaSearch', $grdData);
+        $grid->setData(MedTema::searchGrid($filters));
+        $divGrid = new MDiv('divGridTemas', $grid);
+        $divGrid->addBoxStyle('width', '100%');
+        $fields[] = new MBaseGroup('baseGroupTemas', _M('Atividades do rodizio',$module), array($divGrid));
+
+        MPopup::show('divPopup', $fields, _M('Mais informações', $module));
+    }
+
+    public function autoAvaliacao($args)
+    {
+        ini_set('display_errors', true);
+        error_reporting(E_ERROR);
+
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $residenteId = $this->getRequestValue('residenteId');
+
+        $filters = new stdClass();
+        $filters->ofertaDeUnidadeTematicaId = $this->getRequestValue('ofertaDeUnidadeTematicaId');
+        $ut = current(MedOfertaDeUnidadeTematica::searchGrid($filters));
+
+        $ofertaUnidadeTematicaId = $ut[0];
+
+        $avaliacao = new MedOfertaDeUnidadeTematicaAutoAvaliacao($ofertaUnidadeTematicaId, $residenteId);
+
+        $periodos = MedUnidadeTematica::listPeriodos();
+        $tipos = MedUnidadeTematica::listTipos();
+        $options = array(
+            _M('Unidade temática', $module) => $ut[1],
+            _M('Período', $module) => $periodos[$ut[3]],
+            _M('Tipo', $module) => $tipos[$ut[4]],
+            _M('Carga horária', $module) => $ut[5],
+            _M('Frequência mínima', $module) => $ut[6],
+            _M('Núcleos profissionais') => $ut[7],
+            _M('Especialidades') => $ut[8],
+            _M('Início', $module) => $ut[9],
+            _M('Fim', $module) => $ut[10]
+        );
+        $fields[] = new SInformationField(array(
+            'value' => $options,
+            'columns' => 1,
+        ));
+
+
+        $fields[] = MMessage::getStaticMessage(null, 'Autoavaliação do residente ', MMessage::TYPE_INFORMATION);
+
+        // Get grid
+        $fields[] = new MSeparator();
+
+        $ofertaUnidadeTematica = new MTextField('ofertaUnidadeTematicaId', $ofertaUnidadeTematicaId, _M('Oferta de rodízio'), SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $ofertaUnidadeTematica->setVisibility(false);
+        $fields[] = $ofertaUnidadeTematica;
+
+
+        $notaResidente = new MTextField('nota', $avaliacao->getNota(), _M('Nota de autoavaliaçao'), SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $notaResidente->setIsRequired(true);
+        $notaResidente->setAttribute('onchange', "javascript:verificaNota('nota')");
+        $fields[] = $notaResidente;
+
+        $avaliacao = new MMultiLineField('avaliacao', $avaliacao->getAvaliacao(), _M('Autoavaliação'), null, SAGU::getParameter('BASIC', 'FIELD_MULTILINE_NUM_ROWS'), SAGU::getParameter('BASIC', 'FIELD_MULTILINE_NUM_COLS'));
+        $avaliacao->setIsRequired(true);
+        $fields[] = $avaliacao;
+
+        $btns[] = new MButton('button_saveAutoAvaliacao', _M('Salvar', $module));
+
+        $fields[] = new MSeparator();
+
+        $fields[] = new MDiv('divButtons', $btns, '', 'style="margin-left:41%"');
+
+        $jsCode = " function verificaNota(notaResidente)
+                    {
+                        var nota = document.getElementById(notaResidente);
+
+                        // Verifica se tem virgula e troca pelo ponto
+                        nota.value = nota.value.replace(',', '.');
+
+                        // Verifica se é um número
+                        if ( isNaN(nota.value*1) )
+                        {
+                            document.getElementById(notaResidente).value = '';
+                            return;
+                        }
+
+                        // Verifica se a nota informada é maior que a nota máxima configurada na unidade temática
+                        if ( nota.value > " . $ut[12] . " )
+                        {
+                            alert('A nota informada não pode ser superior a nota máxima configurada para a unidade temática.');
+                            nota.value = '';
+                            nota.focus();
+                        }
+
+                    } ";
+
+        $this->page->addAJAXJsCode($jsCode);
+
+        MPopup::show('divPopup', $fields, _M('Autoavaliação', $module));
+    }
+
+    public function button_saveAutoAvaliacao_click()
+    {
+
+        $nota = MIOLO::_REQUEST('nota');
+        $avaliacao = MIOLO::_REQUEST('avaliacao');
+        $residenteId = MIOLO::_REQUEST('residenteId');
+        $ofertaUnidadeTematicaId = MIOLO::_REQUEST('ofertaUnidadeTematicaId');
+
+        if (empty($nota)) {
+            $this->AddAlert(_M('Nota de auto avaliação deve ser preenchida'));
+        }
+
+        try {
+
+            $autoAvaliacao = new MedOfertaDeUnidadeTematicaAutoAvaliacao();
+            $autoAvaliacao->setResidenteId($residenteId);
+            $autoAvaliacao->setOfertaDeUnidadeTematica($ofertaUnidadeTematicaId);
+            $autoAvaliacao->setNota($nota);
+            $autoAvaliacao->setAvaliacao($avaliacao);
+            $salvo = $autoAvaliacao->salvar();
+
+            if ($salvo) {
+                $this->AddInfo(_M('Nota salva com sucesso.'));
+            }
+
+        } catch (Exception $e) {
+            $this->AddError($e->getMessage());
+        }
+    }
+}
+?>

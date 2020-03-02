@@ -1,0 +1,255 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file handles the connection and actions for basPupilListing table
+ *
+ * @author Leovan Tavares da Silva [leovan] [leovan@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Leovan Tavares da Silva [leovan@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 20/01/2006
+ *
+ **/
+
+
+class BusinessAcademicBusCurriculumConversion extends sBusiness
+{
+    /**
+     *  Return the contracts list filtering by course and person data
+     * 
+     * @param $courseId (int): Identification of course
+     * @param $courseVersion (int): Identification of courseVersion
+     * @param $unitId (int): Identification of unit
+     * @param $turnId: Identification of turn
+     * @param $personId (int): Identification of person
+     *
+     * @return (array): Array containing the results.
+     */
+     public function getContractsByData($courseId, $courseVersion, $unitId, $turnId, $personId = null, $opt = null)
+     {
+        $args = array($courseId, $courseVersion, $unitId, $turnId);
+
+        $sql = 'SELECT contractId,
+                       personId,
+                       getPersonName(personId) as personName
+                  FROM unit_acdContract
+                 WHERE courseId      = ?
+                   AND courseVersion = ?
+                   AND unitId        = ?
+                   AND turnId        = ?';
+
+        if ( $personId != null )
+        {
+            $sql   .= ' AND personId = ?';
+            $args[] = $personId;
+        }
+
+        $sql .= ' ORDER BY 3';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        // $opt == 1 significa apenas contratos ativos
+
+        if ( $opt == 1 )
+        {
+            if ( count($result) > 0 )
+            {
+                foreach ( $result as $row )
+                {
+                    $sql = " SELECT A.contractId,
+                                    B.personId,
+                                    getPersonName(B.personId) as personName,
+                                    A.stateContractId
+                                 FROM ( SELECT contractId,
+                                               stateContractId
+                                          FROM acdMovementContract
+                                         WHERE contractId = ?
+                                      ORDER BY stateTime DESC
+                                         LIMIT 1 ) AS A
+                           INNER JOIN unit_acdContract B
+                                   ON (B.contractId = A.contractId)
+                                WHERE A.stateContractId NOT IN (" . SAGU::getParameter('ACADEMIC', 'CONTRACT_STATUSCONTRACTID_OUT') . ", " . SAGU::getParameter('ACADEMIC', 'STATE_CONTRACT_ID_LOCKED') . ")
+                             ORDER BY 3";
+
+                    $query = $this->getDatabase()->query(SAGU::prepare($sql, $row[0]));
+
+                    if ( count($query) > 0 )
+                    {
+                        $return[] = $query[0];
+                    }
+                }
+            }
+        }
+        else
+        {
+            $return = $result;
+        }
+
+        return $return;
+     }
+
+    /**
+     *  Return the list of enrolls filtered by a contract id
+     * 
+     * @param $contractId (int): Identification of contract
+     *
+     * @return (array): Array containing the results.
+     */
+    public function getContractEnrolls($contractId)
+    {
+        $sql = "SELECT enrollId,
+                       curriculumId,
+                       isexploitation
+                  FROM unit_acdEnroll
+                 WHERE contractId = ?";
+                   
+        $args = array( $contractId );
+          
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+          
+        return $result;
+    }
+     
+    /**
+     *  Sets the grades and frequency data
+     * 
+     * @param $enrollId (int): Identification of enroll
+     * @param $note (int): pupil note
+     * @param $examNote (int): pupil exam note
+     * @param $finalNote (int): pupil final note
+     * @param $frequency (double): pupil frequency
+     * @param $desisting (boolean): flag to inform if pupil gives up
+     *
+     * @return (boolean): true if the query is executed with success and false if not
+     */
+    public function getCurriculumLink($curriculumId, $courseId, $courseVersion, $unitId, $turnId)
+    {
+        $args = array($curriculumId, $courseId, $courseVersion, $unitId, $turnId);
+        
+        $sql = "    SELECT A.curriculumId,
+                           A.curriculumLinkId
+                      FROM unit_acdCurriculumLink A
+                INNER JOIN unit_acdcurriculum B
+                        ON (A.curriculumLinkId = B.curriculumId)
+                     WHERE A.curriculumId = ?
+                       AND B.courseId = ?
+                       AND B.courseVersion = ?
+                       AND B.unitId = ?
+                       AND B.turnId = ? ";
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+
+    public function updateEnrollCurriculumId($enrollId, $curriculumId)
+    {
+        $args = array($curriculumId, $enrollId);
+        
+        $sql = "UPDATE acdenroll
+                   SET curriculumId = ?
+                 WHERE enrollId = ? ";
+        
+        $sqls = SAGU::prepare($sql, $args);
+
+        $result = true;
+        for ( $i=0; $i<count($sqls) && $result; $i++ )
+        {
+            $result = $this->getDatabase()->execute($sqls[$i]);
+        }
+
+        return $result;
+    }
+    
+    public function updateContractCourseData($contractId, $courseId, $courseVersion, $unitId, $turnId)
+    {
+        $args = array($courseId, $courseVersion, $unitId, $turnId, $contractId);
+        
+        $sql = "UPDATE acdcontract
+                   SET courseId = ?,
+                       courseVersion = ?,
+                       unitId = ?,
+                       turnId = ?
+                 WHERE contractId = ?";
+        
+        $sqls = SAGU::prepare($sql, $args);
+
+        $result = true;
+        for ( $i=0; $i<count($sqls) && $result; $i++ )
+        {
+            $result = $this->getDatabase()->execute($sqls[$i]);
+        }
+              
+        return $return;
+    }
+
+    public function updateEnrollContracId($enrollId, $contractId)
+    {
+        $args = array($contractId, $enrollId);
+        
+        $sql = "UPDATE acdenroll
+                   SET contractId = ?
+                 WHERE enrollId   = ? ";
+        
+        $sqls = SAGU::prepare($sql, $args);
+
+        $result = true;
+        for ( $i=0; $i<count($sqls) && $result; $i++ )
+        {
+            $result = $this->getDatabase()->execute($sqls[$i]);
+        }
+
+        return $result;
+    }
+
+    public function checkSameContractToCourse($contractId, $courseId, $courseVersion, $unitId, $turnId)
+    {
+        $sql = '    SELECT AA.personId,
+                           AB.name
+                      FROM unit_acdContract AA
+           INNER JOIN ONLY basPhysicalPerson AB
+                        ON (AA.personId = AB.personId)
+                     WHERE AA.personId = ( SELECT A.personId
+                                             FROM unit_acdContract A
+                                            WHERE A.contractId = '.$contractId.' )
+                       AND AA.courseId      = \''.$courseId.'\'
+                       AND AA.courseVersion = '.$courseVersion.'
+                       AND AA.unitId        = '.$unitId.'
+                       AND AA.turnId        = '.$turnId.'';
+
+        $result = $this->getDatabase()->query($sql);
+
+        return $result;
+    }
+
+
+}
+?>

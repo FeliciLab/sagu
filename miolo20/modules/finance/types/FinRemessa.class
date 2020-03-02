@@ -1,0 +1,714 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Solu??es Livres Ltda.
+ *
+ * Este arquivo ? parte do programa Sagu.
+ *
+ * O Sagu ? um software livre; voc? pode redistribu?-lo e/ou modific?-lo
+ * dentro dos termos da Licen?a P?blica Geral GNU como publicada pela Funda??o
+ * do Software Livre (FSF); na vers?o 2 da Licen?a.
+ *
+ * Este programa ? distribu?do na esperan?a que possa ser ?til, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia impl?cita de ADEQUA??O a qualquer MERCADO
+ * ou APLICA??O EM PARTICULAR. Veja a Licen?a P?blica Geral GNU/GPL em
+ * portugu?s para maiores detalhes.
+ *
+ * Voc? deve ter recebido uma c?pia da Licen?a P?blica Geral GNU, sob o t?tulo
+ * "LICENCA.txt", junto com este programa, se n?o, acesse o Portal do Software
+ * P?blico Brasileiro no endere?o www.softwarepublico.gov.br ou escreva para a
+ * Funda??o do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Types cobranca bancaria
+ *
+ * @author Moises Heberle [moises@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.com.br]
+ *
+ * @since
+ * Class created on 24/06/2013
+ */
+set_time_limit(0);
+
+class FinRemessa extends SType
+{
+    const OCORRENCIA_REMESSA = '01';
+    const OCORRENCIA_BAIXA = '02';
+    
+    /**
+     *
+     * @var FinConfiguracaoBancaria
+     */
+    public $configuracaoBancaria;
+    
+    /**
+     *
+     * @var FinBankAccount
+     */
+    public $contaBancaria;
+    
+    /**
+     *
+     * @var int
+     */
+    private $sequencial;
+    
+    /**
+     * Gera o arquivo de saida TXT a partir dos titulos encontrados no sistema
+     * 
+     * @return string
+     */
+    public function gerarTXT($cobrancaBancariaId, $filtros = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->setCacheSQL(true);
+        
+        $this->sequencial = 1;
+        
+        $cobranca = new FinCobrancaBancaria($cobrancaBancariaId);
+        $cobranca->validarDados();
+        
+        $configuracao = $cobranca->obterConfiguracaoRemessa();
+        $configuracao->sequencia = ( SAGU::NVL($configuracao->sequencia, '0') + 1 );
+        $configuracao->save();
+        
+        // validacao
+        $contaBancaria = $cobranca->obterContaBancaria();
+        $campos = $configuracao->obterCamposRemessa();
+
+        foreach ( $campos as $key => $campo )
+        {
+            $campo instanceof FinCampoRemessa;
+
+            if ( $campo->tipovalorvariavelremessaid == FinTipoValorVariavelRemessa::CODIGO_DO_TITULO )
+            {
+                break;
+            }
+
+            // Se chegou ao fim do array
+            if ( !isset($campos[$key+1]) && ( $contaBancaria->geracaoDoNossoNumeroPeloBanco == DB_TRUE ) )
+            {
+                throw new Exception(_M('Não foi configurado um campo do tipo "Código do título (interno)", na Cobrança bancária, sendo que a configuração "Habilita a geração do nosso número pelo banco" do cadastro de Conta bancária está ativada.'));
+            }
+        }
+        
+        // obtem boletos
+        $filtros->bankAccountId = $cobranca->bankaccountid;
+//        $filtros->beginEmissionDate = '01/03/2013';
+//        $filtros->endEmissionDate = '01/08/2013';
+        
+        $this->registrarNossoNumeroParaOsTitulos($filtros);
+
+        $registros = $this->buscarBoletos($filtros, $cobranca);
+        $resultado = array();
+
+        if ( count($registros) > 0 )
+        {
+            //
+            // Gera headers
+            //
+            $camposHeaders = $configuracao->obterCamposRemessa(array(FinCampoRemessa::REG_HEADER_ARQUIVO, FinCampoRemessa::REG_HEADER_LOTE));
+            $resultado[] = $this->gerarLinhaOuLinhas($camposHeaders, $registros[0], $configuracao);
+
+            //
+            // Gera linhas de detalhes do arquivo
+            //
+            $camposDetalhes = $configuracao->obterCamposRemessa(array(FinCampoRemessa::REG_TRANSACAO_DETALHE));
+
+            foreach ( $registros as $reg )
+            {
+                if ( $reg['remessa_' . FinTipoValorVariavelRemessa::OCORRENCIA] == '00' )
+                {
+                    continue;
+                }
+                else
+                {
+                    $resultado[] = $this->gerarLinhaOuLinhas($camposDetalhes, $reg, $configuracao);
+                }
+            }
+
+            //
+            // Gera trailers
+            //
+            $ultimoRegistro = $registros[ count($registros)-1 ];
+            $camposTrailers = $configuracao->obterCamposRemessa(array(FinCampoRemessa::REG_TRAILER_ARQUIVO, FinCampoRemessa::REG_TRAILER_LOTE));
+            $resultado[] = $this->gerarLinhaOuLinhas($camposTrailers, $ultimoRegistro, $configuracao);
+
+            // Finaliza
+            $resultado = array_filter($resultado);
+        }
+        
+        $MIOLO->setCacheSQL(false);
+        
+        $txt = implode($configuracao->obterQuebraLinha(), $resultado);
+        
+        // Salva arquivo no disco
+        $busFile = new BusinessBasicBusFile();
+        $fileId = $busFile->insertFileFromBuffer($txt, $configuracao->nomearquivo);
+        
+        // insere historicos
+        foreach ( $registros as $reg )
+        {
+            $this->inserirHistorico($reg, $fileId);
+        }
+        
+        return $txt;
+    }
+        
+    /**
+     * @return string
+     */
+    private function gerarLinhaOuLinhas($campos = array(), $reg = array(), FinConfiguracaoRemessa $conf)
+    {
+        $linha = array();
+        
+        foreach ( $campos as $campo )
+        {
+            $campo instanceof FinCampoRemessa;
+            $linha[$campo->linha] .= $this->gerarParteDaLinha($campo, $reg);
+        }
+        
+        if ( $this->sequencial == 1 )
+        {
+//            $this->sequencial --;
+        }
+        
+        $this->sequencial += count($linha);
+        
+        //Ordena a linha pelas chaves
+        ksort($linha); 
+        
+        return implode($conf->obterQuebraLinha(), $linha);
+    }
+    
+    /**
+     * @return string
+     */
+    private function gerarParteDaLinha(FinCampoRemessa $campo, $reg = array())
+    {
+        $valor = '';
+        $valorReg = $reg['remessa_' . $campo->tipovalorvariavelremessaid];
+        $removeSpecialChars = true;
+        
+        if ( $campo->tipovalor == FinCampoRemessa::TIPO_VALOR_FIXO )
+        {
+            $valor = $campo->valor;
+        }
+        else if ( $campo->tipovalor == FinCampoRemessa::TIPO_VALOR_VARIAVEL )
+        {
+            // No SQL do buscarBoletos(), todas colunas utilizam um ALIAS que corresponde a constantes da classe FinTipoValorVariavelRemessa
+            // ex.: VALOR_TIPO_*CONSTANTE* corresponde ao tipo ($campo->tipovalorvariavelremessaid)
+            // Por isto ? importante que todos tipos retornem conteudo no SQL da funcao
+            
+            $valor = $valorReg;
+            
+            // Corrige numero do sequencial
+            if ( $campo->tipovalorvariavelremessaid == FinTipoValorVariavelRemessa::SEQUENCIA_DO_REGISTRO )
+            {
+                $valor = $this->sequencial + ( $campo->linha - 1 );
+            }
+            else if ( $campo->tipovalorvariavelremessaid == FinTipoValorVariavelRemessa::DATA_DE_DESCONTO )
+            {
+                $valorDesconto = $reg['remessa_' . FinTipoValorVariavelRemessa::VALOR_DE_DESCONTO];
+                
+                if ( !($valorDesconto > 0) )
+                {
+                    $valor = '';
+                }
+            }
+            else if ( $campo->tipovalorvariavelremessaid == FinTipoValorVariavelRemessa::MENSAGEM_1 )
+            {
+                $valor = $this->obterMensagem($campo, $reg, 1);
+                $removeSpecialChars = false;
+            }
+            else if ( $campo->tipovalorvariavelremessaid == FinTipoValorVariavelRemessa::MENSAGEM_2 )
+            {
+                $valor = $this->obterMensagem($campo, $reg, 2);
+                $removeSpecialChars = false;
+            }
+            else if ( $campo->tipovalorvariavelremessaid == FinTipoValorVariavelRemessa::MENSAGEM_3 )
+            {
+                $valor = $this->obterMensagem($campo, $reg, 3);
+                $removeSpecialChars = false;
+            }
+            else if ( $campo->tipovalorvariavelremessaid == FinTipoValorVariavelRemessa::MENSAGEM_4 )
+            {
+                $valor = $this->obterMensagem($campo, $reg, 4);
+                $removeSpecialChars = false;
+            }
+            else if ( $campo->tipovalorvariavelremessaid == FinTipoValorVariavelRemessa::MENSAGEM_5 )
+            {
+                $valor = $this->obterMensagem($campo, $reg, 5);
+                $removeSpecialChars = false;
+            }
+        }
+        else
+        {
+//            $valorReg = $this->formataValor($campo, $valorReg);
+            
+            if ( $campo->tipovalor == FinCampoRemessa::TIPO_VALOR_MODULO10 )
+            {
+                $valor = FinCampoRemessa::modulo10($valorReg);
+            }
+            else if ( $campo->tipovalor == FinCampoRemessa::TIPO_VALOR_MODULO11 )
+            {
+                $valor = FinCampoRemessa::modulo11($valorReg);
+            }
+            else if ( $campo->tipovalor == FinCampoRemessa::TIPO_VALOR_MODULO10_BANRISUL )
+            {
+                $valor = FinCampoRemessa::modulo10Banrisul( $valorReg ) + 1;
+            }
+            else if ( $campo->tipovalor == FinCampoRemessa::TIPO_VALOR_MODULO11_BANRISUL )
+            {
+                $valor = FinCampoRemessa::modulo11Banrisul( $valorReg . ( FinCampoRemessa::modulo10Banrisul($valorReg) + 1 ) );
+            }
+            else if ( $campo->tipovalor == FinCampoRemessa::TIPO_VALOR_MODULO11_BRADESCO )
+            {
+                // wallet + ourNumber
+                $wallet = $reg['remessa_' . FinTipoValorVariavelRemessa::CODIGO_DA_CARTEIRA];
+                $wallet = str_pad($wallet, 3, '0', STR_PAD_LEFT);
+                
+                $ourNumber = $reg['remessa_' . FinTipoValorVariavelRemessa::SEQUENCIA_NOSSO_NUMERO];
+                $ourNumber = str_pad($ourNumber, 11, '0', STR_PAD_LEFT);
+                
+                $valor = FinCampoRemessa::digitoVerificadorModulo11BRADESCO($wallet . $ourNumber);
+            }
+            else if ( $campo->tipovalor == FinCampoRemessa::TIPO_VALOR_NC_BANRISUL )
+            {
+                $valor = FinCampoRemessa::numeroControleBanrisul( $valorReg );
+            }
+        }
+        
+        $valor = SAGU::stringToASCII($valor); // Remove acentuacao, cedilhas, etc
+        
+        if ( $removeSpecialChars )
+        {
+            $valor = str_replace('.', '', $valor);
+            $valor = str_replace('-', '', $valor);
+            $valor = str_replace('/', '', $valor);
+            $valor = str_replace('_', '', $valor);
+            $valor = str_replace(',', '', $valor);
+            $valor = str_replace(':', '', $valor);
+        }
+        
+        $valor = $this->formataValor($campo, $valor);
+
+        return $valor;
+    }
+    
+    /**
+     * @return string
+     */
+    private function formataValor(FinCampoRemessa $campo, $valor)
+    {
+        $completar = ( $campo->completar == FinCampoRemessa::COMPLETAR_BRANCOS ) ? ' ' : '0';
+        $padType = $campo->alinhamento == FinCampoRemessa::ALINHAMENTO_ESQ ? STR_PAD_RIGHT : STR_PAD_LEFT;
+        
+        $valor = str_pad($valor, $campo->tamanho, $completar, $padType);
+        $valor = substr($valor, 0, $campo->tamanho);
+        $valor = strtoupper($valor);
+        
+        return $valor;
+    }
+    
+    /**
+     * Insere um registro de historico para o titulo gerado
+     */
+    private function inserirHistorico($registro = array(), $fileId)
+    {
+        $ocorrencia = $registro['remessa_' . FinTipoValorVariavelRemessa::OCORRENCIA];
+        
+        $hist = new FinHistoricoRemessa();
+        $hist->invoiceid = $registro['remessa_' . FinTipoValorVariavelRemessa::CODIGO_DO_TITULO];
+        $hist->sequencianoarquivo = $registro['remessa_' . FinTipoValorVariavelRemessa::SEQUENCIA_DO_REGISTRO];
+        $hist->pedidodebaixa = ( $ocorrencia == FinRemessa::OCORRENCIA_BAIXA ) ? DB_TRUE : DB_FALSE;
+        $hist->fileid = $fileId;
+        $hist->save();
+    }
+    
+    /**
+     * Registra nosso número para os títulos que ainda não o possuem.
+     * 
+     * @param stdClass $filters
+     */
+    public function registrarNossoNumeroParaOsTitulos($filters)
+    {
+        $MIOLO     = MIOLO::getInstance();
+        $sDataBase = SDatabase::getInstance();
+        
+        try
+        {
+            $bankAccountId = $filters->bankAccountId;
+            
+            SDatabase::beginTransaction();
+            
+            $sql = "INSERT INTO finBankInvoiceInfo
+		                ( invoiceId,
+                                  bankAccountId,
+                                  ourNumber )
+                         SELECT A.invoiceId,
+                                A.bankAccountId,
+                                getNextOurNumber(A.bankAccountId)
+                      FROM ONLY finInvoice A
+                     INNER JOIN finBankAccount B
+                             ON B.bankAccountId = A.bankAccountId
+                      LEFT JOIN finBankInvoiceInfo C
+                             ON C.invoiceId = A.invoiceId
+                          WHERE B.ournumber IS NOT NULL
+                            AND C.invoiceId IS NULL
+                            AND B.bankAccountId = {$bankAccountId}
+                            AND B.geracaodonossonumeropelobanco IS NOT TRUE ";
+            
+            if ( ( strlen($filters->beginMaturityDate) > 0 ) && ( strlen($filters->endMaturityDate) > 0 ) )
+            {
+                // Adicionados filtros diretamente na string, pois não é possível executar um 'prepare' sem que o sql fique quebrado.
+                $sql .= " AND A.maturityDate BETWEEN TO_DATE('{$filters->beginMaturityDate}', getParameter('BASIC', 'MASK_DATE'))
+                                                 AND TO_DATE('{$filters->endMaturityDate}', getParameter('BASIC', 'MASK_DATE'))";
+            }
+            
+            $sDataBase->execute($sql);
+            SDatabase::commit();
+        } 
+        catch ( Exception $err ) 
+        {
+            SDatabase::rollback();
+            $MIOLO->error($err->getMessage());
+        }
+    }
+    
+    /**
+     * Busca os boletos na base de dados utilizando o intervalo de datas especificado.
+     * 
+     * Esta funcao retorna a maioria das colunas utilizando as constantes da classe FinTipoValorVariavelRemessa,
+     *  para ser possivel obter de forma transparente depois.
+     *
+     * @return array
+     */
+    public function buscarBoletos($filters = null, FinCobrancaBancaria $cobranca)
+    {
+        $formatoData = $cobranca->obterFormatoData();
+        $gerarBaixa = ( $filters->gerarBaixa == DB_TRUE ) ? DB_TRUE : DB_FALSE;
+
+        // implementacao de urgencia - pega o cpf alternativo da pessoa com mesmo nome
+        $cpf = '
+            COALESCE(DOC.content, (
+                SELECT D.content
+                FROM ONLY basphysicalperson PP
+                INNER JOIN basDocument D ON ( D.personId = PP.personId AND D.documentTypeId = 2 )
+                WHERE PP.name = BB.name
+                AND PP.datebirth = BB.datebirth
+                AND LENGTH(D.content) > 0
+                LIMIT 1
+        ))';
+        
+        
+        /**
+         * Para um t?tulo ser considerado pago no caixa da institui??o,
+         * o mesmo deve atender ?s seguintes condi??es:
+         * 
+         * - Estar pago
+         * - N?o ter movimenta??o pelo banco (fin.bankmovement)
+         * - Estar registrado no banco, constar na tabela finhistoricoremessa.
+         */
+        $sqlPagoNoCaixa = "
+            (
+                (
+                    balance(A.invoiceId) = 0 AND 
+                    (SELECT count(*) FROM fin.bankmovement WHERE invoiceid = A.invoiceId) = 0 AND
+                    (SELECT count(*) FROM finhistoricoremessa WHERE invoiceid = A.invoiceId) > 0
+                ) 
+                OR
+                (
+                    A.isCanceled
+                )
+            )
+        ";
+        
+        $sql      = 'SELECT A.invoiceId,
+                            A.personId,
+                            F.wallet AS remessa_' . FinTipoValorVariavelRemessa::CODIGO_DA_CARTEIRA . ',
+                            E.branchNumber AS remessa_' . FinTipoValorVariavelRemessa::CODIGO_DA_AGENCIA . ',
+                            E.accountNumber AS remessa_' . FinTipoValorVariavelRemessa::CODIGO_DO_CEDENTE . ',
+                            BA1.branchNumber || COALESCE(BAII1.transferorcode, \'\') AS remessa_' . FinTipoValorVariavelRemessa::CODIGO_CEDENTE_1_BENEFICIARIO . ',
+                            BA2.branchNumber || COALESCE(BAII2.transferorcode, \'\') AS remessa_' . FinTipoValorVariavelRemessa::CODIGO_CEDENTE_2_BENEFICIARIO . ',
+                            G.ourNumber AS remessa_' . FinTipoValorVariavelRemessa::SEQUENCIA_NOSSO_NUMERO . ',
+                            TO_CHAR(NOW()::time, \'hh24miss\') AS remessa_' . FinTipoValorVariavelRemessa::HORA_DE_GERACAO . ',
+                            TO_CHAR(NOW()::date, \'' . $formatoData . '\') AS remessa_' . FinTipoValorVariavelRemessa::DATA_DE_GERACAO . ',
+                            TO_CHAR(A.emissionDate, \'' . $formatoData . '\') AS remessa_' . FinTipoValorVariavelRemessa::DATA_DE_EMISSAO . ',
+                            TO_CHAR(A.referenceMaturityDate, \'' . $formatoData . '\') AS remessa_' . FinTipoValorVariavelRemessa::DATA_DE_VENCIMENTO . ',
+                            A.invoiceId AS remessa_' . FinTipoValorVariavelRemessa::CODIGO_DO_TITULO . ',
+                            REGEXP_REPLACE(ROUND(BALANCE(A.invoiceId), 2)::text, E\'[^0-9]\', \'\', \'gs\') AS remessa_' . FinTipoValorVariavelRemessa::VALOR_DO_TITULO . ',
+                            REGEXP_REPLACE(ROUND(getinvoicefinevalue(A.invoiceId, A.referenceMaturityDate), 2)::text, E\'[^0-9]\', \'\', \'gs\') AS remessa_' . FinTipoValorVariavelRemessa::VALOR_DA_MULTA . ',
+                            REGEXP_REPLACE(ROUND(getinvoiceinterestvalue(A.invoiceId, A.MaturityDate), 2)::text, E\'[^0-9]\', \'\', \'gs\') AS remessa_' . FinTipoValorVariavelRemessa::VALOR_DE_JUROS . ',
+                            REGEXP_REPLACE(ROUND(getinvoicediscountvalue(A.invoiceId, A.MaturityDate) + getInvoiceConvenantValue(A.invoiceId, A.MaturityDate), 2)::text, E\'[^0-9]\', \'\', \'gs\') AS remessa_' . FinTipoValorVariavelRemessa::VALOR_DE_DESCONTO . ',
+                            D.daystofine AS remessa_' . FinTipoValorVariavelRemessa::DIAS_PARA_MULTA . ',
+                            D.daystointerest AS remessa_' . FinTipoValorVariavelRemessa::DIAS_PARA_JUROS . ',
+                            D.finepercent AS remessa_' . FinTipoValorVariavelRemessa::PERCENTUAL_DA_MULTA . ',
+                            ( CASE WHEN D.applyinterest  THEN D.monthlyInterestPercent ELSE 0 END ) AS remessa_' . FinTipoValorVariavelRemessa::PERCENTUAL_DE_JUROS . ',
+                            ( row_number() OVER(ORDER BY A.invoiceid) ) + 1 AS remessa_' . FinTipoValorVariavelRemessa::SEQUENCIA_DO_REGISTRO . ',
+                            ( row_number() OVER(ORDER BY A.invoiceid) ) + 2 AS remessa_' . FinTipoValorVariavelRemessa::SEQUENCIA_DO_REGISTRO_FIM . ',
+                            CONF.sequencia AS remessa_' . FinTipoValorVariavelRemessa::SEQUENCIA_DA_REMESSA . ',
+                            \'\' AS remessa_' . FinTipoValorVariavelRemessa::DV1 . ',
+                            \'\' AS remessa_' . FinTipoValorVariavelRemessa::DV2 . ',
+                            TO_CHAR(A.maturityDate, \'' . $formatoData . '\') AS remessa_' . FinTipoValorVariavelRemessa::DATA_DE_DESCONTO . ',
+                            \'\' AS remessa_' . FinTipoValorVariavelRemessa::DIAS_PARA_DESCONTO . ',
+                            \'\' AS remessa_' . FinTipoValorVariavelRemessa::PERCENTUAL_DE_DESCONTO . ',
+                            \'\' AS remessa_' . FinTipoValorVariavelRemessa::DATA_PARA_MULTA . ',
+                            \'\' AS remessa_' . FinTipoValorVariavelRemessa::DATA_PARA_JUROS . ',
+                            (CASE WHEN ' . $sqlPagoNoCaixa . ' THEN \''. FinRemessa::OCORRENCIA_BAIXA . '\' ELSE CASE WHEN balance(a.invoiceId) = 0 THEN \'00\' ELSE \'' . FinRemessa::OCORRENCIA_REMESSA . '\' END END ) AS remessa_' . FinTipoValorVariavelRemessa::OCORRENCIA . ',
+                            \'\' AS remessa_' . FinTipoValorVariavelRemessa::CONDICAO_DA_EMISSAO . ',
+                            \'\' AS remessa_' . FinTipoValorVariavelRemessa::NUMERO_DE_CONTROLE . ',
+                            \'\' AS remessa_' . FinTipoValorVariavelRemessa::MENSAGEM_1 . ',
+                            \'\' AS remessa_' . FinTipoValorVariavelRemessa::MENSAGEM_2 . ',
+                            \'\' AS remessa_' . FinTipoValorVariavelRemessa::INSTRUCAO_1 . ',
+                            \'\' AS remessa_' . FinTipoValorVariavelRemessa::INSTRUCAO_2 . ',
+                            \'\' AS remessa_' . FinTipoValorVariavelRemessa::MENSAGEM_DO_VENCIMENTO . ',
+                            \'\' AS remessa_' . FinTipoValorVariavelRemessa::TIPO_INSCRICAO_SACADO . ',
+                            TRIM(COALESCE(REPLACE(REPLACE('.$cpf.', \'.\', \'\'), \'-\', \'\'), \'\') || \' \' || COALESCE(BB.name, (select name from only baslegalperson where personId = A.personId))) AS remessa_' . FinTipoValorVariavelRemessa::CPF_E_NOME_DO_SACADO . ',
+                            (CASE WHEN BB.name IS NOT NULL THEN BB.name ELSE (select name from only baslegalperson where personId = A.personId) END) AS remessa_' . FinTipoValorVariavelRemessa::NOME_DO_SACADO . ',
+                            COALESCE(BB.location, \'\') || \' , NO. \' || COALESCE(BB.number, \'\') || \' , BAIRRO \' || COALESCE(BB.neighborhood, \'\') AS remessa_' . FinTipoValorVariavelRemessa::ENDERECO_DO_SACADO . ',
+                            BB.zipcode AS remessa_' . FinTipoValorVariavelRemessa::CEP_DO_SACADO . ',
+                            (CASE WHEN CHAR_LENGTH(BB.zipcode) >= 3 THEN SUBSTR(BB.zipcode, 1, CHAR_LENGTH(BB.zipcode)-3) ELSE \'\' END) AS remessa_' . FinTipoValorVariavelRemessa::CEP_DO_SACADO_SEM_SUFIXO . ',
+                            (CASE WHEN CHAR_LENGTH(BB.zipcode) >= 2 THEN SUBSTR(BB.zipcode, CHAR_LENGTH(BB.zipcode)-2) ELSE \'\' END) AS remessa_' . FinTipoValorVariavelRemessa::SUFIXO_DO_CEP_DO_SACADO . ',
+                            FB.bankid AS remessa_' . FinTipoValorVariavelRemessa::CODIGO_DO_BANCO . ',
+                            REPLACE(REPLACE('.$cpf.', \'.\', \'\'), \'-\', \'\') AS remessa_' . FinTipoValorVariavelRemessa::CPF_DO_SACADO . ',
+                            E.accountnumberdigit AS remessa_' . FinTipoValorVariavelRemessa::DIGITO_DA_CONTA . ',
+                            C.name AS remessa_' . FinTipoValorVariavelRemessa::CIDADE_DO_SACADO . ',
+                            C.stateid AS remessa_' . FinTipoValorVariavelRemessa::UF_DO_SACADO . ',
+                            II.transferorCodeDv AS remessa_' . FinTipoValorVariavelRemessa::CODIGO_DO_CEDENTE_DIGITO . ',
+                            CCLP.cnpj AS remessa_' . FinTipoValorVariavelRemessa::CNPJ_EMPRESA . ',
+                            \'1% RATEADO COM BANCO 041 CONTA 0600502625\' AS remessa_' . FinTipoValorVariavelRemessa::MENSAGEM_RATEIO_BANRISUL . '
+                        FROM ONLY finReceivableInvoice A
+                  INNER JOIN ONLY basPhysicalPerson BB ON BB.personId = A.personid
+                       INNER JOIN finPolicy D USING (policyId)
+                       INNER JOIN finBankAccount E ON (A.bankAccountId = E.bankAccountId)
+                        LEFT JOIN finBankInvoiceInfo G ON (G.invoiceId = A.invoiceId)
+                        LEFT JOIN finBankAccountInvoiceInfo II ON II.bankaccountid = E.bankaccountid
+                        LEFT JOIN finbank FB ON FB.bankid = E.bankid
+                        LEFT JOIN fininvoicemessage IM1 ON IM1.invoicemessageid = E.invoicemessage1
+                        LEFT JOIN fininvoicemessage IM2 ON IM2.invoicemessageid = E.invoicemessage2
+                        LEFT JOIN finBankAccountInvoiceInfo F ON E.bankAccountId = F.bankAccountId
+                        LEFT JOIN finconfiguracaoremessa CONF ON CONF.cobrancabancariaid = ' . $cobranca->cobrancabancariaid . '
+                        LEFT JOIN fincobrancabancaria COB ON COB.cobrancabancariaid = CONF.cobrancabancariaid
+                        LEFT JOIN basdocument DOC ON A.personid = DOC.personid AND DOC.documenttypeid = GETPARAMETER(\'BASIC\', \'DEFAULT_DOCUMENT_TYPE_ID_CPF\')::int
+                        LEFT JOIN bascity C ON C.cityid = BB.cityId
+                        LEFT JOIN bascompanyconf CC ON CC.companyid = GETPARAMETER(\'BASIC\', \'DEFAULT_COMPANY_CONF\')::int
+                        LEFT JOIN baslegalperson CCLP ON CCLP.personid = CC.personid
+                        
+                        LEFT JOIN finBankAccount BA1 ON BA1.bankAccountId = 32
+                        LEFT JOIN finBankAccountInvoiceInfo BAII1 ON BAII1.bankAccountId = BA1.bankAccountId
+                        LEFT JOIN finBankAccount BA2 ON BA2.bankAccountId = 5
+                        LEFT JOIN finBankAccountInvoiceInfo BAII2 ON BAII2.bankAccountId = BA2.bankAccountId     
+        ';
+
+        $msql = $this->msql();        
+        $msql->createFrom( SAGU::prepare($sql, $args) );        
+        $msql->setOrderBy('A.invoiceId');
+        
+        
+        if ( (strlen($filters->beginMaturityDate) > 0) && (strlen($filters->endMaturityDate) > 0) )
+        {
+                $msql->setWhereAnd("A.maturityDate BETWEEN
+                                    TO_DATE(?, getParameter('BASIC', 'MASK_DATE')) AND
+                                    TO_DATE(?, getParameter('BASIC', 'MASK_DATE'))", array($filters->beginMaturityDate, $filters->endMaturityDate));
+        }
+
+        if ( (strlen($filters->beginEmissionDate) > 0) && (strlen($filters->endEmissionDate) > 0) )
+        {
+                $msql->setWhereAnd("A.emissionDate BETWEEN
+                                TO_DATE(?, getParameter('BASIC', 'MASK_DATE')) AND
+                                    TO_DATE(?, getParameter('BASIC', 'MASK_DATE'))", array($filters->beginEmissionDate, $filters->endEmissionDate));
+        }
+        
+        // Filtra pela conta bancaria
+        $bankAccountId = $cobranca->obterConfiguracaoRemessa()->obterCobrancaBancaria()->bankaccountid;
+        $msql->addEqualCondition('E.bankAccountId', $bankAccountId);
+        
+        // PESSOAS C/ CPF - FEITO TEMPORARIAMENTE P/ URCAMP
+//        $msql->setWhereAnd("getpersondocument(A.personid, 2) IS NOT NULL");
+        
+        if ( $filters->personId )
+        {
+            $msql->addEqualCondition('A.personId', $filters->personId);
+        }
+        
+        // Conds
+        $msql->addEqualCondition('A.incomeSourceId', SAGU::getParameter('FINANCE', 'INCOME_SOURCE_ID'));
+        
+        // Envia apenas títulos cancelados que não foram enviados e que possuem registro na finhistoricoremessa
+        $msql->setWhereAnd('CASE A.isCanceled 
+                                WHEN TRUE THEN 
+                                    (SELECT COUNT(*) > 0 FROM finhistoricoremessa WHERE invoiceid = A.invoiceId AND pedidodebaixa IS FALSE) AND 
+                                    NOT EXISTS (SELECT 1 FROM finhistoricoremessa WHERE invoiceid = A.invoiceId AND pedidodebaixa)
+                                ELSE
+                                     TRUE
+                            END ');
+        
+        if ( $filters->limit )
+        {
+            $msql->setLimit($filters->limit);
+        }
+        
+        if ( $filters->offset )
+        {
+            $msql->setOffsetSQL($filters->offset);
+        }
+        
+        // Adiciona coluna de somatorio titulos na consulta
+        $msql->setColumns($this->obterSomatorioTitulos($msql) . ' AS remessa_' . FinTipoValorVariavelRemessa::SOMATORIO_VALOR_TITULOS);        
+        $rows = SDatabase::queryAssociative( $msql );
+
+        return $rows;
+    }
+    
+    /**
+     * Executa consulta unica que obtem somatorio de titulos.
+     * 
+     * Foi feito separado para reutilizar o objeto MSQL ja com os devidos filtros da consulta principal e questoes de performance.
+     * 
+     * @return float
+     */
+    private function obterSomatorioTitulos(MSQL $msql)
+    {
+        // Cria lista de invoiceId's da consulta principal
+        $msqlList = clone($msql);
+        $msqlList instanceof MSQL;
+        $msqlList->clearColumns();
+        $msqlList->setColumns('A.invoiceId');
+        
+        // Obtem valor total dos titulos da lista
+        $msqlSum = new MSQL();
+        $msqlSum->setTables('finReceivableInvoice RI');
+        $msqlSum->setColumns('COALESCE(REGEXP_REPLACE(ROUND(SUM(BALANCE(RI.invoiceId)), 2)::text, E\'[^0-9]\', \'\', \'gs\'), \'0\')');
+        $msqlSum->setWhere('RI.invoiceId IN ( ' . $msqlList->select() . ' )');
+
+        $query = SDatabase::query($msqlSum->select());
+        
+        return $query[0][0];
+    }
+    
+    /**
+     * @return string
+     */
+    private function obterMensagem(FinCampoRemessa $campo, $reg = array(), $numeroMsg)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->uses( 'classes/IntegrationSAGUSAB.class', 'finance' );
+        
+        static $msgs = array(); // Faz cache das mensagens
+        $invoiceId = $reg['remessa_' . FinTipoValorVariavelRemessa::CODIGO_DO_TITULO];
+        
+        if ( !$msgs[$invoiceId] )
+        {
+            $sab = new IntegrationSAGUSAB();
+            $conta = $campo->obterConfiguracao()->obterCobrancaBancaria()->obterContaBancaria();
+            $mensagens = $sab->getInvoiceMessageForSAB($conta->bankId, $invoiceId);
+
+            $msgs[$invoiceId] = $mensagens;
+        }
+        
+        return $msgs[$invoiceId][$numeroMsg - 1];
+    }
+    
+    public static function obterRemessasPendenteDeRetorno(BasSystemTask $bst)
+    {
+        // Obter data da última pendência.
+        $sql = " SELECT creationdate, to_char(creationdate::date, 'DD/MM/YYYY') FROM bas.task WHERE taskconfigid = 10005 ORDER BY creationdate DESC LIMIT 1 ";
+        $query = SDatabase::query($sql);
+        $lastDate = $query[0][0];
+        $date = $query[0][1];
+        
+        if ( !$lastDate )
+        {
+            $lastDate = "now() - interval'1month'";
+            $date = date( 'd/m/Y', strtotime( "-1 month" ) );
+        }
+        else
+        {
+            $lastDate = "'{$lastDate}'";
+        }
+        
+        $sql = "
+            SELECT count(DISTINCT A.invoiceid) FROM finhistoricoremessa A 
+             WHERE A.datetime >= ({$lastDate})::date 
+               AND A.invoiceid not in (select B.invoiceid 
+              FROM fin.bankmovement B 
+             WHERE B.invoiceid = A.invoiceid)
+        ";
+
+        $query = SDatabase::query($sql);
+        $totalRemessasPendentes = $query[0][0];
+        
+        $ok = TRUE;
+        
+        if ( $totalRemessasPendentes > 0 )
+        {
+            $MIOLO = MIOLO::getInstance();
+            
+            $description = 'Pendência: Remessas pendente de retorno. Existem ' . $totalRemessasPendentes . ' títulos enviados para remessa sem retorno.';            
+            $link = $MIOLO->GetActionURL('finance', 'main:report:genericReports');
+            $link .= '&reportid=10007&field[1]=' . $date . '&event=btnSearch_click';
+            
+            $ok = $bst->addNotification(array(
+                'title' => $bst->description,
+                'description' => $description,
+                'stickynote' => true,
+                'stickyType' => 'P',
+                'link' => $link,
+                'pendencyType' => 'RPR'
+            ));
+        }
+        else
+        {
+            $stickyNote = new BasStickyNote();
+            $ok = $stickyNote->deletePendencyType('RPR');
+        }
+        
+        return $ok;
+    }
+    
+    public static function obterRetornosNaoProcessados(BasSystemTask $bst)
+    {
+        $sql = "
+            SELECT count(DISTINCT A.invoiceid)
+                       FROM fin.bankmovement A 
+                  LEFT JOIN finhistoricoremessa B ON (A.invoiceid = B.invoiceid) 
+                      WHERE A.occurrence NOT IN ('06', '07', '15', '17') 
+                        AND A.invoiceid IS NOT NULL
+        ";
+        
+        $query = SDatabase::query($sql);
+        $totalRetornosNaoProcessados = $query[0][0];
+        
+        $ok = TRUE;
+        
+        if ( $totalRetornosNaoProcessados > 0 )
+        {
+            $MIOLO = MIOLO::getInstance();
+            
+            $description = 'Pendência: Retorno de remessas não processados. Existem ' . $totalRetornosNaoProcessados . ' títulos com retorno de remessa não processados.';
+            $link = $MIOLO->GetActionURL('finance', 'main:report:genericReports');
+            $link .= '&reportid=10008&event=btnSearch_click';
+            
+            $ok = $bst->addNotification(array(
+                'title' => $bst->description,
+                'description' => $description,
+                'stickynote' => true,
+                'stickyType' => 'P',
+                'link' => $link,
+                'pendencyType' => 'RNP'
+            ));
+        }
+        else
+        {
+            $stickyNote = new BasStickyNote();
+            $ok = $stickyNote->deletePendencyType('RNP');
+        }        
+        
+        return $ok;
+    }
+}
+?>

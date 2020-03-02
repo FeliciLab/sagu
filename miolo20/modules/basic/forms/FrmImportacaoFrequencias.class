@@ -1,0 +1,221 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Curso
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class Created on 25/09/2013
+ *
+ **/
+ini_set('memory_limit', '1024M');
+ini_set('max_execution_time', '0');
+class FrmImportacaoFrequencias extends SForm
+{
+    public $fileId;
+    
+    public function __construct()
+    {
+        parent::__construct(_M('Importação de frequencias'), new BasImportacaoFrequencias(), array('importacaofrequenciaid'));
+    }
+    
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $MIOLO->getRequiredJS4Ajax();
+
+        $event = MIOLO::_REQUEST('event');
+        if( $event != 'visualizar_click' )
+        {
+            $fields[] = new MSelection('modulodestino', null, _M('Módulo de destino'), BasImportacaoFrequencias::listarModulosDeDestino());
+            $validators[] = new MRequiredValidator('modulodestino', _M('Módulo de destino'));
+            
+            $url = $MIOLO->GetActionURL(MIOLO::getCurrentModule(), MIOLO::getCurrentAction(), null, array('function' => 'insert', 'event' => 'downloadModelo', 'modelo' => BasImportacaoFrequencias::MODELO_PADRAO));
+            $link = new MDiv('divLink', array(new MLink('downloadLink', _M('Clique aqui para baixar o layout do modelo selecionado', $module), $url)));
+            
+            $modelo = new MSelection('modelo', SAGU::NVL(MIOLO::_REQUEST('modelo'), BasImportacaoFrequencias::MODELO_PADRAO), _M('Modelo'), BasImportacaoFrequencias::listarModelos(), FALSE, $link);
+            $modelo->setAllowNullValue(FALSE);
+            $modelo->addAttribute('onchange', SForm::getAjaxAction('changeModelo', 'divLink', FALSE));
+            
+            $fields[] = $modelo;
+            $validators[] = new MRequiredValidator('modelo', _M('Modelo'));
+
+            $file = new MFileField('uploadFile', $this->getRequestValue('uploadFile'), _M('Arquivo', $module));
+            $fields[] = $file;
+
+            $fields[] = new MSpacer();
+
+            $fields[] = new MButton('btnVisualizar', _M('Visualizar arquivo', $module));
+        }
+        
+        parent::defineFields(array('fields' => $fields, 'validators' => $validators));
+    }
+    
+    public function changeModelo($args)
+    {        
+        $MIOLO = MIOLO::getInstance();
+        
+        $url = $MIOLO->GetActionURL(MIOLO::getCurrentModule(), MIOLO::getCurrentAction(), null, array('function' => 'insert', 'event' => 'downloadModelo', 'modelo' => $args->modelo ));
+        $link = new MLink('downloadLink', _M('Clique aqui para baixar o layout do modelo selecionado', $module), $url);
+        $div = new MDiv('divLink', array($link));
+        
+        return $link;
+    }
+    
+    public function downloadModelo()
+    {        
+        $MIOLO = MIOLO::getInstance();
+        $modelo = MIOLO::_REQUEST('modelo');
+        
+        $file = 'ManualAFD.pdf';
+        if ( $modelo == BasImportacaoFrequencias::MODELO_SIMPLIFICADO )
+        {
+            $file = 'LayoutSimples.pdf';
+        }
+        
+        try
+        {
+            $filename = $MIOLO->GetModulePath('basic', 'docs/' . $file);
+            $buffer = file_get_contents($filename);
+
+            SAGU::returnAsFile(basename($filename), $buffer, 'application/pdf', TRUE);
+        }
+        catch (Exception $e)
+        {
+            $this->AddError( $e->getMessage() );
+        }
+    }
+    
+    public function btnVisualizar_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        //Upload temporário do arquivo
+        $fileName = $_FILES['uploadFile']['tmp_name'];
+        if( !strlen($fileName) > 0 )
+        {
+            $this->addError(_M('Nenhum arquivo selecionado'));
+        }
+        else if ( mime_content_type($fileName) != 'text/plain' )
+        {
+            $this->addError(_M('Ops! O arquivo selecionado não é do tipo texto puro (text/plain)'));
+        }
+        else
+        {
+            $busFile = new BusinessBasicBusFile();
+            $fileId = $busFile->insertFileSimple($fileName);
+            $fields[] = new SHiddenField('fileId', $fileId);
+            
+            $importacaofrequencias = new BasImportacaoFrequenciasAFD();
+            if ( MIOLO::_REQUEST('modelo') == BasImportacaoFrequencias::MODELO_SIMPLIFICADO )
+            {
+                $importacaofrequencias = new BasImportacaoFrequenciasSimplificado();
+            }
+            $importacaofrequencias->modulodestino = MIOLO::_REQUEST('modulodestino');
+            
+            SDatabase::beginTransaction();
+            
+            //Processa e obtém dados das frequencias
+            $importacaofrequencias->processarArquivo($fileId);
+            
+            $link = new MLink('lnkPerfilCurso', _M('clique aqui'), $MIOLO->GetActionURL('pedagogico', 'main:config:perfildecurso'));
+            $link->setTarget('_blank');
+            $fields[] = MMessage::getStaticMessage('msgInfo', _M('Caso não encontrada nenhuma ocorrência de frequência, verifique as configurações de frequência por biometria, na aba "Registro de frequência" do perfil de curso.<br>
+                Para acessar as configurações de perfil de curso, ' . $link->generate()), MMessage::TYPE_INFORMATION);
+            
+            //Popula grid
+            $data = $importacaofrequencias->obterMovimentacoes();
+            if ( MIOLO::_REQUEST('modelo') == BasImportacaoFrequencias::MODELO_SIMPLIFICADO )
+            {
+                foreach ( $data as $key => $line )
+                {
+                    $data[$key][2] = NULL;
+                }
+            }
+            
+            SDatabase::rollback();
+            
+            $grdResults = $MIOLO->getUI()->getGrid($module, 'GrdImportacaoFrequenciasMovimentacao');
+            $grdResults->setData($data);
+            
+            
+            $fields[] = $grdResults;
+
+            $fields[] = new MButton('btnSalvar', _M('Salvar'));
+
+            $this->addFields($fields);
+        }
+    }
+    
+    public function btnSalvar_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        //FileId do arquivo
+        $fileId = MIOLO::_REQUEST('fileId');
+        
+        $importacaofrequencias = new BasImportacaoFrequenciasAFD();
+        if ( MIOLO::_REQUEST('modelo') == BasImportacaoFrequencias::MODELO_SIMPLIFICADO )
+        {
+            $importacaofrequencias = new BasImportacaoFrequenciasSimplificado();
+        }
+        $importacaofrequencias->modulodestino = MIOLO::_REQUEST('modulodestino');
+        
+        SDatabase::beginTransaction();
+        
+        //Processa e obtém dados das frequencias
+        $importacaofrequencias->processarArquivo($fileId, true);
+        
+        SDatabase::commit();
+        
+        $goto = $MIOLO->GetActionURL($module, 'main:config:importacaofrequencias');
+        $this->messageSuccess(_M('Frequências processadas com sucesso'), $goto);
+    }
+    
+    
+    
+    public function visualizar_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();   
+        $importacaofrequenciasid = MIOLO::_REQUEST('importacaofrequenciaid');
+        $importacaofrequencias = new BasImportacaoFrequencias($importacaofrequenciasid);
+        $data = $importacaofrequencias->obterMovimentacoes();
+
+        //Cria a grid
+        $grdResults = $MIOLO->getUI()->getGrid($module, 'GrdImportacaoFrequenciasMovimentacao');
+        $grdResults->setData($data);
+
+        $fields[] = $grdResults;
+        
+        $this->addFields($fields);
+    }
+}
+?>

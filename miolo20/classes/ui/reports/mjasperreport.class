@@ -1,0 +1,821 @@
+<?php
+
+class MJasperReport extends MReport
+{
+    /**
+     * Java type constants.
+     */
+    const JAVA_BIG_DECIMAL = 'java.math.BigDecimal';
+    const JAVA_BOOLEAN = 'java.lang.Boolean';
+    const JAVA_DATE = 'java.util.Date';
+    const JAVA_DOUBLE = 'java.lang.Double';
+    const JAVA_FLOAT = 'java.lang.Float';
+    const JAVA_INTEGER = 'java.lang.Integer';
+    const JAVA_LONG = 'java.lang.Long';
+    const JAVA_NUMBER = 'java.lang.Number';
+    const JAVA_SHORT = 'java.lang.Short';
+    const JAVA_STRING = 'java.lang.String';
+    const JAVA_TIME = 'java.sql.Time';
+    const JAVA_TIMESTAMP = 'java.sql.Timestamp';
+
+    /**
+     * Simplified type constants.
+     */
+    const TYPE_BOOLEAN = 'boolean';
+    const TYPE_DATE = 'date';
+    const TYPE_FLOAT = 'float';
+    const TYPE_INTEGER = 'integer';
+    const TYPE_STRING = 'string';
+    const TYPE_TIME = 'time';
+    const TYPE_TIMESTAMP = 'timestamp';
+
+    public $filetype; // pdf doc xls rtf htm rpt
+    public $fileout;
+    public $fileexp;
+    public $objDb;
+    public $db;
+    public $connectionType;
+
+    private $arquivoRecemGerado;
+    private $javaPath;
+    private $absoluteFileOut;
+    
+    const FIND_JAVA_PATH_COMMAND = 'echo $JAVA_HOME';
+
+    public function __construct($db = 'admin', $connectionType = 'local')
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $this->db = $db;
+        $this->connectionType=$connectionType;
+        
+        if ( $MIOLO->getConf('home.java') )
+        {
+            $this->javaPath = $MIOLO->getConf('home.java');
+        }
+        else
+        {
+            $this->javaPath = trim(shell_exec(self::FIND_JAVA_PATH_COMMAND));
+        }
+    }
+
+    public function getArquivoRecemGerado()
+    {
+        return $this->arquivoRecemGerado;
+        
+    }
+    
+    public function execute($module, $name, $parameters = null, $filetype = 'PDF')
+    {
+        $MIOLO = MIOLO::getInstance();
+        $page = $MIOLO->getPage();
+
+        $this->filetype = isset($filetype) ? $filetype : 'PDF';
+
+        $filein = addslashes($MIOLO->GetModulePath($module, 'reports/' . $name . '.jasper'));
+
+        $uniqid = uniqid(md5(uniqid("")));
+        $this->fileout= $uniqid . "." . strtolower($this->filetype);
+        $pathout = $MIOLO->getConf("home.reports") .'/'.$this->fileout;
+
+        $this->absoluteFileOut = $pathout;
+        
+        $pathMJasper = $MIOLO->getConf("home.extensions")."/jasper";
+        $pathLibs = "$pathMJasper/lib/deps/*:$pathMJasper/lib/ext/*:$pathMJasper/lib/ireport/*:$pathMJasper/lib/jasperreports/*";
+        $classPath = "$pathLibs:$pathMJasper/:$this->javaPath/lib";
+
+        return $this->fill($filein, $pathout, $filetype, $parameters, $classPath);
+
+    }
+     
+    public function fill($fileIn, $fileOut, $filetype, $parameters, $classPath, $download = true)
+    {
+        $this->beforeGenerateReport();
+        
+        $MIOLO = MIOLO::getInstance();
+        $page = $MIOLO->getPage();
+        
+        if ($this->connectionType=='local')
+        {
+            //Solution without TomCat
+            $param = "";
+            if (is_array($parameters))
+            {
+                foreach ($parameters as $pn => $pv)
+                {
+//                    $pv = iconv('iso-8859-2', 'utf-8', $pv);
+                    $pv = utf8_encode($pv);
+                    
+                    $param .= '&' . $pn . "~" . $pv;
+                }
+            }
+            
+            $this->objDb = $MIOLO->GetDatabase($this->db);
+            $dbUser = $this->objDb->user;
+            $dbPass = $this->objDb->pass;
+            $dbHost = $this->objDb->host;
+            $dbName = $this->objDb->db;
+            $dbPort = $this->objDb->port;
+            
+            if ( $this->objDb->system == 'postgres' )
+            {
+                $jdbcDriver = 'org.postgresql.Driver';
+                $dbPort = $dbPort ? $dbPort : '5432';
+                $jdbcDb = "jdbc:postgresql://{$dbHost}:{$dbPort}/{$dbName}";
+            }
+            elseif ( $this->objDb->system == 'mysql' )
+            {
+                $jdbcDriver = 'com.mysql.jdbc.Driver';
+                $dbPort = $dbPort ? $dbPort : '3306';
+                $jdbcDb = "jdbc:mysql://{$dbHost}:{$dbPort}/{$dbName}";
+            }
+            else
+            {
+                $jdbcDriver = 'org.postgresql.Driver';
+                $jdbcDb = "jdbc:postgresql://localhost:5432/postgres";
+                $dbUser = "postgres";
+                $dbPass = "postgres";
+            }
+
+            // Change directory to get the report images from the same place the report is located
+            $pathInfo = pathinfo($fileIn);
+            chdir(realpath($pathInfo['dirname']));
+
+            $param = "relatorio~$fileIn".$param."&fileout~".$fileOut."&filetype~".$this->filetype;
+
+            $pathLog = $MIOLO->GetConf('home.logs');
+            $uniqid = uniqid(md5(uniqid("")));
+            $fileLog = $uniqid . ".txt";
+
+            $this->javaPath = $this->javaPath ? $this->javaPath . '/bin/java' : 'java'; //if JAVA_HOME is unsetted, get java from default path
+
+            $lang = $MIOLO->getConf('i18n.language');
+            
+            // Corrige problema de acentuacao que estava ocorrendo
+            if ( !stripos($lang, 'utf') && !stripos($lang, 'iso') )
+            {
+                $lang .= '.UTF-8';
+            }
+            
+            $cmd = "export LANG=$lang; " . $this->javaPath  . " -classpath $classPath MJasper \"{$pathMJasper}\" \"{$param}\" \"{$dbUser}\" \"{$dbPass}\" \"{$jdbcDriver}\" \"{$jdbcDb}\"";
+            $cmd .= " 2> $pathLog/$fileLog";
+
+            exec($cmd,$output);
+
+            //JAVA application without erros!
+            if (trim($output[0])=="end")
+            {
+                $this->afterGenerateReport();
+                
+                //Break line incompatibility problem with Windows and Unix
+//                if (strtoupper(trim($this->filetype))=="TXT") Mutil::unix2dos($fileOut);
+                
+                // if HTML, redirects the page to the report URL to see the HTML images
+                if ( strtoupper(trim($this->filetype)) == 'HTML' )
+                {
+                    $fileData = pathinfo($fileOut);
+                    $fileName = $fileData['basename'];
+                    $visibleFile = $MIOLO->getConf("home.html") . "/reports/$fileName";
+                    copy($fileOut, $visibleFile);
+
+                    // FIXME: find a way for opening the URL in another tab or window
+                    $MIOLO->page->redirect($MIOLO->getConf('home.url') . "/reports/$fileName");
+                }
+                else
+                {
+                    $fileDown = null;
+                    
+                    // Quando for uma das extensoes abaixo, forca download
+                    if ( strtoupper(trim($this->filetype)) == 'TXT' )
+                    {
+                        $fileDown = $fileOut;
+                    }
+                    
+                    if( $download )
+                    {
+                        $MIOLO->sendFile($fileOut, $fileDown);    
+                    }
+                    
+                }
+
+                $this->arquivoRecemGerado = $fileOut;
+                
+                return 1;
+            }
+            elseif ( trim($output[0]) == 'empty' )
+            {
+                return 0;
+            }
+            else
+            {
+                $link = new MLink('', 'aqui', $MIOLO->GetActionURL('miolo', "logs:$fileLog"), NULL, '_blank');
+                $detalhes = _M("Ocorreu um erro durante a geração do relatório.");
+                $detalhes .= "<br/>Para mais detalhes clique " . $link->generate() . '.';
+
+                if ( $output != 'null' )
+                {
+                    $file = fopen("$pathLog/$fileLog", 'a+');
+                    $error = implode("\n\n", $output);
+                    fwrite($file, "\n\n$error");
+                    fclose($file);
+                }
+
+                throw new EControlException($detalhes);
+            }
+
+        }
+        else if ($this->connectionType=='remote')
+        {
+            //TomCat
+            $this->fileout = $MIOLO->getConf("home.url_jasper"). "?bd={$this->db}&relatorio=$filein" . $param;
+            $MIOLO->getPage()->window($this->fileout);
+        }
+    }
+
+    /**
+     * Generate the report from a JRXML file.
+     *
+     * @param string $module Module where the report is located.
+     * @param string $name Name of the report (without extension).
+     * @param array $parameters Parameters to be passed to the report.
+     * @param string $filetype Report file type.
+     * @param boolean $save Whether to save the report or download it.
+     * @return integer Returns 1 if succeeded.
+     */
+    public function executeJRXML($fileIn, $parameters=NULL, $filetype='PDF', $download = true)
+    {
+        $MIOLO = MIOLO::getInstance();
+         
+        $this->filetype = isset($filetype) ? $filetype : 'PDF';
+
+//        $uniqid = uniqid(md5(uniqid("")));
+        $uniqid = current(explode('.', basename($fileIn)));
+        $pathout = null;
+
+        for ( $count = 1; ( file_exists($pathout) || ( $pathout === null ) ); $count ++ )
+        {
+            $this->fileout = $uniqid . $count . '.' . strtolower($this->filetype);
+            $pathout = $MIOLO->getConf('home.reports') . '/' . $this->fileout;
+            
+            $this->absoluteFileOut = $pathout;
+        }
+        
+        $pathMJasper = $MIOLO->getConf("home.extensions")."/jasper";
+        $pathLibs = "$pathMJasper/lib/deps/*:$pathMJasper/lib/ext/*:$pathMJasper/lib/ireport/*:$pathMJasper/lib/jasperreports/*";
+        $classPath = "$pathLibs:$pathMJasper/:$this->javaPath/lib";
+
+        return $this->fill($fileIn, $pathout, $this->filetype, $parameters, $classPath, $download);
+    }
+
+    /**
+     * Get a simpler type based on the Java type.
+     *
+     * @param string $javaType Java type. E.g. "java.lang.String".
+     * @return string Simpler type. E.g. "string".
+     */
+    private static function getTypeFromJavaType($javaType)
+    {
+        switch ( $javaType )
+        {
+            case self::JAVA_BOOLEAN:
+                $type = self::TYPE_BOOLEAN;
+                break;
+
+            case self::JAVA_DATE:
+                $type = self::TYPE_DATE;
+                break;
+
+            case self::JAVA_BIG_DECIMAL:
+            case self::JAVA_DOUBLE:
+            case self::JAVA_FLOAT:
+            case self::JAVA_NUMBER:
+                $type = self::TYPE_FLOAT;
+                break;
+
+            case self::JAVA_INTEGER:
+            case self::JAVA_LONG:
+            case self::JAVA_SHORT:
+                $type = self::TYPE_INTEGER;
+                break;
+
+            case self::JAVA_TIME:
+                $type = self::TYPE_TIME;
+                break;
+
+            case self::JAVA_TIMESTAMP:
+                $type = self::TYPE_TIMESTAMP;
+                break;
+
+            case self::JAVA_STRING:
+            default:
+                $type = self::TYPE_STRING;
+                break;
+        }
+
+        return $type;
+    }
+
+    /**
+     * Get the report parameters.
+     * Return an array with this format:
+     *     array(
+     *         'parameter1id' => array(
+     *             'type' => some of TYPE_ constants,
+     *             'ohterProperty' => 'propertyValue',
+     *             ...
+     *         ),
+     *         'parameter2id' => array(
+     *             'type' => some of TYPE_ constants,
+     *             ...
+     *         ),
+     *         ...
+     *     )
+     *
+     * @param string $reportFile Report file.
+     * @return array Parameters array.
+     */
+    public static function getParametersFromFile($reportFile)
+    {
+        if ( !file_exists($reportFile) )
+        {
+            return NULL;
+        }
+
+        $xml = simplexml_load_file($reportFile);
+
+        $parameters = array();
+
+        foreach ( $xml->parameter as $parameter )
+        {
+            // Create an array to represent a parameter
+            $p = array();
+            $name = (string) $parameter->attributes()->name;
+
+            // Put the simplified parameter type on "type" attribute
+            $javaType = (string) $parameter->attributes()->class;
+            $p['type'] = self::getTypeFromJavaType($javaType);
+
+            // Iterate through parameter properties to set them on the array
+            foreach ( $parameter->property as $property )
+            {
+                $key = (string) $property->attributes()->name;
+                $value = (string) $property->attributes()->value;
+
+                $p[$key] = $value;
+            }
+
+            $parameters[$name] = $p;
+        }
+
+        return $parameters;
+    }
+
+    /**
+     * Get fields from report parameters.
+     *
+     * @param string $reportFile
+     * @return array Parameters data in the following format:
+     *                    0 => Array with the input ids,
+     *                    1 => Array with the controls,
+     *                    2 => Array with the validators
+     */
+    public static function getParameterFields($reportFile)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $parameters = self::getParametersFromFile($reportFile);
+        $file = pathinfo($reportFile);
+        $ids = array();
+        $validators = array();
+
+        foreach ( $parameters as $id => $parameter )
+        {
+            // Put id prefixes for Jasper
+            switch ( $parameter['type'] )
+            {
+                case MJasperReport::TYPE_BOOLEAN:
+                    $type = 'boo';
+                    break;
+
+                case MJasperReport::TYPE_FLOAT:
+                    $type = 'dbl';
+                    break;
+
+                case MJasperReport::TYPE_INTEGER:
+                    $type = 'int';
+                    break;
+
+                case MJasperReport::TYPE_DATE:
+                    $type = 'tsp';
+                    break;
+
+                case MJasperReport::TYPE_STRING:
+                case MJasperReport::TYPE_TIME:
+                case MJasperReport::TYPE_TIMESTAMP:
+                default:
+                    $type = 'str';
+                    break;
+            }
+
+            $types[$id] = $type;
+        }
+
+        foreach ( $parameters as $id => $parameter )
+        {
+            if ( strlen($parameter['nome']) )
+            {
+                $label = utf8_decode($parameter['nome']);
+            }
+            else
+            {
+                $label = utf8_decode($parameter['label']);
+            }
+
+            if ( !$label )
+            {
+                $label = ucfirst($id);
+            }
+
+            $newId = "{$types[$id]}_$id";
+
+            list($id, $field, $validator) = self::generateFieldFromParameter($newId, $id, $parameter, $label, $types);
+
+            $ids[] = $id;
+            $fields[] = $field;
+
+            if ( $validator )
+            {
+                $validators[] = $validator;
+            }
+        }
+
+        return array($ids, $fields, $validators);
+    }
+
+    /**
+     * Generate field from report parameter data.
+     *
+     * @param string $id Parameter id.
+     * @param string $oldId Original parameter id.
+     * @param array $parameter Parameter data.
+     * @param string $label Label.
+     * @param array $types List of field types.
+     * @return array Parameter data in the following format:
+     *                    0 => The input ids,
+     *                    1 => The controls,
+     *                    2 => The validator
+     */
+    public static function generateFieldFromParameter($id, $oldId, $parameter, $label, $types)
+    {
+        $field = NULL;
+        $validator = NULL;
+        $MIOLO = MIOLO::getInstance();
+
+        if ( $parameter['required'] == 't' )
+        {
+            $validator = new MRequiredValidator($id, $label);
+        }
+
+        $control = strlen($parameter['tipo']) ? $parameter['tipo'] : $parameter['control'];
+
+        if ( $control )
+        {
+            switch ( $control )
+            {
+                case 'lookup':
+
+                    $related = NULL;
+
+                    if ( isset($parameter['related']) )
+                    {
+                        $related = array();
+
+                        $relateds = explode(',', $parameter['related']);
+                        
+                        foreach ( $relateds as $r )
+                        {
+                            if ( $r == "{$oldId}_Description" )
+                            {
+                                $related[] = "str_{$oldId}_Description";
+                            }
+                            elseif ( $types[$r] )
+                            {
+                                $related[] = "{$types[$r]}_$r";
+                            }
+                            else
+                            {
+                                $related[] = "str_$r";
+                            }
+                        }
+
+                        if ( count($related) > 1 )
+                        {
+                            $descriptionField = "str_{$oldId}_Description";
+                        }
+                        else
+                        {
+                            $descriptionField = $related[0];
+                        }
+                        
+                        $related = implode(',', $related);
+                    }
+                    
+                    $filter = array();
+                    if ( isset($parameter['filter']) )
+                    {
+                        $filters = explode(',', $parameter['filter']);
+
+                        foreach ( $filters as $filts )
+                        {
+                            $filter[$filts] = 'str_' . $filts;
+                        }
+                    }
+
+                    $module = $parameter['module'];
+                    $item = $parameter['item'];
+                    
+                    if ( $descriptionField == NULL )
+                    {
+                        $descriptionField = "str_{$oldId}_Description";
+                    }
+                                        
+                    $field = new MLookupContainer($id, $descriptionField, NULL, $label, $related, $module, $item, $filter);
+                    if ( $parameter['required'] == 't' )
+                    {
+                        $field->showRequiredLabel = true;
+                    }
+                    
+                    break;
+
+                case 'escolha':
+                    // este componente funciona apenas no SAGU
+                    // portanto, tenha cautela ao utilizar
+                    
+                    // obtem o nome do type utilizado (pode ser encontrado dentro de modules/MODULO/types/TYPE no SAGU)
+                    $item = $parameter['item'];
+                    
+                    // Pega as chaves do array de parâmetros
+                    $keys = array_keys($parameter);
+                    
+                    $typeArgs = array();
+                    
+                    foreach( $keys as $key )
+                    {
+                        // Se é um parâmetro (identificado pelo prefixo p_)
+                        if( strpos($key, "p_") === 0 )
+                        {
+                            $propriedade = substr($key, 2);
+                            
+                            // Cria uma posição no array de argumentos
+                            // nome da propriedade do type = valor definido no 
+                            // relatório
+                            $typeArgs[$propriedade] = $parameter[$key];
+                            
+                        }
+                        
+                    }
+                    
+                    // instancia type magicamente
+                    $typeInstance = new $item();
+                    
+                    // Instancia as propriedades informadas no type
+                    foreach( $typeArgs as $propriedade => $valor)
+                    {
+                        $typeInstance->$propriedade = $valor;
+                        
+                    }
+                                        
+                    // instancia componente de escolha
+                    $field = new sEscolha($id, NULL, $label, $typeInstance);
+                    
+                    break;
+                    
+                case 'combobox':
+                case 'selection':
+                    if ( $parameter['query'] )
+                    {
+                        $options = self::executarQuery($parameter['query'], $parameter['module']);
+                    }
+                    elseif ( $parameter['options'] )
+                    {
+                        foreach(explode(';',$parameter['options']) as $k=>$params)
+                        {
+                            $value = explode('=',trim($params));
+                            if($value[1])
+                            {    
+                                $options[$k][0] = $value[0];
+                                $options[$k][1] = utf8_decode($value[1]);
+                            }
+                        }
+                    }
+
+                    $field = ( $control == 'selection' ) ? new MSelection($id, NULL, $label, $options) : new MComboBox($id, null, $label, $options);
+                    break;
+                    
+                case 'radio':
+                    if ( $parameter['query'] )
+                    {
+                        $options = self::executarQuery($parameter['query'], $parameter['module']);
+                    }
+                    elseif ( $parameter['options'] )
+                    {
+                        foreach(explode(';',$parameter['options']) as $k=>$params)
+                        {
+                            $value = explode('=',trim($params));
+                            if($value[1])
+                            {    
+                                $options[$k][0] = $value[1];
+                                $options[$k][1] = $value[0];
+                            }
+                        }
+                    }
+
+                    $field = new MRadioButtonGroup($id,$label,$options);
+                    break;
+
+                case 'lista':
+                    $common = $MIOLO->getConf('options.common');
+                    $modulesPath = $MIOLO->getConf('home.modules');
+                    
+                    $class = "$modulesPath/$common/classes/reportList.class";
+                    
+                    if ( !file_exists($class) )
+                    {
+                        continue;
+                    }
+                    
+                    $MIOLO->uses('classes/reportList.class', $common); 
+
+                    $options = reportList::search($parameter['dados']);
+                    $field = new MSelection($id, NULL, $label, $options);
+                    break;
+
+                case 'calendário':
+                case 'calendario':
+                case 'calendar':
+                    $field = new MCalendarField($id, $value, $label);
+                    $typeInstance = 'optional';
+                    if ( $parameter['required'] == 't' )
+                    {
+                        $field->setIsRequired(true);
+                        $typeInstance = 'required';
+                        $field->validator->type = 'required';
+                    }
+                    $validator = new MDateDMYValidator($id, $label, $typeInstance);
+                    break;
+
+                case 'boolean':
+                    $listNoYes = array(
+                        'f' => _M('No'),
+                        't' => _M('Yes'),
+                    );
+
+                    $field = new MSelection($id, NULL, $label, $listNoYes);
+
+                    if ( $parameter['required'] == 't' )
+                    {
+                        $field->validator->type = 'required';
+                    }
+                    break;
+                    
+                case 'text':
+                    $field = new MTextField($id, NULL, $label);
+                    
+                    break;
+                
+                case 'hidden':
+                    $field = new SHiddenField(substr($id, 4), $parameter['value']);
+                    
+                    break;
+
+                default:
+                    $field = new $control();
+
+                    if ( $parameter['required'] == 't' && method_exists($field, 'showRequiredLabel') )
+                    {
+                        $field->showRequiredLabel();
+                    }
+
+                    break;
+            }
+        }
+        else
+        {
+            switch ( $parameter['type'] )
+            {
+                case MJasperReport::TYPE_BOOLEAN:
+                    $listNoYes = array(
+                        'f' => _M('No'),
+                        '1' => _M('Yes'),
+                    );
+
+                    $field = new MSelection($id, NULL, $label, $listNoYes);
+                    break;
+
+                case MJasperReport::TYPE_DATE:
+                    $field = new MTextField($id, NULL, $label);
+                    $field = new MCalendarField($id, $value, $label);
+
+                    if ( $parameter['required'] == 't' )
+                    {
+                        $field->validator->type = 'required';
+                        $validator = NULL;
+                    }
+                    break;
+
+                case MJasperReport::TYPE_FLOAT:
+                    $field = new MFloatField($id, NULL, $label);
+                    break;
+
+                case MJasperReport::TYPE_INTEGER:
+                    $field = new MTextField($id, NULL, $label);
+                    $validatorType = $parameter['required'] == 't' ? 'required' : 'optional';
+                    $validator = new MIntegerValidator($id, $label, $validatorType);
+                    break;
+
+                case MJasperReport::TYPE_TIME:
+                case MJasperReport::TYPE_TIMESTAMP:
+                case MJasperReport::TYPE_STRING:
+                default:
+                    $field = new MTextField($id, NULL, $label);
+                    break;
+            }
+        }
+
+        return array($id, $field, $validator);
+    }
+
+    /**
+     * Get report parameters values from a getData result.
+     *
+     * @param type $parameters array Id of the inputs generated from the report.
+     * @param object $data MForm's getData result.
+     * @return array Values of the fields indexed by the input ids.
+     */
+    public static function getParameterValues($parameters, $data)
+    {
+        $values = array();
+
+        foreach ( $parameters as $id )
+        {
+            if ( !is_null($data->$id) && $data->$id != '' )
+            {
+                $values[$id] = $data->$id;
+            }
+        }
+
+        return $values;
+    }
+    
+    /**
+     * Retorna caminho completo do arquivo de saida
+     *
+     * @return string
+     */
+    public function getAbsoluteFileOut()
+    {
+        return $this->absoluteFileOut;
+    }
+
+    public function setAbsoluteFileOut($absoluteFileOut)
+    {
+        $this->absoluteFileOut = $absoluteFileOut;
+    }
+    
+    /**
+     * Callback method
+     */
+    public function beforeGenerateReport()
+    {
+    }
+    
+    /**
+     * Callback method
+     */
+    public function afterGenerateReport()
+    {
+    }
+
+    /**
+     * @return array
+     */
+    public static function executarQuery($query, $module = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $isSAGU = $MIOLO->getConf('temp.is.from.sagu');
+
+        if ( $isSAGU )
+        {
+            $database = SDatabase::getInstance();
+        }
+        else
+        {
+            $dbconf = strlen($module) > 0 ? $module : 'admin';
+            $database = $MIOLO->getDatabase($dbconf);
+        }
+
+        return $database->query($query);
+    }
+}
+
+?>

@@ -1,0 +1,923 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Equipe Solis [sagu2@solis.coop.br]
+ *
+ * @since
+ * Class created on 14/03/2010
+ *
+ **/
+class SDatabase
+{
+    /**
+     *
+     * @var MDatabase
+     */
+    private static $instance = null;
+    
+    private static $changedDatabase = false;
+
+    /**
+     *
+     * @return MDatabase
+     */
+    public static function getInstance()
+    {
+        if ( is_null(self::$instance) )
+        {
+            $MIOLO = MIOLO::getInstance();
+            self::$instance = $MIOLO->getDatabase( self::getDefaultDb() );
+        }
+        
+        self::checkDatabaseUser();
+
+        return self::$instance;
+    }
+    
+    /**
+     * Altera o usuario de conexao da base de dados para o da miolo_user
+     * Utilizado para propositos como multiunidade, auditoria de registros.
+     */
+    public static function checkDatabaseUser()
+    {
+        if ( ! self::$changedDatabase )
+        {
+            $MIOLO = MIOLO::getInstance();
+            
+            $login = null;
+            if ( !strlen($MIOLO->getConf('usuario_console')) > 0 )
+            {
+                $login = $MIOLO->getLogin()->id;
+            }
+                        
+            if ( strlen($login) > 0 )
+            {
+                self::$changedDatabase = true;
+                           
+                self::insertDbUser($login);
+
+                self::changeConnectionUser($login);
+            }
+        }
+    }
+    
+    /*
+     * Insere usuário no postgres
+     */
+    public static function insertDbUser($login)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        if ( $MIOLO->getSession()->getValue('existsDbUser') == $login )
+        {
+            return true;
+        }
+          
+        $dbPass = $MIOLO->getConf('db.basic.password');
+        try
+        {
+            $result = self::query("SELECT insert_miolo_user_passwords('{$login}','{$dbPass}')", null, false);
+        }
+        catch ( Exception $e )
+        {
+            //Não faz nada, apenas para controlar o erro
+        }
+        
+        
+        $TEMPO_MAXIMO_QUERIES = sagu::getParameter("BASIC","TEMPO_MAXIMO_PARA_QUERIES");
+            $V = SAGU::calcNumber("{$TEMPO_MAXIMO_QUERIES}::int * 60000");
+            self::execute("ALTER ROLE \"{$login}\" SET statement_timeout = $V;");
+        
+        if ( strlen($result[0][0]) > 0 )
+        {
+            $MIOLO->getSession()->setValue('existsDbUser', $login);
+            return true;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Retorna se usuario passado existe na base de dados postgresql.
+     * 
+     * @return boolean
+     */
+    public static function existsDbUser($login)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        if ( $MIOLO->getSession()->getValue('existsDbUser') == $login ) 
+        {
+            return true;
+        }
+       
+        $result = self::query("SELECT usename FROM pg_catalog.pg_user WHERE usename = lower(?)", array($login));
+        
+        if (strlen($result[0][0]) > 0)
+        {
+            $MIOLO->getSession()->setValue('existsDbUser', $login);
+            return true;
+        }
+        
+        return false;
+    }
+    
+    /**
+     * Atualiza usuarios na base de dados 
+     */
+    public static function updateDbUsers()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $dbPass = $MIOLO->getConf('db.basic.password');
+        
+        self::query("SELECT update_miolo_user_passwords('{$dbPass}')");
+    }
+    
+    /**
+     * Altera o login de conexao do MIOLO
+     * Utilize este metodo com cuidado.
+     */
+    public static function changeConnectionUser($user)
+    {
+        self::$instance = null;
+        
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->setConf('db.' . self::getDefaultDb() . '.user', $user);
+        
+        $MIOLO->clearDbConf( self::getDefaultDb() );
+
+        self::getInstance();
+    }
+    
+    /**
+     * Obtem a configuracao padrao de banco de dados
+     * 
+     * @return string
+     */
+    public static function getDefaultDb()
+    {
+        return 'basic';
+    }
+
+    /**
+     *
+     * @param string $sql
+     * @param array $args
+     * @param boolean $upper
+     * @param stdClass $optsPagination{ returnCount:boolean; limit:int; offset:int }
+     * 
+     * @return array
+     */
+    public static function query($sql, $args = null, $upper = true, $optsPagination = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $sql = SAGU::prepare($sql, $args, $upper);
+        $isTestMode = MUtil::getBooleanValue($MIOLO->getConf('isTestMode'));
+        
+        // Utilizado na verificacao de types
+        // Aplica limite de 1 na consulta para evitar processamento excessivo
+        if ( $isTestMode && !preg_match('/LIMIT (\d+)/i', $sql) )
+        {
+            $sql .= ' LIMIT 1 ';
+        }
+        
+        // Para paginação de grids.
+        if ( $optsPagination->returnCount )
+        {
+            $msql = new MSQL();
+            $msql->setDb(SDatabase::getInstance());
+            $msql->createFrom($sql);
+
+            $sql = $msql->selectCount();
+        }
+
+        return self::getInstance()->query($sql, $optsPagination->limit, $optsPagination->offset);
+    }
+    
+    /**
+     * Faz uma consulta de apenas uma expressao na base, ex.:
+     * SDatabase::queryExpression('NOW()::date') -> retorna data atual
+     * 
+     * @return string
+     */
+    public static function queryExpression($expression, $args = null)
+    {
+        return current(current( self::query('SELECT ' . $expression, $args) ));
+    }
+    
+    /**
+     * Retorna consulta ja populando os metodos setters de um objeto.
+     * Caso um metodo set na classe do objeto passado não existir, um Exception será disparado.
+     * 
+     * Exemplo:
+     * SDatabase::queryObject(
+     *     $this->msql()->SetTables('SprSubscription')->setColumns('subscriptionid', 'totalpoints')->setLimit(10), new SprSubscription()
+     * ); // Retorna objetos SprSubscription populados
+     * 
+     * 
+     * @return array Array de objetos do tipo $object passado.
+     */
+    public static function queryObject(MSQL $sql, $object, $cloneObject = true)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        if ( !is_object($object) )
+        {
+            throw new Exception( _M('O argumento passado não é um objeto.', $module) );
+        }
+
+        $objects = array();
+
+        foreach ( self::queryAssociative($sql) as $values )
+        {
+            $tempObject = $cloneObject ? clone($object) : $object;
+            
+            $objects[] = SAGU::setFromArray($tempObject, $values, false);
+        }
+
+        return $objects;
+    }
+
+    /**
+     * Obtem array associativo de acordo com colunas passadas na query
+     *
+     * @param MSQL $sql
+     * @return array
+     */
+    public static function queryAssociative(MSQL $sql)
+    {
+        $query = self::getInstance()->objQuery( $sql->Select() );
+        $query instanceof MQuery;
+        
+        $out = array();
+
+        for ( $i = 0; $i < $query->getRowCount(); $i++ )
+        {
+            $out[] = array_change_key_case($query->getFieldValues(), CASE_LOWER);
+            
+            $query->moveNext();
+        }
+
+        return $out;
+    }
+
+    //TODO Funcao nao completa, devera ser implementada futuramente
+    /**
+     * Executa um query que sera utilizado nos types, para nao causar 
+     *
+     * @param <type> $sql
+     * @param <type> $args 
+     */
+    public static function gridQuery($sql, $args)
+    {
+        //Obtem o total de registros, para enviar a informacao para SObjectGrid
+        $count = self::query("SELECT COUNT('{$sql}')", $args);
+        $count = $count[0][0];
+        //TODO Enviar este $count para MObjectGrid ... MGridNavigator...
+
+        //Adicionar limite no sql passado
+        $nregs = SAGU::getParameter('BASIC', 'LISTING_NREGS');
+        $offset = $nregs * MIOLO::_REQUEST('pn_page');
+        $sql .= " LIMIT {$nregs} OFFSET {$offset}";
+
+        return $sql;
+    }
+
+    public static function execute($sql, $args = null, $upper = true)
+    {
+        $sql = SAGU::prepare($sql, $args, $upper);
+
+        if ( ! is_array($sql) )
+        {
+            $sql = array($sql);
+        }
+
+        $ok = true;
+        for ( $i=0; $i<count($sql) && $ok; $i++ )
+        {
+            $ok = self::getInstance()->execute($sql[$i]);
+        }
+
+        return $ok;
+    }
+
+    public static function beginTransaction()
+    {
+        return self::execute('BEGIN TRANSACTION');
+    }
+
+    public static function commit()
+    {
+        return self::execute('COMMIT');
+    }
+
+    public static function rollback()
+    {
+        return self::execute('ROLLBACK');
+    }
+
+    /**
+     * Inicia um savepoint
+     *
+     * @param string $name 
+     */
+    public static function beginSavepoint($name = 'default_savepoint')
+    {
+        SDatabase::execute("SAVEPOINT {$name}");
+    }
+    
+    /**
+     * Finaliza um savepoint
+     */
+    public static function rollbackSavepoint($name = 'default_savepoint')
+    {
+        SDatabase::execute("ROLLBACK TO {$name}");
+    }
+
+    /**
+     * Converte um array de objetos (do mesmo tipo que retornam os search's dos types) para array simples para utilizar em MSelection
+     *
+     * @param (Array) $array Array de objetos do tipo SType
+     * @param (String) $id Id interno associado (geralmente chave primaria da tabela), Default: Nome da classe + "Id" (ex: SprEvaluationOption ficaria evaluationOptionId)
+     * @param (String) $displayField Campo que sera visualizado (geralmente "name" ou "description"), Default: description
+     *
+     * @return (Array) Array no formato utilizado pelo MSelection
+     */
+    public static function convertSearchToList($array, $id = null, $displayField = null)
+    {
+        if (!$displayField)
+        {
+            $displayField = 'description';
+        }
+
+        if (!$id)
+        {
+            $className = get_class($array[0]);
+            $id = substr($className, 4) . 'Id';
+            $id = strtolower(substr($className, 3, 1)) . $id;
+        }
+
+        $output = array();
+        foreach ((array)$array as $val)
+        {
+            $output[] = array($val->$id, $val->$displayField);
+        }
+
+        return $output;
+    }
+    
+    /**
+     * Converte um conjunto de valores do PHP para o formato SQL.
+     * Util para utilizar em IN(), ANY(), SOME(), etc..
+     *
+     * @param array $values
+     * @return string
+     */
+    public static function arrayToSQL($values = array())
+    {
+        $values = SAGU::quoteArrayStrings($values);
+        $values = implode(',', $values);
+        
+        return $values;
+    }
+    
+    /**
+     * Obtem o nome da tabela no banco baseando-se no nome da classe MBusiness
+     *
+     * @param string $businessName Nome da classe business (ex.: BusinessAcademicBusSchedule)
+     * @return string 
+     */
+    public static function extractBusinessTableName($businessName)
+    {
+        $tableName = null;
+        $found = preg_match('/Business(.*)Bus(.*)/i', $businessName, $matches);
+        
+        if ( $found )
+        {
+            list($null, $busModule, $tableName) = $matches;
+            
+            $busModule = strtolower($busModule);
+            
+            if ( sModules::moduleExists($busModule) )
+            {
+                $module = sModules::getModule($busModule);
+                $prefix = $module->getModulePrefix();
+                $tableName = $prefix . $tableName;
+            }
+            
+            if ( $tableName == 'admUser' )
+            {
+                $tableName = 'miolo_user';
+            }
+            else if ( $tableName == 'acdStatesContract' )
+            {
+                $tableName = 'acdStateContract';
+            }
+        }
+        
+        return $tableName;
+    }
+    
+    /**
+     * Obtem id da ultima insercao de um business
+     * 
+     * @return int
+     */
+    public static function getBusinessLastInsertId(sBusiness $business)
+    {
+        return self::getLastInsertId( self::extractBusinessTableName( get_class($business) ) );
+    }
+    
+    /**
+     * Obtem o ultimo ID inserido baseando-se no nome da tabela passado.
+     * 
+     *
+     * @param string $tableName
+     * @return int
+     */
+    public static function getLastInsertId($tableName)
+    {
+        $max = null;
+        $pkey = self::getTablePrimaryKey($tableName);
+        
+        if ( strlen($pkey) > 0 )
+        {
+            $sql = "SELECT MAX({$pkey}) FROM {$tableName}";
+            $result = self::query($sql);
+            $max = $result[0][0];
+        }
+        
+        return $max;
+    }
+    
+    /**
+     * Retorna o nome da coluna chave primaria da tabela passada.
+     * 
+     * Suporta tabelas que usam schema especifico (ex.: bas.systemtask)
+     *  e com schema public padroes (ex.: acdschedule).
+     *
+     * @param string $tableName 
+     * @return string Ex.: scheduleid
+     */
+    public static function getTablePrimaryKey($tableName)
+    {
+//        $tableName = str_replace('.', '', $tableName);
+//        $prefix = substr($tableName, 0, 3);
+//        $tableNameAlt = substr($tableName, 3);
+        
+//        $sql = "select column_name
+//                  from information_schema.columns
+//                 where ( ( table_schema = lower(?) and table_name = lower(?) )
+//                       OR ( table_schema = 'public' and table_name = lower(?) ) )
+//                  and column_default ilike 'nextval%'";
+//
+//        $args = array($prefix, $tableNameAlt, $tableName);
+//        $sql = SAGU::prepare($sql, $args);
+//        
+        $sql = "SELECT               
+                pg_attribute.attname, 
+                format_type(pg_attribute.atttypid, pg_attribute.atttypmod) 
+                FROM pg_index, pg_class, pg_attribute 
+                WHERE 
+                pg_class.oid = ?::regclass AND
+                indrelid = pg_class.oid AND
+                pg_attribute.attrelid = pg_class.oid AND 
+                pg_attribute.attnum = any(pg_index.indkey)
+                AND indisprimary";
+        
+        $result = self::query($sql, array($tableName));
+        
+        return $result[0][0];
+    }
+    
+    /**
+     * @deprecated
+     */
+    private static function getTableSchema($tableName)
+    {
+        $prefix = substr($tableName, 0, 3);
+        $schema = SModules::getModuleByPrefix($prefix) ? $prefix : 'public';
+        
+        return $schema;
+    }
+    
+    /**
+     * @deprecated
+     */
+    private static function getTableNormalized($tableName)
+    {
+        $prefix = substr($tableName, 0, 3);
+        
+        if ( SModules::getModuleByPrefix($prefix) )
+        {
+            $tableName = substr($tableName, 3);
+        }
+        
+        return $tableName;
+    }
+    
+    /**
+     * Process every SQL parameter escaping data when necessary to avoid SQL injection.
+     *
+     * @param string $sql Parameterized SQL with one "?" for each parameter
+     * @param array $params Array containing data to be positionally substituted by each "?" symbol found in $sql.
+     * @param boolean $upper Optional parameter indicating whether to uppercase each $params item or to leave it as is.
+     * 
+     * @return string
+     */
+    public static function prepareSQL($sql, $params, $upper = true)
+    {
+        global $MIOLO;
+
+        // Feito para funcionar no SUnitTest
+        if ( !$MIOLO )
+        {
+            $MIOLO = MIOLO::getInstance();
+        }
+
+        $prepared = '';
+        $originalSql = $sql;
+        $originalParams = $params;
+
+        if ( isset($params) )
+        {
+            if ( is_object($params) )
+            {
+                foreach ( $params as $k => $v )
+                {
+                    $params_[] = $v;
+                }
+                
+                $params = $params_;
+            }
+            elseif ( !is_array($params) )
+            {
+                $params = array($params);
+            }
+        }
+
+        // convert all field values to uppercase
+        if ( $upper )
+        {
+            for ( $i = 0; $i < count($params); $i++ )
+            {
+                $bs = new BString($params[$i]);
+                $params[$i] = $bs->toUpper();
+            }
+        }
+
+        try
+        {
+            //
+            if ( substr_count($sql, '?') != count($params) )
+            {
+                throw new Exception( _M('Número de parâmetros inválidos! (@1)', 'basic', $sql) );
+            }
+            
+            $i = 0;
+
+            while ( true )
+            {
+                $pos = strpos($sql, '?');
+
+                if ( $pos === false )
+                {
+                    $prepared .= $sql;
+                    break;
+                }
+                else
+                {
+                    if ( $pos > 0 )
+                    {
+                        $prepared .= substr($sql, 0, $pos);
+                    }
+
+                    if ( strlen($par = $params[$i++]) > 0 )
+                    {
+                        $prepared .= "'" . addslashes($par) . "'";
+                        // $prepared .= "'" . str_replace("'","''",$par) . "'";
+                    }
+                    else
+                    {
+                        $prepared .= ' NULL';
+                    }
+                    // cut sql to process next parameter
+                    $sql = substr($sql, $pos + 1);
+                }
+            }
+
+            // The following code is used to automatically update the basLog table
+            $user = $MIOLO->getLogin();
+            $userId = $user->id;
+
+            if ( substr(trim($prepared), 0, 6) == 'UPDATE' )
+            {
+                // find the last WHERE clause and use it as the basLog update's WHERE clause
+                $where = strstr($prepared, 'WHERE');
+                while ( strstr(substr($where, 5), 'WHERE') !== false )
+                {
+                    $where = strstr(substr($where, 5), 'WHERE');
+                }
+                $where = substr($where, 5);
+                $aux = substr($prepared, strpos($prepared, 'UPDATE') + 6, strlen($prepared));
+                $aux = explode(' ', $aux);
+
+                foreach ( $aux as $row )
+                {
+                    if ( $row != '' )
+                    {
+                        $table = $row;
+                        break;
+                    }
+                }
+
+                $log = "UPDATE {$table}
+                        SET userName = '{$userId}',
+                            dateTime = now(),
+                            ipAddress = '" . $_SERVER['REMOTE_ADDR'] . "'
+                        WHERE $where";
+                
+                return array( $prepared, $log );
+            }
+            else if ( substr(trim($prepared), 0, 6) == 'INSERT' )
+            {
+                $pos = strpos($prepared, ')');
+                $pos2 = strrpos($prepared, ')');
+                $pos3 = substr($prepared, $pos, $pos2 - $pos);
+                $prepared = substr($prepared, 0, $pos) . ", userName, ipAddress" . $pos3 . ",'$userId','" . $_SERVER['REMOTE_ADDR'] . "');";
+            }
+        }
+        catch (Exception $e)
+        {
+            SAGU::exceptionWithTrace( $e );
+        }
+
+        return $prepared;
+    }
+    
+    /**
+     * Retorna a estrutura completa dos campos.
+     * 
+     * Os parametros sao filtros no sql.
+     * 
+     * @param string $esquema Nome do esquema.
+     * @param string $tabela Nome da tabela.
+     * @param string $coluna Nome da coluna.
+     * @return array de stdClass Colunas da tabela. 
+     */
+    public static function obterColunasDaTabela($esquema = NULL, $tabela = NULL, $coluna = NULL)
+    {
+        //TODO: pegar comentario col_description http://www.postgresql.org/docs/8.2/static/functions-info.html.
+        $sql = " --obterColunasDaTabela 
+               SELECT a.attname AS column,
+                      t.typname as type,
+                      a.atttypmod-4 as length,
+                      pg_catalog.format_type(a.atttypid, a.atttypmod),
+                      a.attnotNULL as notNULL,
+                      substring(d.adsrc for 128) as default,
+                      coalesce(
+                                (
+                                SELECT i.indisprimary AS primary_key
+                                  FROM pg_class bc,
+                                       pg_index i,
+                                       pg_attribute ia
+                                 WHERE (bc.oid = i.indrelid)
+                                   AND (ia.attrelid = i.indexrelid) 
+                                   AND (bc.relname = c.relname)
+                                   AND ia.attname = a.attname
+                                   AND i.indisprimary = true
+                                   LIMIT 1
+                                ),false
+                      ) as primary_key,
+                      coalesce(
+                                (
+                                SELECT i.indisunique AS unique_key
+                                  FROM pg_class bc,
+                                       pg_index i,
+                                       pg_attribute ia
+                                 WHERE (bc.oid = i.indrelid)
+                                   AND (ia.attrelid = i.indexrelid) 
+                                   AND (bc.relname = c.relname)
+                                   AND ia.attname = a.attname
+                                   AND i.indisunique = true
+                                   LIMIT 1
+                                ),false
+                      ) as unique_key,
+                      dsc.description AS description
+                 FROM pg_class c
+            LEFT JOIN pg_attribute a
+                   ON ( a.attrelid = c.oid )
+            LEFT JOIN pg_type t
+                   ON  ( a.atttypid = t.oid )
+            LEFT JOIN pg_catalog.pg_attrdef d
+                   ON ( d.adrelid = a.attrelid AND d.adnum = a.attnum )
+            LEFT JOIN pg_catalog.pg_tables ta
+                   ON ( ta.tablename = c.relname)
+            LEFT JOIN pg_description dsc
+                   ON ( dsc.objoid = c.oid AND dsc.objsubid = a.attnum )
+            LEFT JOIN information_schema.columns isc
+                   ON ( isc.table_name = ta.tablename AND isc.column_name = a.attname )
+                WHERE a.attnum > 0
+              AND NOT a.attisdropped
+                ";
+        
+        $where = NULL;
+
+        if ($tabela)
+        {
+            $tabela = strtolower($tabela);
+            $where[] = "AND c.relname = '{$tabela}'";
+        }
+        
+        if ($esquema)
+        {
+            $where[] = "AND isc.table_schema = '$esquema'";
+        }
+
+        if ($coluna)
+        {
+            $where[] = "AND a.attname = '$coluna'";
+        }
+
+        $sql .= implode("\n", $where) . "\nORDER BY a.attnum;";
+
+        $colunas = self::query($sql);
+	
+	if ( is_array($colunas) )
+        {
+            foreach ($colunas as $linha => $info)
+            {
+                $coluna = new stdClass();
+                $coluna->column = $info[0];
+                $coluna->type = $info[1];
+                $coluna->length = $info[2];
+                $coluna->formatedType = $info[3];
+                $coluna->notnull = $info[4];
+                $coluna->default = $info[5];
+                $coluna->primaryKey = $info[6];
+                $coluna->unique = $info[7];
+                $coluna->description = $info[8];
+
+                $resultado[$info[0]] = $coluna;
+            }
+
+            return $resultado;
+        }
+     }
+     
+     /**
+      * @return boolean
+      */
+     public static function existeColunaDaTabela($esquema = null, $tabela, $coluna)
+     {
+         $rows = self::obterColunasDaTabela($esquema, $tabela, $coluna);
+         
+         return isset($rows);
+     }
+     
+     /**
+      * Metodo chamado no theme.class (smodern) para debug
+      *
+      * @return string
+      */
+     public static function getDebugTable()
+     {
+         if ( !MIOLO::isDebugMode() )
+         {
+             return;
+         }
+         
+         $MIOLO = MIOLO::getInstance();
+         
+         $data = array();
+         $count = 1;
+         
+         foreach ( $MIOLO->getLog()->getLogSQL() as $line )
+         {
+             if ( substr($line, -1) != ';' )
+             {
+                 $line .= ';';
+             }
+             
+             $data[] = array(
+                 $count,
+                 $line,
+             );
+
+             $count ++;
+         }
+         
+         $table = new MTableRaw('SQL Dump', $data, array('Num', 'Query'));
+         $table->zebra = true;
+         
+         return $table->generate() . '<br/><br/><br/><br/><br/><br/>';
+     }
+     
+     /**
+      * Armazena um cache temporario da query pura em pgsql
+      */
+     public static function getPgQuery($sql)
+     {
+         static $queries = array();
+         
+         $hash = md5($sql);
+         
+         if ( !isset($queries[$hash]))
+         {
+            $pg_conn = SDatabase::getInstance()->conn->id;
+            $query = pg_query($pg_conn, $sql);
+             
+            $queries[$hash] = $query;
+         }
+         
+         return $queries[$hash];
+     }
+     
+     /**
+      * Obtem as colunas de um SQL passado.
+      * 
+      * @return array
+      */
+     public static function getQueryColumns($sql)
+     {
+        $query = self::getPgQuery($sql);
+        $total = pg_num_fields($query);
+        $fields = array();
+
+        for ($i = 0; $i < $total; $i++)
+        {
+            $fields[] = pg_field_name($query, $i);
+        }
+
+        return $fields;
+    }
+    
+     /**
+      * Obtem os tipos de colunas do SQL passado
+      * 
+      * @return array
+      */
+     public static function getQueryTypes($sql)
+     {
+        $query = self::getPgQuery($sql);
+        $total = pg_num_fields($query);
+        $fields = array();
+
+        for ($i = 0; $i < $total; $i++)
+        {
+            $fields[] = pg_field_type($query, $i);
+        }
+
+        return $fields;
+    }
+    
+    /**
+     * Cria usuário com apenas permissão de leitura nas tabelas do sagu, caso
+     * não informado um usuario, é criado um user randômico
+     * 
+     * @param string $usuario = null
+     * @return type
+     */
+    public static function gerarUsuarioComPermissaoDeLeitura($usuario = null)
+    {
+        // Se não foi especificado o usuário, gera um usuário randômico
+        if ( !$usuario )
+        {
+            $usuario = "user_" . rand();
+        }
+        
+        $sql = " SELECT * FROM gerarUsuarioComPermissaoDeLeitura('{$usuario}') ";
+        
+        $result = self::query($sql);
+        
+        return $result[0][0] == DB_TRUE ? $usuario : null;
+    }
+}
+
+?>

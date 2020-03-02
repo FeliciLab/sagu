@@ -1,0 +1,242 @@
+<?php
+/**
+ * <--- Copyright 2005-2013 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Types da tabela acpModeloDeAvaliacao
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @since
+ * Class created on 29/08/2013
+ */
+$MIOLO->uses('types/AcpComponenteDeAvaliacao.class', 'pedagogico');
+class AcpComponenteDeAvaliacaoNota extends SType
+{
+    //Define que utiliza novo padrão
+    protected $_utilizaNovoPadrao = true;
+    
+    protected $_tableName = 'AcpComponenteDeAvaliacaoNota';
+    
+    public $componenteDeAvaliacaoNotaId;
+    
+    public $componenteDeAvaliacaoId;
+    
+    public $peso;
+    
+    public $formaDeCalculo;
+    
+    public $valorMinimo;
+    
+    public $valorMaximo;
+    
+    public $valorMinimoAprovacao;
+    
+    public $grauDePrecisao;
+    
+    public $componenteDeAvaliacao;
+    
+    const FORMA_CALCULO_SOMA = 'S';
+    const FORMA_CALCULO_MEDIA = 'M';
+    const FORMA_CALCULO_MEDIA_PONDERADA = 'P';
+    const FORMA_CALCULO_VALOR = 'V';
+    
+    public function __construct($id = null)
+    {
+        if ( strlen($id) > 0 )
+        {
+            parent::__construct($id);
+            $this->componenteDeAvaliacao = new AcpComponenteDeAvaliacao($this->componenteDeAvaliacaoId);
+        }
+    }
+    
+    public function save()
+    {
+        $this->componenteDeAvaliacao->save();
+        
+        $data = array();
+        $data['componenteDeAvaliacaoId'] = $this->componenteDeAvaliacao->componenteDeAvaliacaoId;
+        $data['peso'] = $this->peso;
+        $data['formaDeCalculo'] = $this->formaDeCalculo;
+        $data['valorMinimo'] = $this->valorMinimo;
+        $data['valorMaximo'] = $this->valorMaximo;
+        $data['valorMinimoAprovacao'] = SAGU::NVL($this->valorMinimoAprovacao, null);
+        $data['grauDePrecisao'] = $this->grauDePrecisao;
+        
+        // Multiunidade
+        if ( $this->utilizaMultiUnidade() && strlen(sMultiUnidade::obterUnidadeLogada()) > 0 && !$this->getAttribute('unitid') )
+        {
+            $data['unitid'] = sMultiUnidade::obterUnidadeLogada();
+        }
+        
+        if ( strlen($this->componenteDeAvaliacaoNotaId) > 0 )
+        {
+            $sql = MSQL::updateTable('AcpComponenteDeAvaliacaoNota', $data, array('componenteDeAvaliacaoNotaId'=>$this->componenteDeAvaliacaoNotaId) );            
+            $ok = SDatabase::getInstance()->execute($sql);
+        }
+        else
+        {
+            $sql = MSQL::insertTable('AcpComponenteDeAvaliacaoNota', $data);
+            $ok = SDatabase::getInstance()->execute($sql);
+            
+            if ( $ok )
+            {
+                $id = SDatabase::getLastInsertId('AcpComponenteDeAvaliacaoNota');
+                $this->componenteDeAvaliacaoNotaId = $id;
+            }
+        }
+        
+        return $ok;
+    }
+    
+    public function listarFormasDeCalculo()
+    {
+        $module = MIOLO::getCurrentModule();
+        
+        return array( self::FORMA_CALCULO_VALOR=> _M('Valor', $module),
+                      self::FORMA_CALCULO_SOMA=> _M('Soma', $module),
+                      self::FORMA_CALCULO_MEDIA => _M('Média', $module),
+                      self::FORMA_CALCULO_MEDIA_PONDERADA=> _M('Média ponderada', $module));        
+    }
+    
+    /**
+     * Lista as notas do componente de avaliação
+     * @return type
+     */
+    public function listarNotasDoModelo($modeloDeAvaliacaoId)
+    {
+        $sql = "WITH RECURSIVE data(node, path, linha) 
+                    AS (
+                     SELECT componentedeavaliacaoid, 
+                            ARRAY[componentedeavaliacaoid],
+                            ARRAY[(row_number() OVER(PARTITION BY componentedeavaliacaopai ORDER BY componentedeavaliacaoid asc))]
+                            FROM acpcomponentedeavaliacao 
+                  LEFT JOIN acprelacionamentodecomponentes
+                         ON (acpcomponentedeavaliacao.componentedeavaliacaoid = acprelacionamentodecomponentes.componentedeavaliacaofilho)
+                      WHERE componentedeavaliacaopai IS NULL
+                        AND modelodeavaliacaoid = ?
+                  UNION ALL
+                     SELECT C1.componentedeavaliacaoid,
+                            data.path||ARRAY[C1.componenteDeAvaliacaoid],
+                            data.linha||ARRAY[(row_number() OVER(PARTITION BY C2.componentedeavaliacaopai ORDER BY C1.componentedeavaliacaoid asc))]
+                       FROM acpcomponentedeavaliacao C1 
+                  LEFT JOIN acprelacionamentodecomponentes C2
+                         ON (C1.componentedeavaliacaoid = C2.componentedeavaliacaofilho)
+                       JOIN data 
+                         ON (C2.componentedeavaliacaopai=data.node)
+                      WHERE NOT (ARRAY[C2.componentedeavaliacaofilho] && data.path) )
+
+                     SELECT ARRAY_TO_STRING(data.linha,'.'),
+                            cn.componentedeavaliacaonotaid,
+                            ca.descricao,
+                            ca.detalhes, 
+                            cn.peso,
+                            cn.formadecalculo,
+                            ca.classedecomponente,
+                            cn.valorminimo,
+                            cn.valormaximo,
+                            cn.valorminimoaprovacao,
+                            cn.graudeprecisao
+                       FROM data
+                  LEFT JOIN acprelacionamentodecomponentes rc
+                         ON (data.node = rc.componentedeavaliacaofilho)
+                 INNER JOIN acpComponenteDeAvaliacaoNota cn
+                         ON cn.componentedeavaliacaoid = data.node
+                 INNER JOIN acpComponenteDeAvaliacao ca
+                         ON ca.componenteDeAvaliacaoid = cn.componentedeavaliacaoid
+                      WHERE ca.modelodeavaliacaoid = ?
+                   ORDER BY path;";
+        
+        $resultado = SDatabase::query(SAGU::prepare($sql, array($modeloDeAvaliacaoId, $modeloDeAvaliacaoId)));
+        
+        if( count($resultado) > 0 )
+        {
+            $formasDeCalculo = self::listarFormasDeCalculo();
+            $classesDeComponente = AcpComponenteDeAvaliacao::listarClassesDeComponente();
+            foreach( $resultado as $cod=>$linha )
+            {
+                $linha[5] = $formasDeCalculo[$linha[5]];
+                $linha[6] = $classesDeComponente[$linha[6]];
+                $resultado[$cod] = $linha;
+            }
+        }
+        
+        return $resultado;
+    }
+    
+    public function delete()
+    {
+        //Remove o componente de recuperação da nota
+        if( $this->componenteDeAvaliacao->classeDeComponente == AcpComponenteDeAvaliacao::CLASSE_RECUPERACAO )
+        {
+            $componenteDeAvaliacaoNotaRecuperacao = AcpComponenteDeAvaliacaoNotaRecuperacao::obterComponenteRecuperacaoDaNota($this->componenteDeAvaliacaoNotaId);
+            if( $componenteDeAvaliacaoNotaRecuperacao )
+            {
+                $ok = $componenteDeAvaliacaoNotaRecuperacao->delete();
+            }
+        }
+        
+        $ok &= SDatabase::execute(MSQL::deleteTable('AcpComponenteDeAvaliacaoNota', array('componenteDeAvaliacaoNotaId'=>$this->componenteDeAvaliacaoNotaId) ));        
+        return $ok;
+    }
+    
+    /**
+     * @return AcpComponenteDeAvaliacaoNota 
+     */
+    public static function obterComponenteNotaDoComponente($componenteDeAvaliacaoId)
+    {
+        $componenteDeAvaliacaoNota = new AcpComponenteDeAvaliacaoNota();
+        $msql = $componenteDeAvaliacaoNota->msql();
+        $msql->addEqualCondition('componenteDeAvaliacaoId', $componenteDeAvaliacaoId);        
+        $searchComponenteDeAvaliacaoNota = $componenteDeAvaliacaoNota->findList($msql);                
+
+        if( count($searchComponenteDeAvaliacaoNota) > 0 )
+        {
+            foreach($searchComponenteDeAvaliacaoNota as $cod=>$linha)
+            {
+                $return = new AcpComponenteDeAvaliacaoNota($cod);                                
+            }
+        }
+        
+        return $return;
+    }
+    
+    /**
+     * Obtem cor que deve ser utilizada no formulario de digitacao de notas
+     */
+    public function obterCor($nota)
+    {
+        $cor = null;
+        
+        if ( is_numeric($this->valorMinimoAprovacao) && is_numeric($nota) )
+        {
+            $aprovado = SAGU::calcNumber("{$nota} >= {$this->valorMinimoAprovacao}") == DB_TRUE;
+            
+            $cor = $aprovado ? 'lightgreen' : 'red';
+        }
+        
+        return $cor;
+    }
+}
+?>

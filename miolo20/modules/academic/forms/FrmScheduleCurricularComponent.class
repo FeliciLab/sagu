@@ -1,0 +1,1696 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Form to manipulate acdSchedule table records
+ *
+ * @author Samuel Koch [samuel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Cristian Edson Göhl [cristian@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ *
+ * @since
+ * Class created on 06/10/2008
+ */
+MIOLO::Import('extensions::cpaint.inc.php', 'cpaint');
+
+class FrmScheduleCurricularComponent extends MForm
+{
+    private $krono;
+
+    /**
+     * Class constructor
+     */
+    public function __construct()
+    {
+        $module = MIOLO::getCurrentModule();
+        $MIOLO = MIOLO::getInstance();
+
+        parent::__construct(_M('Horário da disciplina oferecida', $module));
+        
+        // Instance of the class that handles the time
+        $this->krono = new MKrono( );
+
+        if ( ($f = $this->page->request('cpaint_function')) != "" )
+        {
+            $this->manager->getTheme()->clearContent();
+            $this->$f($this->page->request('cpaint_argument'));
+            $this->page->generateMethod = 'generateAJAX';
+        }
+        else
+        {
+            $this->defineFields();
+            $this->eventHandler();
+        }
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+        $event = MIOLO::_REQUEST('event');  
+        
+        $unidade = sMultiUnidade::obterObjetoUnidade();
+        
+        if ( !SAGU::getEventName() )
+        {
+            $MIOLO->session->setValue($this->getSidSchedule(), null);
+        }
+        
+        $unitId = MIOLO::_REQUEST('unitId');
+        $groupId = MIOLO::_REQUEST('groupId');
+        $scheduleId = MIOLO::_REQUEST('scheduleId');
+        $learningPeriodId = MIOLO::_REQUEST('learningPeriodId');
+        
+        $MIOLO->getClass('basic', 'calendar');
+                      
+        // Limpa os dados da seção e tira da url o evento 'clean'.
+        if ( $event == 'clean' )
+        {
+            $currentUrl = $MIOLO->getCurrentURL();
+            $vetUrl     = explode('amp;', $currentUrl);
+            
+            $url = '';
+            foreach ( $vetUrl as $value )
+            {
+                if ( $value != 'event=clean' )
+                {
+                    $url .= $value;
+                }
+            }            
+            
+            $this->clearTypes();                       
+            $this->page->addJsCode("window.location.href = '{$url}';");
+        }
+        
+        // Determine whether the course was offered in a given period.
+        if ( (strlen($groupId) > 0) && (strlen($learningPeriodId) > 0) )
+        {
+            $fields[] = new MHiddenField('groupId', $groupId);
+            $fields[] = new MHiddenField('scheduleId', $scheduleId);
+            $fields[] = new MHiddenField('learningPeriodId', $learningPeriodId);
+
+            // Instance of the classes of business.
+            $busCurriculum = new BusinessAcademicBusCurriculum();
+            $busTimeSheet = new BusinessAcademicBusTimeSheet();
+            $busSchedule = new BusinessAcademicBusSchedule();
+            $busScheduleProf = new BusinessAcademicBusScheduleProfessor();
+            $busGroup = new BusinessAcademicBusGroup();
+            $busClass = new BusinessAcademicBusClass();
+
+            $infoGroup = $busGroup->getGroup($groupId);
+            $infoClass = $busClass->getClass($infoGroup->classId);
+
+            // Fields that display information from the discipline offered
+            $fields[] = new MTextLabel('lbl_groupId0', $groupId, _M('Disciplina oferecida', $module));
+            $fields[] = new MTextLabel('lbl_groupId1', $infoGroup->curriculumCourseId, _M('Curso', $module));
+            $fields[] = new MTextLabel('lbl_groupId11', $infoGroup->curriculumCourseName, _M('Nome do curso', $module));
+            $fields[] = new MTextLabel('lbl_groupId2', $infoGroup->curriculumCurricularComponentName, _M('Disciplina', $module));
+            $fields[] = new MTextLabel('lbl_groupId3', $infoGroup->regimenDescription, _M('Regime', $module));
+            $fields[] = new MTextLabel('lbl_groupId4', $infoGroup->vacant, _M('Vagas', $module));
+            $fields[] = new MTextLabel('lbl_groupId5', $infoClass->className_, _M('Nome da turma', $module));
+
+            // Checks if the function is to update
+            $hasSchedulesSession = is_array($MIOLO->session->getValue($this->getSidSchedule()));
+            $hasProfessorSession = is_array($MIOLO->session->getValue($this->getSidProfessor()));
+            $hasScheduleAndProfessors = $hasSchedulesSession && $hasProfessorSession;
+            $hasEvent = strlen(SAGU::getEventName()) > 0;
+            $isEditFromGrid = MIOLO::_REQUEST('isEditFromGrid');
+            $isEditFromGrid = strlen($isEditFromGrid) > 0;
+            
+            if( $event == 'clean' )
+            {
+                $function = 'clean';
+            }
+            else if ( ($function == 'update') && !$hasEvent && ( $hasScheduleAndProfessors || $isEditFromGrid ) )
+            {
+                $filter->scheduleId = MIOLO::_REQUEST('scheduleId');
+                
+                // Search for teachers by a certain time.
+                $data = $busSchedule->getSchedule($filter->scheduleId);
+                                
+                $arrayProfessor = $busScheduleProf->searchScheduleProfessor($filter);
+                
+                if ( is_array($arrayProfessor) )
+                {
+                    foreach ( $arrayProfessor as $value )
+                    {
+                        $sessionProfessor[] = array($value[1],
+                            $value[2],
+                            $value[4],
+                            $value[3]);
+                    }
+                    
+                    //Seta campos lookup de array com dados da base, caso seja update
+                    if(SAGU::getParameter('ACADEMIC', 'TABELA_DE_DISCIPLINA_OFERECIDA_SIMPLIFICADA') == 'NO' || SAGU::getParameter('ACADEMIC', 'MAX_PROFESSOR_POR_HORARIO') == 0 )
+                    {
+                         // Inserts the teachers in the session.
+                         $MIOLO->session->setValue($this->getSidProfessor(), $sessionProfessor);
+                        
+                    }else
+                    {                        
+                        $professorMaximo = SAGU::getParameter('ACADEMIC', 'MAX_PROFESSOR_POR_HORARIO');
+                        for($i=1; $i< $professorMaximo+1; $i++)
+                        {                
+                            $MIOLO->session->setValue($this->getSidProfessorId($i), $sessionProfessor[$i-1][0]);
+                            $MIOLO->session->setValue($this->getSidProfessorName($i), $sessionProfessor[$i-1][1]);
+                        }
+                    }                      
+                }
+
+                // There is a discipline has already offered time
+                if ( is_array($data->timeIds) )
+                {
+                    $info = $busTimeSheet->getTime($data->timeIds[0]);                    
+                    $data->timeSheetId = $info->timeSheetId;
+
+                    // Inserts the times in the session.
+                    $MIOLO->session->setValue($this->getSidSchedule(), $data->timeIds);
+                }
+            }
+            else
+            {
+                $data = $busGroup->getGroup($groupId);
+            }
+
+            unset($flds);
+                       
+            // Unit
+            $unitLabel = new MText('unitLabel', _M('Unidade', $module) . ':');
+            $unitLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $data->unitId = strlen($unitId) > 0 ? $unitId : $data->unitId;
+            $businessUnit = new BusinessBasicBusUnit();
+            
+            if($unidade->unitId)
+            {
+                $opts = $businessUnit->listUnitSimple($unidade->unitId); 
+            }else
+            {
+                $opts = $businessUnit->listUnit();
+            }            
+            
+            $cbUnit = new MComboBox('unitId', $this->getFormValue('unitId', ($data->unitId) ? $data->unitId : $MIOLO->session->getValue($this->getSidUnitId())), '', $opts);
+            $cbUnit->setJsHint(_M('Selecione uma unidade', $module));
+            $hctUnit = new MHContainer('hctUnit', array($unitLabel, $cbUnit));
+            $flds[] = $hctUnit;
+
+            // Physical resource
+            $physicalResourceLabel = new MText('physicalResourceLabelS', _M('Local', $module) . ':');
+            $physicalResourceLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $physicalResourceId = new MLookupTextField('physicalResourceId', $this->getFormValue('physicalResourceId', ($data->physicalResourceId) ? $data->physicalResourceId : $MIOLO->session->getValue($this->getSidPhysicalResourceId())), '', SAGU::getParameter('BASIC', 'FIELD_LOOKUPFIELD_SIZE'), null, null, 'physicalResourceId, physicalResourceVersion, physicalResourceDescription, room, building', 'institutional', 'PhysicalResource', null, array('unitId'=>'unitId'), true);
+            $physicalResourceId->setJsHint(_M('Código do recurso físico', $module));
+            $physicalResourceVersion = new MTextField('physicalResourceVersion', $this->getFormValue('physicalResourceVersion', $data->physicalResourceVersion), '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+            $physicalResourceVersion->setReadOnly(true);
+            $physicalResourceVersion->setJsHint(_M('Versão do recurso físico', $module));
+            $physicalResourceDescription = new MTextField('physicalResourceDescription', $this->getFormValue('physicalResourceDescription', $data->physicalResourceDescription), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $physicalResourceDescription->setJsHint(_M('Descrição do recurso físico', $module));
+            $physicalResourceDescription->setReadOnly(true);
+            $hctMaterial = new MHContainer('hctMaterial', array($physicalResourceLabel, $physicalResourceId, $physicalResourceVersion, $physicalResourceDescription));
+            $flds[] = $hctMaterial;            
+
+            // Field room
+            $roomLabel = new MText('roomLabel', _M('Sala', $module) . ':');
+            $roomLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $room = new MTextField('room', $this->getFormValue('room', $data->room), '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+            $room->setJsHint(_M('Sala de aula', $module));
+            $room->setReadOnly(true);
+            $room->setJsHint(_M('Sala', $module));
+
+            $building = new MTextField('building', $this->getFormValue('building', $data->building), '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+            $building->setReadOnly(true);
+            $building->setJsHint(_M('Prédio', $module));
+            $building->setJsHint(_M('Prédio', $module));
+            $hctRoom = new MHContainer('hctRoom', array($roomLabel, $room, $building));
+            $flds[] = $hctRoom;
+
+            // Schedule of curricular component
+            if ( $data->timeSheetId > 0 )
+            {
+                $value = $data->timeSheetId;
+            }
+            else if ( $MIOLO->session->getValue($this->getSidTimeSheetId()) > 0 )
+            {
+                $value = $MIOLO->session->getValue($this->getSidTimeSheetId());
+            }
+            else
+            {
+                $value = '';
+            }             
+                                    
+            $tableOfScheduleLabel = new MText('TableScheduleLabel', _M('Tabela de horários', $module) . ':');
+            $slcTableOfSchedule = new MSelection('slcTableOfSchedule', $value, '', $busTimeSheet->listTimeSheet());
+            $slcTableOfSchedule->setJsHint(_M('Selecione uma tabela de horário', $module));
+            $slcTableOfSchedule->addAttribute('onChange', 'gridSchedule(\'insert\');');
+            $hctTableOfSchedule = new MHContainer('hctTableOfSchedule', array($tableOfScheduleLabel, $slcTableOfSchedule));
+            $divTableOfSchedule = new MDiv('divTableOfSchedule');
+            $vctTableOfSchedule = new MVContainer('vctTableOfSchedule', array($hctTableOfSchedule, $divTableOfSchedule));
+            $vctTableOfSchedule->setWidth('100%');
+            $bgTableOfSchedule = new MBaseGroup('bgTableOfSchedule', _M('Selecione a hora de ocorrência da disciplina', $module), array($vctTableOfSchedule));
+            $bgTableOfSchedule->setWidth('48%');
+                        
+            if( SAGU::getParameter('ACADEMIC', 'TABELA_DE_DISCIPLINA_OFERECIDA_SIMPLIFICADA') == 'NO' || SAGU::getParameter('ACADEMIC', 'MAX_PROFESSOR_POR_HORARIO') == 0 )
+            {                   
+                // Schedule of curricular component
+                $professorLabel = new MText('professorLabel', _M('Professor', $module) . ':');
+                $professorLabel->setWidth(100);
+                $professorId = new MLookupTextField('professorId', $this->getFormValue('professorId', $data->professorId), '', SAGU::getParameter('BASIC', 'FIELD_LOOKUPFIELD_SIZE'), null, null, 'professorName', 'basic', 'PhysicalPersonProfessor', null, null, true);
+                $professorId->setJsHint(_M('Informe o código do professor', $module));
+                $professorName = new MTextField('professorName', $this->professorName->value, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+                $professorName->setJsHint(_M('Nome do professor', $module));
+                $professorName->setReadOnly(true);
+                $addProfessor = new MButton('addProfessor', _M('Adicionar', $module), "javascript:insertProfessor('insert');");
+                $hctProfessor = new MHContainer('hctProfessor', array($professorLabel, $professorId, $professorName, $addProfessor));
+                $hctProfessor->setShowLabel(false);
+                $this->SetFormValue('professorId', null);               
+                
+                // Institutional evaluation
+                $isInstitutionalEvaluationLabel = new MText('isInstitutionalEvaluationLabel', _M('Tem avaliação institucional', $module) . '?');
+                $isInstitutionalEvaluationLabel->setWidth(100);
+                $isInstitutionalEvaluation = new MRadioButtonGroup('isInstitutionalEvaluation', null, SAGU::listYesNo(1), $this->getFormValue('isInstitutionalEvaluation', $data->isInstitutionalEvaluation) ? $this->getFormValue('isInstitutionalEvaluation', $data->isInstitutionalEvaluation) : DB_true, null, 'horizontal');
+                $isInstitutionalEvaluation->setShowLabel(false);
+                $hctIsInstitutionalEvaluation = new MHContainer('hctIsInstitutionalEvaluation', array($isInstitutionalEvaluationLabel,$isInstitutionalEvaluation));
+
+                // Weight
+                $weightLabel = new MText('weightLabel', _M('Peso', $module) . ':');
+                $weightLabel->setWidth(100);
+                $weightLabel->setClass('m-caption m-caption-required');
+                $weight = new MTextField('weight', $this->getFormValue('weight', $data->weight) > 0 ? $this->getFormValue('weight', $data->weight) : 1, '', 15, _M('de 0 até 100', $module));
+                $weight->setJsHint(_M('Informe o peso', $module));
+                $hctWeight = new MHContainer('hctWeight', array($weightLabel, $weight));
+                
+                // Div professor
+                $divProfessor = new MDiv('divProfessor');
+                $vctProfessor = new MVContainer('vctprofessor', array($hctProfessor,$hctIsInstitutionalEvaluation, $hctWeight, $divProfessor));
+                $vctProfessor->setWidth('100%');
+
+                $bgProfessor = new MBaseGroup('bgProfessor', _M('Informe os professores que ministrarão aula no horário selecionado', $module), array($vctProfessor));
+                $bgProfessor->setWidth('50%');
+
+                //$hctScheduleAndProfessor = new MHContainer('hctContainer', array($bgTableOfSchedule, $bgProfessor));
+
+                //$flds[] = $hctScheduleAndProfessor;
+
+                //$fields[] = new MBaseGroup('bgSchedule', _M('Dados do horário', $module), $flds, 'vertical');    
+                
+            }else
+            {   /*
+                * Cso parâmetro disciplina oferecida simplificada esteja setado com true, monta a div de professores com
+                * campos lookup de array.                * 
+                */
+                $professorMaximo = SAGU::getParameter('ACADEMIC', 'MAX_PROFESSOR_POR_HORARIO');
+                
+                for($i=1; $i< $professorMaximo+1; $i++)
+                {                    
+                    // Schedule of curricular component
+                    $professorLabel = new MText('professorLabel', _M('Professor', $module) . " {$i}:");
+                    $professorLabel->setWidth(100);
+                    $professorId = new MLookupTextField("professorId_{$i}", $MIOLO->session->getValue($this->getSidProfessorId($i)), '', SAGU::getParameter('BASIC', 'FIELD_LOOKUPFIELD_SIZE'), null, null, "professorName_{$i}", 'basic', 'PhysicalPersonProfessor', null, null, true);
+                    $professorId->setJsHint(_M('Informe o código do professor', $module));
+                    $professorName = new MTextField("professorName_{$i}", $this->professorName->value, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+                    $professorName->setJsHint(_M('Nome do professor', $module));
+                    $professorName->setReadOnly(true);
+                    $hctProfessor = new MHContainer('hctProfessor', array($professorLabel, $professorId, $professorName));
+                    $hctProfessor->setShowLabel(false);
+                    
+                    $campo[] = $hctProfessor;                    
+                }                
+                
+                // Institutional evaluation
+                $fields [] = $isInstitutionalEvaluation = new MHiddenField('isInstitutionalEvaluation', 'f');
+
+                // Weight
+                $fields[] = $weight = new MHiddenField('weight', 1);               
+
+                $divProfessor = new MDiv('divProfessor');
+                $vctProfessor = new MVContainer('vctprofessor', $campo);
+                $vctProfessor->setWidth('100%');
+
+                $bgProfessor = new MBaseGroup('bgProfessor', _M('Informe os professores que ministrarão aula no horário selecionado', $module), array($vctProfessor));
+                $bgProfessor->setWidth('50%');
+            }
+                        
+            $hctScheduleAndProfessor = new MHContainer('hctContainer', array($bgTableOfSchedule, $bgProfessor));
+            
+            $flds[] = $hctScheduleAndProfessor;
+
+            $fields[] = new MBaseGroup('bgSchedule', _M('Dados do horário', $module), $flds, 'vertical');
+            
+            $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+            $learnigPeriod = $busLearningPeriod->getLearningPeriod($learningPeriodId);
+
+            //<FIXME>
+
+            /*
+             * FIXME: Foi forçado dia um nas datas devido ao "problema"
+             * encontrado no SAGU::dateDiffInMonth. Dependendo dos dias
+             * altera o resultado do diff o que não é interessante neste
+             * caso.
+             */
+            $beginDate = "01/" . $this->krono->getMonth($learnigPeriod->beginDate) . "/" . $this->krono->getYear($learnigPeriod->beginDate);
+            $endDate = "01/" . $this->krono->getMonth($learnigPeriod->endDate) . "/" . $this->krono->getYear($learnigPeriod->endDate);
+
+            $diffInMonth = SAGU::dateDiffInMonth($beginDate, $endDate);
+
+            $monthSplit = str_split($this->krono->getMonth($learnigPeriod->beginDate));
+            $beginMonth = ( $monthSplit[0] != "0" ) ? $this->krono->getMonth($learnigPeriod->beginDate) : str_replace('0', '', $this->krono->getMonth($learnigPeriod->beginDate));
+            $beginYear = $this->krono->getYear($learnigPeriod->beginDate);
+
+            $fields[] = new Separator('');
+            $fields[] = new Separator('');
+
+            // Business academic calendar event
+            $busAcademicCalendarEvent = new BusinessAcademicBusAcademicCalendarEvent();
+            // Array of dates that there will be no class
+            // obtem a ocorrencia de curso do grupo
+            $curriculum = $busCurriculum->getCurriculum($infoGroup->curriculumId);
+
+            $eventNotClass = $busAcademicCalendarEvent->getDatesThatThereWillBeNoClass($beginYear, $curriculum->courseId, $curriculum->courseVersion, $curriculum->turnId, $curriculum->unitId);
+
+            $datesNotClass = array();
+            $disabledHint = array();
+            foreach ( (array)$eventNotClass as $e )
+            {
+                $datesNotClass[] = $e->eventDate;
+
+                $description = strlen($e->description) > 0 ? $e->description : 'Não informado.';
+                $disabledHint[] = _M('No calendário de eventos foi definido que não haverá aula neste dia. (descrição: @1)', $module, $description);
+            }
+            
+            $occurrenceDates = isset($data->occurrenceDates) ? $data->occurrenceDates : $MIOLO->session->getValue($this->getSidOccurrenceDates());
+            
+            if ( (is_array($occurrenceDates)) && (in_array('error', $occurrenceDates)) )
+            {
+                $position = array_search('error', $occurrenceDates);
+                unset($occurrenceDates[$position]);
+            }
+            
+            $disableGrey = array();
+            foreach ( $occurrenceDates as $key => $ocDates )   
+            {
+                // Verifica se já foi registrada frequência ou nota para o dia e desabilita o click.
+                $busFrequenceEnroll = new BusinessAcademicBusFrequenceEnroll();
+                $busDegreeEnroll = new BusinessAcademicBusDegreeEnroll();
+                
+                $filters = new stdClass();
+                $filters->groupId = MIOLO::_REQUEST('groupId');
+                $filters->frequencyDate = $ocDates;
+
+                $frequencias = $busFrequenceEnroll->searchFrequenceEnroll($filters);
+                if ( count($frequencias) > 0 )
+                {
+                    $datesNotClass[] = $disableColorGrey[] = $ocDates;
+                    $disabledHint[] = _M('Já houve marcação de frequência neste horário. Deste modo não é possível modificar este registro.');
+                }
+            }
+                        
+            for ( $counter = 0; $counter <= $diffInMonth; $counter++ )
+            {              
+                $calendar = new SCalendar('cld' . $counter, $beginMonth, $beginYear, $occurrenceDates);
+                $calendar->setWeeksVisible(true);
+                $calendar->enable(true);
+                $calendar->setNavigatorBarVisible(false);
+                $calendar->setDisableDatesHint($disabledHint);
+                $calendar->disableDateColorGrey = $disableColorGrey;
+                foreach ($datesNotClass as $data)
+                {
+                    $day = explode('/', $data);
+                    $day[0] = (strlen($day[0]) > 1) ? $day[0] : '0' . $day[0];
+                    $day[1] = (strlen($day[1]) > 1) ? $day[1] : '0' . $day[1];
+                    $data = implode('/', $day);
+
+                    $calendar->setDateColor($data, 'red');
+                    $calendar->disableDatesArray[] = $data;
+                }
+                $hctFields[] = new MDiv('divX', array($calendar));
+
+                if ( (($counter % 3) == 2) || $diffInMonth - $counter == 0 )
+                {
+                    $hctCalendar = new MHContainer('hctCalendar' . $counter, $hctFields);
+                    $fields[] = $hctCalendar;
+                    $fields[] = new MSeparator( );
+
+                    unset($calendar);
+                    unset($hctFields);
+                }
+
+                if ( $beginMonth == 12 )
+                {
+                    $beginYear++;
+                    $beginMonth = 0;
+                }
+
+                $beginMonth++;
+            }
+            
+            $fields[] = new MSeparator();
+            
+            $fields[] = new MTextLabel('feriado', '<font color=\'red\'>' . _M('Feriado') . '</font>', _M('Datas em vermelho', $module));
+            $fields[] = new MTextLabel('aula', '<font color=\'blue\'>' . _M('Aulas') . '</font>', _M('Datas em azul', $module));
+            $fields[] = new MTextLabel('frequencia', '<font color=\'dimgray\'>' . _M('Aula com frequência já lançada', $module) . '</font>', _M('Datas em cinza', $module));
+                        
+            $MIOLO->session->setValue($this->getSidOccurrenceDates(), null);                        
+
+            // Adds the functions java script "insertProfessor" e "gridSchedule".Aqui
+            $this->page->addJsCode('insertProfessor(\'' . $function . '\');');
+            $this->page->addJsCode('gridSchedule(\'' . $function . '\');');
+
+            $opt = array(
+                'function' => 'update',
+                'groupId' => MIOLO::_REQUEST('groupId')
+            );
+
+            $linkBack = $MIOLO->getActionURL($module, 'main:process:group', null, $opt);
+
+            $opt = array(
+                'function' => 'insert',
+                'groupId' => MIOLO::_REQUEST('groupId'),
+                'unitId' => MIOLO::_REQUEST('unitId'),
+                'learningPeriodId' => MIOLO::_REQUEST('learningPeriodId'),
+                'event' => 'clean'
+            );
+
+            $linkClean = $MIOLO->getActionURL($module, $action, null, $opt);            
+
+            // Buttons
+            $btnSave = new MButton('tbBtnSave', _M('Salvar', $module));
+            $btnBack = new MButton('btnBack', _M('Voltar', $module), $linkBack);
+            $btnClean = new MButton('btnClean', _M('Limpar', $module), $linkClean);
+
+            $fields[] = new MDiv('divActions', array($btnSave, $btnBack, $btnClean), null, array('style' => 'margin-top:30px;'));
+
+            $fields[] = new Separator('');
+            $fields[] = new Separator('');
+
+            // adicionar uma grid com informações dos horários.
+            if ( strlen($groupId) > 0 )
+            {
+                $filters->groupId = $groupId;
+
+                try
+                {
+                    $scheduleData = $busSchedule->searchSchedule($filters, true);
+                }
+                catch ( Exception $e )
+                {
+                    $this->addError(_M('Erro ao buscar dados dos horários.', $module) . ' ' . $e->getMessage());
+                }
+
+                // Check whether the subject has already offered time.
+                if ( count($scheduleData) > 0 )
+                {   
+                    if(SAGU::getParameter('ACADEMIC', 'EXIBIR_DATAS_DE_OCORRENCIA_NA_OFERECIDA') == DB_TRUE)
+                    {                    
+                        foreach($scheduleData as $key => $occurrenceDates)
+                        {                           
+                            $dataConcatenada = NULL;
+                            $datas = str_replace( '{', '', $occurrenceDates[13]);
+                            $datas = str_replace( '}', '', $datas);
+
+                            $datas = explode(',', $datas);
+
+                            for($i =0; $i < count($datas); $i++)
+                            {
+                                $date1 = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'), strtotime($datas[$i]));
+                                $i++;
+                                $date2 = $datas[$i] ? date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'), strtotime($datas[$i])) : null;
+                                $i++;
+                                $date3 = $datas[$i] ? date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'), strtotime($datas[$i])) : null;
+
+                                $dataConcatenada .= $date1.'&nbsp'.$date2.'&nbsp'.$date3.'<br>';                            
+                            }
+
+                            $scheduleData[$key][11] = $dataConcatenada;
+                         }
+                    }
+                    
+                    $filters->unitId = $unitId;
+                    $filters->learningPeriodId = $learningPeriodId;
+
+                    $grdResults = $MIOLO->getUI()->getGrid($module, 'GrdScheduleSearch', $filters);
+
+                    $grdResults->setTitle(_M('Horários para', $module) . ' ' . $infoGroup->curriculumCurricularComponentId . ' - ' . $infoGroup->curriculumCurricularComponentName);
+                    $grdResults->setData($scheduleData);
+                    $grdResults->setIsScrollable(false);
+
+                    $fields[] = $grdResults;
+
+                    $scheduleAllocate = $busSchedule->getScheduleAllocate($groupId, true);
+
+                    $fields[] = new MSeparator('');
+                    $fields[] = new MTextLabel('totalSchedule', '<font color=\'blue\'>' . $infoGroup->lessonNumberHours . ' ' . _M('Horas', $module) . '</font>', _M('Total de horas', $module));
+                    $fields[] = new MTextLabel('scheduleAllocate', '<font color=\'red\'>' . $scheduleAllocate . ' ' . _M('Horas', $module) . '</font>', _M('Horas alocadas', $module));
+                    $fields[] = new MTextLabel('balance', '<font color=\'green\'>' . SAGU::timeDiff($infoGroup->lessonNumberHours . ':00', $scheduleAllocate) . ' ' . _M('Horas', $module) . '</font>', _M('Saldo', $module));
+                }
+            }
+        }
+
+        $currentUrl = str_replace('&amp;', '&', $this->manager->getCurrentURL());
+        
+        $data->professor = $MIOLO->session->getValue($this->getSidProfessor());
+        
+        $profId   = "''";
+        $profName = "''";
+            
+        if ( (isset($data->professor)) && (is_array($data->professor))  )
+        {
+            foreach ( $data->professor as $value )
+            {
+                $profId   = $value[0];
+                $profName = "'" . $value[1] . "'";
+                break;
+            }
+        }
+
+        $MIOLO->getRequiredJS4Ajax();
+
+        // Javascript functions
+        $jsCode = "
+        // javascript function to add teachers
+        function insertProfessor(action)
+        {
+            args    = new Array();
+            args[0] = action;
+        
+            if ( action == 'insert' )
+            {        
+                object = document.getElementById('isInstitutionalEvaluation_0');
+                if ( object == null )
+                {
+                    object.checked = false;
+                }                
+                
+                if ( document.getElementById('professorId').value != '' )
+                {
+                    args[1] = document.getElementById('professorId').value;       
+                    args[2] = document.getElementById('professorName').value;
+                }
+                else
+                {
+                    args[1] = $profId;
+                    args[2] = $profName;
+                }
+        
+                args[3] = document.getElementById('weight').value;
+                args[4] = object.checked;
+        
+                document.getElementById('professorId').value = '';
+                document.getElementById('professorName').value = '';
+            }            
+        
+            showLoading();            
+            cpaint_call('" . $currentUrl . "', 'POST', 'addProfessor_click', args, showAddProfessor, 'TEXT');
+        }
+
+        // Javascript function to mount grid of schedule.
+        function gridSchedule(action)
+        {
+            args    = new Array();
+            args[0] = action;
+
+            if ( (action == 'insert') || (action == 'update') )
+            {
+                args[1] = document.getElementById('slcTableOfSchedule').value;
+            }
+
+            showLoading();
+            cpaint_call('" . $currentUrl . "', 'POST', 'gridSchedule_click', args, showGridSchedule, 'TEXT');
+        }
+     
+        // Javascript function to add schedule
+        function insertSchedule(schedule, checked)
+        {
+            args    = new Array();
+            args[0] = schedule;
+            args[1] = checked;
+            cpaint_call('" . $currentUrl . "', 'POST', 'insertSchedule_click', args, showInsertSchedule, 'TEXT');
+        }
+
+        function showInsertSchedule(result)
+        {
+            xGetElementById('divInsertSchedule').innerHTML = result;
+            MIOLO_parseAjaxJavascript(result);
+        }
+
+        function showAddProfessor(result)
+        {
+            stopShowLoading();
+            xGetElementById('divProfessor').innerHTML = result;
+            MIOLO_parseAjaxJavascript(result);
+        }
+
+        function showGridSchedule(result)
+        {
+            stopShowLoading();
+            xGetElementById('divTableOfSchedule').innerHTML = result;
+            MIOLO_parseAjaxJavascript(result);
+        }
+        ";
+
+        $this->page->addJsCode($jsCode);
+
+        $fields[] = new Separator( );
+        $fields[] = new Separator( );
+        $fields[] = new Separator( );
+
+        $this->setFields($fields);
+        $this->SetValidators($validators);
+        $this->setLabelWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $this->setShowPostButton(false);
+        $this->setClose($MIOLO->getActionURL($module, substr($action, 0, strrpos($action, ':'))));        
+    }
+
+    /**
+     * Method used by cpaint to construct the schedule grid
+     */
+    private function gridSchedule_click($args)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $session = $MIOLO->getSession();
+
+        $busTime = new BusinessAcademicBusTimeSheet();
+        $currentData = explode(',', $args[0]);
+
+        $learningPeriodId = MIOLO::_REQUEST('learningPeriodId');
+
+        $filter->function = $currentData[0];
+
+        if ( ($filter->function == "insert") || ($filter->function == "update") )
+        {
+            if ( $filter->function != 'update' )
+            {
+                if ( strlen($learningPeriodId) > 0 )
+                {
+                    $busLearningPeriod  = new BusinessAcademicBusLearningPeriod();
+                    $dataLearningPeriod = $busLearningPeriod->getLearningPeriod($learningPeriodId);
+                    $turnId             = $dataLearningPeriod->turnId;
+                    
+                    if ( strlen($turnId) > 0 )
+                    {
+                        $busTurn   = new BusinessBasicBusTurn();
+                        $dataTurn  = $busTurn->getTurn($turnId);
+                        $beginHour = $dataTurn->beginHour;
+                        $endHour   = $dataTurn->endHour;
+                    }
+                }
+            }
+            else
+            {
+                $arrayTimeIds = $MIOLO->session->getValue($this->getSidSchedule());
+            }
+            
+            $arrayTimeIds = $MIOLO->session->getValue($this->getSidSchedule());
+
+            $filter->timeSheetId = $currentData[1];
+
+            $dataTime = $busTime->searchTime($filter);
+
+            unset($retTime);
+
+            if ( isset($dataTime) )
+            {
+                foreach ( $dataTime as $i => $v )
+                {
+                    if ( is_array($arrayTimeIds) )
+                    {
+                        if ( in_array($v[0], $arrayTimeIds) )
+                        {
+                            $set = true;
+                            $times[] = $v[0];
+                        }
+                        else
+                        {
+                            $set = false;
+                        }
+                    }
+                    elseif ( $filter->function == 'insert' )
+                    {
+                        if ( ( SAGU::timediff($beginHour, $v[2]) <= 0 ) && (SAGU::timediff($beginHour, $v[3]) <= 0 ) && ( SAGU::timediff($v[2], $endHour) <= 0 ) && (SAGU::timediff($v[3], $endHour) <= 0) )
+                        {
+                            $set = true;
+                            $times[] = $v[0];
+                        }
+                        else
+                        {
+                            $set = false;
+                        }
+                    }
+                    else
+                    {
+                        $set = false;
+                    }
+
+                    $ckbTime = new MCheckBox('schedule' . $v[0], '', '', $set);
+                    $ckbTime->addAttribute('onChange', "insertSchedule('$v[0]', document.getElementById('schedule" . $v[0] . "').checked );");
+                    $retTime[] = array(
+                        $ckbTime,
+                        $v[2],
+                        $v[3],
+                        $v[4],
+                        $v[1]);
+                }
+                if ( is_array($times) )
+                {
+                    $session->setValue($this->getSidSchedule(), $times);
+                }
+            }
+        }
+
+        $columns = array(
+            _M('Ações', $module),
+            _M('Hora inicial', $module),
+            _M('Hora final', $module),
+            _M('Equivalência em minutos (min.)', $module),
+            _M('Turno', $module));
+
+        $fields[] = new MTableRaw('', $retTime, $columns);
+
+        $insertSchedule = new MDiv('divInsertSchedule');
+        $insertSchedule->addBoxStyle('display', 'none');
+
+        $fields[] = $insertSchedule;
+
+        $this->manager->getTheme()->setContent($fields);
+    }
+
+    /**
+     * Method used by store the times in session
+     */
+    private function insertSchedule_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $session = $MIOLO->session;
+        $currentData = explode(',', $args[0]);
+
+        $filter->timeId = $currentData[0];
+        $schedule = $session->getValue($this->getSidSchedule());
+
+        $session->setValue($this->getSidSchedule(), '');
+
+        if ( is_array($schedule) )
+        {
+            foreach ( $schedule as $i => $v )
+            {
+                if ( $v == $filter->timeId )
+                {
+                    $insert = false;
+                    break;
+                }
+                $insert = true;
+            }
+            if ( $insert )
+            {
+                $schedule[] = $filter->timeId;
+            }
+            else
+            {
+                foreach ( $schedule as $i => $v )
+                {
+                    if ( $v != $filter->timeId )
+                    {
+                        $retSchedule[] = $v;
+                    }
+                }
+                $schedule = $retSchedule;
+            }
+        }
+        else
+        {
+            $schedule[] = $filter->timeId;
+        }
+
+        if ( is_array($schedule) )
+        {
+            foreach ( $schedule as $cod => $valor )
+            {
+                if ( $valor == $currentData[0] && $currentData[1] == 'false' )
+                {
+                    unset($schedule[$cod]);
+                }
+            }
+        }
+        $session->setValue($this->getSidSchedule(), $schedule);
+
+        $this->manager->getTheme()->setContent($fields);
+    }
+
+    /**
+     * Method used by cpaint to construct the professor grid
+     */
+    private function addProfessor_click($args)
+    {  
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $event  = MIOLO::_REQUEST('event');
+
+        $session = $MIOLO->session;
+        $currentUrl = str_replace('&amp;', '&', $this->manager->getCurrentURL());
+        $currentData = explode(',', $args[0]);
+
+        $filter->action = $currentData[0];
+
+        unset($filter->professorId);
+        unset($filter->professorName);
+
+        if ( ($filter->action == "insert") )
+        {
+            $filter->professorId = $currentData[1];
+            $filter->professorName = $currentData[2];
+            $filter->weight = $currentData[3];
+            $filter->isInstitutionalEvaluation = $currentData[4];
+        }
+        else
+        {
+            if ( $filter->action != 'update' )
+            {
+                $session->setValue($this->getSidProfessor(), '');
+            }
+        }
+
+        $professor = $session->getValue($this->getSidProfessor());
+
+        //
+        // Verificacao de limite
+        //
+        $countActiveProfessorList = 0;
+        if ( is_array($professor) )
+        {
+            foreach ( $professor as $i => $v )
+            {
+                if ( $v[4] != 'deleted' )
+                {
+                    $countActiveProfessorList ++;
+                }
+            }
+        }
+        // Verifica limite de professores
+        $maxProfessor = SAGU::getParameter('ACADEMIC', 'MAX_PROFESSOR_POR_HORARIO');
+        $hasExcededLimit = ( $countActiveProfessorList >= $maxProfessor ) && ( $maxProfessor > 0 );
+        
+        //
+        $session->setValue($this->getSidProfessor(), '');
+        $erro = false;
+        
+        if ( (strlen($filter->professorId) > 0) && (strlen($filter->professorName) > 0) && (strlen($filter->weight) > 0) && (strlen($filter->isInstitutionalEvaluation) > 0) )
+        {
+            if ( $filter->action == "delete" )
+            {
+                unset($retProfessor);
+                foreach ( $professor as $i => $v )
+                {
+                    if ( $v[0] != $filter->professorId )
+                    {
+                        $retProfessor[] = array(
+                            $v[0],
+                            $v[1],
+                            $v[2],
+                            $v[3],
+                            null);
+                    }
+                    else
+                    {
+                        $retProfessor[] = array(
+                            $v[0],
+                            $v[1],
+                            $v[2],
+                            $v[3],
+                            'deleted');
+                    }
+                }
+
+                $professor = $retProfessor;
+            }
+            elseif ( $filter->action == "insert" )
+            {
+                if ( $hasExcededLimit )
+                {
+                    $fields[] = MPrompt::Error( _M('O número máximo de professores permitidos é @1', $module, $maxProfessor) );
+                }
+                else
+                {
+                    if ( is_array($professor) )
+                    {
+                        foreach ( $professor as $i => $v )
+                        {
+                            if ( $v[0] == $filter->professorId )
+                            {
+                                $insert = false;
+                                break;
+                            }
+
+                            $insert = true;
+                        }
+                        if ( $insert )
+                        {
+                            $professor[] = array(
+                                $filter->professorId,
+                                $filter->professorName,
+                                $filter->weight,
+                                $filter->isInstitutionalEvaluation);
+                        }
+                        else
+                        {
+                            $erro = true;
+                        }
+                    }
+                    else
+                    {
+                        $professor[] = array(
+                            $filter->professorId,
+                            $filter->professorName,
+                            $filter->weight,
+                            $filter->isInstitutionalEvaluation);
+                    }
+                }
+            }
+        }
+        else
+        {
+            if ( is_array($professor) && ($filter->action != 'update') && ($event != 'clean') )
+            {
+                $fields[] = new MText('Erro', _M('Todos os campos referente ao professor devem ser informados', $module) . ' !', 'red');
+            }
+        }
+
+
+        $columns = array(
+            _M('Ações', $module),
+            _M('Código', $module),
+            _M('Professor', $module),
+            _M('Peso', $module),
+            _M('Avaliação institucional', $module));
+
+        unset($retProfessor);
+
+        if ( is_array($professor) )
+        {
+            foreach ( $professor as $i => $v )
+            {
+                if ( $v[3] == 't' )
+                {
+                    $v[3] = 'true';
+                }
+                elseif ( $v[3] == 'f' )
+                {
+                    $v[3] = 'false';
+                }
+
+                $linkAction = ("javascript:cpaint_call('" . $currentUrl . "&event=dropProfessor', 'POST', 'addProfessor_click', '" . "delete" . ',' . $v[0] . ',' . $v[1] . ',' . $v[2] . ',' . $v[3] . " ', showAddProfessor, 'TEXT');");
+                $linkActionImg = new MImageLink("linkAction", null, $linkAction, $MIOLO->getUI()->getImageTheme($MIOLO->getConf('theme'), 'button_drop.png'));
+
+                if ( $v[4] != 'deleted' )
+                {
+                    $retProfessor[] = array($linkActionImg,
+                        $v[0],
+                        $v[1],
+                        $v[2],
+                        $isInstitutionalEvaluation = $v[3] == 'true' ? _M('Sim', $module) : _M('Não', $module));
+                }
+            }
+        }
+
+        $fields[] = new MTableRaw('', $retProfessor, $columns);
+        
+        if( $erro )
+        {
+            $fields[] = new MText('Erro', _M('Professor já cadastrado', $module) . ' !', 'red');
+        }
+        
+        $this->manager->getTheme()->setContent($fields);
+        
+        $session->setValue($this->getSidProfessor(), $professor);
+    }
+
+    /**
+     * Event triggered when user clicks the save button of toolbar
+     */
+    public function tbBtnSave_click($sender = null)
+    {        
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+        $msg = array();
+
+        $data = $this->getTypesData();
+        $data->professor = (array) $data->professor;
+        $MIOLO->session->setValue($this->getSidOccurrenceDates(), $data->occurrenceDates);      
+
+        try
+        {
+            $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+            $learningPeriod = $busLearningPeriod->getLearningPeriod($data->learningPeriodId);
+            
+            if ( (is_array($data->occurrenceDates)) && (in_array('error', $data->occurrenceDates)) )
+            {
+                throw new Exception(_M("As datas selecionadas não podem ser menores ou maiores que o intervalo de datas do período letivo " . $learningPeriod->periodDescription . ". Este inicia em " . $learningPeriod->beginDate . " e termina " . $learningPeriod->endDate . ".", $module));
+            }
+            $businessSchedule = new BusinessAcademicBusSchedule();
+            $businessScheduleProfessor = new BusinessAcademicBusScheduleProfessor();
+
+            $MIOLO->session->setValue($this->getSidProfessor(), '');
+            $MIOLO->session->setValue($this->getSidSchedule(), '');
+
+            if ( !is_array($data->timeIds) )
+            {
+                throw new Exception(_M('Deve ser informado, pelo menos, um horário', $module));
+            }
+            elseif ( !is_array($data->occurrenceDates) )
+            {
+                throw new Exception(_M('Deve ser informada a data em que a disciplina oferecida ocorrerá', $module));
+            }
+
+            if ( ( SAGU::getParameter($module, 'ENABLE_SCHEDULE_PROFESSOR_CHECK') == DB_TRUE ) && $businessSchedule->existeConflitoDeHorario($data->groupId, $data->unitId, $data->occurrenceDates, $data->timeIds, $data->scheduleId) )
+            {
+                throw new Exception(_M('Os dados informados conflitam com um horário já existente para esta disciplina oferecida.', $module));
+            }
+
+            SDatabase::beginTransaction();
+
+            if ( $function == 'insert' )
+            {
+                // Se for informado recurso físico e versão de recurso físico, verifica se existe conflito de alocação.
+                $conflictPhysicalResource = ( strlen($data->physicalResourceId) > 0 && strlen($data->physicalResourceVersion) > 0 ) ? $businessSchedule->scheduleAlreadyExistsForPhysicalResource($data->physicalResourceId, $data->physicalResourceVersion, $data->unitId, $data->occurrenceDates, $data->timeIds) : false;
+
+                // Se existe conflito com o recurso físico.
+                if ( $conflictPhysicalResource )
+                {
+                    $excPhysicalResource = $data->physicalResourceId .'/'. $data->physicalResourceVersion .' - '. $this->getFormValue('physicalResourceDescription');
+                    $businessUnit = new BusinessBasicBusUnit();
+                    $unit = $businessUnit->getUnit($data->unitId);
+                    $excUnit = $data->unitId .' - '. $unit->description;
+                    throw new Exception( _M('O recurso físico @1 já está alocado na unidade @2 em algum dos horários informados.', $module, $excPhysicalResource, $excUnit) );
+                }
+
+                $scheduleId = $businessSchedule->insertSchedule($data);
+                $msg[] = SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED');
+            }
+            elseif ( $function == 'update' )
+            {
+                // Se for informado recurso físico e versão de recurso físico, verifica se existe conflito de alocação, passando o código do horário.
+                $conflictPhysicalResource = ( strlen($data->physicalResourceId) > 0 && strlen($data->physicalResourceVersion) > 0 ) ? $businessSchedule->scheduleAlreadyExistsForPhysicalResource($data->physicalResourceId, $data->physicalResourceVersion, $data->unitId, $data->occurrenceDates, $data->timeIds, $data->scheduleId) : false;
+
+                // Se existe conflito com o recurso físico.
+                if ( $conflictPhysicalResource )
+                {
+                    $excPhysicalResource = $data->physicalResourceId .'/'. $data->physicalResourceVersion .' - '. $this->getFormValue('physicalResourceDescription');
+                    $businessUnit = new BusinessBasicBusUnit();
+                    $unit = $businessUnit->getUnit($data->unitId);
+                    $excUnit = $data->unitId .' - '. $unit->description;
+                    throw new Exception( _M('O recurso físico @1 já está alocado na unidade @2 em algum dos horários informados.', $module, $excPhysicalResource, $excUnit) );
+                }
+                $scheduleId = $businessSchedule->updateSchedule($data);
+                $msg[] = SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED');
+            }
+
+            // Faz a verificacao de carga horária excedente para o professor
+            $_msg = $businessSchedule->workLoadProfessorCheck($data->groupId);
+            if ( strlen($_msg) > 0 )
+            {
+                $_msg = 'Aviso: ' . $_msg . '<br><br>';
+                $msg = array_merge(array($_msg), $msg);
+            }
+            /*
+             * Caso parâmetro simplificado esteja setado, busca os dados do prfessor  
+             * dos campos -lookups de array.
+             */
+            if( SAGU::getParameter('ACADEMIC', 'TABELA_DE_DISCIPLINA_OFERECIDA_SIMPLIFICADA') == 'YES' && SAGU::getParameter('ACADEMIC', 'MAX_PROFESSOR_POR_HORARIO') != 0 )
+            {                  
+                $professorMaximo = SAGU::getParameter('ACADEMIC', 'MAX_PROFESSOR_POR_HORARIO');
+                for($i=1; $i< $professorMaximo+1; $i++)
+                {   
+                    //Pega o número de professores cadastrados em determinado horário
+                    $filter->scheduleId = MIOLO::_REQUEST('scheduleId');
+                    $busScheduleProf = new BusinessAcademicBusScheduleProfessor();
+                    $arrayProfessor = $busScheduleProf->searchScheduleProfessor($filter); 
+                    
+                    $infoProfessor->scheduleId = $scheduleId;                
+                    $infoProfessor->professorId = $data->professorId[$i];
+                    $infoProfessor->weight = $data->weight;
+                    $infoProfessor->isInstitutionalEvaluation = $data->isInstitutionalEvaluation;                    
+                    $infoProfessor->scheduleProfessorId = $arrayProfessor[$i-1][8];
+                    $infoProfessor->delete = ($value[4] == 'deleted');
+                    
+                    $scheduleProfessor = $businessScheduleProfessor->getScheduleProfessor($scheduleId, $infoProfessor->professorId);
+                    
+                    if ( $infoProfessor->delete )
+                    {
+                        $businessScheduleProfessor->deleteScheduleProfessor($scheduleProfessor->scheduleProfessorId);
+                    }
+                    //Verifica para ver se é update, e altera o professor.
+                    if($arrayProfessor[$i-1][1])
+                    { 
+                        $businessScheduleProfessor->updateScheduleProfessor($infoProfessor);
+                    }
+                    //Caso não seja update, é inserido o professor.
+                    else
+                    {
+                        $businessScheduleProfessor->insertScheduleProfessor($infoProfessor);
+                    }
+                     
+                    if( SAGU::getParameter($module, 'ENABLE_SCHEDULE_PROFESSOR_CHECK') == DB_TRUE )
+                    {
+                        // Verifica se existe conflito de horarios para o professor
+                        // deve ser executado apos insercao ou atualizacao, e caso exista, executa ROLLBACK
+                        $businessSchedule->scheduleAlreadyExistsForProfessor($scheduleId, $infoProfessor->professorId, $data->groupId);
+                    }
+                    
+                }
+            }else
+            {
+        
+                foreach ( $data->professor as $value )
+                {
+                    if ( !SAGU::allIsFilled($value[0], $value[2], $value[3]) )
+                    {
+                        continue;
+                    }
+
+                    $infoProfessor->scheduleId = $scheduleId;
+                    $infoProfessor->professorId = $value[0];
+                    $infoProfessor->weight = $value[2];
+                    $infoProfessor->isInstitutionalEvaluation = $value[3];
+                    $infoProfessor->delete = ($value[4] == 'deleted');
+
+                    $scheduleProfessor = $businessScheduleProfessor->getScheduleProfessor($scheduleId, $value[0]);
+
+                    if ( $infoProfessor->delete )
+                    {
+                        $businessScheduleProfessor->deleteScheduleProfessor($scheduleProfessor->scheduleProfessorId);                        
+                    }
+                    elseif ( strlen($scheduleProfessor->scheduleProfessorId) == 0 )
+                    {
+                        $businessScheduleProfessor->insertScheduleProfessor($infoProfessor);
+                    }
+                    else
+                    {
+                        $infoProfessor->scheduleProfessorId = $scheduleProfessor->scheduleProfessorId;
+                        $businessScheduleProfessor->updateScheduleProfessor($infoProfessor);
+                    }
+
+                    if( SAGU::getParameter($module, 'ENABLE_SCHEDULE_PROFESSOR_CHECK') == DB_TRUE )
+                    {
+                        // Verifica se existe conflito de horarios para o professor
+                        // deve ser executado apos insercao ou atualizacao, e caso exista, executa ROLLBACK
+                        $businessSchedule->scheduleAlreadyExistsForProfessor($scheduleId, $infoProfessor->professorId, $data->groupId);
+                    }
+                }
+            }
+            
+            SDatabase::commit();
+
+            $opts = array(
+                'function' => 'insert',
+                'groupId' => MIOLO::_REQUEST('groupId'),
+                'unitId' => MIOLO::_REQUEST('unitId'),
+                'learningPeriodId' => MIOLO::_REQUEST('learningPeriodId'),
+                'event'=>'clean');
+
+            if ( $function == 'update' )
+            {
+                $goto = $MIOLO->getActionURL($module, $action, null, $opts);
+                $caption = _M('Informação', $module);
+                $MIOLO->information($msg, $goto);
+            }
+            else
+            {
+                $opt = array(
+                    'function' => 'update',
+                    'groupId' => MIOLO::_REQUEST('groupId'),
+                    'unitId' => MIOLO::_REQUEST('unitId'),
+                    'learningPeriodId' => MIOLO::_REQUEST('learningPeriodId'),
+                    'event'=>'clean');
+
+                $gotoYes = $MIOLO->getActionURL($module, $action, null, $opts);
+
+                $goto = SAGU::getStackBackUrl();
+                $goto = $MIOLO->getActionURL($module, 'main:process:group', null, $opt);
+                $caption = _M('Questão', $module);
+                $MIOLO->question($msg, $gotoYes, $goto);
+            }
+        }
+        catch ( Exception $e )
+        {
+            SDatabase::rollback();           
+            $goto = SAGU::getStackBackUrl();            
+            $MIOLO->error($e->getMessage(), $goto);            
+        }
+    }
+
+    /**
+     * Event triggered when user chooses Delete Schedule on the grid
+     */
+    public function tbBtnDeleteSchedule_click($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $goto = MIOLO::_REQUEST('goto');
+
+        $opts = array(
+            'event' => 'tbBtnDeleteSchedule_confirm',
+            'function' => 'insert',
+            'scheduleId' => MIOLO::_REQUEST('scheduleId'),
+            'groupId' => MIOLO::_REQUEST('groupId'),
+            'unitId' => MIOLO::_REQUEST('unitId'),
+            'learningPeriodId' => MIOLO::_REQUEST('learningPeriodId'),
+            'goto' => MIOLO::_REQUEST('goto'));
+
+        $gotoYes = $MIOLO->getActionURL($module, $action, null, $opts);
+
+        // This return the primary key to the search form so that user
+        // can see the record he would delete
+        $opts = array(
+            'function' => 'insert',
+            'groupId' => MIOLO::_REQUEST('groupId'),
+            'unitId' => MIOLO::_REQUEST('unitId'),
+            'learningPeriodId' => MIOLO::_REQUEST('learningPeriodId'));
+
+        $action = strlen($goto) > 0 ? $goto : $action;
+        $gotoNo = $MIOLO->getActionURL($module, $action, null, $opts);
+
+        $caption = _M('Questão', $module);
+        $MIOLO->question(SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE'), $gotoYes, $gotoNo);
+    }
+
+    /**
+     * Event triggered when user chooses Yes from the Delete Schedule prompt dialog
+     */
+    public function tbBtnDeleteSchedule_confirm($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $goto = MIOLO::_REQUEST('goto');
+
+        try
+        {
+            $businessProf = new BusinessAcademicBusScheduleProfessor();
+            $scheduleProfessor = $businessProf->isExistScheduleForProfessor(MIOLO::_REQUEST('scheduleId'));
+
+            if ( $scheduleProfessor != '0' )
+            {
+                $businessProf->deleteProfessorBySchedule(MIOLO::_REQUEST('scheduleId'));
+            }
+
+            $business = new BusinessAcademicBusSchedule();
+            $enroll = new BusinessAcademicBusFrequenceEnroll();
+            $filters = new stdClass();
+            $filters->groupId = MIOLO::_REQUEST('groupId');
+            $filters->learningPeriodId = MIOLO::_REQUEST('learningPeriodId');
+            $filters->scheduleId = MIOLO::_REQUEST('scheduleId');
+            $filters->existFrequency = '-1'; //frequencia limpa
+            $existeEnroll = $enroll->searchForRegisterInLot($filters);
+
+            if(count($existeEnroll) == 0)
+            {
+                $business->deleteSchedule(MIOLO::_request('scheduleId'));
+            }
+            else
+            {
+               throw new Exception( _M('Não é possível alterar o horário, já existe conteúdo de aula registrado. Caso queira remover as 
+frequências/conteúdo ministrado acesse: Acadêmico::Processo::Geração em lote::Registro de 
+frequências em lote e remova todas as ocorrências de frequência disciplina na data desejada.'));
+            }
+            if ( strlen($goto) > 0 )
+            {
+                $action = $goto;
+                $function = 'update';
+            }
+            else
+            {
+                $function = 'insert';
+            }
+
+            $opts = array(
+                'function' => $function,
+                'groupId' => MIOLO::_REQUEST('groupId'),
+                'unitId' => MIOLO::_REQUEST('unitId'),
+                'learningPeriodId' => MIOLO::_REQUEST('learningPeriodId'));
+
+            $goto = $MIOLO->getActionURL($module, $action, null, $opts);
+            $caption = _M('Informação', $module);
+            $MIOLO->information(SAGU::getParameter('BASIC', 'MSG_RECORD_DELETED'), $goto);
+        }
+        catch ( Exception $e )
+        {
+            $msg = _M('Erro executando a operação solicitada.', $module) . ' ' . $e->getMessage();
+
+            $this->addError($msg);
+        }
+    }
+
+    /**
+     * Event triggered when user chooses Delete from the toolbar
+     */
+    public function tbBtnDeleteProfessor_click($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $goto = MIOLO::_REQUEST('goto');
+        
+        $busFrequenceEnroll = new BusinessAcademicBusFrequenceEnroll();
+        $busDegreeEnroll = new BusinessAcademicBusDegreeEnroll();
+
+        // Verifica se o professor já registrou aula ou frequencia para a disciplina.
+        // Caso verdadeiro, não permite a exclusão do professor, mostrando uma mensagem informativa.
+        $filters = new stdClass();
+        $filters->groupId = MIOLO::_REQUEST('groupId');
+        
+        $frequencias = $busFrequenceEnroll->searchFrequenceEnroll($filters);
+        $existeNotas = $busDegreeEnroll->existeNotasRegistradas($filters->groupId);
+        if ( count($frequencias) > 0 || $existeNotas )
+        {
+            $opts = array(
+                'function' => 'update',
+                'scheduleProfessorId' => MIOLO::_REQUEST('scheduleProfessorId'),
+                'groupId' => MIOLO::_REQUEST('groupId'),
+                'unitId' => MIOLO::_REQUEST('unitId'),
+                'learningPeriodId' => MIOLO::_REQUEST('learningPeriodId'));
+
+            $goto = $MIOLO->getActionURL($module, 'main:process:group', null, $opts);
+            
+            $MIOLO->information(_M('O professor não pode ser excluído pois já cadastrou conteúdo e/ou lançou frequências.<br>
+                Devem ser cadastradas as aulas restantes para o professor substituto, completando a carga horária da disciplina.'), $goto);
+        }
+        else
+        {
+            $opts = array(
+                'event' => 'tbBtnDeleteProfessor_confirm',
+                'function' => 'insert',
+                'scheduleProfessorId' => MIOLO::_REQUEST('scheduleProfessorId'),
+                'groupId' => MIOLO::_REQUEST('groupId'),
+                'unitId' => MIOLO::_REQUEST('unitId'),
+                'learningPeriodId' => MIOLO::_REQUEST('learningPeriodId'),
+                'goto' => MIOLO::_REQUEST('goto'));
+
+            $gotoYes = $MIOLO->getActionURL($module, $action, null, $opts);
+
+            if ( strlen($goto) > 0 )
+            {
+                $action = $goto;
+                $function = 'update';
+            }
+            else
+            {
+                $function = 'insert';
+            }
+
+            // This return the primary key to the search form so that user
+            // can see the record he would delete
+            $opts = array(
+                'function' => $function,
+                'groupId' => MIOLO::_REQUEST('groupId'),
+                'unitId' => MIOLO::_REQUEST('unitId'),
+                'learningPeriodId' => MIOLO::_REQUEST('learningPeriodId'));
+
+            $gotoNo = $MIOLO->getActionURL($module, $action, null, $opts);
+            $caption = _M('Questão', $module);
+            $MIOLO->question(SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE'), $gotoYes, $gotoNo);
+        }
+    }
+
+    /**
+     * Event triggered when user chooses Yes from the Delete Professor prompt dialog
+     */
+    public function tbBtnDeleteProfessor_confirm($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $goto = MIOLO::_REQUEST('goto');
+
+        try
+        {
+            $business = new BusinessAcademicBusScheduleProfessor();
+            $business->deleteScheduleProfessor(MIOLO::_REQUEST('scheduleProfessorId'));
+
+            if ( strlen($goto) > 0 )
+            {
+                $action = $goto;
+                $function = 'update';
+            }
+            else
+            {
+                $function = 'insert';
+            }
+
+            $opts = array(
+                'function' => $function,
+                'groupId' => MIOLO::_REQUEST('groupId'),
+                'unitId' => MIOLO::_REQUEST('unitId'),
+                'learningPeriodId' => MIOLO::_REQUEST('learningPeriodId'));
+
+            $msg = SAGU::getParameter('BASIC', 'MSG_RECORD_DELETED');
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto) > 0 ? $goto : $MIOLO->getActionURL($module, $action, null, $opts);
+            $caption = _M('Informação', $module);
+            $MIOLO->information($msg, $goto);
+        }
+        catch ( Exception $e )
+        {
+            $msg = _M('Erro executando a operação solicitada.', $module) . ' ' . $e->getMessage();
+
+            $this->addError($msg);
+        }
+    }
+    
+    /**
+     * Method to gather all information from the group form fields
+     * and put them on a database compatible object
+     */
+    public function getTypesData()
+    {  
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $data->unitId = $this->getFormValue('unitId');
+        $MIOLO->session->setValue($this->getSidUnitId(), $data->unitId);
+        
+        $data->groupId = $this->getFormValue('groupId');
+        $MIOLO->session->setValue($this->getSidGroupId(), $data->groupId);
+        
+        $data->scheduleId = $this->getFormValue('scheduleId');
+        $MIOLO->session->setValue($this->getSidScheduleId(), $data->scheduleId);
+        
+        $data->timeIds = $MIOLO->session->getValue($this->getSidSchedule());
+        $MIOLO->session->setValue($this->getSidSchedule(), $data->timeIds);
+        
+        $data->professor = $MIOLO->session->getValue($this->getSidProfessor());
+        $MIOLO->session->setValue($this->getSidProfessor(), $data->professor);
+        
+        $data->timeSheetId = $this->getFormValue('slcTableOfSchedule');
+        $MIOLO->session->setValue($this->getSidTimeSheetId(), $data->timeSheetId);
+        
+        $data->learningPeriodId = $this->getFormValue('learningPeriodId');
+        $MIOLO->session->setValue($this->getSidLearningPeriodId(), $data->learningPeriodId);
+        
+        $data->physicalResourceId = $this->getFormValue('physicalResourceId');
+        $MIOLO->session->setValue($this->getSidPhysicalResourceId(), $data->physicalResourceId);
+        
+        $data->physicalResourceVersion = $this->getFormValue('physicalResourceVersion');
+        $MIOLO->session->setValue($this->getSidPhysicalResourceVersion(), $data->physicalResourceVersion);
+
+        if ( strlen($data->learningPeriodId) > 0 )
+        {
+            $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+            $learningPeriod = $busLearningPeriod->getLearningPeriod($data->learningPeriodId);
+
+            $beginDate = "01/" . $this->krono->getMonth($learningPeriod->beginDate) . "/" . $this->krono->getYear($learningPeriod->beginDate);
+            $endDate = "01/" . $this->krono->getMonth($learningPeriod->endDate) . "/" . $this->krono->getYear($learningPeriod->endDate);
+
+            $diffInMonth = SAGU::dateDiffInMonth($beginDate, $endDate);
+
+            for ( $counter = 0; $counter <= $diffInMonth; $counter++ )
+            {
+                $error = false;
+                $var   = 'cld' . $counter;
+                eval('$calendar->' . $var . ' = $this->' . $var . '->value;');                
+                
+                if ( is_array($calendar->$var) )
+                {
+                    $beginPeriodDate = explode('/', $learningPeriod->beginDate);
+                    $endPeriodDate   = explode('/', $learningPeriod->endDate);
+
+                    foreach ( $calendar->$var as $i => $value )
+                    {                        
+                        $day    = explode('/', $value);
+                        $day[0] = (strlen($day[0]) > 1) ? $day[0] : '0' . $day[0];
+                        $day[1] = (strlen($day[1]) > 1) ? $day[1] : '0' . $day[1];                        
+
+                        if ( ( ($day[1] == $beginPeriodDate[1]) && ($day[2] == $beginPeriodDate[2]) && ($day[0] < $beginPeriodDate[0]) ) 
+                                || ( ($day[1] == $endPeriodDate[1]) && ($day[2] == $endPeriodDate[2]) && ($day[0] > $endPeriodDate[0]) ) )
+                        {
+                            $error = true;
+                        }
+
+                        $data->occurrenceDates[] = $value;
+                    }
+                }
+                if ( $error )
+                {
+                    $data->occurrenceDates[] = 'error';
+                }
+            }
+        }
+        
+        //Pega valor dos campos de array
+        if( SAGU::getParameter('ACADEMIC', 'TABELA_DE_DISCIPLINA_OFERECIDA_SIMPLIFICADA') == 'YES' )
+        {
+            $professorMaximo = SAGU::getParameter('ACADEMIC', 'MAX_PROFESSOR_POR_HORARIO');
+            for($i=1; $i< $professorMaximo+1; $i++)
+            {
+                $data->professorName[$i] = $this->getFormValue("professorName_{$i}");
+                $MIOLO->session->setValue($this->getSidProfessorName($i), $data->professorName[$i]);
+                
+                $data->professorId[$i] = $this->getFormValue("professorId_{$i}");
+                $MIOLO->session->setValue($this->getSidProfessorId($i), $data->professorId[$i]);
+                
+                $data->isInstitutionalEvaluation = $this->getFormValue('isInstitutionalEvaluation');
+                $MIOLO->session->setValue($this->getSidIsInstitutionalEvaluation(), $data->isInstitutionalEvaluation);
+
+                $data->weight = $this->getFormValue('weight');
+                $MIOLO->session->setValue($this->getSidWeight(), $data->weight);
+            }
+        }
+                
+        $data->session = $MIOLO->page->name;
+        $MIOLO->session->setValue($this->getSidSession(), $data->session);
+
+        return $data;
+    }
+    
+    /**
+     * Limpa os dados da seção.
+     */
+    public function clearTypes()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $MIOLO->session->setValue($this->getSidUnitId(), null);                
+        $MIOLO->session->setValue($this->getSidGroupId(), null);
+        $MIOLO->session->setValue($this->getSidScheduleId(), null);
+        $MIOLO->session->setValue($this->getSidSchedule(), null);
+        $MIOLO->session->setValue($this->getSidProfessor(), null);
+        $MIOLO->session->setValue($this->getSidTimeSheetId(), null);
+        $MIOLO->session->setValue($this->getSidLearningPeriodId(), null);
+        $MIOLO->session->setValue($this->getSidPhysicalResourceId(), null);
+        $MIOLO->session->setValue($this->getSidPhysicalResourceVersion(), null);
+        
+        //Limpa campos de arrays
+        $professorMaximo = SAGU::getParameter('ACADEMIC', 'MAX_PROFESSOR_POR_HORARIO');
+        for($i=1; $i< $professorMaximo+1; $i++)
+        {
+            $MIOLO->session->setValue($this->getSidProfessorName($i), null);
+            $MIOLO->session->setValue($this->getSidProfessorId($i), null);
+        }        
+    }
+    
+    public function getSidSchedule()
+    {
+        return 'schedule_' . MIOLO::_REQUEST('randomId');
+    }
+    
+    public function getSidScheduleId()
+    {
+        return 'scheduleId_' . MIOLO::_REQUEST('randomId');
+    }
+    
+    public function getSidProfessor()
+    {
+        return 'professor_' . MIOLO::_REQUEST('randomId');
+    }
+    
+    public function getSidUnitId()
+    {
+        return 'untiId_' . MIOLO::_REQUEST('randomId');
+    }
+    
+    public function getSidGroupId()
+    {
+        return 'groupId_' . MIOLO::_REQUEST('randomId');
+    }
+
+    public function getSidPhysicalResourceId()
+    {
+        return 'physicalResourceId_' . MIOLO::_REQUEST('randomId');
+    }
+    
+    public function getSidPhysicalResourceVersion()
+    {
+        return 'physicalResourceVersion_' . MIOLO::_REQUEST('randomId');
+    }
+
+    public function getSidTimeSheetId()
+    {
+        return 'timeSheetId_' . MIOLO::_REQUEST('randomId');
+    }
+    
+    public function getSidLearningPeriodId()
+    {
+        return 'learningPeriodId_' . MIOLO::_REQUEST('randomId');
+    }
+
+    public function getSidOccurrenceDates()
+    {
+        return 'occurrenceDates_' . MIOLO::_REQUEST('randomId');
+    }
+    
+    public function getSidProfessorId($i)
+    {
+        return "professorId_{$i}_" . MIOLO::_REQUEST('randomId');
+    }
+    
+    public function getSidProfessorName($i)
+    {
+        return "professorName_{$i}_" . MIOLO::_REQUEST('randomId');
+    }
+    
+    public function getSidIsInstitutionalEvaluation()
+    {
+        return 'isInstitutionalEvaluation_' . MIOLO::_REQUEST('randomId');
+    }
+    
+    public function getSidWeight()
+    {
+        return 'weight_' . MIOLO::_REQUEST('randomId');
+    }
+    
+    public function getSidSession()
+    {
+        return 'session_' . MIOLO::_REQUEST('randomId');
+    }
+}
+?>

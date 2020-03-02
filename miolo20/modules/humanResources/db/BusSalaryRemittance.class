@@ -1,0 +1,227 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file handles the connection and actions for basEmployee table
+ *
+ * @author Armando Taffarel Neto [taffarel@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * 
+ * @since
+ * Class created on 22/03/2006
+ *
+ **/
+
+/**
+ * Class to manipulate the basEmployee table
+ **/
+class BusinessHumanResourcesBusSalaryRemittance extends sBusiness
+{
+    /**
+     * Get data about bank account
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): An array containing the search results
+     **/
+    public function getBankData($bankAccountId)
+    {
+       $sql = 'SELECT A.bankId,
+                      A.accountnumber,
+                      A.accountnumberdigit,
+                      A.branchNumber,
+                      A.branchNumberDigit,
+                      C.transferorCode,       
+                      B.description
+                 FROM finBankAccount A
+           INNER JOIN finBank B
+                   ON (A.bankId = B.bankId)
+            LEFT JOIN finBankAccountInvoiceInfo c
+                   ON (A.bankAccountId = C.bankAccountId)
+                WHERE A.bankaccountid =  ?';
+
+       $args[] = $bankAccountId;
+
+       $db     = $this->getDatabase();
+       $result = $db->query(SAGU::prepare($sql, $args));
+
+       return $result[0];
+    }
+
+    /**
+     * Get data about default company
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): An array containing the search results
+     **/
+    public function getCompanyData()
+    {
+       $sql = 'SELECT B.cnpj,
+                      B.name,
+                      B.location,
+                      B.number,
+                      B.complement,
+                      C.name,
+                      B.zipcode,
+                      C.stateId
+                  FROM basCompanyConf A
+                INNER JOIN ONLY basLegalPerson B
+                      USING(personId)
+                LEFT JOIN basCity C
+                      USING(cityId)';
+
+       $sql   .= ' WHERE  A.companyId = ?';
+
+       $args[] = SAGU::getParameter('BASIC', 'DEFAULT_COMPANY_CONF');
+
+       $db     = $this->getDatabase();
+       $result = $db->query(SAGU::prepare($sql, $args));
+
+       return $result[0];
+    }
+    
+    /**
+     * Get the types of accounts
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): An array containing the search results
+     **/
+    public function getAccountTypes()
+    {
+       $sql = 'SELECT DISTINCT accountType 
+                FROM basEmployee
+                WHERE accountType IS NOT NULL';
+
+       $db      = $this->getDatabase();
+       $result  = $db->query($sql);
+       
+       return $result;
+    }    
+
+    /**
+     * Do a search of employess
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): An array containing the search results
+     **/
+    public function searchEmployeeRemittance($employeeTypeId, $accountType)
+    {
+        $sql = 'SELECT A.clearingHouse,
+                       A.bankId,
+                       A.branchNumber,
+                       A.branchNumberDigit,
+                       A.accountNumber,
+                       A.accountNumberDigit,
+                       B.name,
+                       A.personId,
+                       CASE A.valueHour 
+                            WHEN \''. DB_FALSE . '\' 
+                            THEN sum(round(round(A.salary,2)*100,0)) 
+                            ELSE round((round( sum ( A.salary * A.weeklyhours * 4 ) ::numeric , 2) * 100 ),0)
+                       END as salary
+                  FROM basEmployee A
+        LEFT JOIN ONLY basPhysicalPersonEmployee B
+                 USING (personid)
+             LEFT JOIN basEmployeeType C
+                    ON (A.employeeTypeId = C.employeeTypeId)';
+
+        if ( strlen($employeeTypeId) > 0 )
+        {
+            $where .= ' AND C.employeeTypeId IN (' . $employeeTypeId . ')';
+        }
+        
+        if ( strlen($accountType) > 0 )
+        {
+            $where .= ' AND A.accountType = \'' . $accountType . '\'';
+        }
+        
+        $where .= ' AND A.isActiveAccount = TRUE ';
+
+        unset($result);
+        if ( strlen($where) > 0 )
+        {
+            $sql   .= ' WHERE ' . substr($where, 4) . ' GROUP BY A.clearinghouse, A.bankId, A.branchNumber, A.branchNumberDigit, B.name,
+                       A.personId, A.valueHour, A.salary, A.weeklyHours, A.accountnumber, A.accountnumberdigit ORDER BY B.name ';
+            $db     = $this->getDatabase();
+            $result = $db->query($sql);
+            //$db->close();
+        }
+
+        return $result;
+    }
+
+    /**
+     * Get the total of salary
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): An array containing the search results
+     **/
+    public function getTotalSalary($employeeTypeId, $accountType)
+    {
+
+
+      $sql = 'SELECT CASE A.valueHour 
+                          WHEN \''. DB_FALSE . '\' 
+                          THEN sum(round(round(A.salary,2)*100,0)) 
+                          ELSE round((round( sum ( A.salary * A.weeklyhours * 4 ) ::numeric , 2) * 100 ),0)
+                     END as salary
+                FROM basEmployee A
+                INNER JOIN basEmployeeType B
+                USING(employeeTypeId)';
+       
+        if ( strlen($employeeTypeId) > 0 )
+        {
+            $where .= ' AND B.employeeTypeId IN (' . $employeeTypeId . ')';
+        }
+        
+        if ( strlen($accountType) > 0 )
+        {
+            $where .= ' AND A.accountType = \'' . $accountType . '\'';
+        }
+
+        $where .= ' AND A.isActiveAccount = TRUE ';
+
+        unset($result);
+        if ( strlen($where) > 0 )
+        {
+            $sql   .= ' WHERE ' . substr($where, 4) . ' GROUP BY A.valueHour, A.salary ';
+            $db     = $this->getDatabase();
+            $result = $db->query($sql);
+            //$db->close();
+        }
+
+        return $result[0][0];
+    }
+}
+?>

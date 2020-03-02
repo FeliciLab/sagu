@@ -1,0 +1,254 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Esse processo serve para listar e possivelmente cancelar todas as matrículas
+ * cujo pagamento da primeira parcela não tenha sido efetuado.
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ *
+ * @since
+ * Class created on 28/12/2010
+ */
+
+/**
+ * Form to delete unpaid enrolls
+ */
+class FrmUnpaidEnrollDeletion extends SForm
+{
+    private $module;
+
+    /**
+     * Class constructor
+     */
+    public function __construct($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $this->module = SAGU::getFileModule(__FILE__);
+
+        parent::__construct(_M('Exclusão de matrículas não pagas', $this->module), null, null);
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $this->toolbar->disableButton('tbBtnNew');
+        $this->toolbar->disableButton('tbBtnSave');
+        $this->toolbar->disableButton('tbBtnDelete');
+        $this->toolbar->disableButton('tbBtnSearch');
+
+        $explanationText = new MText('explanationText', _M('Este processo permite a exclusão de todas as informações de matrícula de alunos que não tenham efetuado o pagamento da primeira parcela.', $this->module));
+        $fields[] = $explanationText;
+
+        // Field period
+        $busPeriod = new BusinessAcademicBusPeriod();
+        $periodValue = $this->getFormValue('periodId', SAGU::getParameter('BASIC', 'CURRENT_PERIOD_ID'));
+        $periodId = new MComboBox('periodId', $periodValue, _M('Código do período', $this->module), $busPeriod->listPeriod());
+        $validators[] = new MRequiredValidator('periodId');
+        $fields[] = $periodId;
+
+        /*
+         * Course occurrence lookup
+         */
+        $courseOccurrenceLookup = new SCourseOccurrenceLookup();
+        $fields[] = $courseOccurrenceLookup;
+
+        $fields[] = new MCalendarField('limitDate', $data->limitDate, _M('Data limite', $module), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+        $validators[] = new DateDMYValidator('limitDate', _M('Data limite', $module), 'optional');
+
+        $fields[] = new MSeparator();
+        $fields[] = new MButton('btnSearch', _M('Pesquisar', $this->module));
+        $fields[] = new MSeparator();
+
+        $this->setFields($fields);
+        $this->setValidators($validators);
+
+        if (MIOLO::_REQUEST('__EVENTTARGETVALUE') == 'exportGridAsCSV:click')
+        {
+            $this->btnSearch_click();
+        }
+
+        parent::defineFields();
+    }
+
+    /**
+     * Look for people matching search criteria.
+     */
+    public function btnSearch_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        try
+        {
+            $data = $this->getData();
+
+            $periodId = $data->periodId;
+            $courseId = $data->courseId;
+            $courseVersion = $data->courseVersion;
+            $turnId = $data->turnId;
+            $unitId = $data->unitId;
+            $limitDate = $data->limitDate;
+
+            if ( strlen($periodId) <= 0 )
+            {
+                throw new Exception(_M('Um período deve ser informado para a pesquisa.', $this->module));
+            }
+
+            $busEnroll = new BusinessAcademicBusEnroll();
+            $data = $busEnroll->searchUnpaidEnrolls($periodId, $courseId, $courseVersion, $turnId, $unitId, null, $limitDate);
+
+            // Filtrar apenas contratos e títulos distintos
+            $gridData = array();
+            for ( $i=0; $i<count($data); $i++ )
+            {
+                $row = new stdClass();
+                list ( $row->enrollId,
+                       $row->contractId,
+                       $row->personId,
+                       $row->personName,
+                       $row->courseId,
+                       $row->courseVersion,
+                       $row->courseName,
+                       $row->unitId,
+                       $row->unitDescription,
+                       $row->turnId,
+                       $row->turnDescription,
+                       $row->invoiceId,
+                       $row->maturityDate,
+                       $row->updatedValue,
+                       $row->residentialPhone,
+                       $row->cellPhone ) = $data[$i];
+
+                $gridData[$row->contractId . '_' . $row->invoiceId] = array(
+                    $row->contractId,
+                    $row->personId,
+                    $row->personName,
+                    $row->courseId . '/' . $row->courseVersion . ' - ' . $row->courseName,
+                    $row->unitId . ' - ' . $row->unitDescription,
+                    $row->turnId . ' - ' . $row->turnDescription,
+                    $row->invoiceId,
+                    $row->maturityDate,
+                    $row->updatedValue,
+                    $row->residentialPhone && $row->cellPhone ? $row->residentialPhone . ' / ' . $row->residentialPhone : $row->residentialPhone ? $row->residentialPhone : $row->cellPhone
+                );
+            }
+
+            if ( count($gridData) > 0 )
+            {
+                $gridData = array_values($gridData);
+            }
+
+            $fields = array();
+            $subFields = array();
+
+            $grid = $MIOLO->getUI()->getGrid($this->module, 'GrdUnpaidEnrollDeletion', $gridData);
+            $subFields[] = $grid;
+
+            $subFields[] = new MButton('btnDeleteEnrolls', _M('Excluir matrículas selecionadas', $this->module));
+
+            $fields[] = new MDiv('divResult', $subFields);
+
+            $this->addFields($fields);
+        }
+        catch ( Exception $e )
+        {
+            $this->addError($e->getMessage());
+        }
+    }
+
+    /**
+     * Event triggered when user clicks btnLockSelectedContracts button
+     */
+    public function btnDeleteEnrolls_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        //Array do report final
+        $persons = array();
+
+        $busEnroll = new BusinessAcademicBusEnroll();
+        
+        $contractIds = MIOLO::_request('selectGrdUnpaidEnrollDeletion');
+        $periodId = MIOLO::_request('periodId');
+        $courseId = MIOLO::_request('courseId');
+        $courseVersion = MIOLO::_request('courseVersion');
+        $turnId = MIOLO::_request('turnId');
+        $unitId = MIOLO::_request('unitId');
+
+        if ( count($contractIds) == 0 )
+        {
+            throw new Exception(_M('Nenhum registro selecionado.', $this>module));
+        }
+
+        if ( strlen($periodId) <= 0 )
+        {
+            throw new Exception(_M('Um período deve ser informado.', $this->module));
+        }
+
+        $enrollsDeleted = 0;
+        $invoicesDeleted = 0;
+        foreach ( $contractIds as $contractId )
+        {
+            $busContract = new BusinessAcademicBusContract();
+            $contract = $busContract->getContract($contractId);
+            
+            try
+            {
+                $busEnroll->deleteUnpaidEnrolls($periodId, $courseId, $courseVersion, $turnId, $unitId, $contractId);
+                
+                $persons['confirmed'][] = $contract->personName . ' (' . $contract->personId . ') - CONTRATO ' . $contract->contractId .
+                                  ' - ' . $busEnroll->enrollsDeleted . ' matrículas deletadas' . ' - ' . $busEnroll->invoicesDeleted . ' títulos deletados';
+            } 
+            catch (Exception $ex) 
+            {
+                $persons['failed'][] = $contract->personName . ' (' . $contract->personId . ') - CONTRATO ' . $contract->contractId; 
+            }
+        }
+        
+        $msgFim = _M("Processo finalizado<br>");
+
+        if ( count($persons['failed']) > 0 )
+        {
+            $msgFim .= '<br>Os seguintes contratos NÃO PUDERAM ser processados e devem ser ajustados manualmente: <br>';
+            $msgFim .= implode('<br>', $persons['failed']);
+        }
+
+        if ( count($persons['confirmed']) > 0 )
+        {
+            $msgFim .= '<br>Os seguintes contratos obtiveram SUCESSO no processo: <br><br>';
+            $msgFim .= implode('<br>', $persons['confirmed']);
+        }
+
+        $MIOLO->information($msgFim);
+    }
+
+}
+
+?>

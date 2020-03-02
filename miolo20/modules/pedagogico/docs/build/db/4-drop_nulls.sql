@@ -1,0 +1,20 @@
+ALTER TABLE acpregrasmatriculaperfilcurso ALTER carenciaparapendencias DROP NOT NULL;
+ALTER TABLE acpregrasmatriculaperfilcurso ALTER numerodependencias DROP NOT NULL;
+ALTER TABLE acpregrasmatriculaperfilcurso ALTER checardebitosavencer DROP NOT NULL;
+ALTER TABLE acpregrasmatriculaperfilcurso ALTER checardebitosvencidos DROP NOT NULL;
+ALTER TABLE acpregrasmatriculaperfilcurso ALTER checarnegociacoesabertas DROP NOT NULL;
+ALTER TABLE acpregrasmatriculaperfilcurso ALTER checarmultasbiblioteca DROP NOT NULL;
+ALTER TABLE acpregrasmatriculaperfilcurso ALTER checardevolucoesbiblioteca DROP NOT NULL;
+ALTER TABLE acpregrasmatriculaperfilcurso ALTER tipodecontrolerequisitos DROP NOT NULL;
+ALTER TABLE acpregrasmatriculaperfilcurso ALTER quantidademinimatotal DROP NOT NULL;
+ALTER TABLE acpregrasmatriculaperfilcurso ALTER quantidademaximatotal DROP NOT NULL;
+ALTER TABLE acpregrasmatriculaperfilcurso ALTER quantidademinimaoutroscursos DROP NOT NULL;
+ALTER TABLE acpregrasmatriculaperfilcurso ALTER quantidademaximaoutroscursos DROP NOT NULL;
+ALTER TABLE acpregrasmatriculaperfilcurso ALTER quantidademinimaoutrasunidades DROP NOT NULL;
+ALTER TABLE acpregrasmatriculaperfilcurso ALTER quantidademaximaoutrasunidades DROP NOT NULL;
+ALTER TABLE acpregrasmatriculaperfilcurso ALTER quantidademinimaoutrosturnos DROP NOT NULL;
+ALTER TABLE acpregrasmatriculaperfilcurso ALTER quantidademaximaoutrosturnos DROP NOT NULL;
+
+ALTER TABLE acpregrasmatriculaperfilcurso ADD utilizarmensagempasso1 BOOLEAN;
+ALTER TABLE acpregrasmatriculaperfilcurso ADD utilizarmensagempasso2 BOOLEAN;
+ALTER TABLE acpregrasmatriculaperfilcurso ADD utilizarmensagempasso3 BOOLEAN;

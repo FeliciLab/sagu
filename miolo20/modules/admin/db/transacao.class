@@ -1,0 +1,203 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This class Business Admin Transacao
+ *
+ * @author Leovan Tavares da Silva [leovan] [leovan@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Leovan Tavares da Silva [leovan@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 14/06/2006
+ *
+ **/
+ 
+class BusinessAdminTransacao extends sBusiness implements ITransaction
+{
+    var $idtrans;
+    var $transacao;
+    var $idsistema;
+    var $grupos;
+
+    public function BusinessAdminTransacao($data=null)
+    {
+       $this->Business('admin',$data);
+    }
+
+    public function SetData($data)
+    {
+        $this->idtrans = $data->idtrans;
+        $this->transacao = strtoupper($data->transacao);
+        $this->idsistema = $data->idsistema;
+        $this->grupos = $data->grupos;
+    }
+
+    public function GetById($idtrans)
+    {
+        $sql = new sql('t.idtrans, t.transacao, t.idsistema','cm_transacao t','t.idtrans = ?');
+        $query = $this->Query($sql, $idtrans);
+        if ( $query )
+        {
+            $this->SetData($query->GetRowObject());
+            $this->SetGrupos();
+        }
+        return $this;
+    }
+
+    public function GetByName($trans)
+    {
+        $sql = new sql('t.idtrans, t.transacao, t.idsistema','cm_transacao t','t.transacao = ?');
+        $query = $this->Query($sql, $trans);
+        if ( $query )
+        {
+            $this->SetData($query->GetRowObject());
+            $this->SetGrupos();
+        }
+        return $this;
+    }
+
+    public function GetByGroup($group=null)
+    {
+        if ( $group )
+        {
+            $sql = new sql('distinct t.idtrans, t.transacao','','upper(g.grupo) = ?','t.transacao');
+            $sql->SetJoin('cm_grupoacesso g','cm_acesso a','(g.idgrupo = a.idgrupo)');
+            $sql->SetJoin('cm_acesso a','cm_transacao t','(a.idtrans = t.idtrans)');
+            $query = $this->Query($sql, $group);
+        }
+        else
+        {
+            $query = $this->ListAll();
+        }
+        return $query;
+    }
+    
+    public function Insert()
+    {   global $MIOLO;
+
+        $this->idtrans = $this->_db->GetNewId('seq_cm_transacao');
+        $sql = new sql('idtrans, transacao, idsistema','cm_transacao');
+        $args = array($this->idtrans,
+                      strtoupper($this->transacao),
+                      $this->idsistema);
+        $cmd[] = $sql->Insert($args);
+        $sql->sql('idtrans, idgrupo, direito','cm_acesso');
+        
+        foreach($this->grupos as $grupo)
+        {
+           $cmd[] = $sql->Insert(array($this->idtrans, $grupo[0], $grupo[1]));
+        }
+        $ok = $this->Execute($cmd);
+        if ($ok) {$this->Log(OP_INS,"idtrans = $this->idtrans; transacao = $this->transacao");} 
+        return $ok;
+    }
+
+    public function Update()
+    {
+        $sql = new sql('transacao, idsistema','cm_transacao','idtrans = ?');
+        $args = array(strtoupper($this->transacao),
+                      $this->idsistema,
+                      $this->idtrans);
+        $cmd[] = $sql->Update($args);
+        $sql->sql('','cm_acesso','idtrans=?');
+        $cmd[] = $sql->Delete($this->idtrans);
+        $sql->sql('idtrans, idgrupo, direito','cm_acesso');
+        foreach($this->grupos as $grupo)
+        {
+           $cmd[] = $sql->Insert(array($this->idtrans, $grupo[0], $grupo[1]));
+        }
+        $ok = $this->Execute($cmd);
+        if ($ok) {$this->Log(OP_UPD,"idtrans = $this->idtrans; transacao = $this->transacao");} 
+        return $ok;
+    }
+    
+    public function Delete()
+    {
+        $obj = new sql('','cm_acesso','idTrans = ' . $this->idtrans);
+        $sql[] = $obj->Delete();
+        $obj = new sql('','cm_transacao','idTrans = ' . $this->idtrans);
+        $sql[] = $obj->Delete();
+        $ok = $this->Execute( $sql );
+        if ($ok) {$this->Log(OP_DEL,"idtrans = $this->idtrans; transacao = $this->transacao");} 
+        return $ok;
+    }
+
+    public function ListRange($range=NULL)
+    {
+        $sql = new sql('t.idtrans, t.transacao, t.idsistema, s.sistema','cm_transacao t, cm_sistema s',
+                       't.idsistema = s.idsistema','t.transacao');
+        $sql->SetRange($range);
+        $query = $this->Query($sql);
+        return $query;
+    }
+
+    public function ListAll()
+    {
+        return $this->ListRange();
+    }
+
+    public function ListByTransaction($transaction='')
+    {
+        $sql = new sql('t.idtrans, t.transacao, t.idsistema, s.sistema','cm_transacao t, cm_sistema s',
+                       "(t.idsistema = s.idsistema) and (t.transacao like '$transaction')",'t.transacao');
+        $query = $this->Query($sql);
+        return $query;
+    }
+
+    public function SetGrupos()
+    {
+        $sql = new sql('a.idgrupo, a.direito', 'cm_acesso a, cm_grupoacesso g', '(a.idgrupo=g.idgrupo) and (idtrans = ?)', 'g.grupo');
+        $query = $this->Query($sql,$this->idtrans);
+        $this->grupos = $query->result;
+    }
+
+    public function ListAcessoByIdTrans($idtrans)
+    {
+        $sql = new sql('a.idgrupo, a.direito', 'cm_acesso a, cm_grupoacesso g', '(a.idgrupo=g.idgrupo) and (idtrans = ?)', 'g.grupo');
+        $query = $this->Query($sql,$idtrans);
+        return $query;
+    }
+
+    public function CountWhere($where='')
+    {
+        $sql = new sql('*','cm_transacao',$where);
+        return $this->_db->Count($sql->Select());
+    }
+
+    public function GetUsersAllowed($action = A_ACCESS)
+    {
+    }
+
+    public function GetGroupsAllowed($action = A_ACCESS)
+    {
+    }
+}
+?>

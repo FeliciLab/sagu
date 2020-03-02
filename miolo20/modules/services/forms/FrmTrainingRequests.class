@@ -1,0 +1,532 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulário responsável por inserir solicitações.
+ *
+ * @author Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 12/04/2011
+ */
+
+MIOLO::uses('/ui/controls/msubdetail.class');
+
+class FrmTrainingRequests extends SForm
+{
+
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        // If is the first access to form, clear subdetail session data
+        if ( !$MIOLO->page->isPostBack() )
+        {
+            MSubDetail::clearData('requests');
+        }
+
+        parent::__construct(_M('Solicitações de estágio', $module), null, null);
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        $data = $this->getData();
+
+        try
+        {
+            // Login do usuário
+            $loginUser = $MIOLO->GetLogin();
+
+            // Bus user
+            $busUser = new BusinessAdminBusUser();
+            // Bus physical person
+            $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+            // Business document
+            $busDocument = new BusinessBasicBusDocument();
+
+            // Physical person
+            $physicalPerson = $busPhysicalPerson->getPhysicalPersonByMioloUserName($loginUser->id);
+            
+            // Verifica se não achou a pessoa
+            if ( !strlen($physicalPerson->personId) > 0 )
+            {
+                $msg = '<ul><li>' . _M('O usuário logado não está relacionado a uma pessoa física', $module) . '.' . '</ul></li>';
+            }
+
+            // Verifica se o usuário está relacionado a alguma instituição convêniada
+            $listAgreement = TraAddendumCourseAdmin::isAgreement($physicalPerson->personId);
+            if ( !$listAgreement )
+            {
+                $msg .= '<ul><li>' . _M('O usuário logado não está relacionado a nenhuma instituição conveniada', $module) . '.' . '</ul></li>';
+            }
+
+            if ( strlen($msg) > 0 )
+            {
+                $message = _M('Erro. Você não tem permissão para acessar este processo', $module) . '!' . '</li>';
+                $message .= $msg;
+                throw new Exception($message);
+            }
+        }
+        catch ( Exception $e )
+        {
+            $MIOLO->error($e->getMessage());
+        }
+
+        $fields[] = new MHiddenField('preceptorId', $physicalPerson->personId);
+        $fields[] = new MTextLabel('userLabel', $physicalPerson->personId . ' - ' . $physicalPerson->name, _M('Usuário', $module));
+
+        $listCovening = TraAddendumCourseAdmin::listConvening($physicalPerson);
+
+        // Se tiver apenas uma conveniada define valor da combo
+        if ( count($listCovening) == 1 )
+        {
+            $value = key($listCovening);
+        }
+        // Field institution
+        $institution = new MSelection('institution', $value ? $value : $this->getFormValue('institution', $data->institution), _M('Instituição de origem', $module), $listCovening);
+        $institution->setJsHint(_M('Informe sua instituição de origem', $module));
+        $institution->addAttribute('maxlength', '255');
+        $fields[] = $institution;
+
+        // Field unit
+        $unitLabel = new MLabel(_M('Unidade', $module) . ':');
+        $unitLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $unitLabel->setClass('m-caption m-caption-required');
+        $unit = new MSelection('unitId', $this->getFormValue('unitId', $data->unitId), null, TraUnit::listUnit());
+        $unit->setJsHint(_M('Informe a unidade', $module));
+        $unit->addAttribute('onChange', $this->getAjaxAction('TraCommonFields::changeUnitId', 'divUnitArea', false));
+        $baseDataTraining[] = new MHContainer('unitCnt', array($unitLabel, $unit));
+        $validators[] = new MRequiredValidator('unitId', _M('Unidade', $module));
+
+        // Field area
+        $baseDataTraining[] = new MDiv('divUnitArea', TraCommonFields::changeUnitId($data));
+
+        // Place
+        $args = new stdClass();
+        $args->unitAreaId = $this->getRequestValue('unitAreaId');
+        $baseDataTraining[] = new MDiv('divRequireTrainingPlace', TraCommonFields::changeUnitAreaId($args));
+
+        // Field beginDate
+        $beginDateLabel = new MLabel(_M('Duração', $module) . ':');
+        $beginDateLabel->setClass('m-caption m-caption-required');
+        $beginDateLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $beginDate = new MCalendarField('beginDate', $this->getFormValue('beginDate', $data->beginDate), null, 10);
+        $beginDate->setJsHint(_M('Informe a data de início prevista', $module));
+        $hctDates[] = new MHContainer('beginDateCnt', array($beginDateLabel, $beginDate));
+
+        // Field endDate
+        $endDateLabel = new MLabel(_M('Até', $module) . ':');
+        $endDate = new MCalendarField('endDate', $this->getFormValue('endDate', $data->endDate), null, 10);
+        $endDate->setJsHint(_M('Informe a data de fim prevista', $module));
+        $hctDates[] = new MHContainer('endDateCnt', array($endDateLabel, $endDate));
+        $baseDataTraining[] = new MHContainer('hctDates', $hctDates);
+
+        // Field supervisor
+        $supervisorLabel = new MLabel(_M('Supervisor do estágio', $module) . ':');
+        $supervisorLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $supervisor = new MTextField('supervisor', $this->getFormValue('supervisor', $data->supervisor), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $supervisor->setJsHint(_M('Informe o supervisor do estágio', $module));
+        $baseDataTraining[] = new MHContainer('hctSupervisor', array($supervisorLabel, $supervisor));
+        $fields[] = new MBaseGroup('baseDataTraining', _M('Dados do estágio', $module), $baseDataTraining, 'vertical');
+
+        // Validators
+        $validators[] = new MRequiredValidator('unitId', _M('Unidade', $module));
+        $validators[] = new MRequiredValidator('beginDate', _M('Início previsto', $module));
+        $validators[] = new MRequiredValidator('endDate', _M('Fim previsto', $module));
+        $validators[] = new MRequiredValidator('institution', _M('Instituição de origem', $module));
+
+        /*
+         * Subdetail alunos
+         */
+        // Nome
+        $personNameLabel = new MLabel(_M('Nome', $module) . ':');
+        $personNameLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $personNameLabel->setClass('m-caption m-caption-required');
+        $personName = new MTextField('personName', $stepData->personName, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $personName->setJsHint(_M('Informe o nome', $module));
+        $subFields[] = new MHContainer('personNameCnt', array($personNameLabel, $personName));
+
+        // Sexo
+        $sexLabel = new MText('sexLabel', _M('Sexo', $module) . ':');
+        $sexLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $sexLabel->setClass('m-caption m-caption-required');
+        $sex = new MSelection('sex', $stepData->sex, null, SAGU::listSex());
+        $sex->setJsHint(_M('Informe o sexo', $module));
+        $valids[] = new MRequiredValidator('sex', _M('Sexo', $module));
+        $subFields[] = new MHContainer('sexCnt', array($sexLabel, $sex));
+
+        // E-mail
+        $emailLabel = new MLabel(_M('E-mail', $module) . ':');
+        $emailLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $emailLabel->setClass('m-caption m-caption-required');
+        $email = new MTextField('email', $stepData->email, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $email->setJsHint(_M('Informe o e-mail', $module));
+        $subFields[] = new MHContainer('emailCnt', array($emailLabel, $email));
+        $valids[] = new MEmailValidator('email', _M('E-mail', $module), 'required');
+
+        // Data de nascimento
+        $dateBirthLabel = new MText('dateBirthLabel', _M('Data de nascimento', $module) . ':');
+        $dateBirthLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $dateBirthLabel->setClass('m-caption m-caption-required');
+        $dateBirth = new MCalendarField('dateBirth', $stepData->dateBirth, null, SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+        $dateBirth->setJsHint(_M('Informe a data de nascimento', $module));
+        $valids[] = new MDateDMYValidator('dateBirth', _M('Data de nascimento', $module), 'required');
+        $subFields[] = new MHContainer('dateBirthCnt', array($dateBirthLabel, $dateBirth));
+
+        // CPF
+        $cpfLabel = new MLabel(_M('CPF', $module) . ':');
+        $cpfLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $cpfLabel->setClass('m-caption m-caption-required');
+        $cpf = new MTextField('cpf', $stepData->cpf, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_LOOKUP_SIZE'));
+        $cpf->setJsHint(_M('Informe o CPF', $module));
+        $subFields[] = new MHContainer('cpfCnt', array($cpfLabel, $cpf));
+        $valids[] = new MRequiredValidator('cpf', _M('CPF', $module));
+        $validators[] = new MCPFValidator('cpf', _M('CPF', $module), 'optional');
+
+        // Field courseid
+        $courseLabel = new MLabel(_M('Curso', $module) . ':');
+        $courseLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $courseLabel->setClass('m-caption m-caption-required');
+        $courseId = new MSelection('courseId', $this->getFormValue('courseId', $data->courseId), _M('Curso', $module), TraCourse::listRecords());
+        $courseId->setJsHint(_M('Informe o curso que o aluno deseja cursar', $module));
+        $valids[] = new MRequiredValidator('courseId', _M('Curso', $module));
+        $subFields[] = new MHContainer('hctCourse', array($courseLabel, $courseId));
+
+        // Field semester
+        $semesterLabel = new MLabel(_M('Semestre', $module) . ':');
+        $semesterLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $semesterLabel->setClass('m-caption m-caption-required');
+        $semester = new MTextField('semester', $this->GetFormValue('semester', $data->semester), _M('Semestre', $module), SAGU::getParameter('BASIC', 'FIELD_ID_LOOKUP_SIZE'));
+        $semester->setJsHint(_M('Informe o semestre do aluno', $module));
+        $valids[] = new MRequiredValidator('semester', _M('Semestre', $module));
+        $subFields[] = new MHContainer('hctSemester', array($semesterLabel, $semester));
+
+        // Colunas da subDetail
+        $columns[] = new MGridColumn(_M('Solicitação', $module), 'left', true, null, false, 'requestId');
+        $columns[] = new MGridColumn(_M('Nome', $module), 'left', true, null, true, 'personName');
+        $columns[] = new MGridColumn(_M('Sexo', $module), 'left', true, null, true, 'sex', false, SAGU::listSex());
+        $columns[] = new MGridColumn(_M('E-mail', $module), 'left', true, null, true, 'email');
+        $columns[] = new MGridColumn(_M('Data de nascimento', $module), 'left', true, null, true, 'dateBirth');
+        $columns[] = new MGridColumn(_M('CPF', $module), 'left', true, null, true, 'cpf');
+        $columns[] = new MGridColumn(_M('Curso', $module), 'left', true, null, true, 'courseId', false, TraCourse::listRecords());
+        $columns[] = new MGridColumn(_M('Semestre', $module), 'left', true, null, true, 'semester');
+
+        $fields[] = $sub = new MSubDetail('requests', _M('Alunos', $module), $columns, $subFields, array('edit', 'duplicate', 'remove'));
+        $sub->setValidators($valids);
+
+        $buttons[] = new MButton('submitRequest', _M('Enviar solicitações', $module));
+        $buttons[] = new MButton('cancel', _M('Cancelar', $module), $this->toolbar->getButtonUrl(MToolBar::BUTTON_BACK));
+
+        $divButtons = new MDIV('formButtons', $buttons);
+        $divButtons->addBoxStyle('width', '100%');
+        $divButtons->addBoxStyle('text-align', 'center');
+        $fields[] = $divButtons;
+
+        $this->setFields($fields);
+        $this->SetValidators($validators);
+    }
+
+
+    /**
+     * Event triggered when user chooses Save from the toolbar
+     */
+    public function submitRequest_click($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $function = MIOLO::_REQUEST('function');
+        $module = SAGU::getFileModule(__FILE__);
+
+        // Dados do form
+        $data = $this->getData();
+
+        // Dados da subdetail
+        $dataSubDetail = $data->requests;
+        
+        $loginUser = $MIOLO->GetLogin();
+
+        // BusPhysicalPerson
+        $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+        
+        $physicalPersonAdmin = $busPhysicalPerson->getPhysicalPersonByMioloUserName($loginUser->id);
+        
+        $agreement = TraAddendumCourseAdmin::getAgreementId($physicalPersonAdmin->personId);
+        // BusDocument
+        $busDocument = new BusinessBasicBusDocument();
+
+        // Bus legal person
+        $businessLegalPerson = new BusinessBasicBusLegalPerson();
+
+        try
+        {
+            // Valida campos definidos por ajax
+            if ( strlen($data->unitAreaId) == 0 )
+            {
+                throw new Exception(_M("O campo 'área' deve ser informado", $module) . '.');
+            }
+
+            $unitArea = new TraUnitArea( $data->unitAreaId );
+            if ( ( $unitArea->requireTrainingPlace == DB_TRUE ) && ( strlen($data->place) == 0 ) )
+            {
+                throw new Exception(_M("O campo 'Informações sobre o posto' deve ser informado", $module) . '.');
+            }
+
+            // Begin transaction
+            SDatabase::beginTransaction();
+
+            if ( is_array($dataSubDetail) )
+            {
+                $countRequestSucess = 0;
+                $countRequestError = 0;
+                foreach ( $dataSubDetail as $request )
+                {
+                    // Obtem nome da instituição conveniada
+                    $legalPerson = $businessLegalPerson->getLegalPerson($data->institution);
+                    
+                    // Obtem dados do curso
+                    $course = new TraCourse($request->courseId);
+
+                    // Solicitação
+                    $traRequest = new TraRequest();
+                    /**
+                     * Dados da solicitação de estágio
+                     */
+                    $traRequest->updatePerson = DB_TRUE;
+                    $traRequest->trainingRequests = true;
+                    $traRequest->unitAreaId = $data->unitAreaId;
+                    $traRequest->place = $data->place;
+                    $traRequest->trainingTypeId = 1; // FIXME hardcode modalidade
+                    $traRequest->beginDate = $data->beginDate;
+                    $traRequest->endDate = $data->endDate;
+                    $traRequest->institution = $legalPerson->name; 
+                    $traRequest->courseId = $request->courseId;
+                    $traRequest->observation = $request->observation;
+                    $traRequest->supervisor = $request->supervisor;
+                    $traRequest->status = TraRequest::PENDING;
+                    $traRequest->semester = $request->semester;
+                    $traRequest->agreementId = $agreement[0][0];
+                    $traRequest->addendumCourseAdminId = TraAddendumCourseAdmin::getAddendumCourseAdminId($physicalPersonAdmin->personId);
+
+                    $physicalPerson = new stdClass();
+                    $physicalPerson->name = $request->personName;
+                    $physicalPerson->sex = $request->sex;
+                    $physicalPerson->email = $request->email;
+                    $physicalPerson->dateBirth = $request->dateBirth;
+                    $physicalPerson->isAllowPersonalData = DB_TRUE;
+                    $physicalPerson->sentEmail = TRUE;
+                    $physicalPerson->workAtHome = DB_FALSE;
+
+                    unset($_doc);
+                    unset($documents);
+                    $_doc->documentTypeId = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF');
+                    $_doc->content = $request->cpf;
+                    $_doc->isDelivered = DB_FALSE; // FIXME
+                    $documents[] = $_doc;
+
+                    $traRequest->physicalPerson = $physicalPerson;
+                    $traRequest->physicalPerson->documents = $documents;
+
+                    // Verifica se o documento ja existe na base de dados
+                    $filters = new stdClass();
+                    $filters->documentTypeId = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF');
+                    $filters->content = $request->cpf;
+                    $documents = $busDocument->searchDocument($filters, true);
+
+                    $requestFail = false;
+
+                    if ( count($documents) > 0 )
+                    {
+                        $filters = new stdClass();
+                        $filters->personId = $documents[0]->personId;
+                        $filters->name = $request->personName;
+                        $filters->sex = $request->sex;
+                        $filters->email = $request->email;
+                        $filters->dateBirth = $request->dateBirth;
+                        $person = $busPhysicalPerson->searchPhysicalPerson($filters);
+
+                        if ( count($person) > 0 )
+                        {
+                            $traRequest->physicalPerson->personId = $person[0][0];
+                            $traRequest->personId = $person[0][0];
+                            $traRequest->updatePerson = DB_FALSE;
+                        }
+                        else
+                        {
+                            // Array de pessoas onde a solicitação não foi executada com sucesso
+                            $requestError[$countRequestError][0] = $request->personName;
+                            $requestError[$countRequestError][1] = SAGU::getSex(strtolower($request->sex));
+                            $requestError[$countRequestError][2] = $request->email;
+                            $requestError[$countRequestError][3] = $request->dateBirth;
+                            $requestError[$countRequestError][4] = $request->cpf;
+                            $requestError[$countRequestError][5] = $course->description;
+                            $requestError[$countRequestError][6] = $request->semester;
+                            $requestError[$countRequestError][7] = new MLabel(_M('Já existe uma outra pessoa com o mesmo CPF', $module), 'red');
+                            $countRequestError++;
+                            $requestFail = true;
+                        }
+                    }
+
+                    if ( !$requestFail )
+                    {
+                        // Array de pessoas onde a solicitação foi executada com sucesso
+                        $requestSucess[$countRequestSucess][0] = $request->personName;
+                        $requestSucess[$countRequestSucess][1] = SAGU::getSex(strtolower($request->sex));
+                        $requestSucess[$countRequestSucess][2] = $request->email;
+                        $requestSucess[$countRequestSucess][3] = $request->dateBirth;
+                        $requestSucess[$countRequestSucess][4] = $request->cpf;
+                        $requestSucess[$countRequestSucess][5] = $course->description;
+                        $requestSucess[$countRequestSucess][6] = $request->semester;
+
+                        $countRequestSucess++;
+
+                        // Salva os dados do form
+                        $traRequest->save();
+                    }
+                }
+            }
+
+            SDatabase::commit();
+
+            if ( (!is_array($requestError)) && (is_array($requestSucess)) )
+            {
+                $msg = _M('As solicitações de estágio foram enviadas com sucesso') . '!';
+                $prompt = new MPrompt(_M('Informação', $module), $msg);
+                $prompt->setType('information');
+            }
+            else if ( (!is_array($requestError)) && (!is_array($requestSucess)) )
+            {
+                $msg = _M('Nenhuma solicitação informada') . '!';
+                $prompt = new MPrompt(_M('Alerta', $module), $msg);
+                $prompt->setType('alert');
+            }
+            else
+            {
+                $msg = _M('Algumas solicitações de estágio não puderam ser enviadas, entre em contato com a instituição responsável') . '.';
+                $prompt = new MPrompt(_M('Informação', $module), $msg);
+                $prompt->setType('alert');
+            }
+
+            $fields[] = $prompt;
+
+            // Field institution
+            $institutionLabel = new MLabel(_M('Instituição de origem', $module) . ':');
+            $institutionLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $institution = new MTextField('institutionI', $legalPerson->name, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $institution->setReadOnly(true);
+            $institution->addAttribute('maxlength', '255');
+            $bsgDataStage[] = new MHContainer('hctInstitutionI', array($institutionLabel, $institution));
+
+            // Field unit
+            $unitLabel = new MLabel(_M('Unidade', $module) . ':');
+            $unitLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $unit = new MSelection('unitIdI', $this->getFormValue('unitId', $data->unitId), null, TraUnit::listUnit());
+            $unit->setReadOnly(true);
+            $bsgDataStage[] = new MHContainer('unitCntI', array($unitLabel, $unit));
+
+            // Field area
+            $bsgDataStage[] = new MDiv('divUnitArea', TraCommonFields::changeUnitId($data, true));
+
+            // Field beginDate
+            $beginDateLabel = new MLabel(_M('Início previsto', $module) . ':');
+            $beginDateLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $beginDate = new MCalendarField('beginDateI', $this->getFormValue('beginDate', $data->beginDate), null, 10);
+            $beginDate->setReadOnly(true);
+            $bsgDataStage[] = new MHContainer('beginDateCntI', array($beginDateLabel, $beginDate));
+
+            // Field endDate
+            $endDateLabel = new MLabel(_M('Fim previsto', $module) . ':');
+            $endDateLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $endDate = new MCalendarField('endDateI', $this->getFormValue('endDate', $data->endDate), null, 10);
+            $endDate->setReadOnly(true);
+            $bsgDataStage[] = new MHContainer('endDateCntI', array($endDateLabel, $endDate));
+
+            // Field supervisor
+            $supervisorLabel = new MLabel(_M('Supervisor do estágio', $module) . ':');
+            $supervisorLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $supervisor = new MTextField('supervisorI', $this->getFormValue('supervisor', $data->supervisor), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $supervisor->setReadOnly(true);
+            $bsgDataStage[] = new MHContainer('supervisorCntI', array($supervisorLabel, $supervisor));
+
+
+            $bsgDataStage = new MBaseGroup('bsgDataStage', _M('Dados do estágio', $module), $bsgDataStage, 'vertical');
+            $fields[] = $bsgDataStage;
+
+
+            if ( is_array($requestSucess) )
+            {
+                unset($columns);
+                $columns[] = _M('Nome', $module);
+                $columns[] = _M('Sexo', $module);
+                $columns[] = _M('Email', $module);
+                $columns[] = _M('Data de nascimento', $module);
+                $columns[] = _M('CPF', $module);
+                $columns[] = _M('Curso', $module);
+                $columns[] = _M('Semestre', $module);
+
+                $fields[] = new MSeparator();
+                $fields[] = $gridSucess = new MTableRaw(_M('Solicitações enviadas', $module), $requestSucess, $columns);
+                $gridSucess->setName('gridSucess');
+                $fields[] = new MSeparator();
+            }
+
+            if ( is_array($requestError) )
+            {
+                unset($columns);
+                $columns[] = _M('Nome', $module);
+                $columns[] = _M('Sexo', $module);
+                $columns[] = _M('Email', $module);
+                $columns[] = _M('Data de nascimento', $module);
+                $columns[] = _M('CPF', $module);
+                $columns[] = _M('Curso', $module);
+                $columns[] = _M('Semestre', $module);
+                $columns[] = _M('Motivo', $module);
+
+                $fields[] = new MSeparator();
+                $fields[] = $gridError = new MTableRaw(_M('Solicitações não enviadas', $module), $requestError, $columns);
+                $gridError->setName('gridError');
+                $fields[] = new MSeparator();
+            }
+            $buttonReset[] = new MButton('backButton', _M('Voltar', $module), $MIOLO->getActionURL($module, $action));
+            $divButtonReset = new MDiv('divBackButton', $buttonReset);
+            $divButtonReset->addBoxStyle('width', '100%');
+            $divButtonReset->addBoxStyle('text-align', 'center');
+            $fields[] = $divButtonReset;
+
+            $this->setFields($fields);
+        }
+        catch ( Exception $e )
+        {
+            $this->addError($e->getMessage());
+        }
+    }
+}
+?>

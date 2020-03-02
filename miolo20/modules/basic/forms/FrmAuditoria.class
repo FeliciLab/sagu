@@ -1,0 +1,270 @@
+<?php
+/**
+ * <--- Copyright 2005-2012 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulário de auditoria.
+ *
+ * @author Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * \b Maintainers: \n
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * @since
+ * Class created on 11/04/2012
+ * 
+ */
+
+$MIOLO->uses('classes/auditoria.class', 'basic');
+
+class FrmAuditoria extends SManagementForm
+{
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $MIOLO->uses('/ui/controls/msubdetail.class');
+
+        parent::__construct(NULL, NULL, NULL, _M('Auditoria', $module));
+
+        //$this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        //$this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+        
+    }
+
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $confAuditoria = SAGU::getParameter('BASIC', 'MIOLO_AUDIT_DATABASE');
+        
+        if( !strlen($confAuditoria) > 0 )
+        {
+            $this->addError(_M('O parâmetro MIOLO_AUDIT_DATABASE deve ser configurado corretamente para que as auditorias sejam realizadas.'));
+        }
+
+        $fields[] = MMessage::getMessageContainer();
+
+        $esquemas = array();
+        $tabelas = array();
+        $triggers = auditoria::buscarTriggers();
+                
+        $dados = array();
+
+        foreach ( $triggers as $line )
+        {
+            list($esquema, $tabela, $trigger) = $line;
+
+            $esquemas[$esquema] = $esquema;
+            $tabelas[$esquema][$tabela] = $tabela;
+
+            if ( strlen($trigger) )
+            {
+                $dados[] = (object) array(
+                    'esquema' => $esquema,
+                    'tabela' => $tabela,
+                    'trigger' => $trigger
+                );
+            }
+        }
+
+        $js = <<<JS
+var te = document.getElementById('tabelas' + this.value);
+var s = document.getElementById('tabela');
+var news = document.createElement('select');
+
+s.innerHTML = news.innerHTML;
+   
+for ( i=0; i<te.options.length; i++ )
+{
+    o = document.createElement('option');
+    o.value = te.options.item(i).value;
+    o.innerHTML = te.options.item(i).innerHTML;
+
+    news.options.add(o);
+}
+
+s.innerHTML = news.innerHTML;
+
+JS;
+        
+        //Replicado lógica para carregar apenas as tabelas sem auditorias nos selections
+        $esquemas = array();
+        $tabelas = array();
+        $triggers = auditoria::obtemTabelasSemAuditoria();
+
+        $esquemas['selection'] = '--Selecione-- ';
+        $tabelas['selection'] = '--Selecione-- ';
+        foreach ( $triggers as $line )
+        {
+            list($esquema, $tabela, $trigger) = $line;
+            
+            $esquemas[$esquema] = $esquema;
+            $tabelas[$esquema][$tabela] = $tabela;
+        }
+        
+        $sFields[] = $e = new MSelection('esquema', 'public', _M('Esquema', $module), NULL);
+        $e->options = $esquemas;
+        $e->addAttribute('onchange', $js);
+        $sFields[] = $c = new MSelection('tabela', NULL, _M('Tabela', $module), $tabelas['public']);
+        $sFields[] = new SHiddenField('trigger', NULL, _M('Trigger', $module), NULL);
+
+        foreach ( $tabelas as $esquema => $tabelasDoEsquema )
+        {
+            $fields[] = $t = new MSelection('tabelas' . $esquema, NULL, _M('Tabela', $module), $tabelasDoEsquema);
+            $t->addBoxStyle('display', 'none');
+        }
+           
+        $todasTabelas = SAGU::getParameter('BASIC', 'AUDITAR_TODAS_TABELAS');
+        
+        $fields[] = new MCheckBox('auditarTodasTabelas', DB_TRUE, _M('Auditar todas tabelas', $module), $this->getFormValue('auditarTodasTabelas', $todasTabelas) == DB_TRUE, null, _M('Ao marcar esta opção e salvar, todas as tabelas incluindo as novas e futuras, serão auditadas.'));
+        
+        $cols[] = new MGridColumn(_M('Esquema', $module), 'left', FALSE, '', TRUE, 'esquema');
+        $cols[] = new MGridColumn(_M('Tabela', $module), 'left', FALSE, '', TRUE, 'tabela');
+        $cols[] = new MGridColumn(_M('Trigger', $module), 'left', FALSE, '', FALSE, 'trigger');
+        $fields[] = $sub = new MSubDetail('tabelas', _M('Tabelas auditadas', $module), $cols, $sFields, array('remove'));
+        $sub->setBorder('none');
+
+        $sValidators[] = new MRequiredValidator('esquema');
+        $sValidators[] = new MRequiredValidator('tabela');
+        $sub->setValidators($sValidators);
+
+        if ( $this->isSubDetailEditMode() )
+        {
+            $sub->setData($dados);
+        }
+        
+        parent::defineFields($fields, $validators, $data);
+    }
+    
+    public function tbBtnSave_click($sender=NULL)
+    {   
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        $auditarTodasTabelas = MIOLO::_REQUEST('auditarTodasTabelas');
+        
+        $busConf = new BusinessBasicBusConfig();
+        $parameter = $busConf->getConfig('BASIC', 'AUDITAR_TODAS_TABELAS');
+        
+        //Verifica se o checkbox foi marcado
+        if( $auditarTodasTabelas == DB_TRUE )
+        {
+            if( $parameter->value == DB_FALSE )
+            {
+                //ALtera o valor do parâmetro
+                $data->value = DB_TRUE;
+                $data->moduleConfig = $parameter->moduleConfig;
+                $data->parameter = $parameter->parameter;
+                
+                $busConf->updateConfigValue($data);
+            }
+            
+            //Obtem todas tabelas passíveis de auditoria e que não estão sendo auditadas
+            $tabelasSemAuditoria = auditoria::obtemTabelasSemAuditoria();
+            
+            //Insere a trigger de auditoria
+            $ok = true;
+            foreach ( $tabelasSemAuditoria as $tabelas )
+            {
+                $ok = auditoria::criarTrigger($tabelas[0], $tabelas[1]);
+                
+                if ( !$ok )
+                {
+                    $mensagemErro = _M("Não foi possível inserir a trigger de auditoria na $tabelas[0].$tabelas[1]." );
+
+                    new MMessageWarning($mensagemErro, $module);
+
+                    break;
+                }
+            }
+        }
+        else
+        {
+            $data->value = DB_FALSE;
+            $data->moduleConfig = $parameter->moduleConfig;
+            $data->parameter = $parameter->parameter;
+
+            $busConf->updateConfigValue($data);
+        }
+        
+        $dadosDasTabelas = MSubDetail::getData('tabelas');
+        $resultado = TRUE;
+
+        foreach ( $dadosDasTabelas as $dados )
+        {
+            if ( $dados->removeData && strlen($dados->trigger) )
+            {
+                // Remove a trigger
+                $resultado = auditoria::removerTrigger($dados->trigger, $dados->esquema, $dados->tabela);
+            }
+            elseif ( !$dados->removeData && !strlen($dados->trigger) )
+            {
+                // Cria a trigger
+                $resultado = auditoria::criarTrigger($dados->esquema, $dados->tabela);
+            }
+            
+            if ( !$resultado )
+            {
+                break;
+            }
+        }
+        
+        if ( $resultado || $ok )
+        {
+            new MMessageSuccess(_M('Dados salvos com sucesso', $module));
+
+            $triggers = auditoria::buscarTriggers();
+
+            $dados = array();
+
+            foreach ( $triggers as $line )
+            {
+                list($esquema, $tabela, $trigger) = $line;
+
+                if ( strlen($trigger) )
+                {
+                    $dados[] = (object) array(
+                        'esquema' => $esquema,
+                        'tabela' => $tabela,
+                        'trigger' => $trigger
+                    );
+                }
+            }
+
+            MSubDetail::setData($dados, 'tabelas');
+            
+            //Para recarregar os campos novamente com os valores corretos
+            $action .= "&function=insert";
+            $this->page->redirect($MIOLO->getActionURL($module, $action));
+        }
+        else
+        {
+            new MMessageWarning(_M('Não foi possível salvar os dados', $module));
+        }
+    }
+}
+
+?>

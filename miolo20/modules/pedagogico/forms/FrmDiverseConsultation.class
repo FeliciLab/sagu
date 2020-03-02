@@ -1,0 +1,940 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Diverse consultation form
+ *
+ * @author Moises Heberle [moises@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.com.br]
+ *
+ * @since
+ * Class created on 15/05/2014
+ *
+ **/
+
+MIOLO::Import('extensions::cpaint.inc.php','cpaint');
+
+/**
+ * Form to manipulate a classification
+ **/
+class FrmDiverseConsultation extends SForm
+{
+    //Desabilita div padrão de mensagens do form
+    public $removeDivMensagem = true;
+    
+    /**
+     * Class constructor
+     **/
+    public function __construct()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        parent::__construct(_M('Consultas diversas', $module), null, null);
+    }
+
+    /**
+     * Default method to define fields
+     **/
+    public function defineFields()
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        
+        if( $function == SForm::FUNCTION_UPDATE )
+        {
+            $this->page->onload("
+            var selecionar = setInterval(function(){selecionarAba()}, 500);
+            function selecionarAba()
+            {
+                mtabbedbasegroup.changeTab('tabObs', 'allInfos');
+                clearInterval(selecionar);
+            }");
+        }
+        
+        if ( MIOLO::_REQUEST('abaDisciplinas') == DB_TRUE )
+        {
+            unset($_SESSION['abaDisciplinas']);
+            
+            $this->page->onload("
+            var selecionar = setInterval(function(){selecionarAba()}, 500);
+            function selecionarAba()
+            {
+                mtabbedbasegroup.changeTab('tabDisc', 'allInfos');
+                clearInterval(selecionar);
+            }");
+        }
+        
+        $fields[] = $MIOLO->getConf('sagu.message.div');
+        $MIOLO->setConf('sagu.messages.div', '');
+        
+        $fields[] = new MDiv('divLimbo');
+
+        $fields = array_merge($fields, $this->genericFields()->lookupCPFComPessoa());
+        
+        $searchButton = new MButton('btnSearch',_M('Localizar',$module));
+        $searchButton->event = 'btnSearch';
+
+        $fields[] = $searchButton;
+        $fields[] = new MSeparator();
+        $fields[] = new MHiddenField('currentUrl', str_replace('&amp;', '&', $MIOLO->getCurrentURL()));
+
+        $filters = new stdClass();
+        $filters->personId = $this->getFormValue('personId');
+
+        if ( strlen($filters->personId) > 0 )
+        {
+            $matricula = new AcpMatricula();
+
+            if ( $matricula->possuiMatricula($filters->personId) )
+            {
+                $tab = new MTabbedBaseGroup('allInfos');
+                $tab->createTab('tabInfo', _M('Informações gerais'), array($this->informacoesGerais($filters)));
+                $tab->createTab('tabCurso', _M('Informações do curso'), array($this->informacoesDoCurso($filters)));
+                $tab->createTab('tabDisc', _M('Componentes curriculares', $module), array($this->disciplinas($filters)));
+                $tab->createTab('tabDocs', _M('Documentos'), array($this->documentos($filters)));
+                $tab->createTab('tabObs', _M('Observações do aluno'), array($this->observacoesDoAluno($filters)));
+                
+                if ( SAGU::getParameter('BASIC', 'MODULE_PROTOCOL_INSTALLED') == 'YES' )
+                {
+                    $tab->createTab('tabProt', _M('Protocolo'), array($this->protocoloAluno($filters)));
+                }
+                
+                $fields[] = $tab;
+            }
+            else
+            {
+                $this->addError(_M('Nenhuma matrícula encontrada para esta pessoa.', $module));
+            }
+        }
+        
+        $fields[] = new MDiv('divPopup2');
+
+        // js
+        $MIOLO->page->addScript('m_tabbedbasegroup.js');
+        $MIOLO->getRequiredJS4Ajax();
+        $this->page->onLoad('document.' . $this->name . '.personId.focus();');
+        
+        parent::defineFields(array('fields' => $fields, 'validators' => $validators, 'toolbar' => false));
+    }
+    
+    /**
+     * @param type array()
+     * @return html
+     */
+    public function informacoesGerais($args)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        $docs = $this->documentosPendentes($args);
+        
+        $bsgPersonData = new SPersonalDataField(array( 'personId' => $args->personId) );
+        
+        $controls = new MVContainer('vctGeneralData', array($docs, $bsgPersonData ));
+        
+        return $controls;
+    }
+    
+    /**
+     * Verifica e retorna se a pessoa tem documentos pendentes de entrega - PEDAGOGICO
+     * @param type $args
+     * @return \MDiv
+     */
+    public function documentosPendentes($args)
+    {
+        $personId = $args->personId;
+        $gfields = new sGenericFields();           
+                
+        $busDocument = new BusinessBasicBusDocument();
+        $listDoc = $busDocument->checkDocumentosPendentes($personId);
+
+        if ( count($listDoc) > 0)
+        {
+            
+            $msg = _M('O(s) seguinte(s) documento(s) do aluno(a) esta(ão) pendente(s) de entrega:');
+            
+            foreach ( $listDoc as $value)
+            {
+                $msg.= "<br>".$value[0];
+            }
+            
+            $flds[] = $gfields->labelDica($msg);
+        }
+        
+        $controls = new MDiv('divDocs', $flds);
+        
+        return $controls;
+    }
+
+
+    /**
+     * @param type array()
+     * @return html
+     */
+    public function informacoesDoCurso($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $login = $MIOLO->GetLogin();
+
+        $acpCursoInscricao = new AcpCursoInscricao();
+        $acpCursoInscricao->personid = $args->personId;
+        $cursosDaPessoa = $acpCursoInscricao->buscar();
+        
+        $divMsg = new MDiv('divMensagem');        
+
+        foreach ($cursosDaPessoa as $curso)
+        {
+            $cursoid = $curso['cursoid'];
+            $acpCurso = new AcpCurso($cursoid);
+            
+            $fields[] = $dtFechamento = new MTextField('datafechamento_' . $cursoid, SAGU::dateToUser($curso['datafechamento']), _M('Data de encerramento'), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+            $dtFechamento->setReadOnly(TRUE);
+            $fields[] = $dtFormatura = new MCalendarField('dataformatura_' . $cursoid, SAGU::dateToUser($curso['dataformatura']), _M('Data de formatura'), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+            $dtFormatura->setReadOnly(!$login->IsAdmin() || $curso['situacao'] == AcpMatricula::SITUACAO_MATRICULA);
+            $fields[] = $dtConclusao = new MCalendarField('dataemissaodocumentoconclusao_' . $cursoid, SAGU::dateToUser($curso['dataemissaodocumentoconclusao']), _M('Entrega do documento de conclusão'), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+            $dtConclusao->setReadOnly(!$login->IsAdmin() || $curso['situacao'] == AcpMatricula::SITUACAO_MATRICULA);
+            $fields[] = new MDiv();
+            $fields[] = $situacao = new MSelection('situacao_' . $cursoid, strlen($curso['situacao']) > 0 ? $curso['situacao'] : AcpMatricula::SITUACAO_MATRICULA, _M('Situação final'), AcpMatricula::listarSituacao());
+            $situacao->setReadOnly(TRUE);
+            $fields[] = new MDiv();
+            
+            $validators[] = new MDATEDMYValidator('dataformatura_' . $cursoid, _M('Data de formatura'), 'optional'); 
+            $validators[] = new MDATEDMYValidator('dataemissaodocumentoconclusao_' . $cursoid, _M('Entrega do documento de conclusão'), 'optional'); 
+            
+            $cargaHorariaTotalDoCurso = $acpCurso->obterCargaHorariaTotalDoCurso($cursoid);
+            $cargaOferecida = strlen($curso['cargahorariaoferecida']) > 0 ? $curso['cargahorariaoferecida'] : 0;
+            $cargaHorariaIntegralizada = strlen($curso['cargahorariacursada']) > 0 ? $curso['cargahorariacursada'] : 0;
+            $cargaHorariaFrequente = strlen($curso['cargahorariafrequente']) > 0 ? $curso['cargahorariafrequente'] : 0;
+            
+            if ( $cargaHorariaTotalDoCurso > 0 )
+            {
+                $frequenciaReal = SAGU::calcNumber(($cargaHorariaIntegralizada * 100) / $cargaHorariaTotalDoCurso, TRUE);
+            }
+            
+            if ( $cargaOferecida > 0 )
+            {
+                $frequenciaParcial = SAGU::calcNumber(($cargaHorariaIntegralizada * 100) / $cargaOferecida, TRUE);
+            }
+            
+            unset($arrayFrequencias);
+            $arrayFrequencias[0][] = _M('Carga horária encerrada');
+            $arrayFrequencias[0][] = $cargaOferecida . 'h';
+            $arrayFrequencias[1][] = _M('Carga horária total do curso'); 
+            $arrayFrequencias[1][] = $cargaHorariaTotalDoCurso . 'h';
+            $arrayFrequencias[0][] = _M('Frequência real no curso');
+            $arrayFrequencias[0][] = $frequenciaParcial . '%';
+            $arrayFrequencias[2][] = _M('Carga horária integralizada');
+            $arrayFrequencias[2][] = $cargaHorariaIntegralizada . 'h ';
+            $arrayFrequencias[3][] = '<b>' . _M('Carga horária frequente') . '</b>';
+            $arrayFrequencias[3][] = '<b>' . $cargaHorariaFrequente . 'h </b>';
+            
+            $tableFrequencias = new MTableRaw(NULL, $arrayFrequencias, NULL);
+            $fields[] = $tableFrequencias;
+
+            $fields[] = $this->genericFields()->labelDica(
+                _M('Legendas:') . '<br/>' .
+                _M('<b>Carga horária encerrada</b>: Carga horária total já disponível para o aluno no curso, considerando somente disciplinas encerradas.') . '<br/>' .
+                _M('<b>Carga horária total do curso</b>: Carga horária total de todas disciplinas da matriz do curso do aluno, independente se já foi cursada ou oferecida.') . '<br/>' .
+                _M('<b>Carga horária integralizada</b>: Carga horária já cursada pelo aluno, assim apenas considera a carga horária de componentes curriculares em que foi aprovado ou recebeu aproveitamento (não importando sua frequência).') . '<br/>' .
+                _M('<b>Carga horária frequente</b>: Carga horária que o aluno esteve presente em aula (presença), somente considerando disciplinas encerradas.') . '<br/>' .
+                _M('<b>Frequência real no curso</b>: Percentual calculado a partir da carga horária em relação com a carga horária total do curso.') . '<br/>'
+            );
+            
+            $fields[] = new MDiv();
+            
+            $avaliacoes = array();
+            $cursoInscricaoAvaliacoes = $acpCursoInscricao->obterAvaliacoesDoCurso($curso['cursoinscricaoid']);
+            foreach ($cursoInscricaoAvaliacoes as $key => $cursoInscricaoAvaliacao)
+            {
+                $avaliacoes[$key][0] = $cursoInscricaoAvaliacao[1];
+                $avaliacoes[$key][1] = $cursoInscricaoAvaliacao[3];
+                $avaliacoes[$key][2] = $nota = new MTextField("nota[{$cursoInscricaoAvaliacao[0]}][{$cursoInscricaoAvaliacao[2]}]_{$curso['cursoid']}", $cursoInscricaoAvaliacao[4]);
+                $nota->setReadOnly(TRUE);
+            }
+            $fields[] = new MTableRaw(_M('Desempenho geral'), $avaliacoes, array(_M('Modelo de avaliação'), _M('Tipo de componente', $module), _M('Média')));        
+            $fields[] = $tableContainer = new MHContainer('', array(new MText('txtInfo', '<b>' . _M('* As médias são recalculadas sempre que alguma disciplina do aluno for encerrada.') . '</b>', 'blue')));
+            $tableContainer->addStyle('width', '800px');
+
+            $fields[] = $txtOferta = new MTextField('ofertacursoid_' . $curso['cursoid'], $ofertacursoid);
+            $txtOferta->setVisibility(FALSE);
+            $fields[] = $txtCursoInscricao = new MTextField('cursoinscricaoid_' . $curso['cursoid'], $curso['cursoinscricaoid']);
+            $txtCursoInscricao->setVisibility(FALSE);
+            
+            $controls = new MVContainer('vctCourseData_' . $curso['cursoid'], $fields);
+            
+            $finalFields[] = $bsgCurso = new MBaseGroup('bsgCurso_' . $curso['cursoid'], _M($acpCurso->nome), array($controls));
+            
+            unset($controls);
+            unset($bsgCurso);
+            unset($fields);
+        }
+        
+        //Monta somente a pessoa possua registro em acpCursoInscricao
+        if ( count($cursosDaPessoa) > 0 )
+        {
+            $this->SetValidators($validators);
+        
+            $divButton = new MDiv('', array(new MButton('btnSalvarInformacoesDoCurso', _M('Salvar'), $this->getAjaxAction('salvarInformacoesDoCurso', 'divMensagem'))));
+            $cursos = new MVContainer('vctCursos', $finalFields);
+            $campos = new MVContainer('hctCursos', array($divMsg, $cursos, $divButton)); 
+        }
+        else
+        {
+            $campos = MMessage::getStaticMessage('msg', _M("Não foram encontrados registros para esta pessoa."), MMessage::TYPE_WARNING);
+        }
+        
+        return $campos;
+    }
+
+    public function salvarInformacoesDoCurso($args)
+    {
+        $cursoInscricao = $args->cursoinscricaoid;
+        
+        $acpCursoInscricao = new AcpCursoInscricao($cursoInscricao);
+        $acpCursoInscricao->personid = $args->personId;
+        $cursosDaPessoa = $acpCursoInscricao->buscar();
+        
+        try
+        {
+            foreach ($cursosDaPessoa as $curso)
+            {
+                $acpCursoInscricao->cursoinscricaoid = $args->{"cursoinscricaoid_" . $curso['cursoid']};
+                $acpCursoInscricao->personid = $args->personId;
+                $acpCursoInscricao->situacao = $args->{"situacao_" . $curso['cursoid']};
+                $acpCursoInscricao->dataformatura = $args->{"dataformatura_" . $curso['cursoid']};
+                $acpCursoInscricao->dataemissaodocumentoconclusao = $args->{"dataemissaodocumentoconclusao_" . $curso['cursoid']};
+
+                if ( strlen($acpCursoInscricao->dataformatura) > 0 && !SAGU::validaData($acpCursoInscricao->dataformatura) )
+                {
+                    throw new Exception(_M('Por favor, verifique a data de formatura informada.'));
+                }
+                
+                if ( strlen($acpCursoInscricao->dataemissaodocumentoconclusao) > 0 && !SAGU::validaData($acpCursoInscricao->dataemissaodocumentoconclusao) )
+                {
+                    throw new Exception(_M('Por favor, verifique a data de entrega do documento de conclusão.'));
+                }
+
+                if (is_numeric($args->{"frequencia_"} . $curso['cursoid']))
+                {
+                    $acpCursoInscricao->frequencia = $args->{"frequencia_" . $curso['cursoid']};
+                }
+
+                if ($acpCursoInscricao->save())
+                {
+                    foreach ($args->nota as $modelo => $notas)
+                    {
+                        foreach ($notas as $componente => $nota)
+                        {
+                            $acpCursoInscricao->salvarAvaliacao($acpCursoInscricao->cursoinscricaoid, $modelo, $componente, $nota);
+                        }
+                    }
+
+                    $msg = MMessage::getStaticMessage('msg', _M('Informações do curso salvas com sucesso.'));
+                }
+                else
+                {
+                    $msg = MMessage::getStaticMessage('msg', _M('Não foi possível salvar as informações do curso.'), MMessage::TYPE_ERROR);
+                }
+            }
+        }
+        catch( Exception $e )
+        {
+            $msg = MMessage::getStaticMessage('msg', $e->getMessage(), MMessage::TYPE_ERROR);
+        }
+
+        $popFields[] = new MDiv('divMensagem2', array($msg));
+        $closeBtn = new MButton('btnClose', _M('Fechar'), 'mpopup.remove()');
+        $popFields[] = new MHContainer('ctnButtons', array($closeBtn));
+        $popup = new MPopup('popMSG', $popFields, _M('Mensagem'));
+        
+        return $popup;
+    }
+    
+    public static function documentos($args)
+    {
+        $type = new AcpInscricao();
+        $sql = $type->msql();
+        $sql->addEqualCondition('acpinscricao.personid', $args->personId);
+        $sql->setOrderBy('acpinscricao.inscricaoid desc ');
+
+        //O aluno pode ter mais turmas em uma inscricao quando sao feitas inscricoes por módulo
+
+        //Array de checagem das inscricaoTurmaGrupo que já foram
+        $checked = array();
+        
+        foreach( $type->findMany($sql) as $cod=>$inscricao )
+        {
+            $ok = false;
+             
+            $ofertacurso = new AcpOfertaCurso($inscricao->ofertacursoid);
+            $inscricaoTurmaGrupo = AcpInscricaoTurmaGrupo::obterInscricaoTurmaGrupo($inscricao->inscricaoid);
+            
+            foreach ( $inscricaoTurmaGrupo as $insTG)
+            {
+                //Só mostra o documento se a inscricaoTurmaGrupo e a ofertaTurma ainda nao passaram pela checagem
+                if ( !in_array($insTG->inscricaoturmagrupoid, $checked) && !array_key_exists($insTG->ofertaturmaid, $checked))
+                {
+                    $checked[$insTG->ofertaturmaid] = $insTG->inscricaoturmagrupoid;
+                    
+                    $ofertaTurma = new AcpOfertaTurma($insTG->ofertaturmaid);
+            
+                    $situacao = ($inscricao->situacao == AcpInscricao::SITUACAO_CANCELADO) ? '<span style="color:#FF0000"> (CANCELADO)</span>' : null;
+
+                    $documentos[] = new MTextLabel('lblCurso', $ofertacurso->descricao . ' - ' . $ofertaTurma->descricao . $situacao);
+
+                    $perfilcurso = $ofertacurso->ocorrenciacurso->curso->perfilcurso;
+
+                    //Lista todos documentos do perfil de curso a serem exibidos nas consultas diversas
+                    foreach (AcpDocumentoPerfilCurso::listarDocumentos($perfilcurso->perfilcursoid, NULL, true) as $cod => $documento)
+                    {
+                        $ok = true;
+
+                        //Adiciona filtro para o tipo de documento contrato
+                        $parametros['int_inscricaoId'] = $inscricao->inscricaoid;
+                        $parametros['str_inscricaoId'] = $inscricao->inscricaoid;
+                        $parametros['int_inscricaoid'] = $inscricao->inscricaoid;
+                        $parametros['str_inscricaoid'] = $inscricao->inscricaoid;
+
+                        $documentos[] = $documento->getLink(NULL, $parametros);
+                    }
+
+                    if ($ok)
+                    {
+                        $docs = $documentos;
+                    }
+                }
+            }
+        }
+        
+        $controls = new MVContainer('vctDocumentos', $docs);
+        
+        return $controls;
+    }
+    
+    public function observacoesDoAluno($args)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $observacaodoalunoid = MIOLO::_REQUEST('observacaodoalunoid');
+        $observacaodoaluno = new AcpObservacoesDoAluno($observacaodoalunoid);
+        $flds[] = new MSelection('tipodeobservacaoid', SAGU::NVL($this->getFormValue('tipodeobservacaoid', MIOLO::_REQUEST('tipodeobservacaoid')), $observacaodoaluno->tipodeobservacaoid), _M('Tipo de observação', $module), AcpTipoDeObservacao::listarTiposDeObservacao());
+        $flds[] = new MMultiLineField('observacao', SAGU::NVL($this->getFormValue('observacao', MIOLO::_REQUEST('observacao')), $observacaodoaluno->observacao), _M('Observação', $module), 20, 10, 40);        
+        $flds[] = $this->obterBotoesContextuais();
+        
+        //Grid de observações do aluno
+        $grid = $MIOLO->getUI()->getGrid($module, 'GrdObservacoesDoAlunoSearch');
+        $grid instanceof SGrid;
+        $grid->setGridDataType(new AcpObservacoesDoAluno(), array('personid' => $this->getFormValue('personId')));
+        $grid->disablePagination();
+        $grid->disableColumnSorting();
+        $flds[] = new MDiv(rand(), $grid);
+        
+        $this->page->addJsCode("
+        
+        ");
+        
+        $controls = new MVContainer('vctGeneralData', $flds);
+        
+        return $controls;
+    }
+    
+    public function protocoloAluno($args)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $flds[] = new MDiv('divCancelRequest', null);
+        
+        // nova solicitacao
+        $urlNovo = $MIOLO->GetActionURL('protocol', 'main:process:request', null, array(
+            'function' => 'insert',
+            'event' => 'tbBtnNew:click',
+            'personId' => $args->personId
+        ));
+        $link = new MLink('lnkSolic', _M('Nova solicitação'), $urlNovo);
+        $link->setTarget('_new');
+        $flds[] = new MDiv('divSolic', $link);
+        $flds[] = new MSeparator();
+        
+        // grid busca
+        $filtros = new stdClass();
+        $filtros->personId = MIOLO::_REQUEST('personId');
+        
+        $business = new BusinessProtocolBusRequestPtc();
+        $dadosGrid = $business->searchDiverseConsultationRequest($filtros);
+
+        $grid = $MIOLO->getUI()->getGrid('protocol', 'GrdDiverseConsultationRequest');
+        $grid->setData($dadosGrid);
+        $grid->disableExports();
+        $grid->disablePagination();
+        $grid->disableColumnSorting();
+        $flds[] = new MDiv('divGrd', $grid);
+
+        $controls = new MVContainer('vctGeneralData', $flds);
+        
+        return $controls;
+    }
+    
+    public function cancel_request($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        $code = new MTextField('requestId', $args->requestId);
+        $code->addBoxStyle('display', 'none');
+        $flds[] = $code;
+        $flds[] = new MMultiLineField('justification', null, _M('Justificativa', $module), 100, 10, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        
+        $btnConfirm = new MButton('btnConfirm', _M('Confirmar'), SForm::getAjaxAction('btnConfirm_click', 'divCancelRequest', false));
+        $btnCancel = new MButton('btnCancel', _M('Cancelar'), 'mpopup.remove();');
+        
+        $flds[] = new MHContainer('ctnButtons', array($btnConfirm, $btnCancel));
+        
+        // Pupup Cancelar solicitacao
+        $fields[] = $popup = new MPopup('popupCancelRequest', $flds, _M('Cancelar solicitação', $module));
+        
+        return $fields;
+    }
+    
+    public function btnConfirm_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        
+        if( !( strlen($args->justification) > 0 ) )
+        {
+            $this->addAlert(_M('O campo justificativa deve ser informado', $module));
+        }
+        else
+        {
+            $requestId = $args->requestId;
+            $busRequest = new BusinessProtocolBusRequestPtc();
+            $busDispatch = new BusinessProtocolBusDispatch();
+
+            $requestData = $busRequest->getRequest($requestId);
+
+            //Inserir parecer da justificativa.
+            $data = new PtcDispatch();
+            $data->description = $args->justification;
+            $data->requestId = $requestId;
+            $data->subjectId = $requestData->subjectId;
+            $data->sectorId = $requestData->currentSectorId;
+            $data->level = $requestData->currentLevel;
+            $busDispatch->insertDispatch($data);
+
+            //Cancela a solicitação
+            if( $busRequest->updateRequestStatus($requestId, PtcRequest::STATUS_CANCELLED) )
+            {
+                SAGU::information( _M('Solicitação cancelada com sucesso'), $MIOLO->getActionURL ( $module, 'main:diverseConsultation', null, array ( 'personId'=> MIOLO::_REQUEST('personId') ) ) ); 
+            }
+        }
+    }
+    
+    public function btnSalvarObservacao_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        //Obtém campos do formulário
+        $tipodeobservacaoid = MIOLO::_REQUEST('tipodeobservacaoid');
+        $observacao = MIOLO::_REQUEST('observacao');
+        
+        $ok = true;
+        if( strlen($tipodeobservacaoid) == 0 )
+        {
+            $ok = false;
+            if( count(AcpTipoDeObservacao::listarTiposDeObservacao()) == 0 )
+            {
+                $this->AddAlert(_M('Nenhum tipo de observação cadastrado até o momento. Realize o cadastro em Pedagógico::Configuração::Tipo de observação.'));
+            }
+            else
+            {
+                $this->AddAlert(_M('O campo tipo de observação deve ser informado'));
+            }
+            
+        }
+        if( strlen($observacao) == 0 )
+        {
+            $ok = false;
+            $this->AddAlert(_M('O campo observação deve ser informado'));
+        }
+        
+        if( $ok )
+        {
+            try 
+            {
+                $observacaodoalunoid = MIOLO::_REQUEST('observacaodoalunoid');
+                $observacaodoaluno = new AcpObservacoesDoAluno($observacaodoalunoid);
+                $observacaodoaluno->tipodeobservacaoid = $tipodeobservacaoid;
+                $observacaodoaluno->observacao = $observacao;
+                $observacaodoaluno->personid = $this->getFormValue('personId');
+                $observacaodoaluno->save();
+            } 
+            catch (Exception $e) 
+            {
+                $this->addError(_M('Não foi posssível salvar a observação: '.$e->getMessage()));
+            }
+            
+            $goto = $MIOLO->GetActionURL($module, $action, '', array('personId'=>$this->getFormValue('personId')));
+            
+            $this->messageSuccess(_M('Observação salva com sucesso!', $module), $goto);
+        }
+        $this->page->onload("
+        var selecionar = setInterval(function(){selecionarAba()}, 500);
+        function selecionarAba()
+        {
+            mtabbedbasegroup.changeTab('tabObs', 'allInfos');
+            clearInterval(selecionar);
+        }");
+        
+    }
+    
+    /**
+     * Event triggered when user chooses Delete from the toolbar
+     */
+    public function tbBtnDelete_click($sender=NULL, $opts)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $opts = array_merge(array(
+            'observacaodoalunoid' => MIOLO::_REQUEST('observacaodoalunoid'),
+            'personId' => MIOLO::_REQUEST('personId'),
+            'event' => 'tbBtnDelete_confirm',
+            'function' => 'delete'), (array) $opts);
+
+        foreach ( (array)$this->pkey as $field )
+        {
+            $opts[$field] = MIOLO::_REQUEST($field);
+        }
+
+        $gotoYes = $MIOLO->getActionURL( $module, $action, null, $opts );
+        $goto = SAGU::getStackBackUrl();
+        $gotoNo = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+        $msg = SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE');
+        $caption = _M('Questão',$module);
+        SAGU::question($msg, $gotoYes, $gotoNo);
+    }
+    
+    /**
+     * Evento que removve uma observação
+     */
+    public function tbBtnDelete_confirm()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        $goto = $MIOLO->GetActionURL($module, $action, '', array('personId'=>MIOLO::_REQUEST('personId')));
+        $observacaodoalunoid = MIOLO::_REQUEST('observacaodoalunoid');
+        try
+        {
+            $observacaodoaluno = new AcpObservacoesDoAluno($observacaodoalunoid);
+            $observacaodoaluno->delete();
+        } 
+        catch (Exception $e) 
+        {
+            
+            $this->messageError(_M("Não foi possível remover a observação do aluno: ".$e->getMessage()), $goto);
+        }
+        $this->messageSuccess(_("Observação removida com sucesso!"), $goto);
+    }
+    
+    /**
+     * Cria os botões contextuais para adicionar ou remover observação
+     * @return MDiv
+     */
+    public function obterBotoesContextuais()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        
+        if ( $this->isUpdateFunction() )
+        {
+            $label = _M('Atualizar', $module);
+        }
+        else
+        {
+            $label = _M('Adicionar', $module);
+        }
+            
+        $fields[] = new MButton('btnSalvarObservacao', $label);
+        
+        if ( $this->isUpdateFunction() )
+        {
+            $fields[] = $btn = new MButton('btnCancelarAtualizacaoRegistro', _M('Cancelar', $module));
+        }
+        
+        $div = new MDiv('divBotoesContextuais', $fields);
+        $div->addBoxStyle('text-align', 'center');
+        
+        return $div;
+    }
+    
+    /**
+     * Evento para cancelar a edição de uma observação
+     * @param type $sender
+     */
+    public function btnCancelarAtualizacaoRegistro_click($sender = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $goto = $MIOLO->GetActionURL($module, $action, '', array('personId'=>$this->getFormValue('personId')));
+        $MIOLO->page->Redirect( $goto );
+    }
+    
+    /**
+     * Exibe informações do parecer do aluno
+     * 
+     * @param type $args
+     */
+    public function popupVizualisarParecer($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $fields[] = new MText('_parecer', "<center>" . $args->{parecer_ . $args->matriculaId} . "</center>");
+        $fields[] = new MSeparator();
+        $fields[] = $fecharParecer = new MButton('fecharParecer', _M('Fechar', $module), "javascript:mpopup.remove()");
+        $fecharParecer->addBoxStyle('margin-left', '45%');
+        
+        $componente = utf8_decode($args->componente);
+        
+        MPopup::show('popupVizualisarParecer', $fields, "Componente: {$componente} - Parecer: ");
+    }
+    
+    /**
+     * @param type array()
+     * @return html
+     */
+    public function disciplinas($args)
+    {        
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $fields = array();
+        $section = array();
+        $matricula = new AcpMatricula();
+        
+        $rows = $matricula->buscarParaConsultaDiversa($args);
+        
+        foreach ( $rows as $key => $row )
+        {
+            $modelo = AcpModeloDeAvaliacao::obterModeloDaOfertaDeComponenteCurricular($row['ofertacomponentecurricularid']);
+            
+            // Se modelo de avaliação do componente for parecer e o parecer já foi digitado, é montado popup para exbir informação do parecer
+            if ( $modelo->tipoDeDados == AcpModeloDeAvaliacao::TIPO_PARECER && strlen($row['parecer']) > 0 )
+            {
+                $fields[] = new SHiddenField('parecer_' . $row['matriculaid'], $row['parecer']);
+                
+                $args->matriculaId = $row['matriculaid'];
+                $args->componente = $row['componente'];
+                
+                $href = SForm::getAjaxAction('popupVizualisarParecer', 'divLimbo', false, $args, false, false);
+                $parecer = new MLink('_parecerLink', null, $href, 'Ver parecer');
+                
+                $row['notafinal'] = $parecer->generate();
+            }
+            
+            $section[] = $row;
+            
+            $proximo = $rows[$key+1]['turma'];
+            $temProximo = strlen($proximo) > 0;
+            
+            // Quando mudar dados do agrupamento, cria outra grid
+            if ( ( $row['turma'] != $proximo && $temProximo ) || !$temProximo )
+            {
+                if ( $key > 0 )
+                {
+                    $fields[] = new MSeparator();
+                }
+                
+                $grid = $MIOLO->getUI()->getGrid($module, 'GrdDisciplinaAluno');
+                $grid instanceof SGrid;
+                $grid->setData($section);
+                $grid->disableColumnSorting();
+                $grid->setTitle($row['turma']);
+                
+                if ( $modelo->tipoDeDados == AcpModeloDeAvaliacao::TIPO_PARECER )
+                {
+                    $grid->columns['notafinal']->align = 'center';
+                }
+
+                $fields[] = new MDiv(rand(), $grid);
+                
+                $section = array();
+            }
+        }
+        
+        $fields[] = new MDiv('divLimbo');
+        
+        $controls = new MVContainer('vctGeneralData', $fields);
+        
+        return $controls;
+    }
+    
+    /**
+     * @param type array()
+     * @return html
+     */
+    public function relatorios($args)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $fields = array();
+
+        $fields[] = new MLabel('abc');
+        
+        $controls = new MVContainer('vctGeneralData', $fields);
+        
+        return $controls;
+    }
+    
+    public function popupAproveitamento($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $matricula = new AcpMatricula($args->matriculaid);
+        
+        $fields[] = new SHiddenField('personId', $args->personId);
+        
+        $fields[] = new SHiddenField('matriculaid', $args->matriculaid);
+        $fields[] = new MSelection('tipoAproveitamento', $matricula->obterTipoAproveitamento(), _M('Tipo de aproveitamento'), AcpMatricula::listarAproveitamentos());
+        $fields[] = new sMultiLineField('obs_aproveitamento', array('label' => _M('Observação'), 'value' => $matricula->obs_aproveitamento));
+        
+        $fields[] = new MIntegerField('notafinal', $matricula->notafinal, _M('Nota final'));
+        $this->AddValidator(new MFloatValidator('notafinal', _M('Nota final')));
+
+        $fields[] = new MTextField('conceitofinal', trim($matricula->conceitofinal), _M('Conceito final'));
+        $val = new MRegExpValidator('conceitofinal', _M('Conceito final'), '^[A-Za-z]{1}$');
+        $this->AddValidator($val);
+        
+        $fields[] = new MTextField('frequencia_', $matricula->frequencia, _M('Frequência'));
+        $this->AddValidator(new MFloatValidator('frequencia_', _M('Frequência')));
+        
+        $estmat = new AcpEstadoDeMatricula();
+        $fields[] = new MSelection('estadodematriculaid', $matricula->estadodematriculaid, _M('Estado da matricula'), $estmat->listarParaCombo());
+        
+        $fields[] = new sMultiLineField('parecerfinal', array('label' => _M('Parecer final'), 'value' => $matricula->parecerfinal));
+        
+        $buttons[] = new MButton('btnSalvarGrupo', _M('Salvar', $module), SForm::getAjaxAction('salvarAproveitamento', 'divPopup2'));
+        $buttons[] = new MButtonDesfazer('btnDesfazer', _M('Desfazer aproveitamento', $module), SForm::getAjaxAction('desfazerAproveitamento', 'divPopup2'));;
+        $buttons[] = new MButton('btnCancelar', _M('Cancelar', $module), 'mpopup.remove();');
+        $fields[] = new MHContainer('ctnButtons', $buttons);
+        
+        $this->popupShow('popupAproveitamento', $fields, _M('Aproveitamento de disciplina'));
+    }
+    
+    public function salvarAproveitamento($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        $matricula = new AcpMatricula($data->matriculaid);
+        $matricula->obs_aproveitamento = strlen($data->obs_aproveitamento) > 0 ? $data->obs_aproveitamento : SType::NULL_VALUE;
+        $matricula->notafinal = strlen($data->notafinal) > 0 ? $data->notafinal : SType::NULL_VALUE;
+        $matricula->conceitofinal = strlen($data->conceitofinal) > 0 ? $data->conceitofinal : SType::NULL_VALUE;
+        $matricula->frequencia = strlen($data->frequencia_) > 0 ? $data->frequencia_ : SType::NULL_VALUE;
+        $matricula->estadodematriculaid = strlen($data->estadodematriculaid) > 0 ? $data->estadodematriculaid : SType::NULL_VALUE;
+        $matricula->parecerfinal = strlen($data->parecerfinal) > 0 ? $data->parecerfinal : SType::NULL_VALUE;
+        $matricula->defineAproveitamento($data->tipoAproveitamento);
+        
+        if ( $matricula->save() )
+        {
+            $MIOLO->page->addAJAXJsCode('mpopup.remove();');
+            
+            $_SESSION['abaDisciplinas'] = DB_TRUE;
+            
+            $args = array('personId'=> $data->personId);
+            $goto = $MIOLO->GetActionURL($module, $action, '', $args);
+            $goto = str_replace('amp;', '', $goto);
+            $MIOLO->page->addAJAXJsCode("window.location = '{$goto}'");
+        }
+        
+        return '';
+    }
+    
+    
+    public function desfazerAproveitamento($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $matricula = new AcpMatricula($data->matriculaid);
+        $matricula->obs_aproveitamento = SType::NULL_VALUE;
+        $matricula->notafinal = SType::NULL_VALUE;
+        $matricula->conceitofinal = SType::NULL_VALUE;
+        $matricula->frequencia = SType::NULL_VALUE;
+        $matricula->estadodematriculaid = SType::NULL_VALUE;
+        $matricula->parecerfinal = SType::NULL_VALUE;
+        $matricula->situacao = AcpMatricula::SITUACAO_MATRICULA;
+        $matricula->defineAproveitamento('_NENHUM_');
+        
+        if ( $matricula->save() )
+        {
+            $this->AddInfo(_M('Aproveitamento desfeito com sucesso.'));
+            
+            $MIOLO->page->addAJAXJsCode('mpopup.remove();');
+        }
+        else
+        {
+            $this->AddError(_M('Erro ao desfazer aproveitamento'));
+        }
+        
+        return '';
+    }
+    
+    public function redirecionaAba3($data)
+    {
+        $_SESSION['abaDisciplinas'] = DB_TRUE;        
+    }
+}
+
+class MButtonDesfazer extends MButton
+{
+    public function generateButton()
+    {
+        parent::generateButton();
+        
+        $this->onclick = ' if ( !confirm(\'Tem certeza?\') ) { return false; }; ' . $this->onclick;
+    }
+}
+?>

@@ -1,0 +1,426 @@
+<?php
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class definition for database entities
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * \b Maintainers: \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ *
+ * @since
+ * Class created on 15/07/2011
+ */
+class ApsEnfase extends SType
+{
+    /**
+     * @AttributeType integer
+     */
+    protected $enfaseId;
+    /**
+     * @AttributeType character varying
+     */
+    protected $descricao;
+    /**
+     * @AttributeType character varying
+     */
+    protected $abreviatura;
+
+    /**
+     * @AttributeType integer
+     */
+    protected $enfaseDePreRequisitoId;
+
+
+    /**
+     * @AssociationType MedEnfaseResponsavel
+     */
+    protected $responsaveis = null;
+
+
+    const CODIGO_GRUPO_ADMIN_RESIDENCIA_MEDICA = 13;
+
+    public function __construct($enfaseId = NULL)
+    {
+        if ( (strlen($enfaseId)  >  0) )
+        {
+            $this->enfaseId = $enfaseId;
+            $this->populate();
+        }
+    }
+
+    public function  __get($name)
+    {
+        if ( $name == 'responsaveis' )
+        {
+            if ( is_null($this->responsaveis) && (strlen($this->enfaseId) > 0) )
+            {
+                $filters = new stdClass();
+                $filters->enfaseId = $this->enfaseId;
+                $this->responsaveis = ApsEnfaseResponsavel::search($filters);
+            }
+        }
+
+        return parent::__get($name);
+    }
+
+    public static function search($filters)
+    {
+        $sql = 'SELECT enfaseid
+                  FROM aps.enfase';
+        $where = '';
+        foreach ( $filters  as  $key => $value )
+        {
+            if ( (is_scalar($value))  &&  (strlen($value)  >  0) )
+            {
+                $key = trim($key);
+                $value = trim($value);
+                $where .= " AND {$key} = '{$value}'";
+            }
+        }
+
+        if ( strlen($where)  >  0 )
+        {
+            $sql .= ' WHERE '.substr($where, 5);
+        }
+
+        $sql .= ' ORDER BY descricao ';
+        $result = SDatabase::query($sql);
+        $retVal = array();
+
+        for ( $i = 0;  $i  <  count($result);  $i++ )
+        {
+            $retVal[] = new ApsEnfase($result[$i][0]);
+        }
+
+        return $retVal;
+    }
+
+    public static function getSearchGridSQL($filters  =  null)
+    {
+        $sql = 'SELECT enfaseid,
+                   descricao,
+                   abreviatura,
+                   (
+                  SELECT 
+                    string_agg(DISTINCT P.personId || \' - \' || P.name, \' | \')
+                  FROM basPerson P INNER JOIN aps.enfaseresponsavel ER 
+                    ON P.personid = ER.responsavel
+                  WHERE ER.enfaseid = A.enfaseid
+                   ) AS responsavelNome
+              FROM aps.enfase A';
+
+        $where = '';
+        $params = array();
+        if ( strlen($filters->enfaseId)  >  0 )
+        {
+            $where .= ' AND enfaseid = ?';
+            $params[] = $filters->enfaseId;
+        }
+
+        if ( strlen($filters->descricao)  >  0 )
+        {
+            $where .= ' AND UNACCENT(descricao) ILIKE UNACCENT(?) ';
+            $params[] = $filters->descricao.'%';
+        }
+
+        if ( strlen($filters->abreviatura)  >  0 )
+        {
+            $where .= ' AND UNACCENT(abreviatura) ILIKE UNACCENT(?) ';
+            $params[] = $filters->abreviatura.'%';
+        }
+
+        $usuario = ApsEnfase::retornaAdminDaEspecialidadeResidenciaMedica();
+        if ( $usuario )
+        {
+            $where .= " AND A.enfaseid in (SELECT AA.enfaseid FROM aps.enfaseresponsavel AA WHERE AA.responsavel = ?)";
+            $params[] = $usuario;
+        }
+
+        if ( strlen($where)  >  0 )
+        {
+            $sql .= ' WHERE '.substr($where, 4);
+        }
+
+        $sql .= ' ORDER BY descricao ';
+
+        return SAGU::prepare($sql, $params);
+    }
+
+    /**
+     * Mantem codigo legado funcionando
+     *
+     * @param stdClass $filters
+     * @return array
+     */
+    public static function searchGrid($filters = null)
+    {
+        $sql = self::getSearchGridSQL($filters);
+
+        return preg_match('/ WHERE /', $sql) ? SDatabase::query($sql) : array();
+    }
+
+    private function populate()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $sql = "SELECT username,
+                       TO_CHAR(datetime, '" . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . "'),
+                       ipaddress,
+                       enfaseid,
+                       descricao,
+                       abreviatura,
+                       enfaseDePreRequisitoId
+                  FROM aps.enfase
+                 WHERE enfaseid = ?";
+
+        $result = SDatabase::query($sql, array($this->enfaseId));
+
+        if ( !isset($result[0][1]) )
+        {
+            throw new Exception(_M('Registro inexistente. (@1)', $module, __CLASS__));
+        }
+
+        list( $this->userName,
+              $this->dateTime,
+              $this->ipAddress,
+              $this->enfaseId,
+              $this->descricao,
+              $this->abreviatura,
+              $this->enfaseDePreRequisitoId) = $result[0];
+    }
+
+    public function save()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        if ( strlen($this->enfaseId)  ==  0 )
+        {
+            $retVal = $this->insert();
+        }
+        else
+        {
+            $retVal = $this->update();
+        }
+
+        foreach ( (array)$this->responsaveis as $responsavel )
+        {
+            $responsavel->enfaseId = $this->enfaseId;
+            $ok = $responsavel->save();
+
+            $this->insertGrupo($responsavel->responsavelId, self::CODIGO_GRUPO_ADMIN_RESIDENCIA_MEDICA);
+
+            if ( !$ok )
+            {
+                $msg = _M('Erro ao salvar os responsáveis', $module);
+                throw new Exception($msg);
+            }
+        }
+
+        return $retVal;
+    }
+
+    private function insert()
+    {
+        $sqlPK = "SELECT nextval('seq_medenfase_enfaseid'::regclass)";
+        $result = SDatabase::query($sqlPK);
+        $enfaseId = $result[0][0];
+
+        $sql = 'INSERT INTO aps.enfase
+                            (enfaseid,
+                             descricao,
+                             abreviatura,
+                             enfaseDePreRequisitoId )
+                     VALUES (?, ?, ?,?)';
+
+        $params = array();
+        $params[] = $enfaseId;
+        $params[] = $this->descricao;
+        $params[] = $this->abreviatura;
+        $params[] = $this->enfaseDePreRequisitoId;
+
+        $result = SDatabase::execute($sql, $params);
+
+        if ( $result )
+        {
+            $this->enfaseId = $enfaseId;
+        }
+
+        return $result;
+    }
+
+    private function update()
+    {
+        $sql = 'UPDATE aps.enfase
+                   SET descricao = ?,
+                       abreviatura = ?,
+                       enfaseDePreRequisitoId = ?
+                 WHERE enfaseid = ?';
+
+        $params = array();
+        $params[] = $this->descricao;
+        $params[] = $this->abreviatura;
+        $params[] = $this->enfaseDePreRequisitoId;
+        $params[] = $this->enfaseId;
+
+        return SDatabase::execute($sql, $params);
+    }
+
+    public function delete()
+    {
+
+        $this->__get('responsaveis');
+
+        if ( strlen($this->enfaseId)  ==  0 )
+        {
+            throw new Exception(_M('Não é possível excluir um registro que ainda não foi salvo.', $module));
+        }
+
+
+        foreach ( (array)$this->responsaveis as $responsavel )
+        {
+            $ok = $responsavel->delete();
+            if ( !$ok )
+            {
+                $msg = _M('Erro ao excluir os responsaveis da especialidade', $module);
+                throw new Exception($msg);
+            }
+        }
+
+        $sql = 'DELETE FROM aps.enfase
+                      WHERE enfaseid = ?';
+
+        $params = array($this->enfaseId);
+        $result = SDatabase::execute($sql, $params);
+
+        if ( $result )
+        {
+            $this->enfaseId = null;
+        }
+
+        return $result;
+    }
+
+    public static function listRecords()
+    {
+
+        $where = null;
+        $usuario = ApsEnfase::retornaAdminDaEspecialidadeResidenciaMedica();
+        if ( $usuario )
+        {
+           $where = " WHERE A.enfaseid in (SELECT AA.enfaseid FROM aps.enfaseresponsavel AA WHERE AA.responsavel = " . $usuario . ")";
+        }
+
+        $sql = "SELECT enfaseid,
+                       descricao
+                  FROM aps.enfase A
+                  $where
+              ORDER BY descricao";
+
+        $result = (array) SDatabase::query($sql);
+
+        $list = array();
+        foreach ( $result as $row )
+        {
+            $list[ $row[0] ] = $row[1];
+        }
+
+        return $list;
+    }
+
+
+    public function insertGrupo($personId, $groupId)
+    {
+        $busPerson = new BusinessBasicBusPerson();
+        $personData = $busPerson->getPerson($personId);
+        $busUser = new BusinessAdminUser();
+        $idUser = $busUser->getByLogin($personData->mioloLogin);
+
+        $dataUser = new BusinessAdminGroupUser();
+        $group = new BusinessAdminGroup();
+        $existGroup = $group->getGroup($groupId);
+
+        if($existGroup->idgroup)
+        {
+
+            $unit = sMultiUnidade::obterUnidadesDoUsuario($idUser);
+            $multiUnidadeAtiva = sMultiUnidade::estaHabilitada();
+
+            //Se tiver mais de uma unidade e multiunidade HABILITADO manda o codigo da unidade que esta logada
+            if ( $multiUnidadeAtiva && sizeof($unit) > 1 )
+            {
+                $unitId = sMultiUnidade::obterUnidadeLogada();
+            }
+            //se for apenas multiunidade ativa
+            elseif( $multiUnidadeAtiva )
+            {
+                foreach($unit as $cod => $descricao)
+                {
+                    $unitId = $cod;
+                }
+            }
+
+            $filter = new stdClass();
+            $filter->idUser = $idUser->idUser;
+            $filter->idGroup = $groupId;
+            $filter->unitId = $unitId;
+            $existUser = $dataUser->search($filter);
+
+            if ( count($existUser) == 0)
+            {
+                $dataUser->setIdUser($idUser->idUser);
+                $dataUser->setIdGroup($groupId);
+                $dataUser->setUnitId($unitId);
+
+                $dataUser->insertUserInGroups($dataUser);
+            }
+        }
+    }
+
+    public static function retornaAdminDaEspecialidadeResidenciaMedica()
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $mioloUserName = trim($MIOLO->getLogin()->id);
+        $busPerson = new BusinessBasicBusPerson();
+        $personData = $busPerson->getPersonByMioloUserName($mioloUserName);
+
+
+        $sql = "SELECT COUNT(E.enfaseid) > 0
+                    FROM aps.enfase E INNER JOIN aps.enfaseresponsavel ER 
+                    ON E.enfaseid = ER.enfaseid
+                   WHERE ER.responsavel = ?";
+
+        $result = SDatabase::query($sql, array($personData->personId));
+
+        if ($result[0][0] == DB_TRUE) {
+            return $personData->personId;
+        } else {
+            return 0;
+        }
+    }
+
+}
+?>

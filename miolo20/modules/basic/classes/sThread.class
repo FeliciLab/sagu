@@ -1,0 +1,305 @@
+<?php
+class sThread
+{
+    const PROCESS_WAITING = 1;
+    const PROCESS_RUNNING = 2;
+    const PROCESS_FINISHED = 3;
+
+    
+    /**
+     *
+     * @var ReflectionClass
+     */
+    private $_reflection;
+    
+    
+    /**
+     * Resultado do proc_open() - resource
+     *
+     * @var resource
+     */
+    private $_procOpenInfo;
+    
+    
+    private $_lastCheckedStatus;
+    
+    
+    /**
+     * ProcessId (pid) simulado de processo, utilizado para identificar status de execucao.
+     * OBS: Este nao é o pid real do processo.
+     *
+     * @var int
+     */
+    private $processId;
+    
+    
+    /**
+     * Arquivo temporario que salva informacoes do processo)
+     *
+     * @var string
+     */
+    private $processStatusFile;
+    
+    
+    private $processStatus;
+    
+    
+    public function __construct()
+    {
+        $this->_reflection = new ReflectionClass($this);
+        $this->generateProcessId();
+        $this->checkRunMethod();
+    }
+    
+    /**
+     * Executa de fato o processo via cake shell (php console)
+     */
+    public function start()
+    {
+        $shellDir = dirname(__FILE__);
+        $params = serialize($this->getParameters());
+        $params = str_replace('"', "\\\"", $params);
+
+        // Quando objeto e clonado ocorrem problemas 
+//        $this->generateProcessId();
+        
+        // Indica que processo esta sendo executado
+        $this->setProcessStatus(self::PROCESS_RUNNING);
+        
+        // Executa sequencia de comandos unix para executar processo, e salva dados no arquivo de informacao
+//        $exec = shell_exec("cd {$shellDir}; ./cake code executeThread \"{$params}\"&");
+        $descriptorspecarray = array( fopen($this->getProcessStatusFile().'_', 'w') );
+        $pipes = array('/tmp/threadinfopipe');
+        $this->_procOpenInfo = proc_open("php sconsolethread.php \"{$params}\"&", $descriptorspecarray, $pipes, $shellDir);
+    }
+    
+    /**
+     * Forca a finalizacao do processo (kill)
+     */
+    public function stop()
+    {
+        proc_terminate($this->_procOpenInfo);
+    }
+    
+    /**
+     * Executa processo definido na classe filha
+     */
+    public function __run()
+    {
+//        if ( $this->getProcessStatus() == self::PROCESS_RUNNING )
+        {
+            $this->run();
+        }
+        
+        $this->setProcessStatus(self::PROCESS_FINISHED);
+    }
+    
+    /**
+     * Obtem array onde chaves sao nomes dos metodos get() e valores sao chamadas
+     *  destes metodos.
+     *
+     * @return array
+     */
+    private function getParameters()
+    {
+        $params = array();
+
+        foreach ( $this->_reflection->getMethods(ReflectionMethod::IS_PUBLIC) as $m )
+        {
+            $name = $m->getName();
+            $setMethod = 'set' . substr($name, 3);
+            if ( substr($name, 0, 3) == 'get' && ( $this->_reflection->hasMethod($setMethod) && !$this->_reflection->getMethod($setMethod)->isPrivate() ) )
+            {
+                $cut = substr($name, 3);
+                $value = call_user_method($name, $this);
+                if ( is_scalar($value) )
+                {
+                    $params[$cut] = $value;
+                }
+            }
+        }
+        
+        return $params;
+    }
+    
+    /**
+     * Recebe parametros da mesma forma que getParameters(), e executa chamadas
+     *  ->set() para cada um deles nesta classe.
+     */
+    public function setParameters(array $parameters)
+    {
+        foreach ( $parameters as $p => $value )
+        {
+            $methodName = 'set' . $p;
+            if ( $this->_reflection->hasMethod($methodName) && !$this->_reflection->getMethod($methodName)->isPrivate() )
+            {
+                call_user_method($methodName, $this, $value);
+            }
+        }
+    }
+    
+    private function checkRunMethod()
+    {
+        if ( ! $this->_reflection->hasMethod('run') )
+        {
+            throw new Exception('A sua classe ' . __CLASS__ . ' deve obrigatoriamente possuir um método run().');
+        }
+        
+        if ( ! $this->_reflection->getMethod('run')->isProtected() )
+        {
+            throw new Exception('O método run() da sua classe ' . __CLASS__ . ' deve obrigatoriamente ser definido como "protected".');
+        }
+    }
+    
+    /**
+     * Retorna true caso execucao de processo ja tenha sido finalizado.
+     */
+    public function hasFinished()
+    {
+        return $this->getProcessStatus() == self::PROCESS_FINISHED;
+    }
+    
+    public function isRunning()
+    {
+        return $this->getProcessStatus() == self::PROCESS_RUNNING;
+    }
+    
+    /**
+     * Espera ate que o processo finalize
+     */
+    public function waitForFinish()
+    {
+        while ( !$this->hasFinished() )
+        {
+            sleep(1);
+        }
+    }
+    
+    
+    /**
+     * Obtem nome de classe para ser enviado no CodeShell::executeThread()
+     *
+     * @return string
+     */
+    public function getClassName()
+    {
+        return $this->_reflection->getName();
+    }
+    
+    /**
+     * Nada faz.
+     *
+     * @param string $value 
+     */
+    public function setClassName($value)
+    {
+    }
+    
+    
+    public function getProcessId()
+    {
+        return $this->processId;
+    }
+
+    public function generateProcessId()
+    {
+        $this->processId = rand();
+        $this->setProcessStatusFile("/tmp/appthreadinfo_{$this->processId}");
+    }
+    
+    
+    public function getProcessStatusFile() {
+        return $this->processStatusFile;
+    }
+
+    public function setProcessStatusFile($processStatusFile) {
+        $this->processStatusFile = $processStatusFile;
+    }
+
+    /**
+     * Obtem estado do processo baseado no arquivo
+     *
+     * @return int
+     */
+    public function getProcessStatus()
+    {
+        $pStatus = null;
+        
+        // Verificacao para evitar uso excessido de I/O
+        // Isto pode gerar atraso de ate 1 segundo na mudanca de estado do processo
+        if ( $this->processStatus && ((time() - $this->_lastCheckedStatus) == 0) )
+        {
+            $pStatus = $this->processStatus;
+        }
+        else
+        {
+            $pStatus = @file_get_contents($this->getProcessStatusFile());
+            $this->processStatus = $pStatus;
+        }
+        
+        $this->_lastCheckedStatus = time();
+
+        return $pStatus;
+    }
+
+    /**
+     * Define estado do processo no arquivo
+     *
+     * @param int $processStatus 
+     */
+    public function setProcessStatus($processStatus)
+    {
+        file_put_contents($this->getProcessStatusFile(), $processStatus);
+    }
+    
+    /**
+     * Executa multiplas threads em fila com limite de processos, ate terminar
+     *
+     * @param array $threads Array com instancias de sThread
+     * @param int $parallel Numero de processos paralelos que devem rodar em background
+     */
+    public static function runQueueThreads(array $threads, $parallel = 10)
+    {
+        while ( true )
+        {
+            $finished = 0;
+            $running = 0;
+            
+            foreach ( $threads as $thread )
+            {
+                if ( $thread->hasFinished() )
+                {
+                    $finished ++;
+                }
+                
+                if ( $thread->isRunning() )
+                {
+                    $running ++;
+                }
+            }
+
+            if ( $finished == count($threads) )
+            {
+                return;
+            }
+
+            // Caso estejam sendo rodados menos processos que o limite, inicia outras threads
+            for ( $i=0; ( $running < $parallel ) && ( $i <= $parallel ); $i++ )
+            {
+                foreach ( $threads as $thread )
+                {
+                    if ( ! $thread->isRunning() && !$thread->hasFinished() )
+                    {
+                        $thread->start();
+                        $running ++;
+
+                        break;
+                    }
+                }
+            }
+
+            sleep(1);
+        }
+    }
+}
+?>

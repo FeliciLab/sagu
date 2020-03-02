@@ -1,0 +1,515 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluçoes Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; voce pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundaçao
+ * do Software Livre (FSF); na versao 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇAO a qualquer MERCADO
+ * ou APLICAÇAO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * portugues para maiores detalhes.
+ *
+ * Voce deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se nao, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundaçao do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Verificacao de dependencias do SAGU
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 08/12/2011
+ */
+class SDependencyCheck extends BDependencyCheck
+{
+    public function clearMessages()
+    {
+        $this->setMessage('');
+    }
+    
+    public function listDependency()
+    {
+        $module = MIOLO::getCurrentModule();
+
+        $list = parent::listDependency();
+        
+        $list[] = array('reportsIsOk', _M('Verificação de logos de relatórios', $module));
+        $list[] = array('installedModules', _M('Verificação de módulos instalados', $module));
+        $list[] = array('checkBasSystemTaskMethods', _M('Verificação de métodos da tabela bas.systemTask', $module));
+        //$list[] = array('basicTypesCheck', _M('Verificacão básica de types'));
+        $list[] = array('integraGnuteca', _M('Verificação de Integração com o Gnuteca', $module));
+        $list[] = array('instanciaClasses', _M('Instancia de classes (forms)', $module));
+        $list[] = array('memoryLimitPhp', _M('Memory limit - PHP', $module));
+        $list[] = array('autovacuum', _M('Autovacuum postgreSQL', $module));
+
+        
+        //converte para BString
+        /*foreach ( $list as $key => $val )
+        {
+            $list[$key][1] = new BString($val[1]);
+        }*/
+
+        return $list;
+    }
+    
+    /**
+     * Executa todas verificacoes de dependencia. 
+     */
+    public function checkAll()
+    {
+        foreach ( $this->listDependency() as $method => $label )
+        {
+            SAGU::output("Executando: {$label}...");
+            
+            $msg = $this->runCheck($method) ? 'OK' : 'FALHOU';
+            
+            SAGU::output($msg);
+        }
+    }
+    
+    /**
+     * Executa uma dependencia especifica
+     *
+     * @param string $method 
+     */
+    public function runCheck($method)
+    {
+        return $this->$method();
+    }
+    
+    public function filePermission()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $busFile = new BusinessBasicBusFile();
+        $dir = $MIOLO->GetModulePath('basic', SAGU::getParameter('BASIC', 'UPLOAD_PATH'));
+        $ok = true;
+        
+        if ( !is_writable($dir) )
+        {
+            $ok = false;
+            $this->setMessage( _M('Sem permissão de escrita no diretório <b>@1</b>', 'basic', $dir) );
+        }
+        
+        return $ok;
+    }
+    
+    
+    public function emailConfigured()
+    {
+        $busMailServer = new BusinessBasicBusMailServer();
+        $server = $busMailServer->getMailServer();
+        
+        $recipient = array(
+            'Teste' => SAGU::getParameter('BASIC', 'DEFAULT_MAIL_TEST'),
+        );
+        $mail = new sendEmail($server->smtpUser, 'Teste email',
+                $recipient,
+                'Teste email',
+                'Email de teste gerado pelos testes de dependencias do SAGU', array());
+        $ok = $mail->sendEmail();
+        
+        if ( !$ok )
+        {
+            $this->setMessage( _M('O envio de e-mail nao esta funcionando corretamente, verifique a configuracao.', 'basic') );
+        }
+        
+        return $ok;
+    }
+    
+    
+    /**
+     * Verifica se configuracoes basicas de cliente para relatorios está OK
+     * - Se banner e logo foram modificados para cliente (para nao ficar banner da SOLIS)
+     *
+     */
+    public function reportsIsOk()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        // Array onde chaves sao md5sum dos arquivos do basic/reports/* do svn trunk do SAGU
+        $md5list = array();
+        $md5list['c6ae9886ab1bca659b5addb4d923b4ab'] = $MIOLO->getModulePath('basic', 'reports/logo.png');
+        $md5list['a32b272536b09508cbcb4f908c688840'] = $MIOLO->getModulePath('basic', 'reports/banner.png');
+        
+        $ok = true;
+        $filesError = array();
+        foreach ( $md5list as $key => $file )
+        {
+            if ( $key == md5_file($file) )
+            {
+                $ok = false;
+                $filesError[] = $file;
+            }
+        }
+        
+        //
+        if ( !$ok )
+        {
+            $this->setMessage( _M('O(s) arquivo(s) <b>@1</b> está(ao) igual ao do SVN do SAGU, deve ser feito um específico para cada cliente para não ficar o logo da SOLIS nos relatórios.', $module, implode(', ', $filesError)) );
+        }
+        
+        return $ok;
+    }
+    
+    
+    /**
+     * Verifica se estrutura de modulos esta instalada corretamente
+     */
+    public function installedModules()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        $sysModule = new SSystemModule();
+        
+        // Varre modulos e verifica se diretorio existe no sistema
+        foreach ( SModules::getInstalledModules() as $sysModule )
+        {
+            if ( !is_dir($sysModule->getSystemPath()) )
+            {
+                $this->addMessage( _M('O diretorio do modulo <b>@1</b> (@2) não foi encontrado.', $module, $sysModule->getName(), $sysModule->getSystemPath()) );
+            }
+        }
+        
+        return ! $this->hasMessage();
+    }
+    
+    
+    /**
+     * Verifica se metodos da BasSystemTask estao em dia
+     */
+    public function checkBasSystemTaskMethods()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        $rows = BasSystemTask::search();
+
+        $row = new BasSystemTask();
+        foreach ( $rows as $row )
+        {
+            // Caso esteja ativada mas metodo nao existe no sistema, alerta
+            if ( $row->enabledTask == DB_TRUE && !method_exists($row->getCallClass(), $row->getCallMethod()) )
+            {
+                $this->addMessage( _M('O método <b>@1</b> da tarefa <b>@2</b> não foi encontrado.', $module, $row->callMethod, $row->description) );
+            }
+        }
+        
+        return ! $this->hasMessage();
+    }
+    
+    /**
+     * Verifica types de uma forma basica (metodos padroes)
+     * 
+     * @TODO Fazer verificacoes mais avancadas, fazer atributo array $testData nos types (que serao utilizados como dados teste)
+     * @TODO Fazer verificacoes dos outros metodos padroes save() (insert / update) , delete()
+     * @TODO Cada type pode dizer de qual outro depende, assim, pode ser inserido antes os dados dependentes, em fila.
+     * 
+     * @TODO Para funcoes especificas, pode ser feito metodos testNomeDoMetodoEspecifico() de cada type,
+     * @TODO  assim, o SDependencyCheck chama estes metodos automaticamente, e alerta com erro para
+     * @TODO  metodos (exceto getters e setters) que estao sem a funcao test*().
+     */
+    public function basicTypesCheck()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $modulesDir = $MIOLO->getConf('home.modules');
+        
+        // Tratamentos especiais SDatabase
+        $MIOLO->setConf('isTestMode', true);
+        
+        $ok = true;
+        
+        $typesList = array();
+        
+        // Percorre modulos
+        $sysModule = new SSystemModule();
+        foreach ( SModules::getInstalledModules() as $sysModule )
+        {
+            $directory = $sysModule->getSystemPath() . '/types';
+            
+            // Busca todos types do modulo
+            if ( is_dir($directory) )
+            {
+                foreach ( SAGU::findFiles($directory) as $file )
+                {
+                    $typesList[] = $file;
+                }
+            }
+        }
+        
+        //
+        $table = array();
+        $table[] = '<table border=1 style="font-size: 10px">';
+        $table[] = '<tr>';
+        $table[] = '<th>Type</th>';
+        $table[] = '<th>search() count</th>';
+        $table[] = '<th>searchGrid() count</th>';
+        $table[] = '<th>listRecords() count</th>';
+        $table[] = '<th>Erros</th>';
+        $table[] = '</tr>';
+        
+        sort($typesList);
+        foreach ( $typesList as $file )
+        {
+            list($className) = explode('.', basename($file));
+            
+            $typeErrors = array();
+            $searchCount = '-';
+            
+            try
+            {
+                if ( !class_exists($className) )
+                {
+                    throw new Exception( _M('Classe @1 não encontrada, verifique autoload.', $module, $className) );
+                }
+                
+                // reflection
+                $reflection = new ReflectionClass($className);
+
+                $isExtendingSType = $reflection->getParentClass() ? $reflection->getParentClass()->getName() == 'SType' : null;
+                if ( ! $reflection->isInstantiable() || !$isExtendingSType )
+                {
+                    continue;
+                }
+
+                $obj = $reflection->newInstanceArgs(); // Obtem instancia do type
+                
+                // testa search() (que inclui populate())
+                if ( ! $reflection->hasMethod('search') )
+                {
+                    throw new Exception( _M('Metodo search() nao encontrado.', $module) );
+                }
+                
+                $searchCount = count($obj->search());
+                
+                $filters = new stdClass();
+                $filters->description = '%';
+                $searchGridCount = $reflection->hasMethod('searchGrid') ? count($obj->searchGrid($filters)) : '-';
+                
+                $listRecordsCount = $reflection->hasMethod('listRecords') ? count($obj->listRecords()) : '-';
+            }
+            catch (Exception $e)
+            {
+                $ok = false;
+                $typeErrors[] = $e->getMessage();
+            }
+            
+            $table[] = '<tr>';
+            $table[] = "<td>{$className}</td>";
+            $table[] = "<td>{$searchCount}</td>";
+            $table[] = "<td>{$searchGridCount}</td>";
+            $table[] = "<td>{$listRecordsCount}</td>";
+            $table[] = '<td><span style="color: red;">' . implode('<br>', $typeErrors) . '</span></td>';
+            $table[] = '</tr>';
+        }
+        
+        $table[] = '</table>';
+        
+        $this->addMessage(implode('', $table));
+        
+        return $ok;
+    }
+    
+    public function integraGnuteca()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $database = SDatabase::getInstance();
+        
+        //Obtém o valor do parâmetro 'GNUTECA_DATABASE_ADRESS'
+        $parameter = SAGU::getParameter('GNUTECA', 'GNUTECA_DATABASE_ADRESS');
+        
+        //Verifica se existe algum valor
+        if ( strlen($parameter) == 0)
+        {
+            $this->setMessage( _M('Integração com Gnuteca não está habilitada', $module) );
+            
+            return true;
+        }
+        
+        //Consulta o catálogo do postgres referente aos gatilhos        
+        $sql = new MSQL();
+        $sql->setTables('pg_catalog.pg_trigger');
+        $sql->setColumns('count(*)');
+        $sql->setWhere("tgname IN ('synchronizegnuteca', 'synchronizegnutecalink', 
+'synchronizegnutecapersonlink', 'synchronizegnutecadocument', 'synchronizepassword')");
+        $sql = $sql->select();
+        
+        //MIOLO::vd($sql);
+        
+        $result = $database->Query($sql);
+        
+        //Testa se o retorno da consulta é diferente de 5
+        if($result[0][0] != 6)
+        {
+           $this->setMessage( _M('Gatilhos de integração não encontrados', $module) );
+           
+           return false;
+        }
+                
+        //Obtém os valores do miolo.conf
+        $system = $MIOLO->getConf('db.gnuteca.system');
+        $host = $MIOLO->getConf('db.gnuteca.host');
+        $port = $MIOLO->getConf('db.gnuteca.port');
+        $name = $MIOLO->getConf('db.gnuteca.name');
+        $user = $MIOLO->getConf('db.gnuteca.user');
+        $password = $MIOLO->getConf('db.gnuteca.password');
+        
+        
+        //Obtém o valor do parâmetro 'GNUTECA_DATABASE_ADRESS'
+        $parameter = SAGU::getParameter('GNUTECA', 'GNUTECA_DATABASE_ADRESS');
+        
+        //Transforma a string em um vetor
+        $parameterVetor = explode(' ', $parameter);      
+        $dbname = substr($parameterVetor[0], strpos($parameterVetor[0], '=')+1);
+        $dbhost = substr($parameterVetor[1], strpos($parameterVetor[1], '=')+1);
+        $dbuser = substr($parameterVetor[2], strpos($parameterVetor[2], '=')+1);
+        $dbport = substr($parameterVetor[3], strpos($parameterVetor[3], '=')+1);
+        
+        //Compara os resultados do vetor com os valores obtidos do miolo.conf
+        if($parameterVetor[4])
+        {
+            $dbpswd = substr($parameterVetor[4], strpos($parameterVetor[4], '=')+1);
+        }
+
+        $ok = true;
+        
+        if ($name != $dbname )
+        {
+            $ok = false;
+        }
+        if ($host != $dbhost )
+        {
+            $ok = false;
+        }
+        if ($user != $dbuser )
+        {
+            $ok = false;
+        }
+        if ($port != $dbport )
+        {
+            $ok = false;
+        }
+        if ($dbpswd)
+        {
+            if ($password != $dbpswd )
+            {
+                $ok = false;
+            }
+        }
+        
+        //Valida as comparações
+        if (!$ok)
+        {
+            $this->setMessage( _M('Parametro configurado incorretamente. Verifique o valor do parâmetro com as configurações de base do Sagu', $module) );
+            
+            return false;
+        }
+        
+        try
+        {
+            $sql = new MSQL();
+            $sql->setTables("dblink('$parameter', 'SELECT 1') AS (result INT)");
+            $sql->setColumns('result');
+            $sql = $sql->select();
+            
+           $database->Query($sql);
+        }
+        catch (Exception $e)
+        {
+           $this->setMessage( _M('Base de dados do Gnuteca não encontrada.', $module) );
+           
+           return false;
+        }
+         
+        $this->setMessage( _M('Integração habilitada.', $module) );
+        
+        return true;
+        
+    }
+    
+    
+    /**
+     * Instancia classes do sistema e executa metodos padrao
+     */
+    public function instanciaClasses()
+    {
+        return true; // FIXME Ainda nao e possivel utilizar este metodo devido a problemas nos forms atualmente
+        
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        global $MIOLO;
+        
+        $instantied = array();
+        $sysModule = new SSystemModule();
+        foreach ( SModules::getInstalledModules() as $sysModule )
+        {
+            // Redefine nome do modulo
+            $module = $sysModule->getName();
+            global $module;
+            
+            // Misc...
+            $_SERVER['REQUEST_URI'] = '...&module=' . $sysModule->getName() . '&...';
+            $_REQUEST['cpaint_function'] = null;
+            
+            $directory = $sysModule->getSystemPath() . '/forms';
+            
+            $typesFile = $sysModule->getSystemPath() . '/types.class';
+            if (file_exists($typesFile))
+            {
+                require_once $typesFile;
+            }
+            
+            // Busca todos types do modulo
+            if ( is_dir($directory) )
+            {
+                foreach ( SAGU::findFiles($directory) as $file )
+                {
+                    MIOLO::vd($file);
+                    list($className) = explode('.', basename(strtolower($file)));
+                    
+                    if ( !in_array($className, $instantied) )
+                    {
+//                        MIOLO::vd($file);
+                        require_once $file;
+                        
+                        // FIXME Deve ser ajustado erros diversos nos forms para poder instanciar
+//                        $obj = new $className();
+
+                        $instantied[] = $className;
+                    }
+                }
+            }
+        }
+        
+        $module = SAGU::getFileModule(__FILE__);
+        $this->setMessage(_M('@1 classes instanciadas', $module, count($instantied)));
+        
+        return true;
+    }
+    
+    /*
+     * Verifica se o autovacuum do banco esta habilitado
+     */
+    public static function verificaAutovacuum()
+    {
+        $sql = 'show autovacuum';
+        
+        $db = SDatabase::getInstance();
+        $result = $db->query(SAGU::prepare($sql, array(), false)); 
+        
+        return $result[0][0];
+    }
+}
+?>

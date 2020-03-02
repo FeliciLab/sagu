@@ -1,0 +1,324 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Retorno de títulos
+ *
+ * @author Equipe SAGU [sagu@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Equipe SAGU [sagu@solis.coop.br]
+ *
+ * @since
+ * Class created on 06/03/2012
+ *
+ **/
+ini_set('memory_limit', '10240M');
+ini_set('max_execution_time', '0');
+
+class FrmBankReturn extends SForm
+{
+    private $divGrid;
+    private $btnApply;
+    private $btnImport;
+    private $btnNew;
+    private $fileIdHidden;
+    
+    public function __construct($data = null, $isTest = false)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        if ( !$isTest )
+        {
+            parent::__construct(_M('Retorno de títulos', $module), new FinBankMovement(), null);
+        }
+    }
+
+
+    public function defineFields()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $event  = MIOLO::_REQUEST('__EVENTTARGETVALUE');
+        
+        // Caso seja solicitado o reinício do processo.
+        if ( $event == 'REINICIAR_PROCESSO' )
+        {
+            FinBankMovement::resetarTabelasTemporariasDeMovimentacoesELancamentos();
+        }
+        
+        $registrosTemporarios = FinBankMovement::obterMovimentacoesBancariasTemporariasParaGrid();
+        
+        // Verifica se existe algum registro nas tabelas 'temporárias'. Se existir, não pode deixar fazer o processo sem antes resetá-las.
+        if ( count($registrosTemporarios) > 0 && $event != 'btnApply:click' )
+        {
+            $prompt = new MPrompt('Erro', _M("Existem registros sendo processados por " . $registrosTemporarios[0][15] . ", deseja reiniciar o processo?"));
+            $prompt->SetType('error');
+
+            $actionUrl = $MIOLO->getActionURL($module, 'main:process:remittanceReturn:bankReturn', null, array('__EVENTTARGETVALUE' => 'REINICIAR_PROCESSO'));
+            $prompt->AddButton(_M('Sim'), $actionUrl);
+            $prompt->AddButton(_M('Voltar'), $MIOLO->getActionURL($module, $MIOLO->getCurrentAction()));
+            
+            $MIOLO->prompt($prompt);
+        }
+
+        // Banco
+        $busBank = new BusinessFinanceBusBank();
+        $fields[] = $bankId = new MComboBox('bankId', $this->getRequestValue('bankId'), _M('Banco', $module), $busBank->listBank(true));
+        $bankId->setJsHint( _M('Escolha o banco que deseja importar o arquivo', $module) );
+        $validators[] = new MRequiredValidator('bankId');
+        
+        // Arquivo
+        $fields[] = new MFileField('uploadFile', null, _M('Arquivo', $module));
+        $fields[] = $this->fileIdHidden = new SHiddenField('fileId', $this->getRequestValue('fileId'));
+        
+        // Botao
+        $fields[] = $this->btnNew = new MButton('btnNew', _M('Nova importação', $module));
+        $this->btnNew->setVisibility(false);
+        
+        $fields[] = $this->btnImport = new MButton('btnImport', _M('Visualizar importação', $module));
+        
+        $fields[] = new MSeparator();
+        
+        $fields[] = $this->divGrid = new MDiv('divGrid');
+        $fields[] = $this->btnApply = new MButton('btnApply', _M('Aplicar', $module));
+        $this->btnApply->onclick = "_doPostBack('btnApply:click','', '_self'); setTimeout(function() { document.getElementById('btnApply').disabled = true; }, 0);";
+        $this->btnApply->setVisibility(false);
+        
+        $this->SetFields($fields);
+        $this->SetValidators($validators);
+    }   
+    
+    /**
+     * Executa o processo de importacao
+     *
+     * @param stdClass $args 
+     */
+    public function btnImport_click($args, $isTest = false)
+    {
+        $MIOLO   = MIOLO::getInstance();
+        $module  = MIOLO::getCurrentModule();
+                
+        try
+        {
+            if ( !strlen($_FILES['uploadFile']['name']) > 0 )
+            {
+                throw new Exception(_M('É necessário selecionar um arquivo de retorno para visualizar a importação.'));
+            }
+            
+            if ( !$isTest )
+            {
+                SDatabase::beginTransaction(); 
+            }
+            
+            $fileId = $this->processarArquivoDeRetorno();
+            
+            if ( !$isTest )
+            {
+                $this->fileIdHidden->setValue($fileId);
+            }
+            
+            $gridData = $this->gerarRegistrosQueSeraoImportados($fileId);
+            $grid = $MIOLO->getUI()->getGrid($module, 'GrdBankReturn');
+            $grid->setData($gridData);
+            
+            if ( !$isTest )
+            {
+                $this->divGrid->setInner($grid);
+                $this->btnApply->setVisibility(true);
+                $this->btnImport->setVisibility(false);
+                $this->btnNew->setVisibility(true);
+                
+                SDatabase::commit();
+            }
+        }
+        catch ( Exception $e )
+        {
+            if ( !$isTest )
+            {
+                SDatabase::rollback();
+                $MIOLO->error($e->getMessage());
+            }
+        }
+    }
+    
+    /**
+     * Processa o arquivo de retorno.
+     * 
+     * @return int
+     * @throws Exception
+     */
+    private function processarArquivoDeRetorno()
+    {
+        $data    = $this->getTypesData();
+        $busFile = new BusinessFinanceBusFinFile();
+        
+        if ( !ReturnInvoice::returnExists($data->bankId) )
+        {
+            throw new Exception(_M('Desculpe, o sistema não tem suporte para importar este arquivo', MIOLO::getCurrentModule()));
+        }
+
+        $fileData = new stdClass();
+        $fileData->localPath      = $_FILES['uploadFile']['tmp_name'];
+        $fileData->fileName       = $_FILES['uploadFile']['name'];
+        $fileData->fileType       = $_FILES['uploadFile']['type'];
+        $fileData->size           = $_FILES['uploadFile']['size'];
+        $fileData->uploadFileName = $fileData->fileName;
+        $fileData->contentType    = $fileData->fileType;
+
+        $file   = $busFile->getFinanceFileByName($fileData->fileName);
+        $fileId = ($file->fileId) ? $file->fileId : $data->fileId;
+
+        // Descriminação de arquivos para gravação na tabela
+        $fileData->fileType      = 'I';
+        $fileData->inputOrOutput = 'I';
+        $fileData->isProcessed   = DB_FALSE;
+            
+        if ( strlen($fileId) == 0 )
+        {
+            $fileId = $busFile->insertFinanceFile($fileData);
+        }
+        else
+        {
+            // Caso já tenha sido processado, edita o registro e novamente efetua o upload.
+            $fileData->fileId = $fileId;
+            $fileData->bankReturnId = $file->bankReturnId;
+            $busFile->updateFinanceFile($fileData, true);
+        }
+        
+        return $fileId;
+    }
+    
+    /**
+     * Gera os registros que deverão ser importados, inserindo nas tabelas
+     * temporárias de movimentações bancárias e lançamentos.
+     * 
+     * @param int $fileId
+     * @return array
+     */
+    private function gerarRegistrosQueSeraoImportados($fileId)
+    {
+        $data    = $this->getTypesData();
+        $finFile = new FinFile($fileId);
+            
+        // Instancia objeto FinReturnInvoice e faz processamento
+        $className    = 'ReturnInvoice' . $data->bankId;
+        $bankReturnId = $finFile->bankReturnId;
+
+        $obj = new $className();
+        $obj instanceof FinReturnInvoice;
+        $obj->setFileId($fileId);
+        $obj->process();
+        
+        foreach ( $obj->getBankMovements() as $row )
+        {
+            $row instanceof FinBankMovement;  
+            $row->bankReturnId = $bankReturnId;
+
+            FinBankMovement::insereRegistroObtidoDoArquivoNaTabelaTemporaria($row);
+        }
+
+        // Processos com os registros.
+        FinBankMovement::processarOsRegistrosDeRetornoBancario();
+        
+        return FinBankMovement::obterMovimentacoesBancariasTemporariasParaGrid();
+    }
+    
+    /**
+     * Aplica definitivamente os registros temporários gerados.
+     * 
+     * @param stdClass $args
+     */
+    public function btnApply_click($args, $isTest = false)
+    {
+        try
+        {
+            if ( !$isTest )
+            {
+                SDatabase::beginTransaction();
+            }
+            
+            $finBankMovement = new FinBankMovement();
+            
+            if ( $finBankMovement->insereNossoNumerosInexistentes() )
+            {
+                if ( $finBankMovement->salvaAsMovimentacoesBancariasDaTabelaTemporaria() )
+                {
+                    if ( $finBankMovement->salvaOsLancamentosDosRegistrosDaTabelaTemporaria() )
+                    {
+                        $finBankMovement->verificaBaixaDaPrimeiraParcelaParaPreMatricula();
+                        $finBankMovement->salvaAsMovimentacoesBancariasDeTitulosNaoEncontrados();
+                        $finBankMovement->verificaTitulosCanceladosDosRegistrosDaTabelaTemporaria();
+
+                        FinBankMovement::resetarTabelasTemporariasDeMovimentacoesELancamentos();
+                    }
+                }
+            }
+            
+            if ( !$isTest )
+            {
+                SDatabase::commit();
+                
+                $this->btnApply->setVisibility(false);
+                $this->AddInfo(_M('Arquivo importado com sucesso', MIOLO::getCurrentModule()));
+            }
+        } 
+        catch ( Exception $err ) 
+        {
+            if ( !$isTest )
+            {
+                SDatabase::rollback();
+
+                $this->btnApply->setVisibility(false);
+                $this->AddError(_M($err->getMessage(), MIOLO::getCurrentModule()));
+            }
+        }
+        
+    }
+    
+    /**
+     * Ação para uma nova importação.
+     * 
+     * @param stdClass $args
+     */
+    public function btnNew_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $url = MIOLO::getCurrentURL();
+        
+        $MIOLO->page->redirect($url);
+    }
+    
+    /**
+     * Get the data from form and returns as a object
+     */
+    public function getTypesData()
+    {
+        $data->bankId = $this->getRequestValue('bankId');
+        $data->fileId = $this->getRequestValue('fileId');
+
+        return $data;
+    }
+}
+?>

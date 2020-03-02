@@ -1,0 +1,203 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Augusto A. Silva [augusto@solis.coop.br] *
+ *
+ * @since
+ * Class created on 03/08/2012
+ */
+
+class FrmDetalhamentoTcc extends SForm
+{
+    /**
+     * Class constructor
+     */
+    public function __construct()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+
+        parent::__construct(_M('Detalhamento de TCC', $module), null, null);
+        $this->addStyleFile('m_grids.css');
+    }
+
+    /**
+     *  Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        
+        $businessPerson               = new BusinessBasicBusPerson();
+        $businessEnroll               = new BusinessAcademicBusEnroll();        
+        $businessDiverseConsultation  = new BusinessAcademicBusDiverseConsultation();
+        $busFinalExaminationDirectors = new BusinessAcademicBusFinalExaminationDirectors();
+        $businessCurriculum           = new BusinessAcademicBusCurriculum();
+        $businessContract             = new BusinessAcademicBusContract();
+        
+        // Pega os dados do professor logado.
+        $personData = $businessPerson->getPersonByMioloUserName(trim($MIOLO->getLogin()->id));
+        $fields[] = new MHiddenField('personId', $personData->personId);
+        
+        $filters = new stdClass();
+        $filters->personId = $personData->personId;
+        
+        $directors = $busFinalExaminationDirectors->searchFinalExaminationDirectors($filters);
+        
+        // Busca todas as matrículas que possuem o professor atual como orientador.
+        if ( isset($directors) )
+        {
+            foreach ( $directors as $value )
+            {
+                $enrollId = $value->enrollId;            
+                $enroll   = $businessEnroll->getEnroll($enrollId);
+
+                $filter = new stdClass();        
+                $filter->periodId   = $enroll->learningPeriodId;
+                $filter->contractId = $enroll->contractId;
+
+                $dataGrid = $businessDiverseConsultation->getCurricularComponentCoursed($filter);
+
+                // Busca as disciplinas da matrícula.
+                foreach ( $dataGrid as $value )
+                {
+                    // Somente se for de tcc.
+                    if ( $value[0] == $enrollId )
+                    {
+                        $curricularComponentId = explode('/', $value[3]);
+
+                        $filters = new stdClass();
+                        $filters->curricularComponentId = $curricularComponentId[0];
+
+                        $curriculum = $businessCurriculum->searchCurriculum($filters);
+
+                        // Busca os dados completos da disciplina de tcc, adicionando em seguida na grid.
+                        foreach ( $curriculum as $cur )
+                        {   
+                            $pupilEnroll   = $businessEnroll->getEnroll($enrollId);
+                            $pupilContract = $businessContract->getContract($pupilEnroll->contractId);
+                            $pupilData     = $businessPerson->getPerson($pupilContract->personId);
+
+                            $args = array(
+                                'enrollVersionId' => $value[3],
+                                'contractId' => $pupilEnroll->contractId,
+                                'curriculumId' => $pupilEnroll->curriculumId,
+                                'personId' => $personData->personId,
+                                'curriComponentName' => $cur[10],
+                                'pupil' => $pupilData->name,
+                                'theme' => $pupilEnroll->finalExaminationTheme,
+                                'event' => 'acompanhamento'
+                            );
+                            $linkAdd    = $MIOLO->GetActionURL($module, 'main:professor:detalhamentoTcc', null, $args);
+                            $linkImgAdd = new MImageLink("linkAdd$enrollId", _M('Histórico de acompanhamento', $module), $linkAdd, $MIOLO->getUI()->getImageTheme($MIOLO->getConf("theme.main"), 'button_add.png') );                        
+
+                            $dataTable[] = array ( 
+                                array ( 
+                                    $linkImgAdd->generate() 
+                                ),
+                                $cur[3],
+                                $cur[8],
+                                $cur[10],
+                                $pupilEnroll->finalExaminationTheme,
+                                $pupilData->name                                               
+                            );
+                        }
+                    }
+                }
+            }
+        }
+        
+        $columns = array ( 
+            _M('Ações', $module),
+            _M('Curso', $module),
+            _M('Código da disciplina', $module),
+            _M('Nome da disciplina', $module),
+            _M('Tema', $module),
+            _M('Nome do aluno', $module)
+        );
+        
+        $table = new MTableRaw(null, $dataTable, $columns);
+        $table->SetAlternate(true);
+        
+        $baseGroup = new MBaseGroup('baseGroup', 'Orientação de TCC', array( $table ));
+        $fields[]  = $baseGroup;
+        
+        $fields[] = new MSeparator();
+        $fields[] = new MDiv('divCurricularComponent', $data);
+        $fields[] = new MSeparator();
+        $fields[] = new MButton('tbBtnBack', '<< ' . _M('Voltar', $module), $MIOLO->getActionURL($module, 'main:professor', null, $opts));                
+
+        parent::defineFields( array( 'fields' => $fields ) );
+    }
+    
+    public function tbBtnSave_click($sender = NULL)
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $function = MIOLO::_REQUEST('function');
+        
+        $enrollId = MIOLO::_REQUEST('enrollId');
+        $personId = MIOLO::_REQUEST('personId');
+        
+        if ( MSubDetail::getData('acompanhamento') != null )
+        {
+            try
+            {
+                foreach ( MSubDetail::getData('acompanhamento') as $value )
+                {
+                    $acompanhamento = new SerAcompanhamentoDeDisciplina();
+
+                    $acompanhamento->acompanhamentoDeDisciplinaId = $value->acompanhamentoId;
+
+                    $acompanhamento->observacao = $value->obs;
+                    $acompanhamento->data       = $value->date;
+                    $acompanhamento->personId   = $personId;
+                    $acompanhamento->enrollId   = $enrollId;
+
+                    if ( $value->removeData )
+                    {
+                        $ok = $acompanhamento->delete();
+                    }
+                    else
+                    {
+                        $ok = $acompanhamento->save();
+                    }
+                }
+
+                if ( $ok )
+                {
+                    $msg = _M('Registro salvo com sucesso.');
+                    $goto = $MIOLO->getActionURL($module, 'main:professor:detalhamentoTcc');
+                    SAGU::information($msg, $goto);
+                }
+            }
+            catch ( Exception $e )
+            {
+                $msg = _M('Erro ao executar a operação solicitada.');
+                $goto = $MIOLO->getActionURL($module, 'main:professor:detalhamentoTcc');
+                $MIOLO->error($msg, $goto);
+            }
+        }
+    }
+}
+
+?>

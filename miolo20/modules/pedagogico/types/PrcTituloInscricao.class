@@ -1,0 +1,968 @@
+<?php
+/**
+ * <--- Copyright 2005-2013 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Type pedagogico
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.com.br]
+ *
+ * @since
+ * Class created on 29/08/2013
+ */
+
+class PrcTituloInscricao extends SType
+{
+    protected $_utilizaMultiUnidade = false;
+    
+    protected $_utilizaNovoPadrao = true;
+    
+    protected $_associations = array(
+        'inscricao' => array(
+            'mode' => 'one',
+            'typeClass' => 'AcpInscricao',
+            'joinColumnLeft' => 'inscricaoid',
+            'joinColumnRight' => 'inscricaoid',
+        ),
+    );
+    
+    const TIPO_INSCRICAO = 'I';
+    const TIPO_MATRICULA = 'M';
+    
+    /**
+     * @var AcpInscricao
+     */
+    public $inscricao;
+    
+    public $tituloinscricaoid;
+    public $formadepagamentodoprecoid;
+    public $invoiceid;
+    public $inscricaoid;
+    public $tipo;
+    public $precocondicaoid;
+    
+    
+    /**
+     * Calcula e obtém o valor da parcela para a inscrição
+     * @param type $inscricaoid
+     */
+    public function obterValorDaParcela($inscricaoid, $tipo)
+    {
+        $inscricao = new AcpInscricao($inscricaoid);
+
+        //Obtém o preço do curso
+        if( $tipo == PrcPrecoCurso::TIPO_INSCRICAO )
+        {
+            $precocondicaoid = $inscricao->precocondicaoinscricaoid;
+        }
+        else
+        {
+            $precocondicaoid = $inscricao->precocondicaomatriculaid;
+        }
+        $precocondicao = new PrcPrecoCondicao($precocondicaoid);
+        
+        $precocurso = PrcPrecoCurso::obterPrecoDaOfertaDoCurso($inscricao->ofertacursoid, $tipo);
+        
+        $valor = '0';
+        
+        //Percorre cada inscrição em grupo
+        $turmasgrupo = AcpInscricaoTurmaGrupo::obterInscricaoTurmaGrupo($inscricaoid);
+        foreach($turmasgrupo as $cod => $inscricaoturmagrupo )
+        {
+            if( $inscricao->ofertacurso->ocorrenciacurso->curso->perfilcurso->permiteinscricaoporgrupo == DB_TRUE )
+            {
+                //Preço curso grupo
+                $precocursogrupo = PrcPrecoCursoGrupo::obterPrecoCursoGrupo($precocurso->precocursoid, $inscricaoturmagrupo->matrizcurriculargrupoid);
+            }
+            $precocondicao = PrcPrecoCondicao::obterPrecoCondicao($precocondicao->condicaodepagamentoid, $precocurso->precocursoid, $precocursogrupo->precocursogrupoid);
+            $valor = SAGU::calcNumber($valor.'+'.$precocondicao->valorparcela);
+        }
+        
+        return $valor;
+    }
+        
+    /**
+     * Gera os títulos referentes a taxa de inscrição
+     * @param type $inscricaoid - Código da inscrição
+     */
+    public function gerarTituloInscricao($inscricaoid)
+    {
+        $inscricao = new AcpInscricao($inscricaoid, true);  
+        $diadevencimento = new PrcDiaDeVencimento($inscricao->diadevencimentoid);
+
+        $precocondicao = new PrcPrecoCondicao($inscricao->precocondicaoinscricaoid);
+        
+        //Obtém o preço do curso
+        $precocurso = PrcPrecoCurso::obterPrecoInscricao($inscricao->ofertacursoid);
+        
+        //Obtém o valor da parcela
+        $valor = $precocondicao->valorparcela;
+        
+        if( $valor <= 0 )
+        {
+            throw new Exception(_M('Não foram encontrados valores para as parcelas de Inscrição Verifique o cadastro de Condições de pagamento do preço do curso ').$inscricao->ofertacurso->descricao);
+        }
+        
+        for ( $x = 1; $x <= $precocondicao->condicaodepagamento->numerodeparcelas; $x++ )
+        {
+            if( $x == 1 )
+            {
+                //Exige entrada
+                if( $precocondicao->condicaodepagamento->exigeentrada == DB_TRUE )
+                {
+                    $vencimento = SAGU::addIntervalInDate(SAGU::getDateNow(), 'd', $precocurso->diasvencimentoentrada);
+                }
+                else
+                {
+                    if ( strlen($vencimento) == 0 )
+                    {
+                        $vencimento = $diadevencimento->dia.'/'.  date('m').'/'.date('Y');
+                    }
+                    
+                    if( SAGU::getDatePart(SAGU::getDateNow(), 'DAY') > $diadevencimento->dia )
+                    {
+                        $mes = SAGU::getDatePart(SAGU::addIntervalInDate($vencimento, 'm', '1'), 'MONTH');
+                        $ano = SAGU::getDatePart(SAGU::addIntervalInDate($vencimento, 'm', '1'), 'YEAR');
+                    }
+                    else
+                    {
+                        $mes = SAGU::getDatePart(SAGU::getDateNow(), 'MONTH');
+                        $ano = SAGU::getDatePart(SAGU::getDateNow(), 'YEAR');
+
+                    }
+                    //Busca a próxima data selecionada na inscrição
+                    $vencimento = $diadevencimento->dia.'/'.$mes.'/'.$ano;
+                }
+            }
+
+            $ok = $this->inserirTitulo($inscricao, PrcPrecoCurso::TIPO_INSCRICAO, $precocurso, $x, $valor, $vencimento);
+            
+            //Obtém a data da próxima parcela
+            $dia = $diadevencimento->dia;
+            $mes = SAGU::getDatePart(SAGU::addIntervalInDate($vencimento, 'm', '1'), 'MONTH');
+            $ano = SAGU::getDatePart(SAGU::addIntervalInDate($vencimento, 'm', '1'), 'YEAR');                                
+            $vencimento = $dia.'/'.$mes.'/'.$ano;
+        }
+        
+        return $ok;
+    }
+    
+    /**
+     * Gera os títulos referentes a matrícula
+     * @param type $inscricaoid - Código da inscrição
+     * @return boolean
+     */
+    public function gerarTitulosMatricula($inscricaoid)
+    {
+        $inscricao = new AcpInscricao($inscricaoid, true);  
+        $diadevencimento = new PrcDiaDeVencimento($inscricao->diadevencimentoid);
+
+        //Percorre cada inscrição turma/grupo
+        $valortotal = '0';
+        $valorparcela = '0';
+        
+        $inscricaoturmagruposearch = AcpInscricaoTurmaGrupo::obterInscricaoTurmaGrupo($inscricaoid);
+        $ofertaTurma = NULL;
+        
+        foreach( $inscricaoturmagruposearch as $cod=>$inscricaoturmagrupo )
+        {
+            $precocondicao = new PrcPrecoCondicao($inscricaoturmagrupo->precocondicaomatriculaid, true);
+            $precocursoid = $precocondicao->precocursoid;
+            $condicaodepagamentoid = $precocondicao->condicaodepagamentoid;
+
+            $valortotal = SAGU::calcNumber($valortotal.'+'.SAGU::NVL($precocondicao->valortotal,'0'));
+            $valorparcela = SAGU::calcNumber($valorparcela.'+'.SAGU::NVL($precocondicao->valorparcela,'0'));
+            
+            $ofertaTurma = new AcpOfertaTurma($inscricaoturmagrupo->ofertaturmaid);
+        }
+        
+        $precocurso = new PrcPrecoCurso($precocursoid, true);
+        $condicaodepagamento = new PrcCondicaoDePagamento($condicaodepagamentoid);
+        
+        for ( $x = 1; $x <= $condicaodepagamento->numerodeparcelas; $x++ )
+        {
+            if ( $x == 2 && $condicaodepagamento->exigeentrada == DB_TRUE && $precocurso->gerarmensalidadeinicioaulas == DB_TRUE )
+            {
+                // Pega o mes e ano do início das aulas
+                if ( strlen($ofertaTurma->datainicialaulas) > 0 )
+                {
+                    $mes = SAGU::getDatePart($ofertaTurma->datainicialaulas, 'MONTH');
+                    $ano = SAGU::getDatePart($ofertaTurma->datainicialaulas, 'YEAR');
+                }
+                
+                $vencimento = $dia.'/'.$mes.'/'.$ano;
+            }
+            
+            if( $x == 1 )
+            {
+                //Exige entrada
+                if( $condicaodepagamento->exigeentrada == DB_TRUE )
+                {
+                    $vencimento = SAGU::addIntervalInDate(SAGU::getDateNow(), 'd', $precocurso->diasvencimentoentrada);
+                }
+                else
+                {
+                    if ( $precocurso->gerarmensalidadeinicioaulas == DB_TRUE )
+                    {
+                        // Pegar o mes e ano do início das aulas
+                        // Se não houver data de início das aulas, não faz nada 
+                        if ( strlen($ofertaTurma->datainicialaulas) > 0 )
+                        {
+                            $mes = SAGU::getDatePart($ofertaTurma->datainicialaulas, 'MONTH');
+                            $ano = SAGU::getDatePart($ofertaTurma->datainicialaulas, 'YEAR');
+                        }
+                    }
+
+                    if ( strlen($vencimento) == 0 )
+                    {
+                        $vencimento = $diadevencimento->dia.'/'.  date('m').'/'.date('Y');
+                    }
+
+                    if ( strlen($mes) == 0 && strlen($ano) == 0 )
+                    {
+                        if( SAGU::getDatePart(SAGU::getDateNow(), 'DAY') > $diadevencimento->dia )
+                        {
+                            $mes = SAGU::getDatePart(SAGU::addIntervalInDate($vencimento, 'm', '1'), 'MONTH');
+                            $ano = SAGU::getDatePart(SAGU::addIntervalInDate($vencimento, 'm', '1'), 'YEAR');
+                        }
+                        else
+                        {
+                            $mes = SAGU::getDatePart(SAGU::getDateNow(), 'MONTH');
+                            $ano = SAGU::getDatePart(SAGU::getDateNow(), 'YEAR');
+                        }
+                    }
+                    
+                    /** Verificar se o dia de vencimento é maior que o último dia do mês. Nesse caso, põe o dia de vencimento para
+                      * o último dia do mês. (quando vencimento for dia 29 ou 30 e for fevereiro (28 dias)
+                     **/
+                    $ultimoDiaDoMes = SAGU::obterUltimoDiaDoMes($mes, $ano);
+                    if ( $diadevencimento->dia > $ultimoDiaDoMes )
+                    {
+                        $diadevencimento->dia = $ultimoDiaDoMes;
+                    }
+                    
+                    //Busca a próxima data selecionada na inscrição
+                    $vencimento = $diadevencimento->dia.'/'.$mes.'/'.$ano;
+                }
+            }
+                        
+            $ok = $this->inserirTitulo($inscricao, PrcPrecoCurso::TIPO_MATRICULA, $precocurso, $x, $valorparcela, $vencimento);
+            
+            //Obtém a data da próxima parcela
+            $dia = $diadevencimento->dia;
+            $mes = SAGU::getDatePart(SAGU::addIntervalInDate($vencimento, 'm', '1'), 'MONTH');
+            $ano = SAGU::getDatePart(SAGU::addIntervalInDate($vencimento, 'm', '1'), 'YEAR');
+            
+            /** Verificar se o dia de vencimento é maior que o último dia do mês. Nesse caso, põe o dia de vencimento para
+              * o último dia do mês. (quando vencimento for dia 29 ou 30 e for fevereiro (28 dias)
+             **/
+            $ultimoDiaDoMes = SAGU::obterUltimoDiaDoMes($mes, $ano);
+            if ( $dia > $ultimoDiaDoMes )
+            {
+                $dia = $ultimoDiaDoMes;
+            }
+            
+            $vencimento = $dia.'/'.$mes.'/'.$ano;
+        }
+        
+        return $ok;
+    }
+    
+    /**
+     * Insere um título
+     * @param type $inscricaoid - Código da inscrição
+     * @param type $tipo - Tipo do título (Matrícula ou Inscrição)
+     * @param PrcPrecoCurso $precocurso - Preço do curso
+     * @param type $parcela - Número da parcela
+     * @param type $valor - Valor do títlo
+     * @param string $vencimento - Vencimento do título
+     */
+    public function inserirTitulo(AcpInscricao $inscricao, $tipo = PrcTituloInscricao::TIPO_INSCRICAO, PrcPrecoCurso $precocurso, $parcela, $valor = NULL, $vencimento = NULL)
+    {
+        $busReceivableInvoice = new BusinessFinanceBusReceivableInvoice();
+        $busEntry = new BusinessFinanceBusEntry();
+        
+        //Obtém o centro de custo do curso
+        $costcenterid = PrcCentroCustoOcorrenciaCurso::obterCentroDeCustoDaOcorrenciaDeCurso($precocurso->ocorrenciacursoid);
+        if( !strlen($costcenterid) > 0 )
+        {
+            $ocorrenciadecurso = new AcpOcorrenciaCurso($precocurso->ocorrenciacursoid);
+            throw new Exception(_M('Nenhum centro de custo encontrado para o curso @1. Acesse "Pedagógico > Precificação > Contábil > Centro de custo da ocorrência de curso" e defina um centro de custo', $module, $ocorrenciadecurso->curso->nome. ' - '.$ocorrenciadecurso->turn->description.' - '.$ocorrenciadecurso->unit->description));
+        }
+        
+        
+        $invoice = new FinReceivableInvoice();
+        
+        //Verifica se o aluno é de menor para gerar o boleto com o nome do responsável 
+        $busPerson = new BusinessBasicBusPerson();
+        $responsavel = $busPerson->getResponsableId($inscricao->personid);
+        
+        if ( (strlen($responsavel) > 0) && ($responsavel != 0) )
+        {
+            $invoice->personId = $responsavel;
+        }
+        else 
+        {
+           $invoice->personId = $inscricao->personid;
+        }
+
+        $invoice->costCenterId = $costcenterid;
+        $invoice->policyId = $precocurso->policyid;
+        $invoice->automaticDebit = false;
+        $invoice->emissionTypeId = SAGU::getParameter('BASIC', 'DEFAULT_EMISSION_TYPE_ID');
+        $invoice->emissionDate  = SAGU::getDateNow();
+        $invoice->incomeSourceId = $precocurso->incomesourceid;
+        $invoice->bankAccountId = $precocurso->bankaccountid;
+        $invoice->comments = '';
+        $invoice->parcelNumber = $parcela;
+        $invoice->value = $valor;
+        $invoice->maturityDate = $vencimento;
+        $invoice->automaticDebit = DB_FALSE;
+        $invoice->policyId =  $precocurso->policyid;
+        $invoice->referenceMaturityDate = $vencimento;
+   
+        //Insere o título
+        $invoiceId = $busReceivableInvoice->insertReceivableInvoice($invoice);
+
+        //Lançamento
+        $entry = new FinEntry();
+        $entry->operationId = $precocurso->operationid;
+        $entry->entryDate = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+        $entry->value = $valor;
+        $entry->costCenterId = $costcenterid;
+        $entry->isAccounted = DB_FALSE;
+        $entry->creationType = 'A';
+        $entry->entryDate = SAGU::getDateNow();
+        $entry->invoiceId = $invoiceId;
+
+        //Insere o lançamento
+        $entryId = $busEntry->insertEntry($entry);
+
+        //Salva informação de título do preco curso
+        $tituloInscricao = new PrcTituloInscricao();
+        $tituloInscricao->invoiceid = $invoiceId;
+        $tituloInscricao->inscricaoid = $inscricao->inscricaoid;
+        $tituloInscricao->tipo = $tipo;
+
+        $ok = $tituloInscricao->save();
+        
+        return $ok;
+    }
+    
+    
+    /**
+     * No cancelamnto da matricula, realiza o cancelamento dos título e recalcula valores
+     * @param type $inscricaoid
+     */
+    public function cancelamentoFinanceiro($inscricaoid)
+    {
+        $module = MIOLO::getCurrentModule();
+        
+        $cursoInscricao = AcpInscricao::obterInformacoes($inscricaoid);
+        $curso = new AcpCurso($cursoInscricao['cursoid']);
+        
+        if($curso->cancelamentofinanceiro != AcpCurso::CANCELAR_TITULOS_NAO_VENCIDOS)
+        {
+            $ok = true;
+
+            $valorcontrato = '0';
+            $custodoaluno = '0';
+            $valordamulta = '0';
+
+            //Percorre cada inscrição em uma turma diferente
+            $inscricaoturmagruposearch = AcpInscricaoTurmaGrupo::obterInscricaoTurmaGrupo($inscricaoid);
+            foreach( $inscricaoturmagruposearch as $cod=>$inscricaoturmagrupo )
+            {
+                $ofertaturmaid = $inscricaoturmagrupo->ofertaturmaid;
+                $ofertaturma = new AcpOfertaTurma($ofertaturmaid);
+
+                //Carga horaria total do curso
+                $cargahorariatotal = AcpInscricao::obterCargaHorariaTotal($inscricaoid, $ofertaturmaid);
+
+                //Carga horária cursada
+                $cargahorariaateadata = AcpInscricao::obterCargaHorariaTotalAteAData($inscricaoid, $ofertaturmaid);
+
+                if( !strlen($inscricaoturmagrupo->precocondicaomatriculaid) > 0 ) 
+                {
+                    return false;
+                    //throw new Exception(_M('Nenhuma condição de matrícula encontrada para a inscrição @1 na turma @2', $module, $inscricaoid, $ofertaturma->descricao));
+                }
+
+                //Valor do contrato
+                $precocondicao = new PrcPrecoCondicao($inscricaoturmagrupo->precocondicaomatriculaid);
+                $valorcontrato = SAGU::calcNumber($valorcontrato.'+'.$precocondicao->valortotal, true, 2);
+
+                if( $cargahorariatotal > 0 && $valorcontrato > 0 && $cargahorariaateadata > 0 )
+                {
+                    $custodoaluno = SAGU::calcNumber("(($valorcontrato/$cargahorariatotal)*$cargahorariaateadata)", true, 2);
+                    $percentualmulta = $ofertaturma->ofertacurso->ocorrenciacurso->curso->percentualmultadesistencia;
+
+                    if( $percentualmulta > 0 && ( $custodoaluno < $valorcontrato ) )
+                    {
+                        //Calcula o valor da multa
+                        $valordamulta = SAGU::calcNumber("$valordamulta+(($valorcontrato-$custodoaluno)*($percentualmulta/100))", true, 2);
+                    }
+
+                    $precocurso = PrcPrecoCurso::obterPrecoDaOfertaDaTurma($ofertaturmaid, PrcTituloInscricao::TIPO_MATRICULA);
+
+                    if( !strlen($precocurso->precocursoid) > 0 )
+                    {
+                        throw new Exception(_M('Nenhum preço de curso encontrado para a turma'));
+                    }
+                }
+            }
+
+            //Valor total pago pela inscrição
+            $valorpago = PrcTituloInscricao::obterValorTotalPago($inscricaoid);
+
+            //Calcula a diferença de valores a ser acertado
+            $valor = SAGU::calcNumber("$custodoaluno - ".SAGU::NVL($valorpago,'0')." + $valordamulta");
+        }
+        //Fecha os títulos em aberto
+        foreach( self::obterTitulosDaMatricula($inscricaoid, true) as $cod=>$titulos )
+        {
+            $fininvoice = new BusinessFinanceBusReceivableInvoice();
+            $fininvoice->deleteInvoice($titulos->invoiceid);
+        }
+        
+        // Verifica se a configuração do curso é para gerar o título de ajuste de cancelamento
+        if ( $curso->lancarvalordecancelamento == DB_TRUE && $curso->cancelamentofinanceiro != AcpCurso::CANCELAR_TITULOS_NAO_VENCIDOS)
+        {
+            //Aluno paga diferença
+            if( $valor != 0 && $custodoaluno != 0 )
+            {
+                $inscricao = new AcpInscricao($inscricaoid, true);
+
+                $ok = self::inserirTitulo($inscricao, PrcTituloInscricao::TIPO_MATRICULA, $precocurso, 1, $valor, SAGU::getDateNow());
+            }
+        }
+
+        return $ok;
+    }
+    
+    /**
+     * Obtém a primeira parcela da inscrição
+     * @param int $inscricaoid
+     * @return int invoiceId - Código da primeira parcela
+     */
+    public static function obterPrimeiraParcelaDaInscricao($inscricaoid)
+    {
+        $tituloInscricao = new PrcTituloInscricao();
+        $sql = $tituloInscricao->msql();
+        $sql->setColumns('PrcTituloInscricao.invoiceid');
+        $sql->addInnerJoin('finreceivableinvoice FinReceivableInvoice', 'PrcTituloInscricao.invoiceid = FinReceivableInvoice.invoiceid');
+        $sql->addEqualCondition('PrcTituloInscricao.inscricaoid', $inscricaoid);
+        $sql->addEqualCondition('FinReceivableInvoice.parcelnumber', '1');
+        $sql->addEqualCondition('PrcTituloInscricao.tipo', PrcTituloInscricao::TIPO_INSCRICAO);
+        $invoiceid = $tituloInscricao->findOne($sql)->invoiceid;
+        return $invoiceid;
+    }
+    
+    /**
+     * Obtém os títulos da matricula
+     * @param int $inscricaoid
+     * 
+     */
+    public static function obterTitulosDaMatricula($inscricaoid, $titulosAbertos = false)
+    {
+        $tituloInscricao = new PrcTituloInscricao();
+        $sql = $tituloInscricao->msql();
+        $sql->setColumns('PrcTituloInscricao.invoiceid, PrcTituloInscricao.tituloinscricaoid');
+        $sql->addInnerJoin('finreceivableinvoice FinReceivableInvoice', 'PrcTituloInscricao.invoiceid = FinReceivableInvoice.invoiceid');
+        $sql->addEqualCondition('PrcTituloInscricao.inscricaoid', $inscricaoid);
+        $sql->addEqualCondition('PrcTituloInscricao.tipo', PrcTituloInscricao::TIPO_MATRICULA);
+        
+        if ( $titulosAbertos )
+        {
+            $sql->setWhere('balance(PrcTituloInscricao.invoiceid) > 0 AND FinReceivableInvoice.maturitydate > now()::date ');
+            $sql->setWhere('FinReceivableInvoice.iscanceled IS FALSE ');
+        }
+                
+        $return = $tituloInscricao->findMany($sql);
+        return $return;
+    }
+    
+    /**
+     * Obtém numero de titulos da inscricao
+     * @param int $inscricaoid
+     * 
+     */
+    public static function totalTitulosInscricao($inscricaoid)
+    {
+        $tituloInscricao = new PrcTituloInscricao();
+        
+        $sql = $tituloInscricao->msql();
+        $sql->setColumns('PrcTituloInscricao.invoiceid');
+        $sql->addEqualCondition('PrcTituloInscricao.inscricaoid', $inscricaoid);
+        $sql->addEqualCondition('PrcTituloInscricao.tipo', PrcTituloInscricao::TIPO_INSCRICAO);
+        
+        return $tituloInscricao->findCount($sql);
+    }
+    
+    /**
+     * Obtém numero de titulos da inscricao
+     * @param int $inscricaoid
+     * 
+     */
+    public static function totalTitulosMatricula($inscricaoid)
+    {
+        $tituloInscricao = new PrcTituloInscricao();
+        
+        $sql = $tituloInscricao->msql();
+        $sql->setColumns('PrcTituloInscricao.invoiceid');
+        $sql->addEqualCondition('PrcTituloInscricao.inscricaoid', $inscricaoid);
+        $sql->addEqualCondition('PrcTituloInscricao.tipo', PrcTituloInscricao::TIPO_MATRICULA);
+        
+        return $tituloInscricao->findCount($sql);
+    }
+    
+    /**
+     * @return array
+     */
+    public static function obterInscricoesPendentesComTituloPago($tipo = null)
+    {
+        if ( !$tipo )
+        {
+            $tipo = self::TIPO_INSCRICAO;
+        }
+        
+        $inscricao = new AcpInscricao();
+        
+        $sql = $inscricao->msql();
+        $sql->addInnerJoin('PrcTituloInscricao PrcTituloInscricao', 'PrcTituloInscricao.inscricaoid = AcpInscricao.inscricaoId');
+        $sql->addEqualCondition('AcpInscricao.situacao', AcpInscricao::SITUACAO_PENDENTE);
+        $sql->addEqualCondition('PrcTituloInscricao.tipo', $tipo);
+        $sql->addEqualCondition('regras.formadeconfirmacaoinscricao', AcpRegrasMatriculaPerfilCurso::CONFIRMACAO_INSCRICAO_PGTO_TAXA);
+        $sql->setWhere('BALANCE(PrcTituloInscricao.invoiceId) = 0');
+        
+        return $inscricao->findMany($sql);
+    }
+    
+    /**
+     * @return array
+     */
+    public static function obterMatriculasPendentesComTituloPago($tipo = null)
+    {
+        if ( !$tipo )
+        {
+            $tipo = self::TIPO_MATRICULA;
+        }
+        
+        $matricula = new AcpMatricula();
+        
+        $sql = $matricula->msql();
+        $sql->addInnerJoin('PrcTituloInscricao PrcTituloInscricao', 'PrcTituloInscricao.inscricaoid = AcpMatricula.inscricaoId');
+        $sql->addEqualCondition('AcpMatricula.situacao', AcpMatricula::SITUACAO_INSCRICAO);
+        $sql->addEqualCondition('PrcTituloInscricao.tipo', $tipo);
+        $sql->addEqualCondition('regras.formadeconfirmacaomatricula', AcpRegrasMatriculaPerfilCurso::CONFIRMACAO_MATRICULA_PGTO_PRIMEIRA_PARCELA);
+        $sql->setWhere('BALANCE(PrcTituloInscricao.invoiceId) = 0');
+        
+        return $matricula->findMany($sql);
+    }
+    
+    /**
+     * Verifica se possui inscricoes pendentes e com a parcela paga, para então alterar o estado para Inscrito.
+     * 
+     * @return boolean
+     */
+    public static function verificarInscricoesPendentes(BasSystemTask $bst = null)
+    {
+        $inscricoes = self::obterInscricoesPendentesComTituloPago();
+        
+        foreach ( $inscricoes as $inscricao )
+        {
+            $inscricao instanceof AcpInscricao;
+            $inscricao->alterarParaInscrito();
+        }
+        
+        return true;
+    }
+                
+    /**
+     * Verifica se possui matriculas pendentes e com a parcela paga, para então alterar o estado para Matricula.
+     * 
+     * @return boolean
+     */
+    public static function verificarMatriculasPendentes(BasSystemTask $bst = null)
+    {
+        $matriculas = self::obterMatriculasPendentesComTituloPago();
+        
+        foreach ( $matriculas as $matricula )
+        {
+            $matricula instanceof AcpMatricula;
+            $matricula->confirmarMatricula();
+        }
+        
+        return true;
+    }
+    
+    /**
+     * @return array
+     */
+    public static function buscarCursoDoTitulo($invoiceId)
+    {
+        $sql = new MSQL();
+        $sql->setColumns('DISTINCT
+                            C.codigo AS codcurso,
+                            C.nome AS nomecurso');
+        $sql->setTables('PrcTituloInscricao TI');
+//        $sql->addInnerJoin('AcpInscricao I', 'I.inscricaoId = TI.inscricaoid');
+        $sql->addInnerJoin('acpinscricaoturmagrupo itg', 'itg.inscricaoid = TI.inscricaoid');
+        $sql->addInnerJoin('acpofertaturma ot', 'ot.ofertaturmaid = itg.ofertaturmaid');
+        $sql->addInnerJoin('acpofertacurso oc', 'oc.ofertacursoid = ot.ofertacursoid');
+        $sql->addInnerJoin('acpocorrenciacurso ocorrencia', 'ocorrencia.ocorrenciacursoid = oc.ocorrenciacursoid');
+        $sql->addInnerJoin('acpcurso c', 'c.cursoid = ocorrencia.cursoid');
+        $sql->setWhere('TI.invoiceId = ?', array($invoiceId));
+
+        return SDatabase::queryAssociative($sql);
+    }
+    
+    
+    /**
+     * Cancela os titulos da inscricao passada
+     */
+    public static function cancelarTitulos($inscricaoId, $tipo = null)
+    {
+        if ( !$tipo )
+        {
+            $tipo = PrcTituloInscricao::TIPO_INSCRICAO;
+        }
+        
+        $ti = new PrcTituloInscricao();
+        $busInvoice = new BusinessFinanceBusInvoice();
+        
+        $sql = $ti->msql()
+                  ->addEqualCondition('prctituloinscricao.inscricaoid', $inscricaoId)
+                  ->addEqualCondition('prctituloinscricao.tipo', $tipo);
+        
+        $rows = $ti->findMany( $sql );
+        foreach ( $rows as $cod => $row )
+        {
+            $row instanceof PrcTituloInscricao;
+            $invoice = $busInvoice->getInvoice($row->invoiceid);
+            if( $busInvoice->getInvoiceBalance($row->invoiceid) > 0 && SAGU::compareTimestamp($invoice->maturitydate, '>=', SAGU::getDateNow()) )
+            {
+                $busInvoice->deleteInvoice($row->invoiceid);
+            }
+            
+        }
+    }
+    
+    /**
+     * Valor total pago, apenas as mensalidades, taxas emissao de boleto foram retirados
+     */
+    public static function obterValorTotalPago($inscricaoid)
+    {
+        $tituloInscricao = new PrcTituloInscricao();
+        $sql = $tituloInscricao->msql();
+        
+        $inscricaoturmagruposearch = AcpInscricaoTurmaGrupo::obterInscricaoTurmaGrupo($inscricaoid);
+        
+        foreach( $inscricaoturmagruposearch as $cod=>$inscricaoturmagrupo )
+        {
+            $precocondicao = new PrcPrecoCondicao($inscricaoturmagrupo->precocondicaomatriculaid, true);
+            $precocursoid = $precocondicao->precocursoid;
+        }
+        
+        $precocurso = new PrcPrecoCurso($precocursoid, true);
+
+        $sql->setColumns('ROUND(COALESCE(SUM(finentry.value), 0),getParameter(\'BASIC\',\'REAL_ROUND_VALUE\')::INTEGER)');
+        $sql->setTables('PrcTituloInscricao');
+        $sql->addInnerJoin('finreceivableinvoice FinReceivableInvoice', 'PrcTituloInscricao.invoiceid = FinReceivableInvoice.invoiceid');
+        $sql->addLeftJoin('finentry FinEntry', 'FinEntry.invoiceid = FinReceivableInvoice.invoiceid');
+        $sql->addLeftJoin('finoperation FinOperation', 'FinEntry.operationid = FinOperation.operationid');
+        $sql->addEqualCondition('PrcTituloInscricao.inscricaoid', $inscricaoid);
+        $sql->addEqualCondition('PrcTituloInscricao.tipo', PrcTituloInscricao::TIPO_MATRICULA);
+        $sql->addEqualCondition('finoperation.operationid', $precocurso->operationid);       
+        $sql->addEqualCondition('finreceivableinvoice.iscanceled', DB_FALSE);       
+        $sql->addEqualCondition('finreceivableinvoice.balance', '0');       
+        $total = SDatabase::query($sql->select());;
+
+        return $total[0][0];
+    }
+    
+    public static function obterCodInscricao($invoiceId)
+    {
+        $sql = new MSQL();
+        $sql->setTables('prctituloinscricao i');
+        $sql->setColumns('i.inscricaoid');
+        $sql->addEqualCondition('i.invoiceid', $invoiceId);
+        $sql->setLimit(1);
+        
+        $rows = SDatabase::query($sql->select());
+        
+        return $rows[0][0];
+    }
+    
+    /**
+     * @return array
+     */
+    public static function obterInformacoesTitulo($inscricaoId, $tipo = null, $titulosAbertos = false)
+    {
+        if ( !$tipo )
+        {
+            $tipo = self::TIPO_INSCRICAO;
+        }
+        
+        $sql = new MSQL();
+        $sql->setColumns('cp.descricao AS condicaopgto,
+                          ROUND(RI.value, 2) AS valor,
+                          datetouser(RI.maturitydate) AS vencimento,
+                          ti.invoiceid');
+        $sql->setTables('prctituloinscricao ti');
+        $sql->addLeftJoin('prcprecocondicao pc', 'pc.precocondicaoid = ti.precocondicaoid');
+        $sql->addLeftJoin('prccondicaodepagamento cp', 'cp.condicaodepagamentoid = pc.condicaodepagamentoid');
+        $sql->addLeftJoin('ONLY finreceivableinvoice ri', 'ri.invoiceid = ti.invoiceid');
+        $sql->addEqualCondition('ti.inscricaoid', $inscricaoId);
+        $sql->addEqualCondition('ti.tipo', $tipo);
+        
+        if ( $titulosAbertos )
+        {
+            $sql->setWhere('ri.iscanceled IS FALSE');
+            $sql->setOrderBy('ri.maturitydate DESC');
+        }
+        else
+        {
+            $sql->setOrderBy('RI.maturitydate ASC');
+        }
+        
+        return SDatabase::queryAssociative($sql);
+    }
+    
+    /**
+     * @return boolean
+     */
+    public static function temMensalidadePaga($inscricaoId)
+    {
+        $sql = 'SELECT TRUE
+                  FROM prctituloinscricao i
+                 WHERE i.inscricaoid = ?
+                   AND BALANCE(i.invoiceId) = 0';
+        
+        $rows = SDatabase::query($sql, array($inscricaoId));
+        
+        return $rows[0][0] == DB_TRUE;
+    }
+    
+    /**
+     * Obtém a operação utilizada na inscrição
+     * @param type $invoiceId
+     * @return type
+     */
+    public static function obtemOperacaoTaxaDeInscricao($invoiceId)
+    {
+        $sql = " SELECT B.ofertaCursoId,
+                        B.dataSituacao::DATE
+                   FROM prcTituloInscricao A 
+             INNER JOIN acpInscricao B
+                     ON (A.inscricaoId = B.inscricaoId)
+                  WHERE A.invoiceId = ? ";
+        
+        $infoCurso = SDatabase::query($sql, array($invoiceId));
+                
+        $objetoPreco = PrcPrecoCurso::obterPrecoInscricao($infoCurso[0][0], $infoCurso[0][1], $infoCurso[0][1]);
+        
+        return $objetoPreco->operationid;
+    }
+    
+    /**
+     * 
+     * Obtém informações para grid de informações do financeiro da tranferência de turma
+     * @param type $inscricaoId
+     * @return type
+     */
+    public static function obterInformacoesTituloTransferencia($inscricaoId)
+    {
+        $sql = " SELECT A.invoiceId,
+                        dateToUser(A.emissionDate) as emissao,
+                        dateToUser(A.maturityDate) as vencimento,
+                        ROUND(A.value, 2) as valor,
+                        TRUNC(balance(A.invoiceId)::numeric, 2) as valorAberto,
+                        ( CASE WHEN ( TRUNC(balance(A.invoiceId)::numeric, 2) ) > 0.00
+                               THEN
+                                    updatedTime(A.invoiceId)
+                               ELSE
+                                    '(x)'
+                        END ),
+                        TRUNC((balanceWithPoliciesDated(A.invoiceId, now()::date))::numeric, 2)
+                   FROM finReceivableInvoice A
+             INNER JOIN prcTituloInscricao B
+                     ON (A.invoiceId = B.invoiceId)
+                  WHERE B.inscricaoId = ?
+                    AND A.isCanceled IS FALSE
+                    AND balance(A.invoiceId) > 0
+                    AND A.maturitydate > now()::date
+               ORDER BY A.invoiceId ASC ";
+        
+        $result = SDatabase::query($sql, array($inscricaoId));
+        
+        return $result;
+    }
+    
+    public function listGridGeracaoBoletoEmLote($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();        
+
+        $businessDefaultOperations = new BusinessFinanceBusDefaultOperations();
+
+        $defaultOperations = $businessDefaultOperations->getDefaultOperations();
+        $checkAgreements = SAGU::checkParameter( 'AGREEMENT_INCOME_SOURCE_ID');
+
+        $sql = ' SELECT A.invoiceId,
+                        \'\' AS gridCheckbox,
+                        CC.personId,';   
+        $sql .= 'CC.name,';
+        
+        if ( $checkAgreements == true )
+        {
+            $sql .= '
+                        CASE WHEN A.incomeSourceId IN (' . SAGU::getParameter('FINANCE', 'AGREEMENT_INCOME_SOURCE_ID') . ')
+                             THEN 1
+                             ELSE 0 
+                        END,
+                   ';
+        } 
+        else
+        {
+            $sql .= ' 0, ';
+        }
+        
+        $sql .= '     A.parcelNumber,  TO_CHAR(A.emissionDate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') as emissionDate,
+                        TO_CHAR(A.maturityDate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') as maturityDate_,
+                        TRUNC(A.value, ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ') as balance,
+                        TRUNC(balance(A.invoiceId)::numeric, ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '),
+                        ( CASE WHEN ( TRUNC(balance(A.invoiceId)::numeric, 2) ) > 0.00
+                               THEN
+                                    updatedTime(A.invoiceId)
+                               ELSE
+                                    \'(x)\'
+                          END ),
+                        TRUNC((balanceWithPoliciesDated(A.invoiceId, now()::date))::numeric, ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '),
+                        (CASE WHEN TRUNC(BALANCE(A.invoiceId), 2) <> 0 THEN A.maturityDate ELSE NULL END) as order1, -- Utilizado para ordenacao
+                        (CASE WHEN TRUNC(BALANCE(A.invoiceId), 2) = 0 THEN A.maturityDate ELSE NULL END) as order2 -- Utilizado para ordenacao
+                        ';
+        
+        $sql .= ' FROM finReceivableInvoice A
+             LEFT JOIN finPolicy B
+                 USING (policyId)';
+        
+        $where = '';
+        
+        $sql .= 'INNER JOIN prctituloinscricao AA ON A.invoiceId = AA.invoiceId
+                 INNER JOIN acpinscricao BB using(inscricaoid)
+                 INNER JOIN basphysicalpersonstudent CC ON CC.personid = BB.personid
+                 INNER JOIN acpofertacurso II ON II.ofertacursoId = BB.ofertacursoId
+                 INNER JOIN acpinscricaoturmagrupo DD using(inscricaoid)
+                 INNER JOIN acpofertaturma AK ON AK.ofertaturmaid = DD.ofertaturmaid';
+                 //$where .= ' AA.invoiceId = A.invoiceId ';
+
+            if ( strlen($data->cursoId) > 0 )
+            {
+                $sql .= ' AND AK.ofertacursoid = ?';
+                $args[] = $data->cursoId;
+            }
+        
+            if ( strlen($data->ofertaturmaId) > 0 )
+            {   
+                $where .= 'AND AK.ofertaturmaid = ? ';
+                $args[] = $data->ofertaturmaId;
+            }
+            
+            if ( strlen($data->inscricaoId) > 0 )
+            {
+                $sql .= ' AND BB.inscricaoId = ?';
+                $args[] = $data->inscricaoId;
+            }
+                     
+            if ( strlen($data->unitId) > 0 )
+            {
+                $where .= " AND BB.unitId = ?";
+                $args[] = $data->unitId;
+            }
+     
+        // Lógica específica para geração de boletos em lote.
+        if ( strlen($data->remittance) > 0 && $data->remittance != DB_ALL )
+        {
+            $not = ($data->remittance != DB_TRUE) ? 'NOT' : '';
+            $where .= " AND {$not} EXISTS ( SELECT invoiceId
+                                              FROM finHistoricoRemessa
+                                             WHERE invoiceId = A.invoiceId )";
+        }
+        if ( strlen($data->personId) > 0 )
+        {
+            $where .= ' AND BB.personid = ?';
+            $args[] = $data->personId;
+        }
+        if ( strlen( $data->onlyOpen ) > 0 )
+        {
+            $where .= ' AND balance(A.invoiceId) > 0';
+        }
+        if ( strlen( $data->onlyClose ) > 0 )
+        {
+            $where .= ' AND balance(A.invoiceId) <= 0';
+        }        
+        if ( strlen($data->maturityDateBegin) > 0 && strlen($data->maturityDateEnd) > 0 )
+        {
+            // Período de vencimento dos títulos (between).
+            $where .= " AND A.maturityDate BETWEEN TO_DATE(?, getParameter('BASIC', 'MASK_DATE')) AND TO_DATE(?, getParameter('BASIC', 'MASK_DATE')) ";
+            $args[] = $data->maturityDateBegin;
+            $args[] = $data->maturityDateEnd;
+        }
+        
+        if ( $data->apenasComValorAtual == DB_TRUE )
+        {
+            $where .= ' AND balanceWithPoliciesDated(A.invoiceId, now()::date) > 0 ';
+        }
+               
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 4);
+        }        
+        
+        // Ordenacao dinamica configuravel
+        $orderBy = strtr(SAGU::getParameter('FINANCE', 'INVOICE_LIST_ORDER'), array(
+            'MATURITYDATE' => 'order2 DESC, order1 DESC', // Ordena pela data de vencimento
+            'TOPAYFIRST' => 'order1 ASC, order2 DESC', // Ordena pela data de vencimento ascendente primeiro boletos que ainda nao foram pagos, e decrescente boletos que ja foram pagos
+        ));        
+        
+        $sql .= ' AND A.iscanceled=FALSE
+                  AND A.invoiceIdDependence IS NULL
+             ORDER BY ' . $orderBy;
+
+        $return = SDatabase::query( $sql, $args  );
+
+        return $return;
+    }
+    
+    public static function obterTitulo($invoiceId)
+    {
+        $type = new PrcTituloInscricao();
+        $sql = $type->msql();
+        $sql->addEqualCondition('PrcTituloInscricao.invoiceid', $invoiceId);
+        return $type->findOne($sql);
+    }
+    
+}
+?>

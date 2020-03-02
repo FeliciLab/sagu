@@ -1,0 +1,217 @@
+<?php
+/**
+ * <--- Copyright 2005-2013 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Type pedagogico
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.com.br]
+ *
+ * @since
+ * Class created on 29/08/2013
+ */
+
+class AcpFrequencia extends SType
+{
+    protected $_utilizaMultiUnidade = true;
+    
+    protected $_utilizaMultiCentro = true;
+    
+    protected $_utilizaNovoPadrao = true;
+        
+    protected $_associations = array(
+        'matricula' => array(
+            'mode' => 'one',
+            'typeClass' => 'AcpMatricula',
+            'joinColumnLeft' => 'matriculaid',
+            'joinColumnRight' => 'matriculaid',
+        ),
+    );
+    
+    const FREQUENCIA_PRESENTE = 'P';
+    const FREQUENCIA_AUSENTE = 'A';
+    const FREQUENCIA_MEIA = 'M';
+    const FREQUENCIA_JUSTIFICADA = 'J';
+
+    public $frequenciaid;
+    public $ocorrenciahorarioofertaid;
+    public $matriculaid;
+    public $datalancamento;
+    public $frequencia;
+    public $justificativa;
+    
+    public function __construct($disableAssociations = false)
+    {
+        if ( $disableAssociations )
+        {
+            $this->_associations = array();
+        }
+        
+        if ( is_numeric($disableAssociations) )
+        {
+            $id = $disableAssociations;
+        }
+        
+        parent::__construct($id);
+    }
+    
+    public static function listarFrequencias()
+    {
+        return array(self::FREQUENCIA_PRESENTE => _M('Presença'),
+                     self::FREQUENCIA_AUSENTE => _M('Falta'),
+                     self::FREQUENCIA_MEIA => _M('Meia presença'),
+                     self::FREQUENCIA_JUSTIFICADA => _M('Falta justificada'));
+    }
+    
+    public static function obterFrequencia($matriculaid, $ocorrenciahorarioofertaid)
+    {
+        $acpfrequencia = new AcpFrequencia(true);
+        
+        $sql = $acpfrequencia->msql();
+        $sql->addEqualCondition('AcpFrequencia.matriculaid', $matriculaid);
+        $sql->addEqualCondition('AcpFrequencia.ocorrenciahorarioofertaid', $ocorrenciahorarioofertaid);
+        
+        $frequencia = $acpfrequencia->findOne($sql);
+        
+        if ( !$frequencia )
+        {
+            $frequencia = new AcpFrequencia();
+        }
+        
+        return $frequencia;
+    }
+    
+    /**
+     * Returna a taxa percentual de presença de determinada matricula
+     * @param type $matriculaid
+     * @return type
+     */
+    public static function obterPercentualDePresenca($matriculaid)
+    {
+        $sql = "SELECT ROUND(
+                       (SUM(CASE WHEN B.frequencia = 'P' 
+                                 THEN 
+                                      D.minutosfrequencia::numeric/60::numeric
+                                 WHEN B.frequencia = 'M' 
+                                 THEN 
+                                      D.minutosfrequencia::numeric/120::numeric
+                                 ELSE 
+                                      0 
+                            END)
+                       /
+                       SUM(D.minutosfrequencia::numeric/60::numeric)::numeric) * 100, 2)
+		  FROM acpMatricula A
+            INNER JOIN acpFrequencia B  
+                    ON (A.matriculaId = B.matriculaId)
+	    INNER JOIN acpOcorrenciaHorarioOferta C
+                    ON (B.ocorrenciaHorarioOfertaId = C.ocorrenciaHorarioOfertaId)
+	    INNER JOIN acpHorario D 
+                    ON (C.horarioId = D.horarioId)
+	         WHERE A.matriculaid = ? ";
+        $frequencia = SDatabase::query($sql, array($matriculaid));
+        
+        return $frequencia[0][0];
+    }
+    
+    
+    /**
+     * Seta a flag possui frequencias para true no cadastro da ocorrenciahorariooferta
+     */
+    public function save()
+    {
+        $ocorrenciahorariooferta = new AcpOcorrenciaHorarioOferta($this->ocorrenciahorarioofertaid);
+        
+        if ( $ocorrenciahorariooferta->possuifrequencia == DB_FALSE )
+        {
+            $ocorrenciahorariooferta->possuifrequencia = DB_TRUE;
+            $ocorrenciahorariooferta->ocorrenciaid = $ocorrenciahorariooferta->obterProximaOcorrenciaId();
+            $ocorrenciahorariooferta->save(false);
+        }
+        
+        return parent::save();
+    }
+    
+    /**
+     * Obtém carga horária total cursada de uma matriculaid
+     * 
+     * @param type $matriculaId
+     * @return type
+     */
+    public static function obtemCargaHorariaTotalCursada($matriculaId)
+    {
+        $sql = " SELECT SUM(acphorario.minutosfrequencia*(CASE WHEN acpfrequencia.frequencia = 'P' THEN 1 WHEN acpfrequencia.frequencia = 'M' THEN 0.5 ELSE 0 END))
+                   FROM acpfrequencia
+              LEFT JOIN acpocorrenciahorariooferta
+                     ON acpocorrenciahorariooferta.ocorrenciahorarioofertaid = acpfrequencia.ocorrenciahorarioofertaid
+              LEFT JOIN acphorario
+                     ON acphorario.horarioid = acpocorrenciahorariooferta.horarioid
+                  WHERE acpfrequencia.matriculaid = ? ";
+        
+        $cargaHoraria = SDatabase::query($sql, array($matriculaId));
+                
+        return $cargaHoraria[0][0];
+    }
+    
+    public static function searchFrequencias($filters = null)
+    {
+        $sql = "SELECT FQ.frequenciaId
+                  FROM acpOcorrenciaHorarioOferta OHF
+            INNER JOIN acpFrequencia FQ
+                    ON (FQ.ocorrenciaHorarioOfertaId = OHF.ocorrenciaHorarioOfertaId)";
+        
+        if ( strlen($filters->ofertaComponenteCurricularId) > 0 )
+        {
+            $where .= ' AND OHF.ofertaComponenteCurricularId = ?';
+            $args[] = $filters->ofertaComponenteCurricularId;
+        }
+        
+        if ( strlen($filters->horarioId) > 0 )
+        {
+            $where .= ' AND OHF.horarioId = ?';
+            $args[] = $filters->horarioId;
+        }
+        
+        if ( strlen($filters->dataAula) > 0 )
+        {
+            $where .= ' AND OHF.dataAula = dateToDb(?)';
+            $args[] = $filters->dataAula;
+        }
+        
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 4);   
+        }
+        
+        $result = SDatabase::query($sql, $args);
+        
+        $return = array();
+        foreach ( $result as $r )
+        {
+            $return[] = new AcpFrequencia($r[0]);
+        }
+        
+        return $return;
+    }
+}
+?>

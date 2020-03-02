@@ -1,0 +1,519 @@
+<?php
+
+$MIOLO->uses('classes/cielo/FinCieloPedido.class', 'finance');
+
+class FrmCreditCardPopup extends SForm
+{
+    public function __construct($title, $object, $pkey) 
+    {
+        parent::__construct($title, $object, $pkey);
+        
+        // Carrega o javascript da MPopup
+        $this->page->AddScript('m_popup_control.js');        
+        $this->page->AddScript('m_lookup_ajax.js');
+        $this->page->AddScript('phpSerialize.js', 'basic');
+    }
+    
+    /**
+     * Abre a popup de cartão de crédito.
+     * 
+     * @param type $args
+     */
+    public function showPopupCreditCard($args)
+    {        
+        $MIOLO = MIOLO::getInstance();
+        $busSpecies = new BusinessFinanceBusSpecies();
+
+        $species[0] = $args->speciesId;
+        $species[1] = $args->speciesDescription;
+        
+        $valor = str_replace(',', '.', $args->paymentValue[$species[0]]);
+        
+        if ( strlen($args->session[$species[0]]) == 0 )
+        {
+            $specie = $busSpecies->getSpecies($species[0]);
+            $specie instanceof FinSpecies;
+
+            // Check
+            $label1 = new MLabel(_M('<span style="font-size:14px;">Já efetuei a transação pelo pin-pad</span>'));
+            $radio1 = new MCheckBox('chkPinPad', 't', NULL, false);
+            $radio1->addAttribute('onchange', SForm::getAjaxAction('FrmCreditCardPopup::alteraCampos', 'divCreditCard'));
+            $fields[] = new MHContainer('cont1', array($radio1, $label1));
+            $fields[] = new MSeparator();
+
+            // Dados do cartão
+            $form = new MFormContainer('frmCreditCard', FrmCreditCardPopup::obterCamposCartaoDeCredito());
+            $bg = new MBaseGroup('bgCreditCard', _M('Informe os dados do cartão'), array($form));
+            $fields[] = new MDiv('divCreditCard', array($bg));
+
+            if ( $specie->modalidade == 'D' )
+            {
+                $parcelas[0][0] = 1;
+                $parcelas[0][1] = 'Débito';
+
+                $parcelasLabel = new MText('parcelasLabel', _M('Número de parcelas', $module) . ':');
+                $parcelasLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                $parcelasLabel->setClass('m-caption m-caption-required');
+                $parcelas = new MSelection('numParcelas', 1, null, $parcelas, false, _M('Selecione o número de parcelas desejadas.'));
+                $parcelas->setReadOnly(TRUE);
+                $parc[] = new MHContainer('parcelasHC', array($parcelasLabel, $parcelas));
+            }
+            else
+            {
+                // Número de parcelas
+                for ( $i = 1; $i <= $specie->numParcelas; $i++ )
+                {
+                    $valorParcela = $valor / $i;
+                    
+                    $parcelas[$i][0] = $i;
+                    $parcelas[$i][1] = $i == 1 ? _M('Crédito à vista') : $i . 'x - R$ ' . number_format($valorParcela, 2, ',', '.');
+                }
+                
+                $parcelasLabel = new MText('parcelasLabel', _M('Número de parcelas', $module) . ':');
+                $parcelasLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                $parcelasLabel->setClass('m-caption m-caption-required');
+                $parcelas = new MSelection('numParcelas', 1, null, $parcelas, false, _M('Selecione o número de parcelas desejadas.'));
+                $parc[] = new MHContainer('parcelasHC', array($parcelasLabel, $parcelas));
+            }
+
+            $fields[] = new MBaseGroup('bgParcelamento', _M('Parcelamento'), $parc);
+
+            $fields[] = new MDiv('divBtn', new MButton('btnPagamento', _M('Inserir pagamento'), SForm::getAjaxAction('FrmCreditCardPopup::inserirPagamento', 'divLimbo', true, array('species' => $args->species))));
+            MPopup::show('popupCreditCard', $fields, $species[1], true, 'numero');
+        }
+        else
+        {
+            $valor = $args->paymentValue[$species[0]];
+            $sessionId = $args->session[$species[0]];
+            
+            $finCieloPedido = new FinCieloPedido($sessionId);
+            if ( $finCieloPedido->efetuadoPorPinPad )
+            {
+                $status = _M('Transação efetuada pelo pin-pad');
+            }
+            else
+            {
+                // Consulta situação da transação
+                $objResposta = $finCieloPedido->requisicaoConsulta();
+
+                // Atualiza status
+                $finCieloPedido->status = $objResposta->status;
+                $status = $finCieloPedido->getStatus();
+            }
+            
+            // Dados do cartão
+            $form = new MFormContainer('frmCancelamento', FrmCreditCardPopup::obterCamposCancelamento($valor, $status));
+            $bg = new MBaseGroup('bgCancelamento', NULL, array($form));
+            $fields[] = new MDiv('divCancelamento', array($bg));
+
+            $fields[] = new MDiv('divBtn', new MButton('btnCancelamento', _M('Cancelar pagamento'), SForm::getAjaxAction('FrmCreditCardPopup::cancelarPagamento', 'divLimbo', true, array('species' => $args->species))));            
+            MPopup::show('popupCreditCard', $fields, 'Cancelamento de transação (' . $species[1] . ')');
+        }
+        
+    }
+    
+    public function cancelarPagamento($args)
+    {        
+        $MIOLO = MIOLO::getInstance();
+        $busSpecies = new BusinessFinanceBusSpecies();        
+        
+        $species = unserialize($args->species);
+        $speciesId = $species[0];
+        $sessionId = $args->session[$speciesId];
+        
+        $finCieloPedido = new FinCieloPedido($sessionId);
+        
+        if ( $finCieloPedido->efetuadoPorPinPad )
+        {
+            if ( $finCieloPedido->limparPedidos() )
+            {
+                $action = $MIOLO->getCurrentAction();
+
+                $MIOLO->page->addAjaxJsCode("
+                    document.getElementById('session[$speciesId]').value = '';
+                    document.getElementById('paymentValue[$speciesId]').value = '';
+                    document.getElementById('paymentValue[$speciesId]').readOnly = '';
+                    document.getElementById('btnPopupCreditCard[$speciesId]').value = \"Informar dados do cartão\";
+                    document.getElementById('btnPopupCreditCard[$speciesId]').innerHTML = \"Informar dados do cartão\";
+                    alert('Pagamento cancelado.');
+
+                    // Necessário somente para a tela de movimentações de caixa.
+                    if ( '{$action}' == 'main:process:counter:counterMovement' )
+                    {
+                        saguDoAjax('changeSpecieValue', 'divAjaxResponse', true, '');
+                    }
+                ");
+            }
+            else
+            {
+                $MIOLO->page->addAjaxJsCode("
+                    alert('Não foi possível cancelar o pagamento.');
+                ");
+            }
+        }
+        else
+        {
+            $objResposta = $finCieloPedido->requisicaoCancelamento();
+            $erro = $finCieloPedido->erro;
+
+            $finCieloPedido->status = $objResposta->status;
+
+            if ( $finCieloPedido->status == FinCieloPedido::STATUS_CANCELADO )
+            {
+                // Registrar transação
+                $finCieloPedido->registrarTransacao($objResposta->asXML());
+
+                if ( $finCieloPedido->limparPedidos() )
+                {
+                    $action = $MIOLO->getCurrentAction();
+
+                    $MIOLO->page->addAjaxJsCode("
+                        document.getElementById('session[$speciesId]').value = '';
+                        document.getElementById('paymentValue[$speciesId]').value = '';
+                        document.getElementById('paymentValue[$speciesId]').readOnly = '';
+                        document.getElementById('btnPopupCreditCard[$speciesId]').value = \"Informar dados do cartão\";
+                        document.getElementById('btnPopupCreditCard[$speciesId]').innerHTML = \"Informar dados do cartão\";
+                        alert('Pagamento cancelado.');
+
+                        // Necessário somente para a tela de movimentações de caixa.
+                        if ( '{$action}' == 'main:process:counter:counterMovement' )
+                        {
+                            saguDoAjax('changeSpecieValue', 'divAjaxResponse', true, '');
+                        }
+                    ");
+                }
+                else
+                {
+                    $MIOLO->page->addAjaxJsCode("
+                        alert('Não foi possível cancelar o pagamento. Motivo: $erro');
+                    ");
+                }
+            }
+            else
+            {
+                $MIOLO->page->addAjaxJsCode("
+                        alert('Não foi possível cancelar o pagamento.');
+                    ");
+            }
+        }
+        
+        MPopup::remove();
+    }
+    
+    public function inserirPagamento($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $busSpecies = new BusinessFinanceBusSpecies();
+        $finCieloPedido = new FinCieloPedido();
+        
+        $species = unserialize($args->species);
+        $speciesId = $species[0];
+        $specie = $busSpecies->getSpecies($speciesId);
+        $specie instanceof FinSpecies;
+        
+        if ( MUtil::getBooleanValue($args->chkPinPad) )
+        {
+            if ( strlen($args->tid) > 0 )
+            {
+                if ( is_numeric($args->paymentValue[$speciesId]) )
+                {
+                    $finCieloPedido->tid = $args->tid;
+                    $finCieloPedido->efetuadoPorPinPad = TRUE;
+
+                    // Serializa Pedido e guarda na SESSION
+                    $strPedido = $finCieloPedido->toString();
+                    $finCieloPedido->append($strPedido);
+
+                    $sessionId = $finCieloPedido->getSessionId();
+                    $action = $MIOLO->getCurrentAction();
+
+                    $MIOLO->page->addAjaxJsCode("
+                        document.getElementById('session[$speciesId]').value = '$sessionId';
+                        document.getElementById('paymentValue[$speciesId]').readOnly = 'readonly';
+                        document.getElementById('btnPopupCreditCard[$speciesId]').value = \"Cancelar pagamento\";
+                        document.getElementById('btnPopupCreditCard[$speciesId]').innerHTML = \"Cancelar pagamento\";
+
+                        // Necessário somente para a tela de movimentações de caixa.
+                        if ( '{$action}' == 'main:process:counter:counterMovement' )
+                        {
+                            saguDoAjax('changeSpecieValue', 'divAjaxResponse', true, '');
+                        }
+                    ");
+                }
+                else
+                {
+                    $MIOLO->page->addAjaxJsCode("
+                        document.getElementById('paymentValue[$speciesId]').value = '';
+                        alert('O valor informado não é válido.');
+                    ");
+                }
+            }
+            else
+            {
+                $MIOLO->page->addAjaxJsCode("
+                    document.getElementById('paymentValue[$speciesId]').value = '';
+                    alert('O identificador da transação não foi informado.');
+                ");
+            }
+        }
+        else
+        {
+            // Valor
+            $finCieloPedido->dadosPedidoValor = FinCieloPedido::formatarValorCielo($args->paymentValue[$speciesId]);
+
+            // Código da bandeira
+            $finCieloPedido->formaPagamentoBandeira = strtolower($specie->bandeira);
+
+            // Num parcelas
+            $finCieloPedido->formaPagamentoParcelas = $args->numParcelas;
+
+            // Num cartao
+            $finCieloPedido->dadosPortadorNumero = $args->numero;
+
+            // Validade cartao
+            $finCieloPedido->dadosPortadorVal = $args->validadeAno . $args->validadeMes;
+
+            // Codigo seguranca cartao
+            $finCieloPedido->dadosPortadorCodSeg = $args->codSeguranca;
+            if ( $args->codSeguranca == NULL || $args->codSeguranca == '' )
+            {
+                $finCieloPedido->dadosPortadorInd = "0";
+            }
+            else
+            {
+                $finCieloPedido->dadosPortadorInd = "1";
+            }        
+
+            // Num Pedido
+            $finCieloPedido->dadosPedidoNumero = rand(1000000, 9999999);
+
+            $objRespostaTid = $finCieloPedido->requisicaoTid();
+
+            $finCieloPedido->tid = $objRespostaTid->tid;
+            $finCieloPedido->pan = $objRespostaTid->pan;
+            $finCieloPedido->status = $objRespostaTid->status;
+
+            $objRespostaAutorizacao = $finCieloPedido->requisicaoAutorizacaoPortador();
+
+            $finCieloPedido->tid = $objRespostaAutorizacao->tid;
+            $finCieloPedido->pan = $objRespostaAutorizacao->pan;
+            $finCieloPedido->status = $objRespostaAutorizacao->status;
+
+            $urlAutenticacao = 'url-autenticacao';
+            $finCieloPedido->urlAutenticacao = $objRespostaAutorizacao->$urlAutenticacao;
+
+            // Serializa Pedido e guarda na SESSION
+            $strPedido = $finCieloPedido->toString();
+            $finCieloPedido->append($strPedido);
+            $erro = $finCieloPedido->erro;
+
+            // Consulta situação da transação
+            $objRespostaConsulta = $finCieloPedido->requisicaoConsulta();
+
+            // Atualiza status
+            $finCieloPedido->status = $objRespostaConsulta->status;
+            
+            if ( $finCieloPedido->status == FinCieloPedido::STATUS_AUTORIZADO )
+            {
+                // Regitra transação
+                $finCieloPedido->registrarTransacao($objRespostaAutorizacao->asXML());
+
+                $sessionId = $finCieloPedido->getSessionId();
+                $action = $MIOLO->getCurrentAction();
+
+                $MIOLO->page->addAjaxJsCode("
+                    document.getElementById('session[$speciesId]').value = '$sessionId';
+                    document.getElementById('paymentValue[$speciesId]').readOnly = 'readonly';
+                    document.getElementById('btnPopupCreditCard[$speciesId]').value = \"Cancelar pagamento\";
+                    document.getElementById('btnPopupCreditCard[$speciesId]').innerHTML = \"Cancelar pagamento\";
+                    alert('Pagamento autorizado.');
+
+                    // Necessário somente para a tela de movimentações de caixa.
+                    if ( '{$action}' == 'main:process:counter:counterMovement' )
+                    {
+                        saguDoAjax('changeSpecieValue', 'divAjaxResponse', true, '');
+                    }
+                ");
+            }
+            else
+            {
+                $MIOLO->page->addAjaxJsCode("
+                    alert(unescape('O pagamento não foi autorizado. Motivo: $erro'));
+                ");
+            }
+        }
+        
+        MPopup::remove();
+    }
+    
+    public function alteraCampos($args)
+    {
+        if ( MUtil::getBooleanValue($args->chkPinPad) )
+        {
+            $form = new MFormContainer('frmCreditCard', FrmCreditCardPopup::obterCamposPinPad());
+            $bg = new MBaseGroup('bgCreditCard', _M('Informe o número sequencial único'), array($form));
+        }
+        else
+        {
+            $form = new MFormContainer('frmCreditCard', FrmCreditCardPopup::obterCamposCartaoDeCredito());
+            $bg = new MBaseGroup('bgCreditCard', _M('Informe os dados do cartão'), array($form));
+        }
+        
+        return $bg;
+    }
+    
+    public static function obterCamposPinPad()
+    {
+        // Numero
+        $numeroLabel = new MText('tidLabel', _M('TID', $module) . ':');
+        $numeroLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $numeroLabel->setClass('m-caption m-caption-required');
+        $numero = new MTextField('tid', null, null, 20, _M('Informe o identificador da transação'));
+        $flds[] = new MHContainer('tidHC', array($numeroLabel, $numero));
+        
+        return $flds;
+    }
+    
+    public static function obterCamposCartaoDeCredito()
+    {
+        // Numero        
+        $numeroLabel = new MText('numeroLabel', _M('Número', $module) . ':');
+        $numeroLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $numeroLabel->setClass('m-caption m-caption-required');
+        $numero = new MTextField('numero', '', null, 20, _M('Informe o número do cartão'));
+        
+        $length    = SAGU::getParameter('FINANCE', 'CREDIT_CARD_LENGTH');
+        $ano       = date('Y');
+        $anoFim    = date('Y') + 20;
+        $anoSeculo = substr($ano, 0, 2);
+        
+        $numero->addAttribute('onkeyup', "
+            if ( this.value.length == parseInt($length) )
+            {
+                var charSeparator = this.value.indexOf('=');
+                var num = this.value.substr(1,charSeparator-1);
+                var ano = this.value.substr(charSeparator+1, 2);
+                var mes = this.value.substr(charSeparator+3, 2);
+                
+                ano = '$anoSeculo' + ano;
+
+                this.value = num;
+                document.getElementById('validadeAno').value = ano;
+                document.getElementById('validadeMes').value = mes;
+
+                document.getElementById('codSeguranca').value = '';
+                document.getElementById('codSeguranca').focus();
+            }
+            else
+            {            
+                if ( this.value.indexOf(':') > -1 )
+                {                    
+                    alert('Erro na leitura do cartão. Por favor tente novamente!');
+                    document.getElementById('validadeAno').value = '';
+                    document.getElementById('validadeMes').value = '';
+                    this.value = null;
+                }
+            }
+            
+            if ( this.value.substr(0, 1) != 'ç' )
+            {
+                if ( this.value.match( /[^\d]/g ) )
+                {
+                    this.value = this.value.replace( /[^\d]/g, '' );
+                }
+            }
+        ");
+        
+        $flds[] = new MHContainer('numeroHC', array($numeroLabel, $numero, $numHidden));
+        
+        // Validade
+        $validadeLabel = new MText('validadeLabel', _M('Validade', $module) . ':');
+        $validadeLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $validadeLabel->setClass('m-caption m-caption-required');
+        
+        for ( $i = $ano; $i < $anoFim; $i++ )
+        {
+            $anos[$i] = $i;
+        }        
+        $validadeAno = new MSelection('validadeAno', date('Y'), null, null, null, _M('ano'));
+        $validadeAno->options = $anos;
+        $validadeAno->addAttribute('style', 'width:80px');
+        
+        $meses['01'] = '01';
+        $meses['02'] = '02';
+        $meses['03'] = '03';
+        $meses['04'] = '04';
+        $meses['05'] = '05';
+        $meses['06'] = '06';
+        $meses['07'] = '07';
+        $meses['08'] = '08';
+        $meses['09'] = '09';
+        $meses['10'] = '10';
+        $meses['11'] = '11';
+        $meses['12'] = '12';
+        $validadeMes = new MSelection('validadeMes', date('m'), null, null, null, _M('mês'));
+        $validadeMes->options = $meses;
+        $validadeMes->addAttribute('style', 'width:50px');
+        
+        $flds[] = new MHContainer('validadeHC', array($validadeLabel, $validadeMes, $validadeAno));
+        
+        // Cód. segurança
+        $segurancaLabel = new MText('segurancaLabel', _M('Cód segurança', $module) . ':');
+        $segurancaLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $segurancaLabel->setClass('m-caption m-caption-required');
+        $seguranca = new MIntegerField('codSeguranca', '', null, 3, _M('Informe o código de segurança do cartão'));
+        
+        $seguranca->addAttribute('onkeyup', "
+            if ( this.value.length < 3 )
+            {
+                if ( this.value.substr(0, 1) != 'ç' )
+                {
+                    if ( this.value.match( /[^\d]/g ) )
+                    {
+                        this.value = this.value.replace( /[^\d]/g, '' );
+                    }
+                }
+                else
+                {
+                    var numero = document.getElementById('numero');
+                    numero.value = this.value;
+                    numero.onkeyup();
+                }
+            }
+            else
+            {
+                this.value = this.value.substr(0, 3);
+                
+                if ( !parseInt(this.value) )
+                {
+                    this.value = '';
+                }
+            }
+        ");
+        
+        $flds[] = new MHContainer('codSegurancaHC', array($segurancaLabel, $seguranca));
+        
+        return $flds;
+    }
+    
+    public static function obterCamposCancelamento($valor, $status)
+    {
+        $valorLabel = new MText('valorLabel', _M('Valor') . ':');
+        $valorLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $campoValor = new MTextField('valor', $valor, NULL);
+        $campoValor->setReadOnly(TRUE);
+        $flds[] = new MHContainer('valorHC', array($valorLabel, $campoValor));
+        
+        $flds[] = new MSeparator('&nbsp;');
+        
+        $statusLabel = new MText('statusLabel', _M('Status atual') . ':');
+        $statusLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $statusCampo = new MText('statusCampo', $status);
+        $flds[] = new MHContainer('statusHC', array($statusLabel, $statusCampo));
+        
+        return $flds;
+    }
+    
+}
+
+?>

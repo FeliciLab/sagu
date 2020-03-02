@@ -1,0 +1,836 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Jonas Guilherme Dahmer [jonas@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Jonas Guilherme Dahmer [jonas@solis.coop.br]
+ *
+ * @since
+ * Class created on 14/10/2008
+ */
+class FrmEnrollConfig extends SForm
+{
+    
+    const DISPLAY_MODE_TODAS_AS_DATAS = 'D';
+    const DISPLAY_MODE_APENAS_DIAS_DA_SEMANA = 'W';
+    const DISPLAY_MODE_APENAS_DATA_INICIAL_E_FINAL = 'B';
+
+    public $MIOLO, $module, $action, $data, $type, $validators;
+
+    /**
+     * Class constructor
+     */
+    public function __construct()
+    {
+        $this->MIOLO = MIOLO::getInstance();
+        $this->module = MIOLO::getCurrentModule();
+        $this->action = MIOLO::getCurrentAction();
+
+        parent::__construct(_M('Configuração de matrícula', $this->module), null, null);
+
+        // Desabilita uns botões da toolbar
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+        
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $function = MIOLO::_REQUEST('function');
+        $enrollConfigId = SAGU::NVL( MIOLO::_REQUEST('enrollconfigid'), $this->GetFormValue('enrollConfigId') );
+        
+        // Obtém os valores antigos
+        try
+        {
+            $this->data = new AcdEnrollConfig($enrollConfigId);
+        }
+        catch ( Exception $e )
+        {
+            $this->addError($e->getMessage());
+        }        
+        
+        $fields[] = new SHiddenField('enrollConfigId', $enrollConfigId);
+        
+        //Begin date
+        $beginDateLabel = new MText('beginDateLabel', _M('Data inicial', $this->module) . ':');
+        $beginDateLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $beginDate = new MCalendarField('beginDate', $this->data->beginDate, '', SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+        $beginDate->setJsHint(_M('Informe a data inicial.', $this->module));
+        $fields[] = new MHContainer('hctBeginDate', array( $beginDateLabel, $beginDate ));
+        $this->validators[] = new MRequiredValidator('beginDate',_M('Data inicial', $this->module));
+        $this->validators[] = new MDateDMYValidator('beginDate');
+        
+        //End date
+        $endDateLabel = new MText('endDateLabel', _M('Data final', $this->module) . ':');
+        $endDateLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $endDate = new MCalendarField('endDate', $this->data->endDate, '', SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+        $endDate->setJsHint(_M('Informe a data final', $this->module));
+        $fields[] = new MHContainer('hctEndDate', array( $endDateLabel, $endDate ));
+        
+        //lookup do curso
+        
+        $courseOccurrenceLookup = new SCourseOccurrenceLookup();
+        $courseOccurrenceLookup->getCourseIdField()->setValue($this->data->courseId);
+        $courseOccurrenceLookup->getTurnIdField()->setValue($this->data->turnId);
+        $courseOccurrenceLookup->getUnitIdField()->setValue($this->data->unitId);
+
+        if ( strlen($this->data->courseId) > 0 && ( $this->data instanceof AcdEnrollConfig ) )
+        {
+            $courseOccurrenceLookup->setOnLoadValues(array(
+                'courseId' => $this->data->courseId,
+                'courseVersion' => $this->data->courseVersion,
+                'courseName' => $this->data->getCourseName(),
+                'turnId' => $this->data->turnId,
+                'turnDescription' => $this->data->getTurnDescription(),
+                'unitId' => $this->data->unitId,
+                'unitDescription' => $this->data->getUnitDescription()
+            ));
+        }
+        
+        if($this->_function == SForm::FUNCTION_UPDATE)
+        {
+            $courseOccurrenceLookup->setReadOnly(true);
+        }
+        
+        $fields[] = $courseOccurrenceLookup;
+        
+        $js = "function verificaMatriculaWeb()
+            {
+                if(document.getElementById('enableEnrollWeb').checked)
+                {
+                    mtabbedbasegroup.enableTab('enrollTabExterna', 'enrollTab');
+                }
+                else
+                {
+                    mtabbedbasegroup.disableTab('enrollTabExterna', 'enrollTab');
+                }
+            }";
+        
+        $this->AddJsCode($js);
+        
+        $fields[] = $enableEnrollWeb = new MCheckBox('enableEnrollWeb', 't', _M('Disponibilizar matrícula no portal do aluno'), true);
+        $enableEnrollWeb->addAttribute('onchange','verificaMatriculaWeb()');
+        
+        $fields[] = new MSeparator();
+        $fields[] = new MSeparator();
+        $fields[] = new MSeparator();
+
+        $fields[] = $tab = new MTabbedBaseGroup('enrollTab');
+        $tab->createTab('enrollTabInterno', _M('Interno', $this->module), $this->internaFields());
+        $tab->createTab('enrollTabGeral', _M('Geral', $this->module), $this->geralFields());
+        $tab->createTab('enrollTabExterna', _M('Portal do aluno', $this->module), $this->externaFields());
+            
+        $fields[] = new MSeparator();
+
+        parent::defineFields();
+
+        $fields[] = $this->getCustomFields($this->getTransaction(), $enrollConfigId);
+        
+        $this->SetFields($fields);
+        $this->SetValidators($this->validators);
+    }
+    
+    public function externaFields()
+    {
+        $fields[] = $this->obterCamposMascarasParaVisualizacaoDeDisciplinas();
+        $fields[] = $this->standartField('showOptionalsExternal', 'Exibir campos para selecionar disciplinas opcionais', 'SIM para exibir campos que habilitam o usuário a selecionar disciplinas opcionais. NÃO para ocultar estes campos e não permitir que o usuário selecione disciplinas opcionais.');
+        $fields[] = $this->standartField('showoOtherCoursesGroupsExternal', 'Exibir disciplinas oferecidas para outros cursos', 'Selecione SIM para exibir disciplinas oferecidas para cursos diferentes do curso do aluno. NÃO para exibir apenas disciplinas oferecidas para o curso do aluno.');
+        $fields[] = $this->standartField('showoOtherUnitsGroupsExternal', 'Exibir disciplinas oferecidas em outras unidades', 'Se SIM for selecionado, as disciplinas oferecidas são exibidas não importanto a unidade. Se NÃO for selecionado, apenas disciplinas oferecidas na unidade do contrato do aluno são exibidas.');
+        $fields[] = $this->standartField('showOtherTurnsGroupsExternal', 'Exibir disciplinas oferecidas em outros turnos', 'SIM para exibir as disciplinas oferecidas não importando o turno. NÃO para exibir apenas disciplinas oferecidas no turno do contrato do aluno.');
+        $fields[] = $this->standartField('showOtherClassesGroupsExternal', 'Exibir disciplinas oferecidas para outras turmas', 'Selecione SIM para exibir disciplinas oferecidas para qualquer turma e NÃO para exibir apenas as disciplinas oferecidas para a turma do aluno.');
+        //$fields[] = $this->standartField('freeOtherPeriodGroupsExternal', 'Exibir disciplinas oferecidas em outro período como liberadas para matrícula', 'Selecione SIM para exibir disciplinas de períodos diferentes do período da turma do aluno como liberadas para matrícula. NÃO para exibir estas disciplinas como indisponíveis.');
+        $fields[] = $this->standartField('checkScheduleShockExternal', 'Verificar choque de horários', 'SIM para verificar conflitos entre os horários das disciplinas oferecidas e NÃO para desativar esta verificação.');
+        $fields[] = $this->standartField('blockDocsMissingExternal', 'Bloquear matrícula se o aluno possui documentos faltando', 'Selecione SIM para bloquear a matrícula em caso de algum dos documentos obrigatórios estar pendente. Se NÃO for selecionado, os documentos pendentes serão exibidos como uma mensagem de aviso e o processo de matrícula poderá continuar.');
+        $fields[] = $this->standartField('blockDebtExternal', 'Bloquear matrícula para alunos com algum débito financeiro com a instituição', 'Sim para bloquear o processo de matrícula para alunos com débitos financeiros. NÃO para apenas avisar sobre a situação.');
+        $fields[] = $this->standartField('checkDebitsExternal', 'Bloquear matrícula para alunos com algum débito financeiro em aberto com a instituição', 'Selecione SIM para bloquear a matrícula em caso de existir algum débito financeiro em aberto com a instituição. Se NÃO for selecionado, os débitos financeiros serão exibidos como uma mensagem de aviso e o processo de matrícula poderá continuar.');
+        $fields[] = $this->bloqueiaMatriculaWebSemestreCheioFields('bloqueiaMatriculaWebSemestreCheio', 'Bloquear matrícula para alunos que não selecionarem todas as matrículas de um semestre do currículo');
+        $fields[] = $this->standartField('disapprovementsToBlockTimeToCourseDisapproved', 'Bloquear matrícula do usuário quando limite máximo de dependências for atingido (reprovações no período anterior)');
+        $fields[] = $this->showModeField('External');
+        $fields[] = $this->standartField('showElectivesExternal', 'Exibir disciplinas eletivas', 'SIM para exibir eletivas (se existirem) de acordo com a matriz curricular ou NÃO para ocultá-las (neste caso, aluno não poderá ser matriculado em eletivas através da tela principal do processo de matrícula).');
+        $fields[] = $this->standartField('sendConfirmationEmailExternal', 'Enviar um e-mail de confirmação para o aluno no final do processo de matrícula', 'Enviar um e-mail de confirmação para o aluno no final do processo de matrícula?');        
+        $fields[] = $this->standartField('minimumAndMaxLimitCreditsBlockEnrollExternal', 'Limite mínimo e máximo de creditos totais a cursar bloqueia matrícula', 'No período letivo é definido o limite mínimo e máximo de créditos a cursar, se selecionado SIM o sistema irá bloquear a matrícula se o aluno não selecionar um número de disciplinas entre o limite mínimo e máximo de créditos. O valor 0 (zero) desabilita esta opção.');
+        $fields[] = $this->standartIntField('minimumCreditsTurnCourseExternal', 'Limite mínimo de créditos no turno do curso', 'Número mínimo de créditos que devem ser cursados no turno do curso. O valor 0 (zero) desabilita esta opção.');
+        $fields[] = $this->standartIntField('maxCreditsTurnCourseExternal', 'Limite máximo de créditos no turno do curso', 'Número máximo de créditos que devem ser cursados no turno do curso. O valor 0 (zero) desabilita esta opção.');
+        $fields[] = $this->standartIntField('minimumCreditsOtherTurnCourseExternal', 'Limite mínimo de créditos em outros turnos.', 'Número mínimo de créditos que devem ser cursados em outros turnos. O valor 0 (zero) desabilita esta opção.');
+        $fields[] = $this->standartIntField('maxCreditsOtherTurnCourseExternal', 'Limite máximo de créditos a cursar em outros turnos', 'Número máximo de créditos que devem ser cursados em outros turnos.');
+        $fields[] = $this->standartField('enableSelectCurricularComponentOfFuturePeriodsExternal', 'Possibilidade de o aluno selecionar disciplinas de períodos futuros', 'Indica se o usuário poderá selecionar ofertas de disciplinas pertencentes a períodos que estão à frente do seu período atual.');
+        $fields[] = $this->standartField('enableSelectCurricularComponentPendingExternal', 'Possibilidade de o aluno selecionar as ofertas de disciplinas pendentes', 'Indica se o usuário poderá selecionar as ofertas de disciplinas pendentes ou se terá que cursar sempre todas.');
+        $fields[] = $this->standartTextField('configurableMessageStep1', 'Mensagem configurável para o passo "Dados"', 'Mensagem de apoio ao aluno disponibilizada no passo "Dados".');
+        $fields[] = $this->standartTextField('configurableMessageStep2', 'Mensagem configurável para o passo "Disciplinas"', 'Mensagem de apoio ao aluno disponibilizada no passo "Disciplinas".');
+        $fields[] = $this->standartTextField('configurableMessageStep3', 'Mensagem configurável para o passo "Finalização"', 'Mensagem de apoio ao aluno disponibilizada no passo "Finalização".');
+        $fields[] = $this->standartField('avaliableContract', 'Disponibilizar o contrato para donwload no final da matricula', 'Permite que ao finalizar a matrícula o aluno possa imprimir o contrato.');
+        $fields[] = $this->standartField('avaliableAddendum', 'Disponibilizar o termo aditivo para donwload no final da matricula', '  Permite que ao finalizar a matrícula o aluno possa imprimir o termo aditivo.');
+        $fields[] = $this->standartField('avaliableEnrollConfirmation', 'Disponibilizar a confirmação de matrícula para donwload no final da matricula', 'Permite que ao finalizar a matrícula o aluno possa imprimir a confirmação de matrícula.');
+        
+        return $fields;
+    }
+
+    /**
+     * Obtém os campos para o cadastro das máscaras para a tela de matrícula.
+     * 
+     * @return \MBaseGroup
+     */
+    public function obterCamposMascarasParaVisualizacaoDeDisciplinas()
+    {
+        $module = MIOLO::getCurrentModule();
+        
+        //Info
+        $fields[] = MMessage::getStaticMessage('msgInfo', _M("Mascará válida para matrícula web dos alunos, para o sistema apenas se o parâmetro 'ENROLL_FORM' estiver habilitado como 'FrmEnrollWeb'.", $module), MMessage::TYPE_INFORMATION);
+        $fields[] = new MSpacer('&nbsp;');
+        
+        //Disciplina
+        $disciLbl = new MLabel(_M('Disciplina (currículo)', $module) . ':');
+        $disciLbl->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $disciLbl->setClass('m-caption');
+        $disci = new MTextField('mascdisciplina', SAGU::NVL(MIOLO::_REQUEST('mascdisciplina'), $this->data->mascDisciplina, 'X_CUR_CODIGO/X_CUR_VERSAO - X_CUR_NOME'), NULL, '100');
+        $fields[] = new MHContainer('hctDisciplina', array($disciLbl, $disci));
+        $fields[] = new MSpacer('&nbsp;');
+        
+        //Disciplina oferecida do currículo
+        $groupLbl = new MLabel(_M('Disciplina oferecida do currículo', $module) . ':');
+        $groupLbl->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $groupLbl->setClass('m-caption');
+        $group = new MTextField('mascoferta', SAGU::NVL(MIOLO::_REQUEST('mascoferta'), $this->data->mascOferta, 'X_OFE_COD_DISCIPLINA/X_OFE_VERSAO_DISCIPLINA - X_OFE_NOME_DISCIPLINA (X_OFE_TURNO/X_OFE_UNIDADE)'), NULL, '100');
+        $fields[] = new MHContainer('hctDisciplinaOferecida', array($groupLbl, $group));
+        $fields[] = new MSpacer('&nbsp;');
+        
+        //Disciplina oferecida fora do currículo
+        $groupOutLbl = new MLabel(_M('Disciplina oferecida fora do currículo', $module) . ':');
+        $groupOutLbl->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $groupOutLbl->setClass('m-caption');
+        $groupOut = new MTextField('mascoutrasofertas', SAGU::NVL(MIOLO::_REQUEST('mascoutrasofertas'), $this->data->mascOutrasOfertas, 'X_OFE_COD_DISCIPLINA/X_OFE_VERSAO_DISCIPLINA - X_OFE_NOME_DISCIPLINA (X_OFE_TURNO/X_OFE_UNIDADE)'), NULL, '100');
+        $fields[] = new MHContainer('hctDisciplinaOferecidaFora', array($groupOutLbl, $groupOut));
+        $fields[] = new MSpacer('&nbsp;');
+        
+        //Link para os manuais
+        $linkManuais = new MLink('linkManuais', _M('clique aqui', $module), 'http://manuais.solis.com.br/index.php/Acad%C3%AAmico::Configura%C3%A7%C3%A3o_de_matr%C3%ADcula', NULL, '_blank');
+        $fields[] = new MLabel('<strong>Para verificar as variáveis disponíveis e seus usos ' . $linkManuais->generate() . '<strong>');
+
+        $bg = new MBaseGroup('bsgMasks', _M('Máscaras para visualização de disciplinas'), $fields);
+        
+        return $bg;
+    }
+    
+    public function geralFields()
+    {
+        $fields[] = $this->preEnrollField();
+        
+        if ( SAGU::getParameter('BASIC', 'MODULE_GNUTECA_INSTALLED') == 'YES' )
+        {
+            $fields[] = new MSeparator();
+            $fields[] = $this->camposBloqueioPendenciasGnuteca();
+        }
+        
+        $fields[] = $this->cancelPreEnrollFields($data);
+        
+        $fields[] = $this->disapprovementsFields($data);
+        
+        return $fields;
+    }
+
+    public function internaFields()
+    {
+        $fields[] = $this->standartField('freeInCourseConditions', 'Exibir disciplinas com requisitos em curso como liberadas para matrícula', 'Se SIM for selecionado, disciplinas com requisitos em curso (aluno está matriculado no requisito) serão exibidas com o status LIBERADA. Ao contrário, elas serão exibidas com o estado BLOQUEADA.');
+        $fields[] = $this->standartField('showElectives', 'Exibir disciplinas eletivas', 'SIM para exibir eletivas (se existirem) de acordo com a matriz curricular ou NÃO para ocultá-las (neste caso, aluno não poderá ser matriculado em eletivas através da tela principal do processo de matrícula).');
+        $fields[] = $this->standartField('showOptionals', 'Exibir campos para selecionar disciplinas opcionais', 'SIM para exibir campos que habilitam o usuário a selecionar disciplinas opcionais. NÃO para ocultar estes campos e não permitir que o usuário selecione disciplinas opcionais.');
+        $fields[] = $this->standartField('showOtherCoursesGroups', 'Exibir disciplinas oferecidas para outros cursos', 'Selecione SIM para exibir disciplinas oferecidas para cursos diferentes do curso do aluno. NÃO para exibir apenas disciplinas oferecidas para o curso do aluno.');
+        $fields[] = $this->standartField('showOtherUnitsGroups', 'Exibir disciplinas oferecidas em outras unidades', 'Selecione SIM para exibir disciplinas oferecidas para cursos diferentes do curso do aluno. NÃO para exibir apenas disciplinas oferecidas para o curso do aluno.');
+        $fields[] = $this->standartField('showOtherTurnsGroups', 'Exibir disciplinas oferecidas em outros turnos', 'SIM para exibir as disciplinas oferecidas não importando o turno. NÃO para exibir apenas disciplinas oferecidas no turno do contrato do aluno.');
+        $fields[] = $this->standartField('showSpecialRegimenGroups', 'Exibir disciplinas oferecidas em regimes especiais', 'SIM para exibir disciplinas oferecidas em regimes especiais. NÃO para ocultá-los.');
+        $fields[] = $this->standartField('showOtherClassesGroups', 'Exibir disciplinas oferecidas para outras turmas', 'Selecione SIM para exibir disciplinas oferecidas para qualquer turma e NÃO para exibir apenas as disciplinas oferecidas para a turma do aluno.');
+        $fields[] = $this->standartField('showOtherGroupsField', 'Exibir um campo para selecionar outras disciplinas oferecidas', 'Selecione SIM para exibir um campo para selecionar disciplinas oferecidas que não são exibidas na tela. Este campo permitirá ao usuário selecionar qualquer outra disciplina oferecida da respectiva disciplina. NÃO para não exibir este campo, o que permitirá que o usuário só selecione as disciplinas oferecidas listadas na tela.');
+        $fields[] = $this->standartField('freeOtherPeriodGroups', 'Exibir disciplinas oferecidas em outro período como liberadas para matrícula', 'Selecione SIM para exibir disciplinas de períodos diferentes do período da turma do aluno como liberadas para matrícula. NÃO para exibir estas disciplinas como indisponíveis.');
+        $fields[] = $this->standartField('mayChooseGroups', 'Usuário pode selecionar disciplinas oferecidas no requerimento de matrícula', 'No requerimento de matrícula, se SIM for selecionado o usuário poderá selecionar as disciplinas oferecidas nas quais se matricular. Se NÃO for selecionado, o aluno será matriculado nas disciplinas oferecidas definidas para sua turma.');
+        $fields[] = $this->standartField('checkScheduleShock', 'Verificar choque de horários', 'SIM para verificar conflitos entre os horários das disciplinas oferecidas e NÃO para desativar esta verificação.');
+        $fields[] = $this->standartField('blockDocsMissing', 'Bloquear matrícula se o aluno possui documentos faltando', 'Selecione SIM para bloquear a matrícula em caso de algum dos documentos obrigatórios estar pendente. Se NÃO for selecionado, os documentos pendentes serão exibidos como uma mensagem de aviso e o processo de matrícula poderá continuar.');
+        $fields[] = $this->standartField('blockRequirementMissing', 'Bloquear matrícula se está faltando o requerimento', 'Selecione SIM para bloquear a matrícula se o aluno não fez requerimento de matrícula. NÃO para apenas avisar sobre esta pendência.');
+        $fields[] = $this->standartField('minimumAndMaxLimitCreditsBlockEnroll', 'Limite mínimo e máximo de creditos totais a cursar bloqueia matrícula', 'No período letivo é definido o limite mínimo e máximo de créditos a cursar, se selecionado SIM o sistema irá bloquear a matrícula se o aluno não selecionar um número de disciplinas entre o limite mínimo e máximo de créditos. O valor 0 (zero) desabilita esta opção.');
+        $fields[] = $this->standartIntField('minimumCreditsTurnCourse', 'Limite mínimo de créditos no turno do curso', 'Número mínimo de créditos que devem ser cursados no turno do curso. O valor 0 (zero) desabilita esta opção.');
+        $fields[] = $this->standartIntField('maxCreditsTurnCourse', 'Limite máximo de créditos no turno do curso', 'Número máximo de créditos que devem ser cursados no turno do curso. O valor 0 (zero) desabilita esta opção.');
+        $fields[] = $this->standartIntField('minimumCreditsOtherTurn', 'Limite mínimo de créditos em outros turnos.', 'Número mínimo de créditos que devem ser cursados em outros turnos. O valor 0 (zero) desabilita esta opção.');
+        $fields[] = $this->standartIntField('maxCreditsOtherTurn', 'Limite máximo de créditos a cursar em outros turnos', 'Número máximo de créditos que devem ser cursados em outros turnos. O valor 0 (zero) desabilita esta opção.');
+        $fields[] = $this->standartField('enableSelectCurricularComponentPending', 'Possibilidade de o aluno selecionar as ofertas de disciplinas pendentes', 'Indica se o usuário poderá selecionar as ofertas de disciplinas pendentes ou se terá que cursar sempre todas.');
+        $fields[] = $this->standartField('enableSelectCurricularComponentOfFuturePeriods', 'Possibilidade de o aluno selecionar disciplinas de períodos futuros', 'Indica se o usuário poderá selecionar ofertas de disciplinas pertencentes a períodos que estão à frente do seu período atual.');
+
+        if ( SAGU::getParameter('BASIC', 'MODULE_FINANCE_INSTALLED') == 'YES' )
+        {
+            $fields[] = $this->standartField('blockDebt', 'Bloquear matrícula para alunos com algum débito financeiro atrasado com a instituição', 'Sim para bloquear o processo de matrícula para alunos com débitos financeiros atrasados. NÃO para apenas avisar sobre a situação.');
+            $fields[] = $this->standartField('checkDebits', 'Bloquear matrícula para alunos com algum débito financeiro em aberto com a instituição', 'Selecione SIM para bloquear a matrícula em caso de existir algum débito financeiro em aberto com a instituição. Se NÃO for selecionado, os débitos financeiros serão exibidos como uma mensagem de aviso e o processo de matrícula poderá continuar.');
+        }
+        else
+        {
+            $fields[] = new SHiddenField('blockDebt', 'f');
+            $fields[] = new SHiddenField('checkDebits','f');
+        }
+
+        $fields[] = $this->showModeField();
+        $fields[] = $this->sendConfirmationEmailField($data);
+
+        return $fields;
+    }
+    
+    /**
+     * @return MDiv 
+     */
+    public function preEnrollField()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $checked = strlen($this->data->enablePreEnroll) > 0 ? $this->data->enablePreEnroll == DB_TRUE : false;
+        $enabled = new MCheckBox('enablePreEnroll', DB_TRUE, _M('Ativar pré-matrícula', $module) . ':', $checked);
+        $enabled->addAttribute('onchange','alteraPreMatricula()');
+        $enabled->setFormMode(MControl::FORM_MODE_SHOW_NBSP);
+        $fields[] = $enabled;
+        $fields[] = new MSeparator();
+        
+        $js = "
+            function alteraPreMatricula()
+            {
+                if(document.getElementById('enablePreEnroll').checked)
+                {
+                    document.getElementById('divPreEnroll').style.display = 'block';
+                }
+                else
+                {
+                    document.getElementById('divPreEnroll').style.display = 'none';
+                }
+            }";
+        
+        $this->AddJsCode($js);
+        $this->page->onload('alteraPreMatricula()');
+        
+        $divFields[] = $this->standartField('preEnrollConsumeVacant', _M('Aluno pré-matriculado consome vaga', $module), _M('Se selecionado Sim o aluno já garante sua vaga no processo de pré-matricula independente da confirmação. Se selecionado Não o aluno só terá sua vaga confirmada no momento da efetivação da matrícula.', $module));
+        $divFields[] = new MSeparator();
+        
+        $radioValue = SAGU::NVL($this->data->ativaPreMatriculaPara, AcdEnrollConfig::PREMATRICULA_AMBOS);
+        $radioCalouro = new MRadioButton('ativaPreMatriculaPara', AcdEnrollConfig::PREMATRICULA_CALOURO, '', ($radioValue == AcdEnrollConfig::PREMATRICULA_CALOURO) ? $radioValue : null, _M('Calouro', $module));
+        $radioCalouro->addAttribute('onChange', $this->getAjaxAction('showOptsConfirmacao', 'optsConfirmacao', false, array('radio' => AcdEnrollConfig::PREMATRICULA_CALOURO)));
+        $radioVeterano = new MRadioButton('ativaPreMatriculaPara', AcdEnrollConfig::PREMATRICULA_VETERANO, '', ($radioValue == AcdEnrollConfig::PREMATRICULA_VETERANO) ? $radioValue : null, _M('Veterano', $module));
+        $radioVeterano->addAttribute('onChange', $this->getAjaxAction('showOptsConfirmacao', 'optsConfirmacao', false, array('radio' => AcdEnrollConfig::PREMATRICULA_VETERANO)));
+        $radioAmbos = new MRadioButton('ativaPreMatriculaPara', AcdEnrollConfig::PREMATRICULA_AMBOS, '', ($radioValue == AcdEnrollConfig::PREMATRICULA_AMBOS) ? $radioValue : null, _M('Ambos', $module));
+        $radioAmbos->addAttribute('onChange', $this->getAjaxAction('showOptsConfirmacao', 'optsConfirmacao', false, array('radio' => AcdEnrollConfig::PREMATRICULA_AMBOS)));
+        $paraQuemContainer = new MHContainer('paraQuemContainer', array($radioCalouro, $radioVeterano, $radioAmbos));
+        $flds[] = $paraQuemContainer;        
+        $divFields[] = new MBaseGroup('bgShowQuem', _M("Ativar pré-matrícula para", $this->module), $flds, 'vertical');
+        
+        $args = new stdClass();
+        $args->radio = $this->data->ativaPreMatriculaPara;
+        $divFields[] = new MDiv('optsConfirmacao', $this->showOptsConfirmacao($args));
+        
+        unset($flds);
+        // Mensagem com o link para a wiki
+        $href = 'http://manuais.solis.com.br/index.php/Envio_de_e-mails_de_confirmacao_de_matricula';        
+        $link = new MLink('link', 'link', $href);
+        $linkWiki = new MText('linkWiki', _M('Envia e-mail para os alunos após confirmada a matrícula, independente do método de confirmação. Para maiores informações acesse o ', $this->module) . $link->generate() . '.');
+        $linkWiki->setJsHint(_M('Manuais Solis: Envio de e-mails de confirmação de matrícula.', $this->module));
+        
+        // Radio button
+        $habilitaConfirmacaoLabel = new MText('habilitaConfirmacaoLabel', _M('Enviar e-mail de confirmação', $this->module) . ':');
+        $emailDeConfirmacao = SAGU::NVL($this->data->habilitaEmailDeConfirmacao, DB_FALSE);
+        $habilitaEmailDeConfirmacao = new MRadioButton('habilitaEmailDeConfirmacao', DB_TRUE, '', ($emailDeConfirmacao == DB_TRUE) ? true : false, _M('Habilitado', $this->module));
+        $desabilitaEmailDeConfirmacao = new MRadioButton('habilitaEmailDeConfirmacao', DB_FALSE, '', ($emailDeConfirmacao == DB_FALSE) ? true : false, _M('Desabilitado', $this->module));
+        
+        // Combobox com opções de e-mail
+        $emailDeConfirmacaoLabel = new MText('emailDeConfirmacaoLabel', _M('E-mail padrão', $this->module) . ':');
+        $busEmail = new BusinessBasicBusEmail();
+        $emails = $busEmail->listEmail();
+        $emailDeConfirmacaoId = new MSelection('emailDeConfirmacaoId', $this->data->emailDeConfirmacaoId, '', $emails, '',_M("Confgurados em 'Básico::Configuração::E-mail'", $this->module));
+        
+        $envioDeEmailDeConfirmacao = new MHContainer('envioDeEmailDeConfirmacao', array($linkWiki, new MSeparator(), $habilitaConfirmacaoLabel, $habilitaEmailDeConfirmacao, $desabilitaEmailDeConfirmacao, new MSeparator(), $emailDeConfirmacaoLabel, $emailDeConfirmacaoId));
+        $flds[] = $envioDeEmailDeConfirmacao;        
+        $divFields[] = new MBaseGroup('bgEmailConfirmacao', _M("Envio de e-mail de confirmação", $this->module), $flds, 'vertical');
+        
+        $divFields[] = new MSeparator();
+        
+        $fields[] = new MDiv('divPreEnroll', $divFields);
+        
+        $bgr = new MBaseGroup('bgrPreEnroll', _M('Configurações de pré-matrícula', $module), $fields, 'vertical');
+        
+        return new MDiv('preenroll'.rand(), array($bgr));
+    }
+    
+    /**
+     * Retorna os campos de configuração de bloqueio por pendências no Gnuteca.
+     * 
+     * @return \MDiv
+     */
+    public function camposBloqueioPendenciasGnuteca()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module  = $MIOLO->getCurrentModule();
+        
+        $radioValue = SAGU::NVL($this->data->pendenciasGnuteca, AcdEnrollConfig::SEM_BLOQUEIO);
+        $semBloqueio = new MRadioButton('pendenciasGnuteca', AcdEnrollConfig::SEM_BLOQUEIO, '', ($radioValue == AcdEnrollConfig::SEM_BLOQUEIO) ? $radioValue : null, _M('Sem bloqueio', $module));
+        $semBloqueio->addAttribute('onChange', $this->getAjaxAction('showOptsBloqueio', 'optsBloqueio', false, array('radio' => AcdEnrollConfig::SEM_BLOQUEIO)));
+        $somenteAviso = new MRadioButton('pendenciasGnuteca', AcdEnrollConfig::SOMENTE_AVISO, '', ($radioValue == AcdEnrollConfig::SOMENTE_AVISO) ? $radioValue : null, _M('Somente aviso', $module));
+        $somenteAviso->addAttribute('onChange', $this->getAjaxAction('showOptsBloqueio', 'optsBloqueio', false, array('radio' => AcdEnrollConfig::SOMENTE_AVISO)));
+        $bloqueio = new MRadioButton('pendenciasGnuteca', AcdEnrollConfig::BLOQUEIO, '', ($radioValue == AcdEnrollConfig::BLOQUEIO) ? $radioValue : null, _M('Bloqueio', $module));
+        $bloqueio->addAttribute('onChange', $this->getAjaxAction('showOptsBloqueio', 'optsBloqueio', false, array('radio' => AcdEnrollConfig::BLOQUEIO)));
+        $pendenciasGnutecaContainer = new MHContainer('pendenciasGnutecaContainer', array($semBloqueio, $somenteAviso, $bloqueio));
+        $flds[] = $pendenciasGnutecaContainer;
+        $flds[] = new MSeparator("<br>");
+        
+        $args = new stdClass();
+        $args->radio = $this->data->pendenciasGnuteca;
+        $flds[] = new MDiv('optsBloqueio', $this->showOptsBloqueio($args));
+        
+        $divFields[] = new MBaseGroup('bgPendenciasGnuteca', _M("Configuração de bloqueio por pendências no Gnuteca", $this->module), $flds, 'vertical');
+        
+        return new MDiv('optsBloqueio'.rand(), $divFields);
+    }
+    
+    /**
+     * Constroi opções de configuração de bloqueio por pendências no gnuteca.
+     * 
+     * @param array $args
+     * @return \MBaseGroup
+     */
+    public function showOptsBloqueio($args=null)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();  
+        
+        $enrollConfigId = SAGU::NVL( MIOLO::_REQUEST('enrollconfigid'), $this->GetFormValue('enrollConfigId') );
+        
+        if ( is_null($args->radio) || $args->radio == AcdEnrollConfig::SEM_BLOQUEIO )
+        {
+            return '';
+        }
+        else
+        {
+            $data = new AcdEnrollConfig($enrollConfigId);
+            
+            $emprestimosChecked = ($data->bloqueioEmprestimos == DB_TRUE) ? true : false;
+            $bloqueioEmprestimosLabel = new MText('bloqueioEmprestimosLabel', _M('Empréstimos', $module) . ':');
+            $bloqueioEmprestimosLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $bloqueioEmprestimosLabel->setClass('m-caption');
+            $bloqueioEmprestimos = new MCheckBox('bloqueioEmprestimos', DB_TRUE, null, $emprestimosChecked);
+            $emprestimos = new MHContainer('emprestimosHC', array($bloqueioEmprestimosLabel, $bloqueioEmprestimos));
+            
+            $multasChecked = ($data->bloqueioMultas == DB_TRUE) ? true : false;
+            $bloqueioMultasLabel = new MText('bloqueioMultasLabel', _M('Multas', $module) . ':');
+            $bloqueioMultasLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $bloqueioMultasLabel->setClass('m-caption');
+            $bloqueioMultas = new MCheckBox('bloqueioMultas', DB_TRUE, null, $multasChecked);
+            $multas = new MHContainer('multasHC', array($bloqueioMultasLabel, $bloqueioMultas));
+            
+            $penalidadesChecked = ($data->bloqueioPenalidades == DB_TRUE) ? true : false;
+            $bloqueioPenalidadesLabel = new MText('bloqueioPenalidadesLabel', _M('Penalidades', $module) . ':');
+            $bloqueioPenalidadesLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $bloqueioPenalidadesLabel->setClass('m-caption');
+            $bloqueioPenalidades = new MCheckBox('bloqueioPenalidades', DB_TRUE, null, $penalidadesChecked);
+            $penalidades = new MHContainer('penalidadesHC', array($bloqueioPenalidadesLabel, $bloqueioPenalidades));
+            
+            $fields[] = new MVContainer('optsBloqueios', array($emprestimos, $multas, $penalidades));
+            
+            $bloqueioMensagemLabel = new MText('bloqueioMensagemLabel', _M('Mensagem', $module) . ':');
+            $bloqueioMensagemLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $bloqueioMensagemLabel->setClass('m-caption');
+            $bloqueioMensagem = new MMultiLineField('bloqueioMensagem', $data->bloqueioMensagem, null, 40, 3, 40);
+            $fields[] = new MHContainer('mensagemHC', array($bloqueioMensagemLabel, $bloqueioMensagem));
+            
+            $subBgr = new MBaseGroup('bgrOptsBloqueio', _M('Acusar por', $module), $fields);
+            $divFields[] = $subBgr;
+
+            return $divFields;
+        }
+    }
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    
+    /**
+     * Constroi opções de confimração de matrícula conforme selecionado "quem".
+     * 
+     * @param array $args
+     * @return \MBaseGroup
+     */
+    public function showOptsConfirmacao($args=null)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();               
+                        
+        $options = AcdEnrollConfig::getPreEnrollOptions($args->radio);     
+        
+        // Configs de matricula
+        $subFields[] = new MLabel('A confirmação de matrícula é a transição do estado de pré-matrícula para matrículado e pode ser configurado conforme as opções abaixo:', $module);
+        $subFields[] = new MSeparator();
+        $texto = "Caso a confirmação de matrícula for pelo pagamento da primeira parcela, a cada rematricula ou reprocessamento os títulos serão criados novamente. ";
+        $subFields[] = $this->genericFields()->labelDica($texto);
+        $subFields[] = new MSeparator();
+        
+        $subFields[] = $this->standardOptionsField('preEnrollCheckSignature', _M('Assinatura do contrato', $module), $options, 'N');
+        $subFields[] = $this->standardOptionsField('preEnrollWebConfirmation', _M('Confirmação pelo portal do aluno', $module), $options, 'N');
+        
+        if ( SAGU::getParameter('BASIC', 'MODULE_FINANCE_INSTALLED') == 'YES' )
+        {
+            $subFields[] = $this->standardOptionsField('preEnrollCheckFirstPayment', _M('Pagamento da primeira parcela', $module), $options, 'N');
+        }
+        
+        $subFields[] = $this->standardOptionsField('preMatriculaChecaClassificacao', _M('Classificação de matrícula', $module), $options, 'N', true);
+        
+        $subBgr = new MBaseGroup('bgrPreEnrollSub', _M('Confirmação de matrícula', $module), $subFields);
+        $divFields[] = $subBgr;
+        
+        return $divFields;
+    }
+    
+    public function standardOptionsField($key, $title, $options = array(), $defaultValue = null, $camposClassificacao = false)
+    {
+//        $showStandartLabel = new MDiv($key . 'Label', _M($title, $this->module) . ':');
+//        $flds[] = $showStandartLabel;
+        
+        $showStandartValue = $this->data->$key ? $this->data->$key : $defaultValue;
+        $showStandarts = new MRadioButtonGroup($key, null, $options, $showStandartValue, null, 'horizontal');
+        $showStandarts->setShowLabel(false);
+        $flds[] = $showStandarts;
+                
+        if ( $camposClassificacao )
+        {
+            /*$flds[] = new MDiv();
+            
+            $opcaoInadimplencia = array(AcdEnrollConfig::INADIMPLENTES_CANCELADOS => _M('Alunos inadimplentes serão cancelados', $this->module), 
+                                        AcdEnrollConfig::INADIMPLENTES_CLASSIFICADOS => _M('Alunos inadimplentes serão classificados como os demais.', $this->module));
+                        
+            $cancelamentoInadimplencia = $this->data->preMatriculaCancelamentoDeInadimplentesNaClassificacao ? $this->data->preMatriculaCancelamentoDeInadimplentesNaClassificacao : AcdEnrollConfig::INADIMPLENTES_CLASSIFICADOS;
+            
+            $cancelamentosInadimplentes = new MRadioButtonGroup('preMatriculaCancelamentoDeInadimplentesNaClassificacao', null, $opcaoInadimplencia, $cancelamentoInadimplencia, null, 'vertical');
+            $cancelamentosInadimplentes->setShowLabel(false);
+            $flds[] = $cancelamentosInadimplentes;*/
+            
+            $flds[] = new MDiv();
+            
+            $opcaoCalculoCoeficiente = array(AcdEnrollConfig::CALCULO_COEFICIENTE_1 => _M('Cálculo do coeficiente TIPO 1', $this->module));
+                                    
+            $calculoCoeficiente = $this->data->preMatriculaTipoDeCalculoDoCoeficiente ? $this->data->preMatriculaTipoDeCalculoDoCoeficiente : AcdEnrollConfig::CALCULO_COEFICIENTE_1;
+                        
+            $tipoCalculoCoeficiente = new MRadioButtonGroup('preMatriculaTipoDeCalculoDoCoeficiente', null, $opcaoCalculoCoeficiente, $calculoCoeficiente, null, 'vertical');
+            $tipoCalculoCoeficiente->setShowLabel(false);
+            $flds[] = $tipoCalculoCoeficiente;
+        }
+        
+//        $bgShowStandarts = new MDiv($key.'div', $flds);
+        $bgShowStandarts = new MBaseGroup('bg' . $key, _M($title, $this->module), $flds, 'vertical');
+
+        return $bgShowStandarts;
+    }
+
+    public function standartField($key, $title, $text)
+    {
+        $showStandartLabel = new MDiv($key . 'Label', _M($text, $this->module));
+        $flds[] = $showStandartLabel;
+        $showStandartValue = $this->data->$key == DB_TRUE ? DB_TRUE : DB_FALSE;
+        $showStandarts = new MRadioButtonGroup($key, null, SAGU::listTrueFalse(1), $showStandartValue, null, 'horizontal');
+        $showStandarts->setShowLabel(false);
+        $flds[] = $showStandarts;
+        $bgShowStandarts = new MBaseGroup('bg' . $key, _M($title, $this->module) . '?', $flds, 'vertical');
+
+        return $bgShowStandarts;
+    }
+    
+    public function standartIntField($key, $title, $text)
+    {
+        $standartIntLabel = new MDiv($key.'Label', _M($text, $this->module));
+        $standartIntLabel->setClass('m-caption m-caption-required');
+        $flds[] = $standartIntLabel;
+
+        $value = $this->data->$key;
+        
+        $standartInt = new MTextField($key, $value?$value:'0', null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $flds[] = $standartInt;
+
+        $bgStandartInt = new MBaseGroup('bg'.$key, _M($title, $this->module), $flds, 'vertical');
+
+        return $bgStandartInt;
+    }
+    
+    public function standartTextField($key, $title, $text)
+    {
+        $standartTextLabel = new MDiv($key.'Label', _M($text, $this->module));
+        $standartTextLabel->setClass('m-caption m-caption-required');
+        $flds[] = $standartTextLabel;
+        
+        $standartText = new sMultiLineField($key,array('value'=>$this->data->$key));
+        $flds[] = $standartText;
+
+        $bgStandartText = new MBaseGroup('bg'.$key, _M($title, $this->module), $flds, 'vertical');
+
+        return $bgStandartText;
+    }
+    
+    public function bloqueiaMatriculaWebSemestreCheioFields($key, $title)
+    {
+        $module = MIOLO::getCurrentModule();
+        $opts[] = array(_M('Calouro', $module), AcdEnrollConfig::BLOQUEAR_SEMESTRE_CHEIO_CALOURO );
+        $opts[] = array(_M('Veterano', $module), AcdEnrollConfig::BLOQUEAR_SEMESTRE_CHEIO_VETERANO );
+        $opts[] = array(_M('Ambos', $module), AcdEnrollConfig::BLOQUEAR_SEMESTRE_CHEIO_AMBOS );
+        $opts[] = array(_M('Nenhum', $module), AcdEnrollConfig::BLOQUEAR_SEMESTRE_CHEIO_NENHUM );
+        
+        $fieldCalouro = new MRadioButtonGroup($key, null, $opts, SAGU::NVL($this->data->bloqueiaMatriculaWebSemestreCheio, AcdEnrollConfig::BLOQUEAR_SEMESTRE_CHEIO_NENHUM), null, 'horizontal');
+        $fieldCalouro->setShowLabel(false);
+        $flds[] = $fieldCalouro;
+        $bgCalouro = new MBaseGroup('bg' . $key, _M($title, $this->module) . '?', $flds, 'vertical');
+
+        return $bgCalouro;
+    }
+
+    public function sendConfirmationEmailField()
+    {
+        $sendConfirmationEmailLabel = new MDiv('sendConfirmationEmailLabel', _M('Para enviar um email aos alunos no final do processo de matrícula, selecione Sim e informe no campo abaixo o e-mail a utilizar. Se um e-mail não for definido, será utilizado o email padrão (definido no parâmetro ACD_ENROLL_CONFIRMED_EMAIL_ID da tabela de parâmetros).', $this->module));
+        $flds[] = $sendConfirmationEmailLabel;
+        $sendConfirmationEmailValue = $this->getFormValue('sendConfirmationEmail', $this->data->sendConfirmationEmail) == DB_TRUE ? DB_TRUE : DB_FALSE;
+        $sendConfirmationEmail = new MRadioButtonGroup('sendConfirmationEmail', null, SAGU::listTrueFalse(1), $sendConfirmationEmailValue, null, 'horizontal');
+        $sendConfirmationEmail->setShowLabel(false);
+        $flds[] = $sendConfirmationEmail;
+        $busEmail = new BusinessBasicBusEmail();
+        $confirmationEmailId = new MComboBox('confirmationEmailId', $this->data->confirmationEmailId, '', $busEmail->listEmail());
+        $flds[] = $confirmationEmailId;
+
+        $bgSendConfirmationEmail = new MBaseGroup('bgSendConfirmationEmail', _M('Enviar um e-mail de confirmação para o aluno no final do processo de matrícula', $this->module) . '?', $flds, 'vertical');
+
+        return $bgSendConfirmationEmail;
+    }
+
+    public function disapprovementsFields($data)
+    {
+        $disapprovementsToBlockLabel = new MDiv('disapprovementsToBlockLabel', _M('Número de reprovações necessárias para bloquear a matrícula em outras disciplinas (aluno deve se matricular nas disciplinas nas quais reprovou). Informe o valor 0 (zero) para desativar esta verificação.', $this->module));
+        $disapprovementsToBlockLabel->setClass('m-caption m-caption-required');
+        $flds[] = $disapprovementsToBlockLabel;
+
+        $disapprovementsToBlock = new MTextField('disapprovementsToBlock', $this->getFormValue('disapprovementsToBlock', $this->data->disapprovementsToBlock?$this->data->disapprovementsToBlock:'0'), null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $this->validators[] = new MIntegerValidator('disapprovementsToBlock', _M('Número de reprovações para bloquear matrícula', $this->module), 'required');
+        $flds[] = $disapprovementsToBlock;
+
+        $timeToCourseDisapprovedLabel = new MDiv('timeToCourseDisapprovedLabel', _M('Número de períodos um aluno tem para cursar suas reprovações. Informe o valor 0 (zero) para desativar esta verificação.', $this->module));
+        $timeToCourseDisapprovedLabel->setClass('m-caption m-caption-required');
+        $flds[] = $timeToCourseDisapprovedLabel;
+
+        $timeToCourseDisapproved = new MTextField('timeToCourseDisapproved', $this->getFormValue('timeToCourseDisapproved', $this->data->timeToCourseDisapproved?$this->data->timeToCourseDisapproved:0), null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $this->validators[] = new MIntegerValidator('timeToCourseDisapproved', _M('Número de períodos para cursar reprovações', $this->module), 'required');
+        $flds[] = $timeToCourseDisapproved;
+
+        $bgDisapprovements = new MBaseGroup('bgDisapprovements', _M('Reprovações', $this->module), $flds, 'vertical');
+
+        return $bgDisapprovements;
+    }
+    
+    public function cancelPreEnrollFields($data)
+    {
+        $cancelamentoPreMatriculaLabel = new MDiv('cancelamentoPreMatriculaLabel', _M('Esta funcionalidade é referente ao agendamento de tarefas, necessário ativar a tarefa "Não confirmação de pré-matrícula" na tela de Agendamento de tarefas.', $this->module));
+        $cancelamentoPreMatriculaLabel->setClass('m-caption m-caption');
+        $flds[] = $cancelamentoPreMatriculaLabel;
+        
+        $flds[] = new MSeparator();
+        
+        $diasprazoconfirmacaoLabel = new MDiv('diasprazoconfirmacaoLabel', _M('Dias de prazo para confirmação:', $this->module));
+        $diasprazoconfirmacaoLabel->setClass('m-caption m-caption');
+        $flds[] = $diasprazoconfirmacaoLabel;
+        
+        $diasprazoconfirmacao = new MTextField('diasPrazoConfirmacao', $this->getFormValue('diasPrazoConfirmacao', $this->data->diasPrazoConfirmacao), null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $this->validators[] = new MIntegerValidator('diasprazoconfirmacao', _M('Número de dias para cancelar pré-matrícula, caso não seja efetivada.', $this->module));
+        $flds[] = $diasprazoconfirmacao;
+        
+        $stateContractLabel = new MDiv('stateContractLabel', _M('Estado contratual de cancelamento:', $this->module));
+        $stateContractLabel->setClass('m-caption m-caption');
+        $flds[] = $stateContractLabel;
+                
+        $cancelamentoStateContractId = new MLookupTextField('cancelamentoStateContractId', $this->getFormValue('cancelamentoStateContractId',$this->data->cancelamentoStateContractId), '', SAGU::getParameter('BASIC', 'FIELD_LOOKUPFIELD_SIZE'), null, null, 'stateContractDescription', $this->module, 'StateContract', null, null, true);
+        $cancelamentoStateContractId->setJsHint(_M('Informe o código do estado do contrato',$this->module));
+        
+        $stateContractDescription = new MTextField('stateContractDescription', $this->getFormValue('stateContractDescription',$this->data->stateContractDescription), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $stateContractDescription->setReadOnly(true);
+        $stateContractDescription->setJsHint(_M('Estado contratual',$this->module));
+        
+        $flds[] = new MContainer('hctStateContract', array($cancelamentoStateContractId, $stateContractDescription));
+        
+        $this->validators[] = new MIntegerValidator('cancelamentoStateContractId', _M('Estado contratual',$this->module));
+        
+        $cancelamentoReasonLabel = new MDiv('cancelamentoReasonLabel', _M('Motivo do cancelamento:', $this->module));
+        $cancelamentoReasonLabel->setClass('m-caption m-caption');
+        $flds[] = $cancelamentoReasonLabel;
+        
+        $busReason = new BusinessAcademicBusReasonCancellation();
+        $reasons = $busReason->listReasonCancellation();
+        $cancelamentoReasonId = new MSelection('cancelamentoReasonId', $this->data->cancelamentoReasonId, '', $reasons);
+        $flds[] = $cancelamentoReasonId;
+        $this->validators[] = $valid = new MRequiredValidator('cancelamentoReasonId', _M('Motivo', $this->module));
+        $valid->type = 'optional';
+        
+        $bgDisapprovements = new MBaseGroup('bgCancelamentoPreMatricula', _M('Cancelamento de pré-matrícula', $this->module), $flds, 'vertical');
+
+        return $bgDisapprovements;
+    }
+    
+    public function showModeField($type=null)
+    {
+        $scheduleDisplayModeLabel = new MDiv('scheduleDisplayModeLabel'.$type, _M('Define a maneira que os horários da disciplina oferecida serão exibidas na tela de matrícula.', $module));
+        $flds[] = $scheduleDisplayModeLabel;
+
+        $opts = array(
+            self::DISPLAY_MODE_TODAS_AS_DATAS => _M('Exibir todas as datas', $module), // Default
+            self::DISPLAY_MODE_APENAS_DIAS_DA_SEMANA => _M('Exibir apenas os dias da semana', $module),
+            self::DISPLAY_MODE_APENAS_DATA_INICIAL_E_FINAL => _M('Exibir apenas as datas inicial e final', $module),
+        );
+        
+        if(!strlen($this->data->scheduleDisplayMode)>0)
+        {
+            $this->data->scheduleDisplayMode = self::DISPLAY_MODE_APENAS_DATA_INICIAL_E_FINAL;
+        }
+        
+        $scheduleDisplayModeValue = $this->getFormValue('scheduleDisplayMode'.$type, $this->data->scheduleDisplayMode);
+        $scheduleDisplayModeValue = in_array($scheduleDisplayModeValue, array_keys($opts)) ? $scheduleDisplayModeValue : DISPLAY_MODE_TODAS_AS_DATAS;
+        $scheduleDisplayMode = new MRadioButtonGroup('scheduleDisplayMode'.$type, null, $opts, $scheduleDisplayModeValue, null, 'horizontal');
+        $scheduleDisplayMode->setShowLabel(false);
+        $flds[] = $scheduleDisplayMode;
+        return new MBaseGroup('bgscheduleDisplayMode'.$type, _M('Modo de exibição de horário', $module), $flds, 'vertical');
+    }
+
+    /**
+     * Salva os dados
+     * @param type $sender
+     */
+    public function tbBtnSave_click($sender=null)
+    {
+        // Obtém os dados
+        $data = (object)$_POST;
+        $data->enablePreEnroll = isset($data->enablePreEnroll) ? DB_TRUE : DB_FALSE;
+        
+        $data->bloqueioEmprestimos = isset($data->bloqueioEmprestimos) ? DB_TRUE : DB_FALSE;
+        $data->bloqueioMultas      = isset($data->bloqueioMultas) ? DB_TRUE : DB_FALSE;
+        $data->bloqueioPenalidades = isset($data->bloqueioPenalidades) ? DB_TRUE : DB_FALSE;
+                
+        if ( $data->sendConfirmationEmail == DB_TRUE && strlen($data->confirmationEmailId) == 0 )
+        {
+            $data->confirmationEmailId = SAGU::getParameter('ACADEMIC', 'ACD_ENROLL_CONFIRMED_EMAIL_ID');
+        }
+
+        $data->preMatriculaTipoDeCalculoDoCoeficiente = strlen($data->preMatriculaTipoDeCalculoDoCoeficiente) > 0 ? AcdEnrollConfig::CALCULO_COEFICIENTE_1 : null;
+        
+        $data->preMatriculaCancelamentoDeInadimplentesNaClassificacao = strlen($data->preMatriculaCancelamentoDeInadimplentesNaClassificacao) > 0 ? $data->preMatriculaCancelamentoDeInadimplentesNaClassificacao : DB_FALSE ;
+        
+        try
+        {
+            //Valida e-mail de confirmacao
+            if ($data->habilitaEmailDeConfirmacao == DB_TRUE)
+            {
+                if (!(strlen($data->emailDeConfirmacaoId) > 0))
+                {
+                    throw new Exception(_M("Para habilitar o 'Envio de e-mail de confirmação' nas 'Configurações de pré-matrícula' é necessário também escolher um e-mail."));
+                }
+            }
+            
+            //Valida todos os dados da ocorrencia de curso, pois senao depois nao funcionara na matricula
+            if ((strlen($data->courseId) > 0)
+            ||  (strlen($data->courseVersion) > 0)
+            ||  (strlen($data->turnId) > 0) 
+            ||  (strlen($data->unitId) > 0))
+            {
+                if ( !SAGU::allIsFilled($data->courseId, $data->courseVersion, $data->turnId, $data->unitId) )
+                {
+                    throw new Exception(_M("Opa, a ocorrência de curso que você está tentando cadastrar não está completa, por favor, verifique-a novamente."));
+                }
+            }
+
+            $busEnrollConfig = new BusinessAcademicBusEnrollConfig();
+            
+            $data->scheduleDisplayModeExternal = $data->scheduleDisplayMode ? DB_TRUE : DB_FALSE;
+            
+            if ( $data->enrollConfigId )
+            {
+                $busEnrollConfig->updateEnrollConfig($data);
+            }
+            else
+            {
+                $busEnrollConfig->insertEnrollConfig($data);                
+                $data->enrollConfigId = $busEnrollConfig->type->enrollConfigId;
+            }
+
+            $this->saveCustomFields($data->enrollConfigId, $data, $this->getTransaction());
+            
+            $this->MIOLO->information(_M('Configuração de matrícula definida com sucesso', $this->module), $this->MIOLO->getActionURL($this->module, $this->action));
+        }
+        catch ( Exception $e )
+        {
+            $this->addError($e->getMessage());
+        }
+    }
+    
+    public function tbBtnDelete_click($sender=null)
+    {
+        $opts = array(
+            'event' => 'tbBtnDelete_confirm',
+            'function' => 'delete',
+            'enrollconfigid' => MIOLO::_REQUEST('enrollconfigid')
+        );
+
+        $gotoYes = $this->MIOLO->getActionURL( $this->module, $this->action, null, $opts );
+
+        $goto = SAGU::getStackBackUrl();
+        $gotoNo = strlen($goto)>0 ? $goto : $this->MIOLO->getActionURL($this->module, $this->action);
+
+        $this->MIOLO->question(SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE'), $gotoYes, $gotoNo);
+    }
+    
+    public function tbBtnDelete_confirm($sender=null)
+    {
+        try
+        {
+            $type = new AcdEnrollConfig(MIOLO::_REQUEST('enrollconfigid'));
+            $type->enrollConfigId = MIOLO::_REQUEST('enrollconfigid');
+            $type->delete();
+            
+            $goto = $this->MIOLO->getActionURL($module, $action);
+            $this->MIOLO->information(SAGU::getParameter('BASIC', 'MSG_RECORD_DELETED'), $goto);
+        }
+        catch (Exception $e)
+        {
+            $this->MIOLO->error(_M('Erro executando a operação solicitada.',$module) . ' ' . $e->getMessage());
+        }
+    }
+}
+
+?>

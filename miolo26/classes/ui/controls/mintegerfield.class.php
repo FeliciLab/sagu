@@ -1,0 +1,49 @@
+<?php
+
+/**
+ * Input field for integers
+ *
+ * @author Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * @version $id$
+ *
+ * \b Maintainers: \n
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * @since
+ * Creation date 2011/02/07
+ *
+ * \b Organization: \n
+ * SOLIS - Cooperativa de Soluções Livres \n
+ *
+ * \b CopyRight: \n
+ * Copyright (c) 2011 SOLIS - Cooperativa de Soluções Livres \n
+ *
+ * \b License: \n
+ * Licensed under GPLv2 (for further details read the COPYING file or http://www.gnu.org/licenses/gpl.html)
+ *
+ * \b History: \n
+ * See history in CVS repository: http://www.miolo.org.br
+ *
+ */
+
+class MIntegerField extends MTextField
+{
+    public function __construct($name='', $value='', $label='', $size=10, $hint='', $validator=NULL, $isReadOnly=false)
+    {
+        parent::__construct($name, $value, $label, $size, $hint, $validator, $isReadOnly);
+
+        if ( $this->manager->checkMobile() )
+        {
+            $this->type = 'number';
+        }
+        $this->page->addScript( 'm_integerfield.js' );
+        
+        // remove non numbers
+        $this->addAttribute('onkeyup', 'return miolo.integerfield.validate(this)');
+        // prevent paste
+        $this->addAttribute('onchange', 'return miolo.integerfield.validate(this)');
+    }
+}
+?>

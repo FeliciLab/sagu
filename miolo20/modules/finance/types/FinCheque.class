@@ -1,0 +1,253 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Types Cheques
+ *
+ * @author Augusto A. Silva [augusto@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Augusto A. Silva [augusto@solis.com.br]
+ *
+ * @since
+ * Class created on 27/06/2013
+ */
+
+class FinCheque extends SType
+{
+    protected $_associations = array(
+        'banco' => array(
+            'mode' => 'one',
+            'typeClass' => 'FinBank',
+            'joinColumn' => 'bankid',
+        )
+    );
+    
+    protected $_virtualColumns = array(
+        '_valorformatado' => "ROUND(fincheque.valorcheque::NUMERIC, 2)",
+        '_statusatual' => "( SELECT b.descricao
+                               FROM finmovimentacaocheque a
+                         INNER JOIN finstatuscheque b
+                                 ON b.statusChequeId = a.statusChequeId 
+                              WHERE a.chequeId = fincheque.chequeid 
+                                AND a.foiexcluido = false
+                           ORDER BY a.data DESC, a.datetime DESC
+                              LIMIT 1 )",
+        '_statusatualid' => "( SELECT b.statusChequeId
+                               FROM finmovimentacaocheque a
+                         INNER JOIN finstatuscheque b
+                                 ON b.statusChequeId = a.statusChequeId 
+                              WHERE a.chequeId = fincheque.chequeid 
+                                AND a.foiexcluido = false
+                           ORDER BY a.data DESC, a.datetime DESC
+                              LIMIT 1 )",
+        '_tipodescricao' => "( SELECT fintipocheque.tipo
+                                 FROM fintipocheque
+                                WHERE fincheque.tipo = fintipocheque.codigo )"
+    );
+    
+    public $_valorformatado;
+    public $_statusatual;
+    
+    protected $_utilizaNovoPadrao = true;
+    
+    /**
+     *
+     * @var FinBank
+     */
+    public $banco;
+    
+    /**
+     *
+     * @var int
+     */
+    public $chequeId;
+    
+    /**
+     *
+     * @var String
+     */
+    public $numeroCheque;
+    
+    /**
+     *
+     * @var Date
+     */
+    public $data;
+    
+    /**
+     *
+     * @var String
+     */
+    public $agencia;
+    
+    /**
+     *
+     * @var String
+     */
+    public $eminente;
+    
+    /**
+     *
+     * @var String
+     */
+    public $cpf;
+    
+    /**
+     *
+     * @var String
+     */
+    public $cnpj;
+    
+    /**
+     *
+     * @var String
+     */
+    public $valorCheque;
+    
+    /**
+     *
+     * @var String
+     */
+    public $tipo;
+    
+    /**
+     *
+     * @var String
+     */
+    public $bankId;
+    
+    /**
+     * 
+     * Constantes com os tipos de cheques
+     */
+    const AO_PORTADOR = 1;
+    const NOMINAL = 2;
+    const CRUZADO = 3;
+    const PRE_DATADO = 4;
+    const ESPECIAL = 5;
+    const ADMINISTRATIVO = 6;
+    
+    /**
+     * Retorna os tipos de cheques.
+     * 
+     * @return array
+     */
+    public function listTiposCheque()
+    {
+        return $listTiposCheques = array(
+            self::AO_PORTADOR => 'AO PORTADOR',
+            self::NOMINAL => 'NOMINAL',
+            self::CRUZADO => 'CRUZADO',
+            self::PRE_DATADO => 'PRÉ-DATADO',
+            self::ESPECIAL => 'ESPECIAL',
+            self::ADMINISTRATIVO => 'ADMINISTRATIVO',
+        );
+    }
+    
+    /**
+     * Retorna todos os cheques referentes aos títulos da pessoa.
+     * 
+     * @param int $personId
+     * @return array
+     */
+    public function obterChequesParaConsultasDiversas($personId)
+    {
+        $sub = new MSQL();
+        $sub->setColumns("invoiceId");
+        $sub->setTables("ONLY finReceivableInvoice");
+        $sub->setWhereAnd("personId = ?");
+        $sub->setWhereAnd("isCanceled = false");
+        $subSelect = $sub->select(array($personId));
+        
+        $msql = new MSQL();
+        $msql->setColumns("DISTINCT
+            C.chequeId, 
+            C.numerocheque, 
+            TO_CHAR(C.data, getParameter('BASIC', 'MASK_DATE')) AS data, 
+            C.eminente, 
+            B.bankId || ' - ' || B.description AS banco, 
+            C.agencia, 
+            ROUND(C.valorCheque::numeric, getParameter('BASIC', 'REAL_ROUND_VALUE')::int) AS valor, 
+            obterStatusAtualDoCheque(C.chequeId) AS status"
+        );
+        $msql->setTables("finCounterMovementCheque MC
+               INNER JOIN finCounterMovement CM
+                       ON CM.counterMovementId = MC.counterMovementId
+               INNER JOIN finCheque C
+                       ON C.chequeId = MC.chequeId
+               INNER JOIN finBank B
+                       ON B.bankId = C.bankId");
+        $msql->setWhere("CM.invoiceId IN ( {$subSelect} )");
+        $msql->setOrderBy("1, 2, 3, 4, 5, 6, 7, 8");
+        $sql = $msql->select();
+        
+        $result = SDatabase::query($sql);
+        $listCheques = array();
+        
+        foreach ( $result as $cheque )
+        {
+            $dataCheque = array();
+            $dataCheque['fincheque.chequeid']        = $cheque[0];
+            $dataCheque['fincheque.numerocheque']    = $cheque[1];
+            $dataCheque['fincheque.data']            = $cheque[2];
+            $dataCheque['fincheque.eminente']        = $cheque[3];
+            $dataCheque['banco.description']         = $cheque[4];
+            $dataCheque['fincheque.agencia']         = $cheque[5];
+            $dataCheque['fincheque._valorformatado'] = $cheque[6];
+            $dataCheque['fincheque._statusatual']  = $cheque[7];
+
+            $listCheques[] = $dataCheque;
+        }
+        
+        return $listCheques;
+    }
+    
+    public function delete()
+    {
+        $msql = new MSQL();
+        $msql->setTables('fincountermovementcheque');
+        $msql->setWhere('chequeId = ?');
+        $msql->addParameter($this->chequeId);
+        
+        $result = SDatabase::execute($msql->delete());
+        
+        if ( $result )
+        {
+            $msql = new MSQL();
+            $msql->setTables('finmovimentacaocheque');
+            $msql->setWhere('chequeId = ?');
+            $msql->addParameter($this->chequeId);
+
+            $result = SDatabase::execute($msql->delete());
+            
+            if ( $result )
+            {
+                $result = parent::delete();
+            }
+        }
+        
+        return $result;
+    }
+    
+}
+?>

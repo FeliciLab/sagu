@@ -1,0 +1,432 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Consulta de solicitações de estágio
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 07/04/2011
+ *
+ */
+MIOLO::uses('/ui/controls/msubdetail.class');
+
+class FrmSubscriptionTeamAllocation extends SManagementForm
+{
+    private $divGrid;
+    private $teamOrganizerId;
+
+    /**
+     * Class constructor
+     * */
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        parent::__construct(new TraRequest(), array( 'requestId' ), null);
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+        $event = MIOLO::_REQUEST('event');
+
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+
+        try
+        {
+            $physicalPerson = $this->getPhysicalPersonLogged();
+            $this->teamOrganizerId = $physicalPerson->personId;
+
+            // Verifica se não achou a pessoa
+            if ( !strlen($physicalPerson->personId) > 0 )
+            {
+                $msg = _M('O usuário logado não está relacionado a uma pessoa física.', $module);
+                throw new Exception($msg);
+            }
+
+            // Verifica se é organizador de equipe
+            if ( ! TraTeamOrganizer::isTeamOrganizer($physicalPerson->personId) )
+            {
+                throw new Exception(_M('O usuário logado não é um organizador de equipe.', $module));
+            }
+        }
+        catch ( Exception $e )
+        {
+            $MIOLO->error($e->getMessage());
+        }
+
+        $fields[] = new MTextLabel('userLabel', $physicalPerson->personId . ' - ' . $physicalPerson->name, _M('Usuário', $module));
+
+        //Field unit
+        $filters = new stdClass();
+        $filters->teamOrganizerId = $this->teamOrganizerId;
+        $unit = new MSelection('unitId', $this->getFormValue('unitId', $data->unitId), _M('Unidade', $module), TraUnit::listUnit($filters));
+        $unit->setJsHint(_M('Informe a unidade', $module));
+        $unit->addAttribute('onChange', $this->getAjaxAction('changeUnitId', 'divUnitArea', false));
+        $fields[] = $unit;
+
+        $validators[] = new MRequiredValidator('unitId', _M('Unidade', $module));
+
+        //Field area
+        $fields[] = new MDiv('divUnitArea', $this->changeUnitId($data));
+        
+        // Conveniada
+        $fields[] = new MCheckBox('conveniada', 't', _M('Exibir somente solicitações feitas pela conveniada'), FALSE);
+        
+        $fields[] = new MDiv('divLimbo', null);
+        
+        $fields[] = $div = new MDiv('divAllocateTeams');
+//        $div->addBoxStyle('display', 'none');
+
+        /**
+         * Período de datas do estágio
+         */
+        //Field beginDate
+        $beginDateLabel = new MLabel(_M('Início', $module) . ':');
+        $beginDateLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $beginDate = new MCalendarField('beginDate', $this->getFormValue('beginDate', $data->beginDate), null, 10);
+        $beginDate->setJsHint(_M('Informe a data de início do período de estágio', $module));
+        $dateStage[] = new MHContainer('beginDateCnt', array( $beginDateLabel, $beginDate ));
+
+        //Field endDate
+        $endDateLabel = new MLabel(_M('Fim', $module) . ':');
+        $endDateLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $endDate = new MCalendarField('endDate', $this->getFormValue('endDate', $data->endDate), null, 10);
+        $endDate->setJsHint(_M('Informe a data de fim do período de estágio', $module));
+        $dateStage[] = new MHContainer('endDateCnt', array( $endDateLabel, $endDate ));
+
+        $bsgDateStage = new MBaseGroup('bsgDataStage', _M('Período do estágio', $module), $dateStage, 'vertical');
+        $fields[] = $bsgDateStage;
+
+        // Separator
+        $fields[] = new MSeparator();
+        $fields[] = new MButton('btnGenerate', _M('Localizar', $module));
+        $fields[] = new MSeparator();
+
+        $fields[] = $this->divGrid = new MDiv('divGrid');
+        if ( $this->isPaginatingData() || in_array(SAGU::getEventName(), array('exportGridAsCSV:click', 'btnGenerate:click')) || MIOLO::_REQUEST('orderby') )
+        {
+            $this->divGrid->setInner($this->generateGrid());
+        }
+
+        $fields[] = new MDiv('divPopup');
+        
+        parent::defineFields($fields, $validators, $data);
+        
+        MCalendarField::loadDeps();
+    }
+
+    /**
+     * Popula selection da area
+     * @param <object> $args
+     * @return Fields
+     */
+    public function changeUnitId($args, $readOnly = false)
+    {
+        $args->unitId = strlen($args->unitId) > 0 ? $args->unitId : $this->getFormValue('unitId');
+        $args->teamOrganizerId = $this->getPhysicalPersonLogged()->personId;
+        $args->ajaxAction = SForm::getAjaxAction('checkRelatedTeam', 'divLimbo', false);
+
+        return TraCommonFields::changeUnitId($args, $readOnly);
+    }
+
+    /**
+     * Obtem os dados do form
+     */
+    public function getTypesData()
+    {
+        $data = new stdClass();
+        $data->unitId = MIOLO::_REQUEST('unitId');
+        $data->beginDateRequest = MIOLO::_REQUEST('beginDateRequest');
+        $data->endDateRequest = MIOLO::_REQUEST('endDateRequest');
+        $data->unitAreaId = MIOLO::_REQUEST('unitAreaId');
+        $data->beginDate = MIOLO::_REQUEST('beginDate');
+        $data->endDate = MIOLO::_REQUEST('endDate');
+        $data->conveniada = MIOLO::_REQUEST('conveniada');
+
+        return $data;
+    }
+
+    /**
+     * Função chamada na ação do botão localizar
+     */
+    public function generateGrid()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        //Filters
+        $dataForm = $this->getTypesData();
+        $dataForm->teamOrganizerId = $this->getPhysicalPersonLogged()->personId;
+        $dataForm->status = TraSubscription::APPROVED;
+
+        $fields[] = new MSeparator();
+        try
+        {
+            $data = TraSubscription::searchGrid($dataForm);
+
+            if ( count($data) > 0 )
+            {
+                $grdResults = $MIOLO->getUI()->getGrid($module, 'GrdSubscriptionTeamAllocation', $data);
+                $grdResults->setData($data);
+                $grdResults->setTitle(_M('Alocação em equipes', $module));
+                $fields[] = $grdResults;
+                
+                $fields[] = new MSeparator();
+
+                $fields[] = new MButton('btnAllocateTeams', _M('Alocar estagiários selecionados', $module), SForm::getAjaxAction('btnAllocateTeams', 'divAllocateTeams'));
+
+                // Subdetail fantasma para popup funcionar corretamente
+                $subFields[] = new SHiddenField('abc');
+                $columns[] = new sSubDetailColumn('abc');
+                $fields[] = $sub = new MSubDetail('ghostDetail', null, $columns, $subFields);
+                $sub->setValidators(array());
+                $sub->setVisibility(false);
+
+                return $fields;
+            }
+            else
+            {
+                throw new Exception(_M('Nenhum registro encontrado.', $module));
+            }
+        }
+        catch ( Exception $e )
+        {
+            $this->addError($e->getMessage());
+        }
+    }
+    
+    
+    /**
+     * Aloca um ou mais estagiarios para uma ou mais equipes.
+     *
+     * @param stdClass $args
+     * @return MPopup 
+     */
+    public function btnAllocateTeams($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $subscriptionId = $args->subscriptionId;
+        $isEditingSubscription = strlen($subscriptionId) > 0;
+        $selecteds = $isEditingSubscription ? array($subscriptionId) : (array) $args->selectGrdSubscriptionTeamAllocation;
+
+        //
+        $subscription = null;
+        if ( $isEditingSubscription )
+        {
+            $subscription = new TraSubscription($subscriptionId);
+        }
+        
+        try
+        {
+            if ( count($selecteds) <= 0 )
+            {
+                throw new Exception( _M('Nenhum estagiário selecionado.', $module) );
+            }
+        }
+        catch (Exception $e)
+        {
+            $this->AddError($e->getMessage());
+            return;
+        }
+        
+        MSubDetail::clearData('teams');
+        
+        // Equipe
+        $filters = new stdClass();
+        $filters->unitAreaId = $args->unitAreaId;
+        $list = TraTeam::listRecords($filters);
+        
+        $_fields[] = $teamId = new MSelection('teamId', null, _M('Colocar selecionados na equipe', $module), $list);
+        $teamId->setJsHint(_M('Informe a equipe', $module));
+        $_validators[] = new MRequiredValidator('teamId', _M('Equipe', $module));
+
+        // Inicio
+        $_fields[] = $beginDate = new MCalendarField('_beginDate', null, _M('Início', $module), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+        $_validators[] = new MRequiredValidator('_beginDate', _M('Início', $module));
+        
+        // Fim
+        $_fields[] = $endDate = new MCalendarField('_endDate', null, _M('Fim', $module), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+        $_validators[] = new MRequiredValidator('_endDate', _M('Fim', $module));
+        
+        //
+        $_columns[] = new MGridColumn(_M('Equipe', $module), 'left', true, '', true, 'teamId', null, $teamId->options);
+        $_columns[] = new MGridColumn(_M('Início', $module), 'left', true, '', true, '_beginDate', null);
+        $_columns[] = new MGridColumn(_M('Fim', $module), 'left', true, '', true, '_endDate', null);
+        $fields[] = $sub = new MSubDetail('teams', _M('Equipes', $module), $_columns, $_fields, true);
+        $sub->setValidators($_validators);
+        
+        if ( $subscription instanceof TraSubscription )
+        {
+            $sub->setData( SAGU::convertSTypeToSubDetail($_columns, $subscription->subscriptionTeam) );
+        }
+        
+
+        $btn = new MButton('btnApply', _M('Salvar', $module));
+        $fields[] = new MHContainer(rand(), array($btn));
+        
+        $fields[] = new SHiddenField('selectedSubscriptions', implode(',', $selecteds));
+        
+        $this->setFields($fields);
+        $this->generateValidators($this->layout);
+        
+        MPopup::show('popAllocate', $fields, _M('Alocar estagiários', $module));
+        
+        $this->generateAJAXValidators();
+        
+        $div = new MDiv('div'.rand(), $fields);
+        $div->addBoxStyle('display', 'none');
+        return $div;
+    }
+    
+
+    /**
+     * Função chamada na ação do botão localizar
+     */
+    public function btnApply_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        set_time_limit(0);
+
+        //Equipe selecionada
+//        $teamId = MIOLO::_REQUEST('teamId');
+
+        $teams = MSubDetail::getData('teams');
+
+        //Obtem apenas os ativos
+        $_teams = array( );
+        foreach ( (array) $teams as $t )
+        {
+            if ( !$t->removeData )
+            {
+                $_teams[] = $t;
+            }
+        }
+        unset($teams);
+
+        //Solicitações de estágio selecionadas na grid
+        $selectedGrid = $this->getRequestValue('selectedSubscriptions');
+        $selectedGrid = explode(',', $selectedGrid);
+
+        try
+        {
+            //Verifica se foi selecionada pelo menos uma solicitação.
+            if ( !is_array($selectedGrid) )
+            {
+                $msg = _M('É necessário selecionar pelo menos uma inscrição', $module) . '.';
+                throw new Exception($msg);
+            }
+
+            SDatabase::beginTransaction();
+
+            //Muda status das solicitações selecionadas
+            foreach ( (array)$selectedGrid as $subscriptionId )
+            {
+                //Busca por equipes ativas para este subscriptionId mas que ainda nao possuem etapas POSTERIORES, caso exista, apaga-as.
+                //Isto é util para quando administrador aloca uma pessoa em alguma equipe, mas depois quer mudar.
+                $objSubscription = new TraSubscription($subscriptionId);
+                foreach ( (array) $objSubscription->subscriptionTeam as $subscriptionTeam )
+                {
+                    // Se ainda nao foi aprovado ou reprovado
+                    if ( strlen($subscriptionTeam->approved) <= 0 )
+                    {
+                        $subscriptionTeam->delete();
+                    }
+                }
+
+                //Adiciona equipes inseridas na subdetail
+                //Caso nenhuma for selecionada, apaga todas
+                foreach ((array) $_teams as $team )
+                {
+                    if ( $team->teamId > 0 )
+                    {
+                        $traST = new TraSubscriptionTeam();
+                        $traST->subscriptionId = $subscriptionId;
+                        $traST->teamId = $team->teamId;
+                        $traST->beginDate = $team->_beginDate;
+                        $traST->endDate = $team->_endDate;
+                        $traST->trainingEnded = DB_FALSE;
+                        $traST->save();
+                    }
+                }
+            }
+
+            SDatabase::commit();
+
+            $this->SetFormValue('selectGrdSubscriptionTeamAllocation', null);
+            
+            MSubDetail::clearData('teams');
+
+            $this->AddInfo( _M('Equipes de inscrições alocadas com sucesso.', $module) );
+        }
+        catch ( Exception $e )
+        {
+            $this->AddError($e->getMessage());
+        }
+
+        $this->divGrid->setInner($this->generateGrid());
+    }
+    
+    /**
+     * Verifica se existe alguma equipe relacionada com esta unidade area (unitAreaId)
+     *
+     * @param type $args
+     * @return type 
+     */
+    public function checkRelatedTeam($args)
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        
+        if ( strlen($args->unitAreaId) > 0 )
+        {
+            $unitArea = new TraUnitArea($args->unitAreaId);
+            if ( count($unitArea->courses) <= 0 )
+            {
+                $this->AddError( _M('Não existe nenhuma equipe cadastrada para a unidade/área selecionada',$module) );
+            }
+        }
+        
+        return null;
+    }
+}
+?>

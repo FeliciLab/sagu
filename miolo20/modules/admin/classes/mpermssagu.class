@@ -1,0 +1,277 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This class Miolo Permissions Sagu
+ *
+ * @author Leovan Tavares da Silva [leovan] [leovan@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Leovan Tavares da Silva [leovan@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 14/06/2006
+ *
+ **/
+ 
+class MPermsSagu extends MPerms
+{
+    private $auth;
+    private $module;
+    
+    public function __construct()
+    {
+        parent::__construct();
+        
+        $this->module = 'admin';
+        
+        $this->perms = array( A_ACCESS  => _M('Acesso/Visualização', $this->module),
+                              A_INSERT  => _M("Inseção", $this->module),
+                              A_DELETE  => _M("Exclusão", $this->module),
+                              A_UPDATE  => _M("Atualização", $this->module),
+                              A_EXECUTE => _M("Execução", $this->module),
+                              A_ADMIN   => _M("Administrador", $this->module) );
+        
+        $this->auth  = $this->manager->GetAuth();
+    }
+
+    public function hasRights($login, $transaction, $permToCheck)
+    {
+        $this->manager->loadMADConf();
+        
+        if( SAGU::getParameter('BASIC', 'ATIVAR_MULTIUNIDADE') == DB_TRUE )
+        {
+            $unidadeLogada = sMultiUnidade::obterObjetoUnidade();
+        }
+        
+        $rights = $this->manager->getLogin()->GetRights();         
+        if( ($rights[$transaction] == $permToCheck || $rights[$transaction] == A_ADMIN) && !count($unidadeLogada) > 0 )
+        {
+            return true;
+        }
+        
+        $db = $this->manager->getDatabase($this->module);
+        
+        $sql = "SELECT COUNT(*)
+                  FROM miolo_access a
+            INNER JOIN miolo_groupuser g
+                    ON (g.idgroup = a.idgroup)
+            INNER JOIN miolo_user u
+                    ON (u.iduser = g.iduser)
+            INNER JOIN miolo_transaction t
+                    ON (t.idtransaction = a.idtransaction)
+                 WHERE u.login = '$login'
+                   AND lower(t.m_transaction) = lower('" . $transaction . "')
+                   AND a.rights IN (" . A_ADMIN . ', ' . $permToCheck . ')';
+        
+        if( count($unidadeLogada) > 0 )
+        {
+            $sql .= " AND g.unitid = $unidadeLogada->unitId ";
+        }
+
+        $result = $db->query($sql);
+
+        return ($result[0][0] > 0);
+    }
+    
+    /**
+     * Adiciona uma permissão do usuário desejado ao usuário atual
+     * @param type String $uid Login
+     * @param type String $pwd Senha
+     * @param type String $trans Transação
+     * @param type String $perm Permissão
+     * @return type boolean - TRUE, caso a permissão foi adicionada com sucesso, FALSE se 
+     * não foi possível adicionar a permissão
+     */
+    public function addUserPerm($uid, $pwd, $trans, $perm)
+    {
+        //Verifica se o usuário informado possui a permissão desejada
+        if ( ! $this->checkUserAccess($uid, $pwd, $trans, $perm) )
+        {
+            throw new Exception(_M("O usuário informado não possui as permissões necessárias.", $module));
+        }
+
+        $login = $this->auth->getLogin();
+        $rigths = $login->GetRights();        
+        $rigths[$trans] = "$perm"; //Adicona permissão ao usuário logado        
+        $login->SetRights($rigths);
+        $this->auth->setLogin($login);
+        return true;
+    }
+    
+    /**
+     * Remove uma permissão do usuário desejado ao usuário atual
+     * @param type String $uid Login
+     * @param type String $pwd Senha
+     * @param type String $trans Transação
+     * @param type String $perm Permissão
+     * @return type boolean - TRUE, caso a permissão foi removida com sucesso, FALSE se 
+     * não foi possível remover a permissão
+     */
+    public function removeUserPerm($trans, $perm)
+    {
+        $login = $this->auth->getLogin();
+        $rigths = $login->GetRights();    
+        unset($rigths[$trans]); //Remove a permissão
+        $login->SetRights($rigths);
+        $this->auth->setLogin($login);
+        return true;
+    }
+    
+    /**
+     * Verifica se o usuário informado possui a permissão informada para a respectiva transação
+     * @param type String $uid Login
+     * @param type String $pwd Senha
+     * @param type String $trans Transação
+     * @param type String $perm Permissão
+     * @return type boolean - TRUE, caso o usuário possui a permissão, FALSE se 
+     * o usuário não possui a permissão
+     */
+    public function checkUserAccess($uid, $pwd, $transaction, $perm)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $user = $MIOLO->GetBusinessMAD('user');
+        $user->GetByLoginPass($uid, $pwd);
+        
+        $hasRights = false;
+        if ($user->login)
+        {
+            $login = new MLogin($user);
+            $hasRights = $this->hasRights($login->id, $transaction, $perm);            
+        }
+        else
+        {
+            throw new Exception(_M("Erro na identificação do usuário!", $module));
+        }
+        return $hasRights;
+    }
+    
+    public function checkAccess($transaction, $perm, $deny = false, $group = false)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $this->module;
+        $action = MIOLO::getCurrentAction();
+        
+        $hasRights = false;
+
+        try
+        {
+            if ( !SAGU::isAllowedAction() )
+            {
+                if ( ! $this->auth->isLogged() )
+                {
+                    throw new Exception(_M('Login não encontrado.', $module));
+                }
+
+                $login   = $this->auth->getLogin();  // MLogin object
+                $hasRights = $this->hasRights($login->id, $transaction, $perm);
+
+                if ( ! $hasRights )
+                {
+                    throw new Exception(_M('Acesso negado', $module));
+                }
+            }
+            else
+            {
+                $hasRights = true;
+            }
+        }
+        catch ( Exception $e )
+        {
+            if ( $deny )
+            {
+                $transactionName = $this->getTransactionName($transaction);
+                
+                $caption = _M('Acesso negado', $module);
+                $msg = $e->getMessage() . "<br><br>\n" .
+                          '<i><font color=red>' . _M('Transação', $module) . ": $transactionName ($transaction)<br>" . 
+                          _M('Permissão necessária', $this->module) . ": " . $this->perms[$perm] . "</font></i><br><br>\n" .
+                       _M('Por favor, informe um usuário/senha válido para ter acesso a este conteúdo', $this->module) . "<br>";
+    
+                $go    = $this->manager->history->Back('action');
+                $error = Prompt::Error($msg, $go, $caption, '');
+                $error->addButton( _M('   Login   '), $this->manager->getActionURL($this->manager->getConf('login.module'),'logout',null,array('return_to'=>urlencode($this->manager->history->Top()))), '');
+    
+                $this->manager->Prompt($error,$deny);
+            }
+        }
+
+        return $hasRights;
+    }
+
+    public function getRights($login, $transaction)
+    {
+        $this->manager->loadMADConf();
+        $db = $this->manager->getDatabase($this->module);
+        
+        $sql = "SELECT a.rights
+                  FROM miolo_access a
+            INNER JOIN miolo_groupuser g
+                    ON (g.idgroup = a.idgroup)
+            INNER JOIN miolo_user u
+                    ON (u.iduser = g.iduser)
+            INNER JOIN miolo_transaction t
+                    ON (t.idtransaction = a.idtransaction)
+                 WHERE u.login = '$login'
+                   AND lower(t.m_transaction) = '" . strtolower($transaction) . "'";
+
+        $result = $db->query($sql);
+
+        $rights = null;
+        if ( count($result) > 0 )
+        {
+            foreach ( $result AS $index => $value )
+            {
+                $rights[] = $value[0];
+            }
+        }
+        
+        return $rights;
+    }
+    
+    public function getTransactionName($transaction)
+    {
+        $this->manager->loadMADConf();
+        $db = $this->manager->getDatabase($this->module);
+        
+        $sql = "SELECT A.nametransaction
+                  FROM miolo_transaction A
+                 WHERE lower(A.m_transaction) = '" . strtolower($transaction) . "'";
+
+        $result = $db->query($sql);
+
+        return $result[0][0];
+    }
+    
+    public function checkTransactionParents($transaction, $perm)
+    {
+        
+    }
+}
+?>

@@ -1,0 +1,312 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file implements a class to use XML to manipulate grades and frequency data
+ *
+ * @author Leovan Tavares da Silva [leovan@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * 
+ * @since
+ * Class created on 05/02/2009
+ *
+ **/
+
+/**
+ * Class that implements the methods to manipulate grades and frequencies using XML
+ */
+class WebGradesTyping
+{
+    private $busGradesTyping;
+    private $busDegree;
+    private $busDegreeEnroll;
+    private $busEvaluation;
+    private $busEvaluationEnroll;
+    private $busEnroll;
+    private $MIOLO;
+    
+    public function __construct()
+    {
+        $this->MIOLO  = MIOLO::getInstance();
+
+        $this->busGradesTyping     = new BusinessAcademicBusGradeTyping();
+        $this->busDegree           = new BusinessAcademicBusDegree();
+        $this->busDegreeEnroll     = new BusinessAcademicBusDegreeEnroll();
+        $this->busEvaluation       = new BusinessAcademicBusEvaluation();
+        $this->busEvaluationEnroll = new BusinessAcademicBusEvaluationEnroll();
+        $this->busEnroll           = new BusinessAcademicBusEnroll();
+    }
+    
+    public function getGroupPupilsGradesData($groupId)
+    {
+        $xmlStr = <<<XML
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<web>
+    <pupils>
+    </pupils>
+</web>
+XML;
+        
+        $xml = new SimpleXMLElement($xmlStr);
+        
+        $groupData   = $this->busGradesTyping->getGroupData($groupId);
+        $pupils      = $this->busGradesTyping->listGroupEnrolledPupils($groupId);
+        $finalDegree = $this->busDegree->getLearningPeriodFinalDegree($groupData->learningPeriodId);
+        $degrees     = $this->busDegree->getChildDegrees($finalDegree->degreeId); 
+        
+        if (count($pupils) > 0)
+        {
+            foreach ($pupils as $pupilData)
+            {
+                list($enrollId,
+                     $personId,
+                     $personName,
+                     $courseId,
+                     $statusId,
+                     $statusDescription) = $pupilData;
+
+                $enrollData = $this->busEnroll->getEnroll($enrollId);
+                
+                $pupilTag = $xml->pupils[0]->addChild('pupil');
+                $pupilTag->addChild('enrollId', $enrollId);
+                $pupilTag->addChild('personId', $personId);
+                $pupilTag->addChild('personName', utf8_encode($personName));
+                $pupilTag->addChild('courseId', $courseId);
+                $pupilTag->addChild('status', utf8_encode($statusDescription));
+                $pupilTag->addChild('frequency', $enrollData->frequency);
+                
+                $degreesTag = $pupilTag->addChild('degrees');
+                
+                if (count($degrees) > 0)
+                {
+                    foreach ($degrees as $degreeData)
+                    {
+                        $degreeTag = $degreesTag->addChild('degree');
+                        $degreeTag->addChild('degreeId', $degreeData->degreeId);
+                        $degreeTag->addChild('description', utf8_encode($degreeData->description));
+                        $degreeTag->addChild('limitDate', $degreeData->limitDate);
+                        $degreeTag->addChild('weight', $degreeData->weight);
+                        $degreeTag->addChild('parentDegreeId', $degreeData->parentDegreeId);
+                        $degreeTag->addChild('mayBeNull', $degreeData->mayBeNull);
+                        
+                        $value = $this->busDegreeEnroll->getDegreeEnrollCurrentGrade($degreeData->degreeId, $enrollId, $groupData->useConcept == DB_TRUE);
+                        
+                        $degreeTag->addChild('degreeValue', $value);
+                        
+                        $filters->degreeId = $degreeData->degreeId;
+                        
+                        $evaluations = $this->busEvaluation->searchEvaluation($filters);
+                        
+                        if (count($evaluations) > 0)
+                        {
+                            $evaluationsTag = $degreeTag->addChild('evaluations');
+                            
+                            foreach ($evaluations as $evaluationData)
+                            {
+                                $evaluationId           = $evaluationData[0];
+                                $evaluationDescription  = $evaluationData[2];
+                                $evaluationWeight       = $evaluationData[5];
+                                $evaluationProfessorId  = $evaluationData[10];
+                                $evaluationDateForecast = $evaluationData[12];
+
+                                $evaluationTag = $evaluationsTag->addChild('evaluation');
+                                $evaluationTag->addChild('evaluationId', $evaluationId);
+                                $evaluationTag->addChild('evaluationDescription', utf8_encode($evaluationDescription));
+                                $evaluationTag->addChild('evaluationProfessorId', $evaluationProfessorId);
+                                $evaluationTag->addChild('evaluationWeight', $evaluationWeight);
+                                $evaluationTag->addChild('evaluationDateForecast', $evaluationDateForecast);
+                                
+                                $value = $this->busEvaluationEnroll->getEvaluationEnrollCurrentGrade($evaluationId, $enrollId, $groupData->useConcept == DB_TRUE);
+                                
+                                $evaluationTag->addChild('evaluationValue', $value);
+                            }
+                        }
+                    }
+                }
+                
+                $degreeTag = $degreesTag->addChild('degree');
+                $degreeTag->addChild('degreeId', $finalDegree->degreeId);
+                $degreeTag->addChild('description', $finalDegree->description);
+                $degreeTag->addChild('limitDate', $finalDegree->limitDate);
+                $degreeTag->addChild('weight', $finalDegree->weight);
+                $degreeTag->addChild('parentDegreeId', $finalDegree->parentDegreeId);
+                $degreeTag->addChild('mayBeNull', $finalDegree->mayBeNull);
+                
+                $value = $this->busDegreeEnroll->getDegreeEnrollCurrentGrade($finalDegree->degreeId, $enrollId, $groupData->useConcept == DB_TRUE);
+                        
+                $degreeTag->addChild('degreeValue', $value);
+            }
+        }
+        
+        return $xml->asXML();
+    }
+    
+    /*
+     * Estrutura do XML
+     * 
+     * <?xml version='1.0' encoding='ISO-8859-1' standalone='yes'?>
+     * <web>
+     *     <pupils>
+     *            <pupil>
+     *             <enrollId>...</enrollId>
+     *                <frequency>...</frequency>
+     *             <degrees>
+     *                 <degree>
+     *                        <degreeId>...</degreeId>
+     *                     <degreeValue>...</degreeValue>
+     *                     <description>...</description>
+     *                 </degree>
+     *                    <degree>
+     *                     ...
+     *                 </degree>
+     *             </degrees>
+     *             <evaluations>
+     *                 <evaluation>
+     *                     <evaluationId>...</evaluationId>
+     *                     <evaluationValue>...</evaluationValue>
+     *                     <description>...</description>
+     *                 </evaluation>
+     *                 <evaluation>
+     *                     ...
+     *                 </evaluation>
+     *             </evaluations>
+     *         </pupil>
+     *         <pupil>
+     *             ...
+     *         </pupil>
+     *     </pupils>
+     * </web>
+     */
+    public function updateGroupPupilsGrades($xmlStr)
+    {
+        $xml = new SimpleXMLElement($xmlStr);
+        
+        if (count($xml->pupils[0]->pupil) > 0)
+        {
+            foreach ($xml->pupils[0]->pupil as $pupil)
+            {
+                $enrollData = $this->busEnroll->getEnroll($pupil->enrollId);
+                
+                if ($enrollData->frequency != $pupil->frequency)
+                {
+                    $this->busEnroll->updateEnroll($enrollData);
+                }
+                
+                $groupData  = $this->busGradesTyping->getGroupData($enrollData->groupId); 
+                
+                if (count($pupil->degrees[0]->degree) > 0)
+                {
+                    foreach ($pupil->degrees[0]->degree as $degree)
+                    {
+                        $degreeData              = new AcdDegreeEnroll();
+                        $degreeData->degreeId    = $degree->degreeId[0];
+                        $degreeData->enrollId    = $enrollData->enrollId;
+                        $degreeData->description = $degree->description[0];
+                        $degreeData->recordDate  = date(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP'));
+
+                        if ($groupData->useConcept == DB_TRUE)
+                        {
+                            $degreeData->concept = $degree->degreeValue[0];
+                        }
+                        else
+                        {
+                            $degreeData->note = $degree->degreeValue[0];
+                        }
+                        
+                        $this->busDegreeEnroll->insertDegreeEnroll($degreeData);
+                    }
+                }
+                
+                if (count($pupil->evaluations[0]->evaluation) > 0)
+                {
+                    foreach ($pupil->evaluations[0]->evaluation as $evaluation)
+                    {
+                        $evaluationData = new AcdEvaluationEnroll();
+                        $evaluationData->evaluationId = $evaluation->evaluationId[0];
+                        $evaluationData->enrollId     = $enrollData->enrollId;
+                        $evaluationData->description  = $evaluation->description[0];
+                        $evaluationData->recordDate   = date(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP'));
+                        
+                        if ($groupData->useConcept == DB_TRUE)
+                        {
+                            $evaluationData->concept = $evaluation->evaluationValue;
+                        }
+                        else
+                        {
+                            $evaluationData->note = $evaluation->evaluationValue;
+                        }
+                        
+                        $this->busEvaluationEnroll->insertEvaluationEnroll($evaluationData);
+                    }
+                }
+            }
+        }
+    }
+    
+    public function getGradeHistory($id, $enrollId, $type = 'D')
+    {
+        $xmlStr = <<<XML
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<web>
+    <history>
+    </history>
+</web>
+XML;
+        
+        $xml = new SimpleXMLElement($xmlStr);
+        
+        $enrollData = $this->busEnroll->getEnroll($enrollId);
+        $groupData  = $this->busGradesTyping->getGroupData($enrollData->groupId);
+        
+        if ($type == 'D')
+        {
+            $data = $this->busDegreeEnroll->getDegreeEnrollHistory($id, $enrollId, $groupData->useConcept == DB_TRUE);
+        }
+        else
+        {
+            $data = $this->busEvaluationEnroll->getEvaluationEnrollHistory($id, $enrollId, $groupData->useConcept == DB_TRUE);
+        }
+        
+        if (count($data) > 0)
+        {
+            foreach ($data as $register)
+            {
+                list($grade,
+                     $description,
+                     $recordDate,
+                     $userName) = $register;
+                     
+                $tag = $xml->history[0]->addChild('register');
+                $tag->addChild('grade', $grade);
+                $tag->addChild('description', utf8_encode($description));
+                $tag->addChild('recordDate', $recordDate);
+                $tag->addChild('userName', utf8_encode($userName));
+            }
+        }
+        
+        return $xml->asXML();
+    }
+}
+?>

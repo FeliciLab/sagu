@@ -1,0 +1,273 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file handles view of Generate income forecast accounting file
+ *
+ * @author Armando Taffarel Neto [taffarel@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 05/09/2006
+ *
+ **/
+
+/**
+ */
+class FrmGenerateIncomeForecastAccountingFile extends SForm
+{
+    private $home;
+
+    /**
+     * Class constructor
+     */
+    public function __construct($data)
+    {
+        $module = MIOLO::getCurrentModule();
+
+        $this->home   = $data->home;
+
+        parent::__construct( _M('Gerar arquivo de contabilização de previsões', $module), NULL, NULL );
+    }
+
+    /**
+     *  Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+
+        // date
+        $dateLabel = new MText('dateLabel', _M('Data', $module).':');
+        $dateLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $dateLabel->setClass('m-caption m-caption-required');
+        $date      = new MCalendarField('date', $this->getFormValue('date',$data->date), '', SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+        $date->setJsHint(_M('Informe a data',$module));
+        $validators[] = new MDATEDMYValidator('date', '', 'required');
+        
+        //partial check box
+        $partialLabel = new MText('partialLabel', _M('Parcial', $module));
+        $partial = new MCheckBox('partial', 'true', '', $this->getFormValue('partial', $data->partial));
+        $fields[] = new MHContainer('hctLimitDate', array($dateLabel, $date, $partialLabel, $partial));
+
+        $fields[] = new MButton('btnGenerate',_M('Gerar',$module));
+        $fields[] = new Separator('');
+        
+        parent::defineFields( array( 'fields' => $fields, 'validators' => $validators ) );
+
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+    }
+
+    /**
+     * Event triggered when user chooses Generate button
+     **/
+    public function btnGenerate_click($sender=NULL)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        $filters->date    = $this->getFormValue('date');
+        $filters->partial = $this->getFormValue('partial');
+
+        $lot      = substr($filters->date,0,2) . substr($filters->date,3,2);
+        
+        $business   = new BusinessAccountancyBusGenerateIncomeForecastAccountingFile();
+        
+        foreach ( $business->getAccountSchemeIds() as $value )
+        {
+            $endOfAccount[$value[0]] = $value[1];
+            $iniOfAccount[$value[0]] = $value[2];
+        }
+        
+        foreach ( $business->getUnitAccountingCode() as $value )
+        {
+            $unitCode[$value[0]] = $value[1];
+        }
+
+        $previousInvoiceId = -1;
+        $document          = 0;
+        $line              = 0;
+        $values = $business->getIncomeForecastData($filters);
+        
+        if (is_array($values[0]))
+        {
+            foreach ( $values as $value )
+            {
+                list (
+                        $incomeForecastData->incomeForecastId,
+                        $incomeForecastData->personId,
+                        $incomeForecastData->personName,
+                        $incomeForecastData->month,
+                        $incomeForecastData->courseId,
+                        $incomeForecastData->unitId,
+                        $incomeForecastData->operationId,
+                        $incomeForecastData->recordDate,
+                        $incomeForecastData->value
+                      ) = $value;
+                      
+                $line ++;
+                if ( $line==100 )
+                {
+                  $line              = 1;
+                  $previousInvoiceId = -1; //força troca de documento
+                }
+                
+                $coursePrefix = $iniOfAccount[$incomeForecastData->courseId];
+                
+                if ( ! $coursePrefix )
+                {
+                    $msg  = _M('Plano de contas para o curso @1 e unidade @2 não definidos', $module, $incomeForecastData->courseId, $incomeForecastData->unitId);
+                    $goto = SAGU::getStackBackUrl();
+                    $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+                    $caption = _M('Erro', $module);
+                    $MIOLO->error( $msg, $goto, $caption );           
+                }
+
+                $courseSuffix = $endOfAccount[$incomeForecastData->courseId];
+                
+                if ( ! $courseSuffix )
+                {
+                    $msg  = _M('Plano de contas para o curso @1 e unidade @2 não definidos', $module, $incomeForecastData->courseId, $incomeForecastData->unitId);
+                    $goto = SAGU::getStackBackUrl();
+                    $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+                    $caption = _M('Erro', $module);
+                    $MIOLO->error( $msg, $goto, $caption );           
+                }
+                
+                $unitId = $unitCode[$incomeForecastData->unitId];
+
+                if ( ! $unitId )
+                {
+                    $msg  = _M('Código contábil para a unidade @1 não definido', $module, $incomeForecastData->unitId);
+                    $goto = SAGU::getStackBackUrl();
+                    $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+                    $caption = _M('Erro', $module);
+                    $MIOLO->error( $msg, $goto, $caption );           
+                }
+
+                $integration = $business->getIntegrationData($incomeForecastData->operationId);
+                
+                foreach ( $integration as $value )
+                {
+                    list (
+                            $integrationData->externalIncomeForecastId,
+                            $integrationData->operationTypeId,
+                            $integrationData->debitAccount,
+                            $integrationData->creditAccount,
+                            $integrationData->operationDescription,
+                            $integrationData->debitCostCenter,
+                            $integrationData->creditCostCenter
+                         ) = $value;
+                         
+                    /*******************************HARDCODE**************************/
+                    $integrationData->debitAccount    = ereg_replace("UU", $unitId, $integrationData->debitAccount);
+                    $integrationData->creditAccount   = ereg_replace("UU", $unitId, $integrationData->creditAccount);
+
+                    $integrationData->debitAccount    = ereg_replace("PPP", $coursePrefix, $integrationData->debitAccount);
+                    $integrationData->creditAccount   = ereg_replace("PPP", $coursePrefix, $integrationData->creditAccount);
+
+                    $integrationData->debitAccount    = ereg_replace("SSSSSSSS", $courseSuffix, $integrationData->debitAccount);
+                    $integrationData->creditAccount   = ereg_replace("SSSSSSSS", $courseSuffix, $integrationData->creditAccount);
+        
+                    $value   = $incomeForecastData->value;
+
+                    if ($value<0)
+                    {
+                        $value *= (-1);
+
+                        $integrationData->operationDescription = _M('Estorno', $module) . ' ' . $integrationData->operationDescription;
+
+                        ACCOUNTING::commuteAccounts($integrationData->debitAccount, $integrationData->creditAccount, $integrationData->debitCostCenter, $integrationData->creditCostCenter, $limbo1, $limbo2);
+
+                        if ($integrationData->operationTypeId == 'C')
+                        {
+                            $integrationData->operationTypeId          = 'D';
+                            $integrationData->externalIncomeForecastId = '101';
+                        }
+                        else
+                        {
+                          if ($integrationData->operationTypeId == 'D')
+                          {
+                              $integrationData->operationTypeId          = 'C';
+                              $integrationData->externalIncomeForecastId = '102';
+                          }
+                        }
+                    }
+
+                    $integrationData->operationDescription = $incomeForecastData->personId . '/' . 
+                                                             $incomeForecastData->month . ': ' . 
+                                                             $integrationData->operationDescription;
+
+                    $content[] = ACCOUNTING::writeToSigaFile(
+                                                                $integrationData->externalIncomeForecastId,
+                                                                $integrationData->operationTypeId,
+                                                                $integrationData->debitAccount,
+                                                                $integrationData->creditAccount,
+                                                                $integrationData->operationDescription,
+                                                                $value,
+                                                                $integrationData->debitCostCenter,
+                                                                $integrationData->debitCostCenter,
+                                                                $lot,
+                                                                $document,
+                                                                $line
+                                                             );
+                        
+                }
+            }
+        }
+
+        if (is_array($content))
+        {
+            $business->updateIncomeForecasts($filters);
+            
+            $fileContent = implode(chr(13) . chr(10), $content);
+            $fileContent.= chr(13) . chr(10);
+        }
+        if (strlen($fileContent)>0)
+        {
+            SAGU::returnAsFile(str_replace('/', '', $filters->date) . '.txt', $fileContent, 'text/accounting-file');
+        }        
+        else
+        {
+            $url = $MIOLO->getActionURL(MIOLO::getCurrentModule(), MIOLO::getCurrentAction());
+            $MIOLO->information(_M('Não foram encontradas previsões de lançamento para processar', $module), $url);
+        }
+    }    
+}
+
+?>

@@ -1,0 +1,655 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribui­do na esperançaa que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃOO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licençaa Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Classe de gerencia de fotos para o Sagu
+ *
+ * @author Luís Augusto Weber Mercado [luis_augusto@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Luís Augusto Weber Mercado [luis_augusto@solis.com.br]
+ *
+ * @since
+ * Class created on 28/04/2014
+ */
+$MIOLO = MIOLO::getInstance();
+$MIOLO->page->addScript('webcamCapture.js', 'basic');
+
+class SPhotoManager extends MContainer
+{
+
+    public $MIOLO;
+    public $module;
+    public $id;
+    public $tab;
+    private static $defaultPrefix = 'photo_';
+    private static $allowedExtensions = array('jpg', 'jpeg', 'png', 'gif');
+
+    /**
+     * Construtor do componente.
+     * 
+     * @param $id Identificador do componente.
+     */
+    public function __construct($id)
+    {
+        $this->MIOLO = MIOLO::getInstance();
+        $this->module = SAGU::getFileModule(__FILE__);
+        $this->id = $id;
+        
+        $uploadMenu = array();
+        $takePhotoFields = array();
+        $photoManagerFields = array();
+
+        // Fields da aba de Upload.
+        $uploadMenu[] = $fileField = new MFileField('uploadedFile', null, _M('Selecione o arquivo'), null, _M('O arquivo deve ter no máximo ' . ini_get('upload_max_filesize') . ' de tamanho.'));
+
+        $fileField->addAttribute('onchange', $this->getAjaxAction('uploadConfirmation'));
+        
+        // Fields da aba de Webcam.
+        $takePhotoFields[] = $divTakePhoto = new MDiv('divTakePhoto', '<p style="position: relative; margin-top: 50%; text-align: center; font-weight: bold; color: #f00;">' . _M('Após dar permissão, a imagem da sua webcam aparecerá aqui!') . '</p>');
+
+        $takePhotoFields[] = $btnTakePhoto = new MDiv('', new MButton('btnTakePhoto', _M('Tirar foto', $this->module), $this->getAjaxAction('takePhoto'), null));
+
+        $takePhotoMenu[] = $divTakePhotoMenu = new MDiv('divTakePhotoMenu', $takePhotoFields);
+        
+        // Fields da aba de gerenciamento de foto.
+        $photoManagerFields[] = $labelCurrentPhoto = new MTextLabel('labelCurrentPhoto', _M('Foto atual'));
+        $photoManagerFields[] = $labelTmpPhoto = new MTextLabel('labelTmpPhoto', _M('Foto recém tirada/carregada'));
+
+        $photoManagerFields[] = $divShowPhoto = new MDiv('divShowPhoto');
+        $divShowPhoto->addStyle('width','120px');
+        $divShowPhoto->addStyle('height','160px');
+        
+        $photoManagerFields[] = $divShowTmpPhoto = new MDiv('divShowTmpPhoto');
+        $divShowTmpPhoto->addStyle('width','120px');
+        $divShowTmpPhoto->addStyle('height','160px');
+        
+        $photoManagerFields[] = $btnRemovePhoto = new MDiv('', new MButton('btnRemovePhoto', _M('Remover foto', $this->module), $this->getAjaxAction('removePhoto'), null));
+        $photoManagerFields[] = $btnRemoveTmpPhoto = new MDiv('', new MButton('btnRemoveTmpPhoto', _M('Descartar foto', $this->module), $this->getAjaxAction('removeTmpPhoto'), null));
+        
+        $photoManagerFields[] = $divMessage = new MDiv('', '<p style="position: absolute; padding: 20px; border: 2px solid grey; width: 300px; font-weight: bold; font-size: 12px; margin-left: 500px; top: 50px; background-color: #f4f4f4; text-align: justify;"> ' . _M('Após realizar as demais operações de cadastro, não se esqueça de clicar no botão de finalizar registro!') . ' </p>');
+        $photoManagerFields[] = $hiddenField = new MHiddenField('hiddenFieldPhotoManager'); // Para verificar se deve ou não realizar a operação de exclusão de foto temporária no primeiro loadTmpPhoto.
+        
+        $photoManagerMenu[] = $divPhotoManager = new MDiv('divPhotoManager', $photoManagerFields);
+
+        $tabGroup = new MTabbedBaseGroup('photoOperations');
+        $tabGroup->createTab('tabPhotoManager', _M('Gerenciar fotos', $this->module), $photoManagerMenu); // loadTmpPhoto
+        $tabGroup->createTab('tabUpload', _M('Upload', $this->module), $uploadMenu); // shutdownWebcam
+        $tabGroup->createTab('tabWebcam', _M('Webcam', $this->module), $takePhotoMenu); // attachWebcam
+
+
+        $this->MIOLO->page->onload("
+            document.getElementById('tabPhotoManagerButton').onclick = function() {
+                {$this->getAjaxAction('loadTmpPhoto')}
+                mtabbedbasegroup.changeTab('tabPhotoManager', 'photoOperations');
+
+            }
+            
+            document.getElementById('tabPhotoManagerButton').click();
+
+            document.getElementById('tabUploadButton').onclick = function() {
+                {$this->getAjaxAction('shutdownWebcam')}
+                mtabbedbasegroup.changeTab('tabUpload', 'photoOperations');
+
+            }
+            
+            document.getElementById('tabWebcamButton').onclick = function() {
+                {$this->getAjaxAction('attachWebcam')}
+                mtabbedbasegroup.changeTab('tabWebcam', 'photoOperations');
+
+            }
+            
+            /* Aba de webcam */
+            var element = document.getElementById('divTakePhoto');
+            element.style.overflow = 'hidden';
+            element.style.width = '360px';
+            element.style.height = '480px';
+            element.style.border = '2px solid #fff';
+            
+            element = document.getElementById('divTakePhotoMenu');
+            element.style.margin = '0px auto 0px auto';
+            element.style.width = '360px';
+            
+            document.getElementById('btnTakePhoto').style.marginLeft = '127px';
+            
+            /* Aba manager */
+            // Labels
+            document.getElementById('labelCurrentPhoto').style.marginLeft = '30px';
+            document.getElementById('labelTmpPhoto').style.marginLeft = '37px';
+            
+            // Divs
+            document.getElementById('divPhotoManager').style.marginLeft = '20px';
+
+            element = document.getElementById('divShowPhoto');
+            element.style.border = '2px solid #fff';
+            element.style.overflow = 'hidden';
+              
+            element = document.getElementById('divShowTmpPhoto');
+            element.style.border = '2px solid #fff';
+            element.style.marginTop = '-162.5px';
+            element.style.marginLeft = '165px';
+            element.style.overflow = 'hidden';
+            
+            // Buttons
+            document.getElementById('btnRemovePhoto').style.marginLeft = '5px';
+            document.getElementById('btnRemoveTmpPhoto').style.position = 'absolute';
+            document.getElementById('btnRemoveTmpPhoto').style.top = '187.5px';
+            document.getElementById('btnRemoveTmpPhoto').style.marginLeft = '170px';
+
+        ");
+
+        $this->tab = $tabGroup;
+
+        parent::__construct($id);
+        
+    }
+
+    /**
+     * Gera o componente.
+     */
+    public function generate()
+    {
+        $fields = array();
+
+        $fields[] = $this->tab;
+        $fields[] = new MDiv('divSPhotoManagerResponse');
+
+        $mainContainer = new MVContainer('photoManagerContainer', $fields);
+
+        return $mainContainer->generate();
+        
+    }
+
+    /**
+     * Retorna a chamada ajax.
+     */
+    public function getAjaxAction($eventName, $args = array())
+    {
+        $args += array("eventName" => $eventName);
+
+        return SForm::getAjaxAction('SPhotoManagerEvents', 'divSPhotoManagerResponse', false, $args, true, false);
+        
+    }
+
+    /* MÉTODOS REFERENTES AO RECURSO DE TIRAR FOTOS PELA WEBCAM. */
+
+    /**
+     * Método AJAX:
+     * Atribui a stream de video da webcam ao elemento.
+     */
+    public static function attachWebcam()
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $operatorId = $MIOLO->GetLogin()->id;
+        
+        $MIOLO->page->addAJAXJsCode("
+            WebcamCapture.attach('divTakePhoto');
+
+        ");
+
+        // Limpa a pasta temporária.    
+        SPhotoManager::findTmpPhoto($operatorId, true);
+        
+        return array();
+        
+    }
+
+    /**
+     * Método AJAX:
+     * Desliga a webcam. Utilizar quando se quer desativar a mesma.
+     */
+    public static function shutdownWebcam()
+    {
+        $msg = _M('Após dar permissão, a imagem da sua webcam aparecerá aqui!');
+        
+        $MIOLO = MIOLO::getInstance();
+        
+        $operatorId = $MIOLO->GetLogin()->id;
+        
+        $MIOLO->page->addAJAXJsCode("
+            WebcamCapture.shutdown();
+            
+            document.getElementById('divTakePhoto').innerHTML = '<p style=\"position: absolute; margin-top: 50%; text-align: center; font-weight: bold; color: #f00;\">{$msg}</p>';
+
+        ");
+           
+        // Limpa a pasta temporária.    
+        SPhotoManager::findTmpPhoto($operatorId, true);
+
+        return array();
+        
+    }
+
+    /**
+     * Método AJAX:
+     * Pega o frame atual da stream de video e retorna a imagem no formato base64 para o método receivePhotoInfo().
+     */
+    public static function takePhoto()
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $args = array('eventName' => 'receivePhotoInfo');
+        
+        $MIOLO->page->addAJAXJsCode("
+            if(WebcamCapture.live)
+            {
+                var imgData = WebcamCapture.snap();
+
+                var auxString = imgData.substring(23);
+                
+                saguDoAjax('SPhotoManagerEvents','divSPhotoManagerResponse',false,'&eventName=receivePhotoInfo&imginfo=' + auxString);
+
+            }
+
+        ");
+
+        return array();
+        
+    }
+
+    /**
+     * Método AJAX:
+     * Salva na pasta temporária do gnuteca a imagem.
+     */
+    public static function receivePhotoInfo($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        // Pega o base64 da imagem recém tirada.
+        $base64 = $args->imginfo;
+        
+        // Id do operador.
+        $loginId = $MIOLO->getLogin()->id;
+
+        // Decode no base64 da imagem.
+        $imgData = base64_decode(str_replace(' ','+', $base64));
+
+        $fileName = SPhotoManager::$defaultPrefix . $loginId . '.jpg';
+        $filePath = SPhotoManager::getTmpFolder();
+        
+        if (!is_dir($filePath)) { // Se não existir a tmp/
+            mkdir($filePath, 0777, true);
+
+        }
+        
+        $targetPath = $filePath . $fileName;
+        
+        // Limpa a pasta temporária.
+        SPhotoManager::findTmpPhoto($loginId, true);
+        
+        file_put_contents($targetPath, $imgData);
+
+        $photoInfo = new stdClass();
+
+        $photoInfo->tmpName = $fileName;
+        $photoInfo->ext = 'jpg';
+        $photoInfo->type = 'image/jpeg';
+        
+        // Escreve na sessão.
+        $_SESSION["SPhotoManager"]["photoInfo"] = $photoInfo;
+        
+        $MIOLO->page->addAJAXJsCode("document.getElementById('tabPhotoManagerButton').click(); WebcamCapture.shutdown();");
+        
+        return array();
+        
+    }
+
+    /* MÉTODOS REFERENTES AO UPLOAD DE FOTO. */
+
+    /**
+     * Método AJAX:
+     * Confirma a escolha de foto do usuário.
+     */
+    public static function uploadConfirmation()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $ajaxAction = "saguDoAjax('SPhotoManagerEvents','divSPhotoManagerResponse',false,'&eventName=uploadPhoto');";
+            
+        $url = $MIOLO->GetActionURL('basic', 'main:photoUpload');
+        
+        $url = str_replace('&amp;', '&', $url);
+                
+        $js = "
+            function doAjaxUpload()
+            {
+                var xmlhttp = new XMLHttpRequest();
+
+                xmlhttp.onreadystatechange = function()
+                {
+                    if((xmlhttp.readyState == 4) && (xmlhttp.status == 200))
+                    {
+                        document.getElementById('uploadedFile').value = '';
+                        mpopup.remove();
+                        {$ajaxAction}
+                            
+                    }
+
+                }
+
+                var formData = new FormData();
+                formData.append(\"myFile\", document.getElementById('uploadedFile').files[0]);
+                formData.append(\"operatorId\",'{$MIOLO->GetLogin()->id}');
+
+                xmlhttp.open(\"POST\",\"{$url}\", true);
+                xmlhttp.send(formData);
+                                
+           }
+                       
+        ";
+                
+        $MIOLO->page->addAJAXJsCode($js);
+        
+        $msg = _M("Desejas utilizar o arquivo selecionado como sua foto?");
+        
+        // Ação requisição para o post + ajaxes.
+        MPopup::confirm(null, $msg, 'doAjaxUpload();');
+        
+        return array();
+        
+    }
+
+    /**
+     * Método AJAX:
+     * "Oficializa" o upload da foto.
+     */
+    public static function uploadPhoto($args)
+    {
+        $photoInfo = $_SESSION['SPhotoManager']['photoInfo'];
+        
+        $timer = 15;
+        $time = 0;
+        
+        while(($time < $timer) && (is_null($photoInfo)))
+        {
+            $photoInfo = $_SESSION['SPhotoManager']['photoInfo'];
+                        
+            $time++;
+            sleep(1);
+            
+        }
+        
+        if(is_null($photoInfo))
+        {
+            MPopup::alert(null, _M("Ocorreu algum erro no upload do arquivo. Verifique a extensão do mesmo (use jpg, jpeg, gif ou png) e tente novamente!"));
+            
+        }
+        else
+        {
+            MPopup::alert(null, _M("Imagem carregada com sucesso!"), "document.getElementById('tabPhotoManagerButton').click(); mpopup.remove();");
+                        
+        }
+        
+        return array();
+        
+    }
+
+    /* MÉTODOS REFERENTES A ABA DE GERENCIAMENTO DE FOTO */
+
+    /**
+     * Atribui a foto da pessoa a div principal.
+     * 
+     * @param $url da imagem.
+     */
+    public static function loadPhoto($url)
+    {
+        $MIOLO = MIOLO::getInstance();
+                
+        $js = SPhotoManager::getShowPhotoDivJs($url, _M('Não há nenhuma foto cadastrada.'), 'divShowPhoto');
+        
+        $MIOLO->page->onload($js);
+        
+        return $js;
+        
+    }
+
+    /**
+     * MÉTODO AJAX:
+     * 
+     * Atribui a foto temporária da pessoa a div.
+     */
+    public static function loadTmpPhoto($args)
+    {
+        if($args->hiddenFieldPhotoManager == '')
+        {
+            SPhotoManager::clearData();
+                        
+        }
+                
+        $MIOLO = MIOLO::getInstance();
+        
+        $operatorId = $MIOLO->GetLogin()->id;
+        
+        $url = $MIOLO->GetActionURL('basic', 'main:getpicture', null, array('operatorid' => $operatorId, 'rand' => time()));
+        
+        if ( strlen(SPhotoManager::findTmpPhoto($operatorId)) === 0 )
+        {
+            $url = null;
+        }
+        
+        // Limpa a cache do servidor.
+        foreach(SPhotoManager::$allowedExtensions as $ext)
+        {
+            clearstatcache(true, SPhotoManager::$defaultPrefix . $operatorId . '.' . $ext);
+            
+        }
+        
+        $js = SPhotoManager::getShowPhotoDivJs($url, _M('Nenhuma foto foi tirada/carregada.'), 'divShowTmpPhoto');
+        $js .=  "document.getElementById('hiddenFieldPhotoManager').value = 'notAnymore';";
+        
+        $MIOLO->page->addAJAXJsCode($js);
+        
+        return array();
+        
+    }
+
+    /**
+     * Atribui a foto da pessoa a div indicada.
+     * 
+     * @param $url Caminho do arquivo.
+     * @param $msg Mensagem a ser mostrada em caso de falha
+     * @param $divName Nome da div a ser atribuida a imagem
+     */
+    private static function getShowPhotoDivJs($url, $msg, $divName)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $inner = "";
+                
+        // Mensagem caso não haja foto (imagem junto com a url).
+        if ((is_null($url)) || ($url === '/tmp/') || (substr($url, strlen($url) - 7) === 'fileId=') || (substr($url, strlen($url) - 4) === 'tmp/'))
+        {
+            $inner = '<p style="position: relative; margin-top: 50%; text-align: center; font-weight: bold; color: #f00;">' . $msg . '</p>';
+            
+        }
+        else
+        {
+            $inner = '<img id="img' . $divName . '\" src=\"' . $url . '\" width="100%" height="100%" />';
+                        
+        }
+
+        $js =
+        "
+            var element = document.getElementById('{$divName}');
+            
+            element.innerHTML = '{$inner}';
+            
+            var img = document.getElementById('img{$divName}');
+            
+            setTimeout(function()
+            {
+                if(img !== null)
+                {
+                    if(img.clientWidth > 180)
+                    {
+                        var margin = Math.floor(((img.clientWidth -180)/ 2) * (-1));
+
+                        img.style.marginLeft = margin + 'px';
+
+                    }
+                }
+            }, 2000);
+                                    
+        ";
+            
+        return $js;
+        
+    }
+
+    /**
+     * Método AJAX:
+     * Remove a foto cadastrada da pessoa.
+     */
+    public static function removePhoto($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        // Pega o id da pessoa.
+        $personId = $args->personId;
+        
+        $busPerson = new BusinessBasicBusPerson();
+        $busFile = new BusinessBasicBusFile();
+                
+        // Pega as informações da pessoa.
+        $personData = $busPerson->getPerson($personId);
+        
+        // FileId associado com ela.
+        $photoId = $personData->photoId;
+        
+        if($photoId != null)
+        {
+            // Limpa do registro.
+            $personData->photoId = null;
+            $personData->SPhotoManagerFlag = 'remove'; // Adiciona uma flag para controlar se é para deixar nulo a imagem ou manter a anterior.
+
+            // Atualiza o registro da pessoa, sem foto agora.
+            $busPerson->updatePerson($personData);
+
+            // Deleta o arquivo.
+            $busFile->deleteFile($photoId);
+            
+            $MIOLO->page->addAJAXJsCode(SPhotoManager::loadPhoto(null));
+            
+        }
+                
+        return array();
+        
+    }
+
+    /**
+     * Método AJAX:
+     * Remove a foto temporária da pessoa.
+     */
+    public static function removeTmpPhoto()
+    {        
+        SPhotoManager::clearData();
+        
+        SPhotoManager::loadTmpPhoto(null);
+        
+        return array();
+        
+    }
+
+    /* MÉTODOS GERAIS */
+    
+    /**
+     * Retorna os dados armazenados na sessão.
+     */
+    public static function getData()
+    {
+        $photoInfo = $_SESSION["SPhotoManager"]["photoInfo"];
+        
+        if($photoInfo->tmpName)
+        {
+            $tmpFilePath = SPhotoManager::getTmpFolder() . $photoInfo->tmpName;
+
+            $photoInfo->tmpFilePath = $tmpFilePath;  
+            
+        }
+                
+        return $photoInfo;
+        
+    }
+    
+    /**
+     * Encontra na pasta temporária o arquivo recém tirado/carregado.
+     * 
+     * @param $OperatorId, id do operador da seção. O nome da imagem é baseado neste.
+     * @param $andDelete, default: false. Se true, ao encontrar a foto, exclui a mesma.
+     */
+    public static function findTmpPhoto($operatorId, $andDelete = false)
+    {
+        foreach(SPhotoManager::$allowedExtensions as $ext)
+        {
+            $fileName = SPhotoManager::$defaultPrefix . $operatorId . '.' . $ext;
+            
+            $filePath = SPhotoManager::getTmpFolder() . $fileName;
+               
+            if(file_exists($filePath))
+            {   
+                if($andDelete)
+                {
+                    unlink($filePath);
+                    
+                }
+                else
+                {
+                    return $fileName;
+                    
+                }
+                                
+            }
+            
+        }
+        
+    }
+    
+    /**
+     * Limpa a pasta temporária e os itens armazenados na sessão.
+     */
+    public static function clearData()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $operatorId = $MIOLO->GetLogin()->id;
+        
+        unset($_SESSION['SPhotoManager']);
+        SPhotoManager::findTmpPhoto($operatorId, true);
+        
+    }
+    
+    /**
+     * Retorna o caminho absoluto do folder temporário.
+     */ 
+    public static function getTmpFolder($file = '')
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'basic';
+        
+        return $MIOLO->getConf("home.modules") . '/' . $module .'/html/files/tmp/' . $file;
+        
+    }
+
+}
+
+?>

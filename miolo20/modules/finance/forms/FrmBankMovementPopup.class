@@ -1,0 +1,323 @@
+<?php
+
+/*
+ * To change this template, choose Tools | Templates
+ * and open the template in the editor.
+ */
+
+/**
+ * Description of FrmBankMovementPopup
+ *
+ * @author augusto
+ */
+
+class FrmBankMovementPopup extends SForm
+{
+    public function __construct($title, $object, $pkey) 
+    {
+        parent::__construct($title, $object, $pkey);
+        
+        // Carrega o javascript da MPopup
+        $this->page->AddScript('m_popup_control.js');        
+        $this->page->AddScript('m_lookup_ajax.js');
+        $this->page->AddScript('phpSerialize.js', 'basic');
+    }
+    
+    /**
+     * Abre a popup de movimentação bancária.
+     * 
+     * @param type $args
+     */
+    public static function showPopupBankMovement($args)
+    {        
+        $MIOLO  = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule(); 
+        $action = MIOLO::getCurrentAction();
+        $MIOLO->uses('/forms/FrmEntry.class', $module);
+                
+        $busSpecies = new BusinessFinanceBusSpecies();
+        $filters = new stdClass();
+        $filters->speciesTypeId = SAGU::getParameter('FINANCE', 'BANK_MOVEMENT_SPECIESTYPE_ID');
+        $filters->isEnabled = DB_TRUE;
+        $specie = $busSpecies->searchSpecies($filters);        
+        $bankMovementSpeciesId = $specie[0][0];
+        
+        if ( !strlen($args->paymentValue[$bankMovementSpeciesId]) > 0 )
+        {
+            self::limparDadosDaSessao();
+        }
+        
+        $data = self::obterDadosDoLancamentoBancario($args);
+        
+        if ( $action == 'main:closeInvoiceAlt1' )
+        {
+            $juros = str_replace(',', '.', ($args->fineValue + $args->interestValue));
+
+            $data->discount = $args->discountValue > 0 ? $args->discountValue : $data->discount;
+            $data->juros = $juros > 0 ? $juros : $data->juros;
+            $data->tax = $args->taxaValue > 0 ? $args->taxaValue : $data->tax;
+            $data->value = $args->openValue > 0 ? $args->openValue : $data->value;
+            
+            $message = _M('Os valores de desconto e juros/multa foram calculados pelo sistema, altere-os se necessário.', $module);
+            $fields[] = MMessage::getStaticMessage('msgInfo', $message, MMessage::TYPE_INFORMATION);
+        }
+        
+        // Campos referentes a lançamento bancário.
+        $fields[] = new MDiv('bankMovementInfo', FrmEntry::generateBankAccountField($data));
+        
+        // Data de lançamento
+        $entryDateLabel = new MText('entryDateLabel', _M('Data de lançamento', $module).':');
+        $entryDateLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $entryDateLabel->setClass('m-caption m-caption-required');
+        $entryDate      = new MCalendarField('entryDate', $data->entryDate ? $data->entryDate : date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')), '', SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+        $entryDate->setJsHint(_M('Informe a data do lançamento',$module));
+        $validators[] = new MDATEDMYValidator('entryDate', _M('Data de lançamento', $module), 'optional');
+        $fields[] = new MHContainer('hctEntryDate', array($entryDateLabel, $entryDate));        
+        
+        // Valor do depósito.
+        $valueLabel = new MText('valueLabel', _M('Valor', $module) . ':');
+        $valueLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $valueLabel->setClass('m-caption m-caption-required');
+        $valueField = new MTextField('value', $data->value, null, 10, '0.00');
+        $poLabel = new MText('poLabel', "<font color='blue'>C</font>");
+        $fields[] = new MHContainer('valueHc', array($valueLabel, $valueField, $poLabel));
+        $validators[] = new MRequiredValidator('value', 'Valor');
+        
+        // Comentário.
+        $commentsLabel = new MText('commentsLabel', _M('Comentários/identificação do comprovante', $module).':');
+        $commentsLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $comments = new MMultiLineField('comments', $data->comments, null, 40, 4, 30);
+        $comments->setJsHint(_M('Informe os comentários',$module));
+        $fields[] = new MHContainer('hctMessage', array($commentsLabel, $comments));
+        
+        $fields[] = new MSeparator();
+        
+        $lblHidden = new MText('lbHidden', ' ');
+        $lblHidden->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $lblHidden->setClass('m-caption');
+        $btnOk = new MButton('btnOk', _M('Ok', $module), SForm::getAjaxAction('FrmBankMovementPopup::formBankMovementOk', 'divError'), false, $args);
+        $btnCancel = new MButton('btnCancel', _M('Cancelar', $module), SForm::getAjaxAction('FrmBankMovementPopup::formBankMovementCancel', 'divError'), false, $args);
+        $fields[] = new MHContainer('btnsHc', array($lblHidden, $btnOk, $btnCancel));
+        
+        MPopup::show('popupBankData', $fields, _M('Depósito', $module));
+    }
+    
+    /**
+     * Seta o valor da movimentação bancária. 
+     * 
+     * @param stdClass $args
+     */
+    public static function formBankMovementOk($args)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $action = $MIOLO->getCurrentAction();        
+        
+        $valorAPagar = self::obtemValorAtualizadoAPagar($args);        
+        self::obterDadosDoLancamentoBancario($args);
+        
+        $busSpecies = new BusinessFinanceBusSpecies();
+        $filters = new stdClass();
+        $filters->speciesTypeId = SAGU::getParameter('FINANCE', 'BANK_MOVEMENT_SPECIESTYPE_ID');
+        $specie = $busSpecies->searchSpecies($filters);        
+        $bankMovementSpeciesId = $specie[0][0];
+
+        $MIOLO->page->addAjaxJsCode("      
+            mpopup.remove();
+
+            var valor = document.getElementById('value');
+            var valorBankMovement = document.getElementById('paymentValue[{$bankMovementSpeciesId}]');    
+            valorBankMovement.value = (valor.value > 0.00) ? valor.value : '';
+            
+            document.getElementById('totalValue').value = '{$valorAPagar}';
+            
+            // Necessário somente para a tela de movimentações de caixa.
+            if ( '{$action}' == 'main:process:counter:counterMovement' )
+            {
+                saguDoAjax('changeSpecieValue', 'divAjaxResponse', true, '');
+            }    
+            
+            if ( '$action' == 'main:closeInvoiceAlt1' )
+            {
+                var discount = document.getElementById('discount');
+                document.getElementById('discountValue').value = (discount.value > 0.00) ? discount.value : '0.00';
+                
+                var interest = document.getElementById('juros');
+                document.getElementById('interestValue').value = (interest.value) > 0.00 ? interest.value : '0.00';
+                document.getElementById('fineValue').value = '0.00';
+                
+                var taxa = document.getElementById('tax');
+                document.getElementById('taxaValue').value = (taxa.value) > 0.00 ? taxa.value : '0.00';
+                
+                var opValue = document.getElementById('value');
+                document.getElementById('openValue').value = (opValue.value) > 0.00 ? opValue.value : '0.00';
+            }
+        ");
+    }
+    
+    /**
+     * Atualiza valor total a pagar. Deve ser recalculado caso sejam registradas
+     * informações de desconto, juros/multa e/ou taxa.
+     * 
+     * @param stdClass $args
+     * @return String
+     */
+    public static function obtemValorAtualizadoAPagar($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+        $busOperation         = new BusinessFinanceBusOperation();
+        $operations           = $busDefaultOperations->getDefaultOperations();
+        
+        if ( (String)$args->discount != (String)$MIOLO->session->getValue('discount') )
+        {
+            $operation = $busOperation->getOperation($operations->discountOperation);
+            $args->totalValue = self::valorAPagarAtualizado($args->totalValue, $args->discount, $MIOLO->session->getValue('discount'), $operation->operationTypeId);
+        }
+        
+        if ( (String)$args->juros != (String)$MIOLO->session->getValue('juros') )
+        {
+            $operation = $busOperation->getOperation($operations->interestOperation);
+            $args->totalValue = self::valorAPagarAtualizado($args->totalValue, $args->juros, $MIOLO->session->getValue('juros'), $operation->operationTypeId);
+        }
+        
+        if ( (String)$args->tax != (String)$MIOLO->session->getValue('tax') )
+        {
+            $operation = $busOperation->getOperation($operations->bankTaxOperation);
+            $args->totalValue = self::valorAPagarAtualizado($args->totalValue, $args->tax, $MIOLO->session->getValue('tax'), $operation->operationTypeId);
+        }        
+        
+        
+        return $args->totalValue;
+    }
+    
+    /**
+     * Atualiza valor total a pagar conforme o valor e tipo da operação do lançamento.
+     * 'C' (Subtrai do valor total a pagar), 'D' (Soma ao valor total a pagar)
+     * 
+     * @param String $valorAPagar
+     * @param Char $operationTypeId
+     * @return String
+     */
+    public static function valorAPagarAtualizado($valorAPagar, $valorNovo, $valorVelho, $operationTypeId)
+    {
+        switch ( $operationTypeId )
+        {
+            case 'C':
+                $valorAPagar += $valorVelho; // Soma o valor velho devolta.
+                $valorAPagar -= $valorNovo; // Recalcula
+                break;
+            
+            case 'D':
+                $valorAPagar -= $valorVelho; // Subtrai o valor velho devolta.
+                $valorAPagar += $valorNovo; // Recalcula.
+                break;
+            
+            default:
+                break;
+        }
+        
+        return SAGU::formatNumber(str_replace(',', '.', $valorAPagar));
+    }
+    
+    /**
+     * Limpa o formulário e os dados do lançamento bancário da sessão.
+     * 
+     * @param stdClass $args
+     */
+    public function formBankMovementCancel($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $MIOLO->page->addAjaxJsCode("
+            document.getElementById('bankAccountId').value = '';
+            document.getElementById('bankAccountId_sel').value = '';
+            document.getElementById('discount').value = '';
+            document.getElementById('juros').value = '';
+            document.getElementById('tax').value = '';
+            document.getElementById('entryDate').value = '';
+            document.getElementById('value').value = '';
+            document.getElementById('comments').value = '';
+        ");
+        
+        unset($args->bankAccountId);
+        unset($args->bankAccountId_sel);
+        unset($args->discount);
+        unset($args->juros);
+        unset($args->tax);
+        unset($args->entryDate);
+        unset($args->value);
+        unset($args->comments);
+        
+        self::limparDadosDaSessao();
+        self::formBankMovementOk($args);
+    }
+    
+    /**
+     * Limpa os dados do lançamento bancário da sessão.
+     */
+    public static function limparDadosDaSessao()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $MIOLO->session->set('bankAccountId', null);
+        $MIOLO->session->set('bankAccountId_sel', null);
+        $MIOLO->session->set('discount', null);
+        $MIOLO->session->set('juros', null);
+        $MIOLO->session->set('tax', null);
+        $MIOLO->session->set('entryDate', null);
+        $MIOLO->session->set('value', null);
+        $MIOLO->session->set('comments', null);
+    }
+    
+    /**
+     * Cria um objeto com os dados do lançamento banário informados.
+     * 
+     * @param stdClass $args
+     * @return stdClass
+     */
+    public static function obterDadosDoLancamentoBancario($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $action = MIOLO::getCurrentAction();
+        
+        $MIOLO->session->set('bankAccountId', SAGU::NVL($args->bankAccountId, $MIOLO->session->getValue('bankAccountId')));
+        $MIOLO->session->set('discount', SAGU::NVL($args->discount, $MIOLO->session->getValue('discount')));
+        $MIOLO->session->set('juros', SAGU::NVL($args->juros, $MIOLO->session->getValue('juros')));
+        $MIOLO->session->set('tax', SAGU::NVL($args->tax, $MIOLO->session->getValue('tax')));
+        $MIOLO->session->set('entryDate', SAGU::NVL($args->entryDate, $MIOLO->session->getValue('entryDate')));
+        $MIOLO->session->set('value', SAGU::NVL($args->value, $MIOLO->session->getValue('value')));
+        $MIOLO->session->set('comments', SAGU::NVL($args->comments, $MIOLO->session->getValue('comments')));
+        
+        $bankMovDataFields = new stdClass();
+        $bankMovDataFields->bankAccountId = $MIOLO->session->getValue('bankAccountId');
+        $bankMovDataFields->discount = $MIOLO->session->getValue('discount');
+        $bankMovDataFields->juros = $MIOLO->session->getValue('juros');
+        $bankMovDataFields->tax = $MIOLO->session->getValue('tax');
+        $bankMovDataFields->entryDate = $MIOLO->session->getValue('entryDate');
+        $bankMovDataFields->value = $action == 'main:closeInvoiceAlt1' ? $MIOLO->_REQUEST('openValue') : $MIOLO->session->getValue('value');
+        $bankMovDataFields->comments = $MIOLO->session->getValue('comments');
+                
+        return $bankMovDataFields;
+    }
+    
+    /**
+     * Salva os cheques com suas respectivas movimentações de caixa.
+     * 
+     * @param stdClass $args
+     * @return boolean
+     */
+    public static function saveBankMovement($args)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        $MIOLO->uses('/forms/FrmEntry.class', $module);
+        
+        $data = self::obterDadosDoLancamentoBancario();
+        $data->invoiceId = $args->invoiceId;
+        
+        return FrmEntry::saveBankAccountMovement($data, true);
+    }
+}
+
+?>

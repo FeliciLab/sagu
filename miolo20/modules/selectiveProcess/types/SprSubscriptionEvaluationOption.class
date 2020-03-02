@@ -1,0 +1,244 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class definition for database entities
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ *
+ * @since
+ * Class created on 15/12/2010
+ */
+/**
+ * @access public
+ * @package Processo_seletivo
+ */
+class SprSubscriptionEvaluationOption extends SType
+{
+    private $subscriptionId;
+
+    private $evaluationOptionId;
+    /**
+     * @AttributeType string
+     * Informações relevantes para a opção que está sendo escolhida
+     */
+    private $description;
+    /**
+     * @AttributeType integer
+     * Neste campo, o candidato informa a quantos pontos (do total da etapa) esta opção concorrerá. Exemplo: se a etapa tem 100 pontos, a soma de todas as pontuações pretendidas em todas as opções não poderá ultrapassar 100 pontos.
+     */
+    private $desiredScore;
+    /**
+     * @AssociationType Processo seletivo.EvaluationOption
+     * @AssociationMultiplicity 1
+     */
+    private $evaluationOption;
+    /**
+     * @AttributeType string
+     * Campo que conterá a justificativa para modificação da pontuação. Preenchimento obrigatório quando o desiredScore for diferente do finalScore.
+     */
+    private $observation;
+    
+    /**
+     * @AssociationType Processo seletivo.basFile
+     * @AssociationMultiplicity 0..*
+     */
+    private $attachment = array();
+
+    /**
+     * @AttributeType integer
+     */
+    private $finalScore;
+
+    public function __construct($evaluationOptionId = null, $subscriptionId = null)
+    {
+        $this->evaluationOption = new SprEvaluationOption();
+
+        if ((strlen($evaluationOptionId) > 0) && (strlen($subscriptionId) > 0))
+        {
+            $this->subscriptionId = $subscriptionId;
+            $this->evaluationOptionId = $evaluationOptionId;
+            $this->populate();
+        }
+    }
+
+    /**
+     * Data logic
+     */
+    public function __get($name)
+    {
+        return $this->$name;
+    }
+
+    public function __set($name, $value)
+    {
+        $this->$name = $value;
+    }
+
+    public function populate()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+
+        $sql = 'SELECT evaluationOptionId,
+                       subscriptionId,
+                       description,
+                       desiredScore,
+                       finalScore,
+                       observation
+                  FROM spr.subscriptionEvaluationOption
+                 WHERE evaluationOptionId = ?
+                   AND subscriptionId = ?';
+
+        $result = SDatabase::query($sql, array($this->evaluationOptionId, $this->subscriptionId));
+
+        if ( strlen($result[0][0]) <= 0 )
+        {
+            throw new Exception(_M('Opção de avaliação da inscrição @1 inexistente.', $module, $this->selectiveProcessId));
+        }
+
+        list( $this->evaluationOptionId,
+              $this->subscriptionId,
+              $this->description,
+              $this->desiredScore,
+              $this->finalScore,
+              $this->observation) = $result[0];
+
+        if (strlen($this->evaluationOptionId) && strlen($this->subscriptionId) > 0)
+        {
+            $filters = new stdClass();
+            $filters->subscriptionId = $this->subscriptionId;
+            $filters->evaluationOptionId = $this->evaluationOptionId;
+
+            $this->attachment = (array)SprAttachment::search( $filters );
+        }
+
+        if (strlen($this->evaluationOptionId) > 0)
+        {
+            $this->evaluationOption = new SprEvaluationOption($this->evaluationOptionId);
+        }
+    }
+
+    public function delete()
+    {
+        foreach ($this->attachment as $attachment)
+        {
+            $attachment instanceof SprAttachment;
+            $attachment->delete();
+        }
+
+        $sql = 'DELETE FROM spr.subscriptionEvaluationOption
+                      WHERE evaluationOptionId = ?
+                        AND subscriptionId = ?';
+
+        $args = array( $this->evaluationOptionId,
+                       $this->subscriptionId );
+
+        $result = SDatabase::execute($sql, $args);
+
+        if ($result)
+        {
+            $this->evaluationOptionId = null;
+            $this->subscriptionId = null;
+        }
+
+        return $result;
+    }
+
+    public function save()
+    {
+        $data = array( 'description' => $this->description,
+                       'desiredScore' => (strlen($this->desiredScore) > 0) ? $this->desiredScore : ':NULL',
+                       'finalScore' => (strlen($this->finalScore) > 0) ? $this->finalScore : ':NULL',
+                       'observation' => $this->observation);
+
+        $filters = array( 'subscriptionId' => $this->subscriptionId,
+                          'evaluationOptionId' => $this->evaluationOptionId );
+
+        if (count( SprSubscriptionEvaluationOption::search( (object) $filters ) ) > 0) //update
+        {
+            $sql = new MSQL( implode(',', array_keys($data)), 'spr.subscriptionEvaluationOption' );
+            $sql->SetParameters(array_values($data));
+            $sql->setWhere('evaluationOptionId = ? AND subscriptionId = ?');
+            $sql->addParameter($this->evaluationOptionId);
+            $sql->addParameter($this->subscriptionId);
+
+            $retVal = SDatabase::execute($sql->update());
+        }
+        else //insert
+        {
+            $data['evaluationOptionId'] = $this->evaluationOptionId;
+            $data['subscriptionId'] = $this->subscriptionId;
+
+            $sql = new MSQL( implode(',', array_keys($data)), 'spr.subscriptionEvaluationOption' );
+            $sql->SetParameters(array_values($data));
+
+            $retVal = SDatabase::execute($sql->insert());
+        }
+
+        foreach ($this->attachment as $attachment)
+        {
+            $attachment->subscriptionId = $this->subscriptionId;
+            $attachment->evaluationOptionId = $this->evaluationOptionId;
+            $attachment->save();
+        }
+
+        return $retVal;
+    }
+
+    public function search($filters)
+    {
+        $sql = 'SELECT evaluationOptionId,
+                       subscriptionId
+                  FROM spr.subscriptionEvaluationOption';
+
+        $where = '';
+        foreach ( $filters as $key => $value )
+        {
+            $where .= ' AND ' . $key . ' = ' . $value;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5);
+        }
+
+        $results = SDatabase::query($sql);
+
+        $retVal = array();
+        foreach ((array)$results as $result)
+        {
+            $retVal[] = new SprSubscriptionEvaluationOption($result[0], $result[1]);
+        }
+
+        return $retVal;
+    }
+
+    public function duplicate()
+    {
+        // Not implemented
+    }
+}
+?>

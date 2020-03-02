@@ -1,0 +1,292 @@
+<?php
+/**
+ * <--- Copyright 2005-2012 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Classe de auditoria.
+ *
+ * @author Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * \b Maintainers: \n
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * @since
+ * Class created on 11/04/2012
+ * 
+ */
+
+class auditoria
+{
+    /**
+     * Obtém lista com todas as tabelas do Sagu passíveis de auditoria.
+     *
+     * @return array Matriz com esquema, nome da tabela e nome da trigger de auditoria (caso exista).
+     */
+    public static function buscarTriggers()
+    {
+        $sql = "SELECT nspname,
+                       relname,
+                       (SELECT tgname
+                          FROM pg_trigger 
+                    INNER JOIN pg_proc
+                            ON tgfoid = pg_proc.oid
+                         WHERE tgrelid = pg_class.oid
+                           AND proname = 'miolo_audit_it'
+                         LIMIT 1) AS tgname
+                  FROM pg_class 
+            INNER JOIN pg_namespace
+                    ON relnamespace = pg_namespace.oid
+            WHERE relkind = 'r'
+                   AND nspname NOT LIKE 'pg_%'
+                   AND nspname != 'information_schema'
+                   AND relname NOT IN ('miolo_audit', 'miolo_audit_detail')
+              ORDER BY nspname, relname";
+
+        $resultado = SDatabase::query(SAGU::prepare($sql, $params, FALSE));
+
+        return $resultado;
+    }
+    
+    /**
+     * Obtém lista com todas as tabelas do Sagu passíveis de auditoria, que não estão sendo auditadas
+     *
+     * @return array Matriz com esquema e nome da tabela 
+     */
+    public static function obtemTabelasSemAuditoria()
+    {
+        $sql = "SELECT nspname,
+                       relname
+                  FROM pg_class 
+            INNER JOIN pg_namespace
+                    ON relnamespace = pg_namespace.oid
+                 WHERE relkind = 'r'
+                   AND nspname NOT LIKE 'pg_%'
+                   AND nspname != 'information_schema'
+                   AND relname NOT IN ('miolo_audit', 'miolo_audit_detail')
+                   AND relname NOT IN ( SELECT UNNEST(STRING_TO_ARRAY(GETPARAMETER('BASIC', 'TABELAS_QUE_NAO_PODEM_SER_AUDITADAS'), ',')) )
+                   AND pg_class.oid NOT IN ( SELECT tgrelid
+                                               FROM pg_trigger 
+                                         INNER JOIN pg_proc
+                                                 ON tgfoid = pg_proc.oid
+                                              WHERE proname = 'miolo_audit_it' )                   
+              ORDER BY nspname, relname";
+
+        $resultado = SDatabase::query(SAGU::prepare($sql, $params, FALSE));
+
+        return $resultado;
+    }
+    
+    /**
+     * Obtém lista com todas as tabelas do Sagu que estão sendo auditadas
+     *
+     * @return array Matriz com nome da tabela e esquema com nome da tabela
+     */
+    public static function obtemTabelasComAuditoria()
+    {
+        $sql = "SELECT relname,
+                       nspname || ' - ' || relname
+                  FROM pg_class 
+            INNER JOIN pg_namespace
+                    ON relnamespace = pg_namespace.oid
+                 WHERE relkind = 'r'
+                   AND nspname NOT LIKE 'pg_%'
+                   AND nspname != 'information_schema'
+                   AND relname NOT IN ('miolo_audit', 'miolo_audit_detail')
+                   AND relname NOT IN ( SELECT UNNEST(STRING_TO_ARRAY(GETPARAMETER('BASIC', 'TABELAS_QUE_NAO_PODEM_SER_AUDITADAS'), ',')) )
+                   AND pg_class.oid IN ( SELECT tgrelid
+                                               FROM pg_trigger 
+                                         INNER JOIN pg_proc
+                                                 ON tgfoid = pg_proc.oid
+                                              WHERE proname = 'miolo_audit_it' )                   
+              ORDER BY nspname, relname";
+
+        $resultado = SDatabase::query(SAGU::prepare($sql, $params, FALSE));
+
+        return $resultado;
+    }
+
+    /**
+     * Cria trigger na tabela informada.
+     *
+     * @param string $esquema Esquema no qual a tabela está.
+     * @param string $tabela Nome da tabela.
+     * @return boolean Retorna verdadeiro caso tenha criado a trigger com sucesso.
+     */
+    public static function criarTrigger($esquema, $tabela)
+    {
+        self::criarFuncaoParaObterChavesPrimariasDaTabela($esquema, $tabela);
+                
+        $sql = 'CREATE TRIGGER ?
+                        BEFORE UPDATE OR DELETE 
+                            ON ?
+                      FOR EACH ROW EXECUTE PROCEDURE miolo_audit_it()';
+
+        $params = array(
+            ":maudit_{$esquema}_$tabela",
+            ":$esquema.$tabela"
+        );
+
+        $msql = new MSQL();
+        $msql->createFrom($sql);
+        $msql->prepare($params);
+        $safeSQL = $msql->command;
+
+        $resultado = SDatabase::execute($safeSQL);
+
+        return $resultado;
+    }
+    
+    /**
+     * Cria função de base que retorna os nomes das colunas chaves primarias
+     * referentes a tabela.
+     * 
+     * @param String $esquema
+     * @param String $tabela
+     * @return boolean
+     */
+    private static function criarFuncaoParaObterChavesPrimariasDaTabela($esquema, $tabela)
+    {
+        $function = " SELECT miolo_audit_cache_primary_key(?, ?) ";
+        $args[] = $esquema;
+        $args[] = $tabela;
+        
+        return SDatabase::execute(SAGU::prepare($function, $args, false));
+    }
+    
+    /**
+     * Cria array de base para deixar fixo os nomes das colunas
+     * chave primárias.
+     * 
+     * @param String $esquema
+     * @param String $tabela
+     * @param boolean $array
+     * @return String
+     */
+    public static function arrayDasColunasChavesPrimarias($esquema, $tabela, $array = true)
+    {
+        // Obtém os nomes das colunas chave primárias da tabela.
+        $sql    = 'SELECT * FROM obtemChavesPrimariasDaTabela(?, ?)';
+        $result = SDatabase::query($sql, array($tabela, $esquema), false);
+        
+        if ( $array == false )
+        {
+            return $result;
+        }
+        
+        $pkeys  = "";
+        
+        if ( count($result) > 0 )
+        {            
+            foreach ( $result as $pkey )
+            {
+                $colPkeys .= "'{$pkey[0]}',";
+            }
+            
+            $colPkeys = substr($colPkeys, 0, -1 );            
+            $pkeys   .= " := ARRAY[{$colPkeys}]";
+        }
+        
+        return $pkeys;
+    }
+
+    /**
+     * Remove a trigger informada da tabela.
+     *
+     * @param string $trigger Nome da trigger a ser removida.
+     * @param string $esquema Esquema no qual a tabela está.
+     * @param string $tabela Nome da tabela.
+     * @return boolean Retorna verdadeiro caso tenha removido a trigger com sucesso.
+     */
+    public static function removerTrigger($trigger, $esquema, $tabela)
+    {
+        self::removerFuncaoDeChavesPrimarias($esquema, $tabela);
+        
+        $sql = 'DROP TRIGGER ? ON ?';
+
+        $params = array(
+            ":$trigger",
+            ":$esquema.$tabela"
+        );
+
+        $msql = new MSQL();
+        $msql->createFrom($sql);
+        $msql->prepare($params);
+        $safeSQL = $msql->command;
+
+        $resultado = SDatabase::execute($safeSQL);
+
+        return $resultado;
+    }
+    
+    /**
+     * Remove a função que retorna os nomes das colunas chaves primárias da tabela.
+     * 
+     * @param String $esquema
+     * @param String $tabela
+     * @return boolean
+     */
+    public function removerFuncaoDeChavesPrimarias($esquema, $tabela)
+    {
+        $sql = "DROP FUNCTION IF EXISTS miolo_audit_{$esquema}_{$tabela}_pkeys()";
+
+        return SDatabase::execute($sql);
+    }
+     
+    public static function verificaAuditoria($schema, $table)
+    {
+        $sql = " SELECT COUNT(relname) = 1
+                   FROM pg_class 
+             INNER JOIN pg_namespace
+                     ON relnamespace = pg_namespace.oid
+                  WHERE relkind = 'r'
+                    AND nspname NOT LIKE 'pg_%'
+                    AND nspname != 'information_schema'
+                    AND pg_class.oid IN ( SELECT tgrelid
+                                            FROM pg_trigger 
+                                      INNER JOIN pg_proc
+                                              ON tgfoid = pg_proc.oid
+                                           WHERE proname = 'miolo_audit_it' )
+	  	    AND nspname = ?
+		    AND relname = ? ";
+        
+        $params[] = strtolower($schema);
+        $params[] = strtolower($table);
+        
+        $resultado = SDatabase::query(SAGU::prepare($sql, $params, FALSE));
+
+        return $resultado[0][0];
+    }
+    
+    public static function obtemSchemaDaTabela($tableName)
+    {
+        $sql = " SELECT schemaname
+                   FROM pg_tables 
+                  WHERE tablename ilike ? ";
+        
+        $params[] = $tableName;
+        
+        $resultado = SDatabase::query(SAGU::prepare($sql, $params, FALSE));
+
+        return $resultado[0][0];
+        
+    }
+}
+
+?>

@@ -1,0 +1,129 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda. e
+ * Univates - Centro Universitário.
+ * 
+ * Este arquivo é parte do programa Gnuteca.
+ * 
+ * O Gnuteca é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * @author Nataniel I. da Silva [nataniel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * @since
+ * Class created on 15/01/2015
+ *
+ **/
+
+require('NFSeSP.class.php');
+require('NFeRPS.class.php');
+
+class FinEnviaNFSeSP 
+{
+    const TESTE_ENVIO_EM_LOTE = 'TesteEnvioLoteRPS';
+    const ENVIO_EM_LOTE = 'EnvioLoteRPS';
+    const CONSULTA_NFE = 'ConsultaNFeRequest';
+    const ENVIO_NFE = 'EnvioLoteRPSRequest';
+    const COD_IBGE_CIDADE_SP = '3550308';
+    
+    public function enviaRPS($rpsArray = array(), $data)
+    {
+        $nfse = new NFSeSP($data->pkcs12, $data->certDir, $data->passphrase);
+        $nfse->cnpjPrestador = $data->cnpjPrestador;
+        $nfse->ccmPrestador = $data->ccmPrestador;
+        
+        $rangeDate['inicio'] = $data->inicio; //date("Y-m-d");
+        $rangeDate['fim']   = $data->fim; //date("Y-m-d");
+        $valorTotal['servicos'] = $data->servicos; //1;
+        $valorTotal['deducoes'] = $data->deducoes; //0;
+                
+        if ( $data->operacao == FinEnviaNFSeSP::ENVIO_EM_LOTE )
+        {
+            $ret = $nfse->sendRPSBatch($rangeDate, $valorTotal, $rpsArray);
+        }
+        else
+        {
+            $ret = $nfse->sendRPSBatchTest($rangeDate, $valorTotal, $rpsArray);
+        }
+                
+        $docxml = $ret->saveXML();
+
+        if ( $ret->Erro )
+        {
+            $msgErro = "Erro no processamento da solicitação: <br>";
+        }
+        
+        foreach ( $ret->Erro as $erro )
+        {
+            $msgErro .= utf8_decode($erro->Codigo) . ' - ' . utf8_decode($erro->Descricao) . '<br>';
+        }
+        
+        foreach ( $ret->Alerta as $alerta )
+        {
+            $msgAlerta .= utf8_decode($alerta->Codigo) . ' - ' . utf8_decode($alerta->Descricao) . '<br>';
+        }
+        
+        if ( strlen($msgErro) > 0 )
+        {
+            throw new Exception($msgErro);
+        }
+        if ( $data->operacao == FinEnviaNFSeSP::ENVIO_EM_LOTE )
+        {
+            if ( is_object($ret->ChaveNFeRPS) )
+            {
+                // Salva o lote de emissão
+                $finEmissaoLoteNfe = new FinEmissaoLoteNfe();
+                $finEmissaoLoteNfe->codigoLoteRetornado = $ret->Cabecalho->InformacoesLote->NumeroLote;
+                $finEmissaoLoteNfe->pagamentosEntre = SAGU::dateToUser($data->inicio);
+                $finEmissaoLoteNfe->pagamentosAte = SAGU::dateToUser($data->fim);
+                $finEmissaoLoteNfe->unitId = $data->unitId;
+                $finEmissaoLoteNfe->valorMinimoDosPagamentos = $data->valorMinimoDosPagamentos;
+                $finEmissaoLoteNfe->discriminacao = $data->discriminacao;
+                $finEmissaoLoteNfe->save();
+
+                // Salva as notas emitidas
+                foreach ( $ret->ChaveNFeRPS as $chaveNfes )
+                {
+                    $finNfe = new FinNfe();
+                    $finNfe->emissaoLoteNfeId = $finEmissaoLoteNfe->emissaoLoteNfeId;
+                    $finNfe->rpsId = $chaveNfes->ChaveRPS->NumeroRPS;
+                    $finNfe->numeronotafiscal = $chaveNfes->ChaveNFe->NumeroNFe;
+                    $finNfe->codigoVerificacao = $chaveNfes->ChaveNFe->CodigoVerificacao;
+                    $finNfe->inscricaoPrestador = $chaveNfes->ChaveNFe->InscricaoPrestador;
+                    $finNfe->save();
+                }
+            }
+        }
+        
+        if ( $ret->Cabecalho->Sucesso == true )
+        {
+            $resultado = new stdClass();
+            $resultado->result = true;
+            
+            if ( strlen($msgAlerta) > 0 )
+            {
+                $resultado->alerta = $msgAlerta;
+            }
+            
+            return $resultado;
+        }
+    }
+}
+
+?>

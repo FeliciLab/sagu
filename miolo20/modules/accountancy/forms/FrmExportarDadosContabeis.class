@@ -1,0 +1,216 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Generate accountancy data
+ *
+ * @author Bruno Edgar Fuhr[bruno@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * @since
+ * Class created on 20/10/2014
+ *
+ **/
+
+ini_set('memory_limit', '1024M');
+set_time_limit('60');
+
+$MIOLO->uses('classes/accArquivoDeExportacao.class', 'accountancy');
+
+class FrmExportarDadosContabeis extends SForm
+{
+
+    /**
+     * Class constructor
+     **/
+    public function __construct($data)
+    {
+        $module     = MIOLO::getCurrentModule();
+        parent::__construct( _M('Exportar dados contábeis', $module), null, null );
+    }
+
+    /**
+     * Default method to define fields
+     **/
+    public function defineFields()
+    {
+        $MIOLO       = MIOLO::getInstance();
+        $module      = MIOLO::getCurrentModule();
+        $action      = MIOLO::getCurrentAction();
+        
+        $this->page->AddJsCode('document.forms[0].onsubmit="return miolo_onSubmit";');
+
+        //Layout
+        $fields[] = new MSelection('layoutArquivo', $this->GetFormValue('layoutArquivo'), _M('Layout'), accArquivoDeExportacao::listarLayouts());
+        $validators[] = new MRequiredValidator('layoutArquivo');
+        $fields[] = new MSeparator();        
+        
+        //Download
+        $url = $MIOLO->GetActionURL(MIOLO::getCurrentModule(), MIOLO::getCurrentAction());
+        $link = new MLinkButton('downloadLink', _M('Baixar layout de exportação', $module), $url);
+        $fields[] = new MTextLabel('dllink', $link->generate(), _M('Download', $module));
+        
+        //Data inicial
+        $fields[] = new MCalendarField('dataInicial', NULL, _M('Data inicial'));
+        
+        //Data final
+        $fields[] = new MCalendarField('dataFinal', NULL, _M('Data final'));        
+        
+        //Se tem acesso a nota fiscal
+        if ( $MIOLO->CheckAccess('FrmNfePaulistana', A_ACCESS))
+        {
+            $fields[] = new MRadioButtonGroup('somenteNotas', _M("Somente lançamentos atrelados à NFes", $module), SAGU::listYesNo(), DB_FALSE, NULL, 'horizontal');
+        }
+        
+        $this->addFields($fields);
+        $this->setValidators($validators);
+        
+        $buttons[] = new MButton('btnExportar', _M('Exportar para arquivo'));
+        $this->setButtons($buttons);
+    }
+    
+    public function downloadLink_click($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        try
+        {
+            $filename = accArquivoDeExportacao::obterFileName($this->GetFormValue('layoutArquivo'));
+            $buffer = file_get_contents($filename);
+            
+            SAGU::returnAsFile(basename($filename), $buffer, 'application/vnd.oasis.opendocument.spreadsheet');
+        }
+        catch (Exception $e)
+        {
+            $this->AddError( $e->getMessage() );
+        }
+    }
+    
+    public function btnExportar_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $args = $this->getData();
+        
+        $busEntry = new BusinessFinanceBusEntry();
+        
+        $finDefaultOperations = new FinDefaultOperations();
+        $opPagamento = $finDefaultOperations->paymentOperation;
+        
+        try
+        {            
+            //Checa datas
+            if ( !(strlen($this->getFormValue('dataInicial')) > 0) || 
+                 !(strlen($this->getFormValue('dataFinal'))> 0 ) )
+            {
+                throw new Exception(_M("Por favor, selecione uma data incial e uma data final.", $module));
+            }
+            
+            //Checa layout
+            if ( !(strlen($this->getFormValue('layoutArquivo')) > 0 ) )
+            {
+                throw new Exception(_M("Por favor, selecione um layout para gerar o arquivo."));
+            } 
+             
+            $lancamentos = $busEntry->obterLancamentosAReceberParaExportacaoContabil($args);
+
+            $data = array();
+
+            foreach ( $lancamentos as $key => $lancamento )
+            {
+                if ( !empty($lancamento->codigo_conta_contabil) &&
+                     !empty($lancamento->codigo_contra_partida) &&
+                     $lancamento->valor_lancamento > 0 )
+                {
+                    $data[$key]['cod_entrada'] = $lancamento->codigo_do_lancamento;
+                    $data[$key]['cod_titulo'] = $lancamento->titulo;
+                    $data[$key]['cod_operacao'] = $lancamento->codigo_da_operacao;
+                    $data[$key]['data_entrada'] = $lancamento->data_contabil_lancamento;
+                    $data[$key]['valor'] = $lancamento->valor_lancamento;
+                    $data[$key]['centro_custo'] = $lancamento->codigo_centro_de_custo;
+                    $data[$key]['cod_retorno_bancario'] = $lancamento->codigo_do_retorno_bancario;
+                    $data[$key]['tipo_operacao'] = $lancamento->tipo_operacao;
+                    $data[$key]['conta_debito'] = $lancamento->codigo_conta_contabil;
+                    $data[$key]['conta_credito'] = $lancamento->codigo_contra_partida;
+                    $data[$key]['descricao_operacao'] = $lancamento->operacao;
+                    $data[$key]['numero_nota'] = $lancamento->numero_nota_fiscal;
+                    $data[$key]['nome_aluno'] = $lancamento->nome_aluno;
+                    $data[$key]['cod_pessoa'] = $lancamento->codigo_aluno;
+                    $data[$key]['observacao_operacao'] = $lancamento->observacao_de_operacao;
+                }
+                else
+                {
+                    //Para mais informacoes
+                    $linkExternal = new MLink('linkExternal', _M('Contabilizando'), 'http://manuais.solis.com.br/index.php/Contabilizando', NULL, '_blank');
+                    $detalhes = (_M("<br><br>Para maiores informações, acesse " . $linkExternal->generate() . "."));
+                    
+                    //Verifica se o parametro de conta contabil padrao esta configurado
+                    if ( !(strlen(SAGU::getParameter('ACCOUNTANCY', 'CONTA_CONTABIL_CREDITO_PADRAO') > 0)) )
+                    {
+                        $hrefP = $MIOLO->GetActionURL('basic', 'main:config:parametersTable', NULL, array('function' => 'update', 'moduleConfig' => 'ACCOUNTANCY', 'parameter' => 'CONTA_CONTABIL_CREDITO_PADRAO'));
+                        $linkP = new MLink('lnk2', _M("Clique aqui."), $hrefP, NULL, '_blank');
+                        
+                        throw new Exception(_M("Por favor, configure uma contra partida padrão: " . $linkP->generate() . $detalhes ));
+                    }
+                    
+                    //Verifica se o plano de contas está cadastrado para a operaçao do lançamento
+                    if ( empty($lancamento->codigo_conta_contabil) )
+                    {
+                        $href = $MIOLO->GetActionURL('finance', 'main:register:operation', NULL, array('function' => 'update', 'operationId' => $lancamento->codigo_da_operacao));
+                        $link = new MLink('lnk', _M('Clique aqui'), $href, NULL, '_blank');
+                        
+                        throw new Exception(_M("Não foi encontrado um plano de contas para a operação $lancamento->operacao, do lançamento $lancamento->codigo_do_lancamento, título $lancamento->titulo da pessoa $lancamento->nome_aluno ($lancamento->codigo_aluno). " . $link->generate() . " para verificar o cadastro da operação.". $detalhes));
+                    }
+                    
+                    //Verifica se o lancamento está negativo, nao pode ser negativo
+                    if ( $lancamento->valor_lancamento < 0 )
+                    {
+                        throw new Exception(_M("O lançamento $lancamento->codigo_do_lancamento da pessoa $lancamento->nome_aluno ($lancamento->codigo_aluno). Está com valor negativo de $lancamento->valor_lancamento, por favor, verifique o lançamento." . $detalhes));
+                    }
+                    
+                    throw new Exception(_M("Não foi encontrada uma contra partida para a operação $lancamento->operacao, do lançamento $lancamento->codigo_do_lancamento, título $lancamento->titulo da pessoa $lancamento->nome_aluno ($lancamento->codigo_aluno). Verifique as configurações de contra partida para a operação." . $detalhes));
+                }
+            }
+
+            if ( !(count($lancamentos) > 0) )
+            {
+                throw new Exception( _M("Não foram encontrados registros para este intervalo de datas.") );
+            }
+            
+            $filename = 'exportacaoSagu_' . date('Ymd') . '.txt';
+            
+            $accArquivoDeExportacao = new accArquivoDeExportacao($data, $args->layoutArquivo);
+            SAGU::returnAsFile($filename, $accArquivoDeExportacao->gerarConteudoDoArquivo($args->layoutArquivo), 'text/text', true);
+        }
+        catch( Exception $e )
+        {
+            $goto = $MIOLO->GetActionURL($module, $action);
+            $MIOLO->error($e->getMessage(), $goto);
+        }
+    }
+
+}
+
+?>

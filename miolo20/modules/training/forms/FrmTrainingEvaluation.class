@@ -1,0 +1,547 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ *  Formulário de avaliacao de estagios
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 12/04/2011
+ *
+ */
+class FrmTrainingEvaluation extends SForm
+{
+    public function __construct($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        parent::__construct(_M('Avaliação do estágio', $module), null, null);
+
+        $this->toolbar->disableButton( MToolBar::BUTTON_SEARCH );
+        $this->toolbar->disableButton( MToolBar::BUTTON_NEW );
+        $this->toolbar->disableButton( MToolBar::BUTTON_SAVE );
+        $this->toolbar->disableButton( MToolBar::BUTTON_DELETE );
+        $this->toolbar->setIsPost(MToolBar::BUTTON_PRINT, true);
+    }
+
+    
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $subscriptionId = MIOLO::_REQUEST('subscriptionId');
+        $subscriptionTeamId = MIOLO::_REQUEST('subscriptionTeamId');
+
+        // Sobrescreve botao imprimir
+        $this->toolbar->setButtonUrl(MToolBar::BUTTON_PRINT, SAGU::getActionURL($module, $action, array('event' => 'tbBtnPrint_click', 'subscriptionId' => $subscriptionId, 'subscriptionTeamId' => $subscriptionTeamId)));
+        
+        if ( strlen($subscriptionTeamId) > 0 )
+        {
+            $subscriptionTeam = $data = new TraSubscriptionTeam($subscriptionTeamId);
+            $subscription = $subscriptionTeam->subscription;
+            $data->period = _M('@1 a @2', $module, $subscriptionTeam->beginDate, $subscriptionTeam->endDate);
+            $data->preceptor = $subscriptionTeam->team->preceptor->personId . ' - ' . $subscriptionTeam->team->preceptor->name;
+            $data->preceptorId = $subscriptionTeam->team->preceptor->personId;
+        }
+        else
+        {
+            $subscription = $data = new TraSubscription($subscriptionId);
+            $data->period = _M('@1 a @2', $module, $subscription->request->beginDate, $subscription->request->endDate);
+            $data->preceptor = $data->request->unitArea->preceptor->personId . ' - ' . $data->request->unitArea->preceptor->name;
+            $data->preceptorId = $data->request->unitArea->preceptor->personId;
+        }
+
+        $mioloUserName = trim($MIOLO->getLogin()->id);
+        $busPerson = new BusinessBasicBusPerson();
+        $personData = $busPerson->getPersonByMioloUserName($mioloUserName);
+
+        
+
+        // Verifica se o usuário é o professor deste estágio
+        if ( $personData->personId == $data->preceptorId )
+        {
+            // Verifica se o estágio terminou
+            $isReadOnly = $data->trainingEnded == DB_TRUE;
+            if ( ( strlen($this->getRequestValue('isFromPreceptor')) > 0 ) && $isReadOnly )
+            {
+                $this->AddAlert( _M('Este estágio já foi finalizado e não pode ser editado.', $module) );
+            }
+        }
+        
+        //Se estagio nao terminou
+        if ( !$isReadOnly )
+        {
+            // Verifica se a pessoa logada tem permissão de somente leitura
+            if ( $MIOLO->checkAccess('FrmTrainingEvaluation', A_ACCESS, false, true) )
+            {
+                $isReadOnly = true;
+            }
+            //Se usuário tem permissão de editar ou for admin readonly false
+            if ($MIOLO->checkAccess('FrmTrainingEvaluation', A_EXECUTE, false, true) || $MIOLO->checkAccess('FrmTrainingEvaluation', A_ADMIN, false, true) )
+            {
+                $isReadOnly = false;
+            }
+        }
+
+        // Verifica se a pessoa logada é o próprio estagiário
+        if ( $personData->personId == $subscription->request->personId )
+        {
+            $isReadOnly = true;
+        }
+
+        $data->unitDescription = $subscription->request->unitArea->unit->description;
+        $data->areaDescription = $subscription->request->unitArea->area->description;
+        $data->institution = $subscription->request->institution;
+        $data->personName = $subscription->request->physicalPerson->name;
+        $data->personId = $subscription->request->personId;
+
+        //Prepara dados para verificar qual radiobutton deve selecionar(quando ja existe registros na base)
+        //* OBS: $data->subscriptionTeamEvaluation pode ser hora populado via TraSubscription e ora via TraSubscriptionTeam
+        $dbConcept = array();
+        foreach ( $data->subscriptionTeamEvaluation as $row )
+        {
+            $dbConcept[ $row->evaluationItemId ] = $row->concept;
+        }
+
+        //Cria campos de informacao
+        $labels = array(
+            'personName' => _M('Nome', $module),
+            'unitDescription' => _M('Unidade', $module),
+            'areaDescription' => _M('Área', $module),
+            'institution' => _M('Instituição', $module),
+            'period' => _M('Período', $module),
+            'preceptor' => _M('Preceptor', $module),
+        );
+
+        foreach ( $labels as $id => $label )
+        {
+            $fld1 = new MLabel($label . ':');
+            $fld1->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+            $fld2 = new MLabel( $data->$id );
+            $fld2->setBold(true);
+            $fields[] = new MHContainer("{$id}Cnt", array($fld1, $fld2));
+        }
+
+        // Foto do estagiário
+        // Desativado criacao quando for PRINT, pois por algum motivo nao esta imprimindo o relatorio
+        //  corretamente quando o mesmo é criado.
+        if ( MIOLO::_REQUEST('event') != 'tbBtnPrint_click' )
+        {
+            $photo = new SPersonPhotoDisplayField(array('fileId' => $subscription->request->physicalPerson->photoId));
+        }
+
+        $vCnt = new MVContainer('vctStage', $fields);
+        $personalData = new MHContainer('hctNew', array($vCnt, $photo));
+        $fields = array(new MBaseGroup('bgrStage', _M('Dados do estágio', $module), array($personalData)));
+
+        //Adiciona este campo apenas para o SForm nao chamar o focus do campo Nota final (que possui um onBlur e estava se comportando de forma inadequada)
+        $fields[] = $limbo = new MTextField('limbo');
+        $limbo->addBoxStyle('display', 'none');
+
+        //Se tipo de avaliacao for por nota
+        if ( in_array($subscription->request->trainingType->evaluationTypeId, array(TraEvaluationType::BY_NOTE, TraEvaluationType::BY_NOTE_AND_FREQUENCY)) )
+        {
+            //Diz para o salvar que existe a grid de avaliacao, para nao ter que repetir a logica
+            $fields[] = new SHiddenField('hasEvaluationGrid', 1);
+
+            //Cria tabela
+            $evaluationItem = TraEvaluationItem::search();
+            $listGroup = TraEvaluationGroup::listRecords();
+
+            //Conceitos estaticos existentes no GHC
+            $filters = (object) array('degreeEquivalenceId' => $subscription->request->trainingType->degreeEquivalenceId);
+            $concepts = array_values(TraConcept::listRecords($filters));
+            $colTitle = array_merge(array(''), $concepts, array(''));
+
+            $fields[] = $table = new MTableRaw(null, null, $colTitle);
+
+            //Percorre os TraEvaluationItem
+            $array  = array();
+            $currentGroup = null;
+            $itemList = array();
+            for ( $i = -1; $i < count($evaluationItem); $i++ )
+            {
+                $radios = array();
+                foreach ( $concepts as $concept )
+                {
+                    $evaluationItemId = $evaluationItem[$i]->evaluationItemId;
+                    $varName = "evaluationItem{$evaluationItemId}";
+                    $checked = MIOLO::_REQUEST($varName) == $concept || ( !$MIOLO->page->isPostBack() && $dbConcept[$evaluationItemId] == $concept );
+                    $radios[] = $field = !$isReadOnly ? new MRadioButton($varName, $concept, null, $checked ) : ($checked ? new MText($varName, 'X') : new MText($varName, ''));
+                    $field->setId("{$field->id}_{$concept}");
+                }
+
+                if ( $i == -1 ) //Primeira coluna
+                {
+                    //Adiciona funcao onchange para marcar todos radioButtons abaixo
+                    foreach ( $radios as $radio )
+                    {
+                        $radio->addAttribute('onchange', 'checkAllRadios(this)');
+                    }
+                    
+                    $array[] = array_merge(array(''), $radios, array(''));
+                }
+                else //Coluna normal
+                {
+                    $itemList[] = $evaluationItemId;
+
+                    //Adiciona coluna com o nome do grupo
+                    if ( ($currentGroup == null) || ($currentGroup != $evaluationItem[$i]->evaluationGroupId) )
+                    {
+                        $currentGroup = $evaluationItem[$i]->evaluationGroupId;
+
+                        $array[] = array( $listGroup[$currentGroup] );
+                        $colspan = count($colTitle);
+                        $table->setCell(count($array)-1, 0, null, 'colspan="' . $colspan .  '" style="background-color: #A4C594; text-align:center"');
+                    }
+
+                    $array[] = array_merge(array($evaluationItem[$i]->lowestDegreeDescription), $radios, array($evaluationItem[$i]->highestDegreeDescription));
+                }
+
+                //Centraliza os radiobutton's
+                for ( $z = 0; $z < count($radios); $z++ )
+                {
+                    $table->setCell(count($array)-1, ($z + 1), null, 'style="text-align:center"');
+                }
+            }
+            $table->array = $array; //joga os dados para table
+
+
+            $items = array();
+            foreach ( $itemList as $il )
+            {
+                $items[] = "'{$il}'";
+            }
+            $items = implode(',', $items);
+
+            $this->page->addJsCode("
+            function checkAllRadios(obj)
+            {
+                var items = Array({$items});
+                for ( i = 0 ; i < items.length; i++ )
+                {
+                    var elements = document.getElementsByName('evaluationItem' + items[i]);
+
+                    for ( y = 0; y < elements.length; y++ )
+                    {
+                        if ( obj.value == elements[y].value )
+                        {
+                            elements[y].checked = true;
+                        }
+                    }
+                }
+            }");
+
+            //Nota final
+            if ( !$isReadOnly )
+            {
+                $degreeLabel = new MText('degreeLabel', _M('Nota final', $module) . ':');
+                $degreeLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE') );
+                $degree = new MTextField('degree', $this->getFormValue('degree', $data->degree), null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+                $degree->addAttribute('onblur', SForm::getAjaxAction('showConcept', 'divConcept', true));
+                $divConcept = new MDiv('divConcept', $this->showConcept( (object) array('degree' => $data->degree) ));
+                $fields[] = new MHContainer('degreeCnt', array($degreeLabel, $degree, $divConcept));
+                $validators[] = new mFloatValidator('degree', _M('Nota final', $module));
+            }
+            else
+            {
+                $degreeLabel = new MText('degreeLabel', _M('Nota final', $module) . ':');
+                $degreeLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE') );
+                $degree = new MText('degree', $this->getFormValue('degree', $data->degree));
+                $divConcept = new MDiv('divConcept', $this->showConcept( (object) array('degree' => $data->degree) ));
+                $fields[] = new MHContainer('degreeCnt', array($degreeLabel, $degree, $divConcept));
+                $validators[] = new mFloatValidator('degree', _M('Nota final', $module));
+            }
+        }
+
+        //Se tipo de avaliacao for por frequencia
+        if ( in_array($subscription->request->trainingType->evaluationTypeId, array(TraEvaluationType::BY_FREQUENCY, TraEvaluationType::BY_NOTE_AND_FREQUENCY)) )
+        {
+            //Frequencia (em horas)
+            if ( !$isReadOnly )
+            {
+                $frequencyLabel = new MText('frequencyLabel', _M('Frequência', $module) . ':');
+                $frequencyLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE') );
+                $frequency = new MTextField('frequency', $this->getFormValue('frequency', $data->frequency), null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+                $frequencyDesc = new MText('frequencyDesc', _M('Horas semanais', $module));
+                $fields[] = new MHContainer('frequencyCnt', array($frequencyLabel, $frequency, $frequencyDesc));
+                $validators[] = new mFloatValidator('frequency', _M('Frequência', $module));
+            }
+            else
+            {
+                $frequencyLabel = new MText('frequencyLabel', _M('Frequência', $module) . ':');
+                $frequencyLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE') );
+                $frequency = new MText('frequency', $this->getFormValue('frequency', $data->frequency));
+                $frequencyDesc = new MText('frequencyDesc', _M('Horas semanais', $module));
+                $fields[] = new MHContainer('frequencyCnt', array($frequencyLabel, $frequency, $frequencyDesc));
+                $validators[] = new mFloatValidator('frequency', _M('Frequência', $module));
+            }
+        }
+
+        //Comentarios
+        if ( !$isReadOnly )
+        {
+            $fields[] = $evaluationComments = new MMultiLineField('evaluationComments', $this->getFormValue('evaluationComments', $data->evaluationComments), _M('Comentários', $module), null, 5, 40);
+        }
+        else
+        {
+            $evaluationCommentsLabel = new MText('evaluationCommentsLabel', _M('Comentários', $module));
+            $evaluationCommentsLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE') );
+            $evaluationComments = new MText('evaluationComments', $this->getFormValue('evaluationComments', $data->evaluationComments));
+            $fields[] = new MHContainer('evaluationCommentsCnt', array($evaluationCommentsLabel, $evaluationComments));
+        }
+
+        if ( !$isReadOnly )
+        {
+            $btnSave = new MButton('btnSave', _M('Salvar', $module));
+            $btnSaveAndPublish  = new MButton('btnSaveAndPublish', _M('Salvar e publicar', $module));
+        }
+
+        if ( MIOLO::_REQUEST('preceptorTeams') == DB_TRUE )
+        {
+            $btnBack = new MButton('back', _M('Voltar', $module), $MIOLO->getActionURL( 'training', 'main:process:trainingLocation', null, array('teamId' => $data->team->teamId, 'webservices' => DB_TRUE, 'preceptorTeams' => DB_TRUE)));
+        }
+        $fields[] = new MHContainer('saveButtonCnt', array($btnSave, $btnSaveAndPublish, $btnBack));
+
+        $this->setFields($fields);
+        $this->SetValidators($validators);
+        parent::defineFields();
+    }
+
+    public function  btnSave_click($sender = NULL, $args = null)
+    {        
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $data = $this->getData();
+        $publish = $args->publish; //Se deve publicar ou nao
+        
+        $subscriptionId = MIOLO::_REQUEST('subscriptionId');
+        $subscriptionTeamId = MIOLO::_REQUEST('subscriptionTeamId');
+        
+        try
+        {
+            //So deve validar quando for publicar notas
+            if ( $publish )
+            {
+                if  ( $this->degree && strlen($data->degree) == 0 )
+                {
+                    throw new Exception( _M('O campo Nota final deve estar preenchido', $module) );
+                }
+
+                if ( $this->frequency && strlen($data->frequency) == 0 )
+                {
+                    throw new Exception( _M('O campo Frequência deve estar preenchido', $module) );
+                }
+            }
+
+            SDatabase::beginTransaction();
+
+            $evaluationItem = (array) TraEvaluationItem::search();
+
+            //Salva TraSubscription
+            if ( strlen($subscriptionTeamId) > 0 )
+            {
+                $subscriptionTeam = $obj = new TraSubscriptionTeam($subscriptionTeamId);
+            }
+            else
+            {
+                $subscription = $obj = new TraSubscription($subscriptionId);
+            }
+            foreach ( $data as $key => $val )
+            {
+                $obj->$key = $val;
+            }
+            $obj->trainingEnded = $publish ? DB_TRUE : DB_FALSE;
+            $obj->save();
+            
+            //Salva na TraSubscriptionTeamEvaluation
+            if ( $data->hasEvaluationGrid )
+            {                
+                $filters = new stdClass();
+                if ( strlen($subscriptionTeamId) > 0 )
+                {
+                    $filters->subscriptionTeamId = $subscriptionTeamId;
+                }
+                else
+                {
+                    $filters->subscriptionId = $subscriptionId;
+                }
+                $rows = TraSubscriptionTeamEvaluation::search($filters);
+
+                //Remove todas avaliacoes anteriores, caso existam
+                foreach ( (array) $rows as $row )
+                {
+                    $row->delete();
+                }
+                                
+                foreach ( $evaluationItem as $ei )
+                {                    
+                    $varName = "evaluationItem{$ei->evaluationItemId}";
+                    $concept = MIOLO::_REQUEST($varName);
+                                        
+                    if ( strlen($concept) > 0 )
+                    {
+                        $ste = new TraSubscriptionTeamEvaluation();
+                        $ste->evaluationItemId = $ei->evaluationItemId;
+                        if ( strlen($subscriptionTeamId) > 0 )
+                        {
+                            $ste->subscriptionTeamId = $subscriptionTeamId;
+                        }
+                        else
+                        {
+                            $ste->subscriptionId = $subscriptionId;
+                        }
+                        $ste->concept = $concept;
+                        $ste->save(); 
+                    }
+                    else if ( $publish )
+                    {
+                        throw new Exception( _M('Todos os campos de avaliação devem estar preenchidos.', $module) );
+                    }
+                }
+            }
+
+            SDatabase::commit();
+
+            $this->AddInfo( _M('Avaliação salva com sucesso.', $module) );
+        }
+        catch (Exception $e)
+        {
+            $this->AddError($e->getMessage());
+        }
+    }
+
+
+    /**
+     * Exibe o conceito equivalente para o usuario
+     *
+     * @param stdClass $args
+     * @return MLabel
+     */
+    public function showConcept($args)
+    {
+        $filters = new stdClass();
+        $filters->betweenBound = $args->degree;
+        $rows = TraConcept::search($filters);
+
+        if ( count($rows) > 0 )
+        {
+            $row = current($rows);
+            $line = _M('Conceito equivalente: @1', $module, $row->concept);
+        }
+        else
+        {
+            $line = _M('Nenhum conceito equivalente encontrado.', $module);
+        }
+
+        $value = new MLabel( $line );
+
+        return $value;
+    }
+
+
+    public function btnSaveAndPublish_click($sender)
+    {        
+        $args =  new stdClass();
+        $args->publish = true;
+        $this->btnSave_click($sender, $args);
+    }
+    
+    public function tbBtnPrint_click($sender)
+    {        
+        $args =  new stdClass();
+        
+        $this->btnSave_click($sender, $args);
+        
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();                
+        $subscriptionId = MIOLO::_REQUEST('subscriptionId');
+        $subscriptionTeamId = MIOLO::_REQUEST('subscriptionTeamId');
+        
+        //
+        $rep = new SReport();
+        $rep->setModule('training');
+        $rep->setReportName('trainingEvaluation');
+        $rep->setParameter('subscriptionid', (int) $subscriptionId);
+        $rep->setParameter('subscriptionteamid', (int) $subscriptionTeamId);
+        $rep->generate();
+    }
+       
+    
+    public function tbBtnDelete_click($sender = NULL, $opts)
+    {
+        $this->pkey = array('subscriptionId', 'subscriptionTeamId');
+        $opts['function'] = '';
+        
+        parent::tbBtnDelete_click($sender, $opts);
+    }
+    
+    /**
+     * Apaga avaliacoes
+     * 
+     * @param stdClass $sender
+     * @param boolean $success 
+     */
+    public function tbBtnDelete_confirm($sender = NULL, $success)
+    {
+        $subscriptionId = MIOLO::_REQUEST('subscriptionId');
+        $subscriptionTeamId = MIOLO::_REQUEST('subscriptionTeamId');
+        
+        $opts = array(
+            'subscriptionId' => $subscriptionId,
+            'subscriptionTeamId' => $subscriptionTeamId);
+        
+        $ok = true;
+        foreach ( $opts as $key => $val )
+        {
+            if ( strlen($val) > 0 )
+            {
+                //Remove todas avaliacoes, caso existam
+                $filters = new stdClass();
+                $filters->$key = $val;
+                $rows = TraSubscriptionTeamEvaluation::search($filters);
+                foreach ( (array) $rows as $row )
+                {
+                    $row->delete();
+                }
+                
+                // Limpa campos no objeto
+                $object = ( $key == 'subscriptionTeamId' ) ? new TraSubscriptionTeam($subscriptionTeamId) : new TraSubscription($subscriptionId);
+                $object->degree = null;
+                $object->frequency = null;
+                $object->evaluationComments = null;
+                $object->trainingEnded = DB_FALSE;
+                $ok = $object->save();
+            }
+        }
+        
+        parent::tbBtnDelete_confirm($sender, $ok, $opts);
+    }
+}
+?>

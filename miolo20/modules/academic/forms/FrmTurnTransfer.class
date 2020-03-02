@@ -1,0 +1,477 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulário pai do passo a passo TurnTransfer (transferencia de turno)
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 02/09/2011
+ *
+ **/
+class FrmTurnTransfer extends SStepByStepForm
+{
+    protected $turnTransfer;
+    
+    protected $busCourseOccurrence;
+    protected $busContract;
+    protected $busCurriculum;
+    protected $busClassPupil;
+    protected $busDegree;
+    protected $busDegreeEnroll;
+    protected $busEntry;
+    protected $busEnroll;
+    protected $busEnrollStatus;
+    protected $busFrequenceEnroll;
+    protected $busGroup;
+    protected $busClass;
+    protected $busInvoice;
+    protected $busLearningPeriod;
+    protected $busMovementContract;
+    protected $busMovementContractComplement;
+    protected $busReceivableInvoicePupil;
+    protected $busSchedule;
+    
+    
+    public function  __construct($steps, $formName)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $this->turnTransfer = (array) $MIOLO->session->get('turnTransfer');
+        
+        $dbases = array();
+        $dbases[] = $this->busCourseOccurrence = new BusinessAcademicBusCourseOccurrence();
+        $dbases[] = $this->busContract = new BusinessAcademicBusContract();
+        $dbases[] = $this->busCurriculum = new BusinessAcademicBusCurriculum();
+        $dbases[] = $this->busClass = new BusinessAcademicBusClass();
+        $dbases[] = $this->busClassPupil = new BusinessAcademicBusClassPupil();
+        $dbases[] = $this->busDegree = new BusinessAcademicBusDegree();
+        $dbases[] = $this->busDegreeEnroll = new BusinessAcademicBusDegreeEnroll();
+        $dbases[] = $this->busEntry = new BusinessFinanceBusEntry();
+        $dbases[] = $this->busEnroll = new BusinessAcademicBusEnroll();
+        $dbases[] = $this->busEnrollStatus = new BusinessAcademicBusEnrollStatus();
+        $dbases[] = $this->busFrequenceEnroll = new BusinessAcademicBusFrequenceEnroll();
+        $dbases[] = $this->busGroup = new BusinessAcademicBusGroup();
+        $dbases[] = $this->busInvoice = new BusinessFinanceBusInvoice();
+        $dbases[] = $this->busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $dbases[] = $this->busMovementContract = new BusinessAcademicBusMovementContract();
+        $dbases[] = $this->busMovementContractComplement = new BusinessAcademicBusMovementContractComplement();
+        $dbases[] = $this->busSchedule = new BusinessAcademicBusSchedule();
+        $dbases[] = $this->busReceivableInvoicePupil = new BusinessFinanceBusReceivableInvoicePupil();
+
+        parent::__construct(null, $steps, $formName);
+        
+        $this->toolbar->disableButton( MToolBar::BUTTON_SAVE );
+        $this->toolbar->disableButton( MToolBar::BUTTON_SEARCH );
+    }
+
+
+    /**
+     * Executa o processo de transferencia de turno, podendo finalizar ou nao.
+     *
+     * @param stdClass $args
+     * @param boolean $finalize
+     */
+    public function executeProcess($args, $finalize = false)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $stepData = (object) array_merge((array)$this->getStepData(), (array)$this->getData());
+        $newTurnId = $stepData->destinationTurnId;
+
+        $tableModificacoesDisciplinas = array();
+        $tableTitulosTransferir = array();
+        $turnTransferData = array();
+
+        try
+        {
+            SDatabase::beginTransaction();
+
+            $contract = $this->busContract->getContract($stepData->contractId);
+
+            $this->setFormValue('oldTurnId', $contract->turnId);
+            $this->setFormValue('_unitId', $contract->unitId);
+
+            if ( $contract->turnId == $newTurnId )
+            {
+                throw new Exception( _M('O turno selecionado é o mesmo do turno atual do contrato.', $module) );
+            }
+
+            // Busca por ocorrencia de curso com turno selecionado
+            $filters = new stdClass();
+            $filters->courseId = $contract->courseId;
+            $filters->courseVersion = $contract->courseVersion;
+            $filters->unitId = $contract->unitId;
+            $filters->turnId = $newTurnId;
+            $filters->periodId = $stepData->periodId;
+            $rows = $this->busCourseOccurrence->searchCourseOccurrence($filters, true);
+            $newLearningPeriod = $this->busLearningPeriod->searchLearningPeriod($filters); // Novo learningPeriod
+            
+            $newLearningPeriodId = $newLearningPeriod[0][0];
+            
+            if ( strlen($newLearningPeriodId) <= 0 )
+            {
+                throw new Exception( _M('Não foi encontrado um período letivo equivalente com o novo turno selecionado.', $module) );
+            }            
+            $objNewLearningPeriod = $this->busLearningPeriod->getLearningPeriod($newLearningPeriodId);
+            // Busca pelo periodo letivo antigo
+            $oldTurnId = $contract->turnId;
+            $filters->turnId = $contract->turnId;
+            $oldLearningPeriod = $this->busLearningPeriod->searchLearningPeriod($filters); // Antigo learningPeriod
+            $oldLearningPeriodId = $oldLearningPeriod[0][0];
+            $objOldLearningPeriod = $this->busLearningPeriod->getLearningPeriod($oldLearningPeriodId);
+
+            if ( count($rows) <= 0 )
+            {
+                throw new Exception( _M('Nenhuma ocorrência de curso encontrada para o turno selecionado.', $module) );
+            }
+
+            
+            // Atualiza o turno do contrato para o selecionado na interface
+            $contract->turnId = $newTurnId;
+            $ok = $this->busContract->updateContract($contract);            
+
+            // Busca enrolls (matriculas)
+            $filters = new stdClass();
+            $filters->contractId = $contract->contractId;
+            $enrolls = $this->busEnroll->searchEnroll($filters);
+            $turnTransferData['learningPeriods'] = array();
+            $turnTransferData['frequencies'] = array();
+
+            foreach ( (array)$enrolls as $e )
+            {
+                $situacao = null;
+                $enroll = $this->busEnroll->getEnroll($e[0]);
+                $group = $this->busGroup->getGroup($enroll->groupId);
+                $learningPeriod = $this->busLearningPeriod->getLearningPeriod($group->learningPeriodId);
+
+                // Quando estado da matricula for MATRICULADO, realiza comportamentos extras (transferencia das notas (acdDegreeEnroll))
+                if ( $enroll->statusId == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') )
+                {
+                    // Busca o learningPeriod de destino
+                    $filters = new stdClass();
+                    $filters->courseId = $learningPeriod->courseId;
+                    $filters->courseVersion = $learningPeriod->courseVersion;
+                    $filters->turnId = $newTurnId;
+                    $filters->unitId = $learningPeriod->unitId;
+                    $filters->periodId = $stepData->periodId;
+                    $rows = $this->busLearningPeriod->searchLearningPeriod($filters);
+                    $_newLearningPeriodId = $rows[0][0];
+
+                    if ( strlen($_newLearningPeriodId) <= 0 )
+                    {
+                        throw new Exception( _M('Não foi encontrado um período letivo equivalente para "@1"', $module, $learningPeriod->description) );
+                    }
+                    
+                    $learningPeriodNew = $this->busLearningPeriod->getLearningPeriod($_newLearningPeriodId);
+
+                    $objLearningPeriod = new stdClass();
+                    $objLearningPeriod->learningPeriodIdOld = $group->learningPeriodId;
+                    $objLearningPeriod->learningPeriodIdNew = $_newLearningPeriodId;
+
+                    // Busca pelos degree's antigos
+                    $filters = new stdClass();
+                    $filters->learningPeriodId = $objLearningPeriod->learningPeriodIdOld;
+                    $objLearningPeriod->degreesOld = (array) $this->busDegree->searchDegree($filters);
+
+                    // Busca pelos degree's novos
+                    $filters = new stdClass();
+                    $filters->learningPeriodId = $objLearningPeriod->learningPeriodIdNew;
+                    $objLearningPeriod->degreesNew = (array) $this->busDegree->searchDegree($filters);
+
+                    // Se quantidade de avaliacoes for diferente, aborta processo
+                    if ( count($objLearningPeriod->degreesOld) != count($objLearningPeriod->degreesNew) )
+                    {
+                        throw new Exception( _M('O número de notas equivalentes para o período letivo "@1" não é igual ao do período letivo "@2"', $module, $learningPeriod->description, $learningPeriodNew->description) );
+                    }
+                    
+                    //
+                    // Frequencias
+                    //
+                    // Busca o curriculumId de destino
+                    $curriculum = $this->busCurriculum->getCurriculum($group->curriculumId);
+                    $filters = new stdClass();
+                    $filters->courseId = $curriculum->courseId;
+                    $filters->courseVersion = $curriculum->courseVersion;
+                    $filters->turnId = $newTurnId;
+                    $filters->unitId = $curriculum->unitId;
+                    $filters->curricularComponentId = $curriculum->curricularComponentId;
+                    $filters->curricularComponentVersion = $curriculum->curricularComponentVersion;
+                    $newCurriculums = $this->busCurriculum->searchCurriculumComponentObject($filters);
+                    $curriculumIdNew = $newCurriculums[0]->curriculumId;
+                    if ( count($curriculumIdNew) <= 0 )
+                    {
+                        throw new Exception( _M('Não foi encontrado uma disciplina equivalente para "@1"', $module, $curriculum->curricularComponentName) );
+                    }
+                    
+                    // Busca novo groupId para atualizar na acdEnroll
+                    $filters = new stdClass();
+                    $filters->learningPeriodId = $newLearningPeriodId;
+                    $filters->curriculumId = $curriculumIdNew;
+                    $findGroup = $this->busGroup->searchGroup($filters);
+                    $groupIdNew = $findGroup[0][0];
+                    if ( strlen($groupIdNew) <= 0 )
+                    {
+                        throw new Exception( _M('Não foi encontrado uma disciplina oferecida equivalente para disciplina "@1" do período letivo "@2"', $module, $curriculum->curricularComponentName, $learningPeriod->description) );
+                    }
+                    //Altera o groupId
+                    $enroll->groupId = $groupIdNew;
+                    
+                    // Add in frequencies list
+                    $objFrequencies = new stdClass();
+                    $objFrequencies->sumWorkLoad = $this->busFrequenceEnroll->getSumWorkLoad($enroll->enrollId, $group->groupId);
+                    if ( $objFrequencies->sumWorkLoad > 0 )
+                    {
+                        $objFrequencies->curriculumIdOld = $curriculum->curriculumId;
+                        $objFrequencies->curriculumIdNew = $curriculumIdNew;
+                        $objFrequencies->groupIdOld = $group->groupId;
+                        $objFrequencies->groupIdNew = $groupIdNew;
+                        $objFrequencies->enrollId = $enroll->enrollId;
+                        $turnTransferData['frequencies'][] = $objFrequencies;
+                    }
+                    
+                    // Add learningPeriodId in list
+                    if ( !in_array($group->learningPeriodId, $turnTransferData['learningPeriods']) )
+                    {
+                        $turnTransferData['learningPeriods'][] = $objLearningPeriod;
+                    }
+                    
+                    if ( $finalize )
+                    {
+                        // Salva dados na acdDegreeEnroll
+                        // Substitui todos degreeId antigos pelos novos equivalentes selecionados na interface
+                        $degreesChanged = (array) $MIOLO->session->get('degreesChanged');
+                        $degrees = (array) $degreesChanged[$group->learningPeriodId];
+                        foreach ( $degrees as $degreeIdOld => $degreeIdNew )
+                        {
+                            $filters = new stdClass();
+                            $filters->enrollId = $enroll->enrollId;
+                            $filters->degreeId = $degreeIdOld;
+                            $degreeEnrolls = (array) $this->busDegreeEnroll->searchDegreeEnroll($filters);
+                            $degreeEnrollId = $degreeEnrolls[0][0];
+                            if ( strlen($degreeEnrollId) > 0 )
+                            {
+                                $degreeEnroll = $this->busDegreeEnroll->getDegreeEnroll($degreeEnrollId);
+                                $this->busDegreeEnroll->deleteDegreeEnroll( $degreeEnroll->degreeEnrollId );
+                                
+                                $degreeEnroll->degreeId = $degreeIdNew;
+                                $this->busDegreeEnroll->insertDegreeEnroll( $degreeEnroll );
+                            }
+                        }
+                    }
+                }
+
+                //
+                if ( strlen($enroll->curriculumId) > 0 )
+                {
+                    $curriculum = $this->busCurriculum->getCurriculum($enroll->curriculumId);
+
+                    $filters = new stdClass();
+                    $filters->courseId = $curriculum->courseId;
+                    $filters->courseVersion = $curriculum->courseVersion;
+                    $filters->turnId = $newTurnId;
+                    $filters->unitId = $curriculum->unitId;
+                    $filters->curricularComponentId = $curriculum->curricularComponentId;
+                    $filters->curricularComponentVersion = $curriculum->curricularComponentVersion;
+                    $rows = $this->busCurriculum->searchCurriculum($filters);
+
+                    if ( count($rows) > 0 )
+                    {
+                        $enroll->curriculumId = $rows[0][0];
+                        $this->busEnroll->updateEnroll($enroll);
+                        $situacao = _M('Transferência OK.', $module);
+                    }
+                    else
+                    {
+                        $situacao = _M('Disciplina equivalente não encontrada.', $module);
+                    }
+
+                    $status = $this->busEnrollStatus->getEnrollStatus($enroll->statusId);
+                    $class = $this->busClass->getClass($group->classId);
+                    $tableModificacoesDisciplinas[] = array(
+                        $learningPeriod->periodId,
+                        $class->classId . ' - ' . $class->className_,
+                        $learningPeriod->minimumFrequency . 'H',
+                        $status->description,
+                        $situacao);
+                }
+            }
+
+            // Salva dados de frequencias (acdFrequenceEnroll)
+            // Percorre as frequencias antigas em ordem ascendente, e insere novas frequencias até fechar a carga horaria digitada pelo usuário na interface
+            if ( $finalize )
+            {
+                foreach ( $this->turnTransfer['frequencies'] as $key => $row )
+                {
+                    $curriculumOld = $this->busCurriculum->getCurriculum($row->curriculumIdOld);
+                    $curriculumNew = $this->busCurriculum->getCurriculum($row->curriculumIdNew);
+
+                    $filters = new stdClass();
+                    $filters->groupId = $row->groupIdOld;
+                    $filters->enrollId = $row->enrollId;
+                    $rows = $this->busFrequenceEnroll->searchFrequenceEnrollObject($filters);
+
+                    $newWorkLoad = $row->newWorkLoad;
+                    if ( ( strlen($newWorkLoad) > 0 ) && ( count($rows) > 0 ) )
+                    {
+                        foreach ( (array) $rows as $_row )
+                        {
+                            $_newWorkLoad = SAGU::calcNumber("$newWorkLoad - {$_row->timeHours}", true);
+                            $newWorkLoad = $_newWorkLoad;
+                            
+                            if ( $_newWorkLoad >= 0 ) // Caso em que ainda nao terminou de encaixar as novas frequencias
+                            {
+                                // Busca o scheduleId de destino
+                                $filters = new stdClass();
+                                $filters->groupId = $row->groupIdNew;
+                                $schedules = $this->busSchedule->searchSchedule($filters);
+                                $scheduleId = $schedules[0][0];
+
+                                if ( strlen($scheduleId) <= 0 )
+                                {
+                                    throw new Exception( _M('Não foi possível encontrar uma horário programado para a disciplina "@1"', $module, $curriculumNew->curricularComponentName) );
+                                }
+
+                                $_row->scheduleId = $scheduleId;
+                                $_row->reasonCancellation = _M('Esta frequência é relativa à disciplina anterior que foi transferida (@1)', $module, $curriculumOld->curricularComponentName);
+                                $this->busFrequenceEnroll->insertFrequenceEnroll($_row);
+                            }
+                            else
+                            {
+                                break;
+                            }                            
+                        }
+
+                        if ( round($newWorkLoad) != 0 ) // Quando nao foi possivel encaixar corretamente as novas frequencias
+                        {
+                            throw new Exception( _M('Não foi possível encaixar corretamente a nova C.H. a utilizar para a disciplina de destino "@1"', $module, $curriculumNew->curricularComponentName) );
+                        }
+                    }
+                }
+            }
+
+            // Insere complemento de movimentacao de contrato
+            // Busca ultima movimentacao do contrato
+            $lastMovement = $this->busMovementContract->getLastMovementContract($stepData->contractId);
+            if ( strlen($lastMovement->stateContractId) > 0 )
+            {
+                $filters = new stdClass();
+                $filters->contractId = $stepData->contractId;
+                $filters->stateContractId = $lastMovement->stateContractId;
+                $filters->stateTime = $lastMovement->stateTime;
+                $rows = $this->busMovementContractComplement->searchMovementContractComplement($filters);
+
+                if ( count($rows) <= 0 )
+                {
+                    $movementContract = new AcdMovementContractComplement();
+                    $movementContract->contractId = $stepData->contractId;
+                    $movementContract->stateContractId = $lastMovement->stateContractId;
+                    $movementContract->stateTime = $lastMovement->stateTime;
+                    $movementContract->stateContractFieldId = SAGU::getParameter('BASIC', 'STATE_CONTRACT_FIELD_ID_TURN_TRANSFER');
+                    $movementContract->value = _M('Transferência de turno', $module);
+                    $this->busMovementContractComplement->insertMovementContractComplement($movementContract);
+                }
+            }
+
+            if ( $finalize )
+            {
+                // Atualiza a turma (classId)
+                if ( strlen($stepData->classId) > 0 )
+                {
+                    // Encerra a turma atual
+                    $filters = new stdClass();
+                    $filters->contractId = $contract->contractId;
+                    $filters->classId = $stepData->classId;
+                    $findClass = $this->busClassPupil->searchClassPupil($filters, true);
+                    foreach ( (array) $findClass as $row )
+                    {
+                        if ( strlen($row->classPupilEndDate) <= 0 )
+                        {
+                            $row->beginDate = $row->classPupilBeginDate;
+                            $row->endDate = SAGU::getDateNow();
+                            $ok = $this->busClassPupil->updateClassPupil($row);
+                        }
+                    }
+
+                    // Insere na classPupil
+                    $dataClassPupil = new stdClass();
+                    $dataClassPupil->contractId = $contract->contractId;
+                    $dataClassPupil->beginDate = SAGU::getDateNow();
+                    $dataClassPupil->classId = $stepData->destinationClassId;
+                    $okClassPupil = $this->busClassPupil->insertClassPupil($dataClassPupil);
+                }
+            }
+
+            // Titulos somente se o módulo financeiro está abilidato e o período letigo gera financeiro
+            
+            // Executa processo de transferencia de titulos
+            // Executa apenas se modulo financeiro estiver ativado e periodos letivos gerarem financeiro
+            if ( ( SAGU::getParameter('BASIC', 'MODULE_FINANCE_INSTALLED') == 'YES' ) && ( $objNewLearningPeriod->isFinanceGenerate == DB_TRUE ) && ( $objOldLearningPeriod->isFinanceGenerate == DB_TRUE ) )
+            {
+                $transfer = $this->busReceivableInvoicePupil->transferInvoice($contract->contractId, $oldLearningPeriodId, $newLearningPeriodId, $stepData->destinationClassId);
+                foreach ( (array) $transfer as $transf )
+                {
+                    $tableTitulosTransferir[] = array($transf->entryId, $transf->maturityDate, $transf->entryValue);
+                }
+            }
+
+            $MIOLO->session->set('tableModificacoesDisciplinas', $tableModificacoesDisciplinas);
+            $MIOLO->session->set('tableTitulosTransferir', $tableTitulosTransferir);
+            $MIOLO->session->set('turnTransfer', $turnTransferData);
+            
+            if ( $finalize )
+            {
+                SDatabase::commit();
+                $goto = $MIOLO->getActionURL($module, $action);
+                SAGU::information( _M('Processo executado com sucesso.', $module), $goto );
+            }
+            else
+            {
+                SDatabase::rollback();
+                
+                // Por algum motivo não volta ao normal o turno.
+                $contract->turnId = $oldTurnId;
+                $this->busContract->updateContract($contract);
+                
+                if ( $this->isLastStep() )
+                {
+                    throw new Exception( _M('Erro ao finalizar processo.', $module) );
+                }
+                else
+                {
+                    parent::nextStepButton_click($args);
+                }
+            }
+        }
+        catch (Exception $e)
+        {
+            SDatabase::rollback();
+            $this->addError($e->getMessage());
+        }
+    }
+}
+?>

@@ -1,0 +1,231 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2013 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * @author Bruno Edgar Fuhr [bruno@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Bruno Edgar Fuhr [bruno@solis.com.br]
+ *
+ * @since
+ * Class created on 25/09/2013
+ *
+ **/
+
+$MIOLO->uses('classes/xmlUrania.class', 'academic');
+
+class FrmImportacaoUrania extends SForm
+{
+    
+    public function __construct()
+    {
+        parent::__construct(_M('Importar dados do Urânia'));
+    }
+    
+    public function defineFields()
+    {        
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        
+        if ( !($_REQUEST['__EVENTTARGETVALUE'] == 'btnConfirmar:click') )
+        {
+            $hint = '<b>
+                Para a importação ocorrer corretamente, é necessário que os códigos externos de <br>
+                disciplinas, turmas e professores do Urânia sejam equivalentes aos códigos do SAGU.
+            </b><br>';
+            
+            $this->addInfo($hint);
+        }
+        
+        if ( $_REQUEST['__EVENTTARGETVALUE'] == 'btnUpload:click' )
+        {
+            $fields[] = new SHiddenField('periodId', $this->getFormValue('periodId'));
+            $fields[] = new SHiddenField('courseId', $this->getFormValue('courseId'));
+            $fields[] = new SHiddenField('courseVersion', $this->getFormValue('courseVersion'));
+            $fields[] = new SHiddenField('turnId', $this->getFormValue('turnId'));
+            $fields[] = new SHiddenField('unitId', $this->getFormValue('unitId'));
+            
+            $btns[] = new MButton('btnCancelar', _M('Cancelar importação', $module));
+            $btns[] = new MButton('btnConfirmar', _M('Confirmar importação', $module));
+            $fields[] = new MHContainer('divBtns', $btns);
+        }
+        else
+        {
+            // Field period
+            $busPeriod = new BusinessAcademicBusPeriod();
+            $periodId = new MComboBox('periodId', $this->getFormValue('periodId', SAGU::getParameter('BASIC', 'CURRENT_PERIOD_ID')), _M('Período', $module), $busPeriod->listPeriod(), true );
+            $validators[] = new MRequiredValidator('periodId', _M('Período', $module));
+            $periodId->setJsHint(_M('Selecione um período', $module));
+            $fields[] = $periodId;
+
+            $courseOccurrenceLookup = new SCourseOccurrenceLookup(null, true, null);
+            $validators[] = new MRequiredValidator('courseId', _M('Curso', $module));
+            $validators[] = new MIntegerValidator('courseVersion', _M('Versão do curso', $module));
+            $validators[] = new MIntegerValidator('turnId', _M('Turno', $module));
+            $validators[] = new MIntegerValidator('unitId', _M('Unidade', $module));
+            $fields[] = $courseOccurrenceLookup;
+
+            $fields[] = new MFileField('uploadXML', '', _M('Selecionar arquivo XML',$module), 40);
+            $validators[] = new MRequiredValidator('uploadXML');
+
+            $fields[] = new MSeparator('<br>');
+            $fields[] = new MButton('btnUpload', _M('Importar dados do arquivo do Urânia', $module));
+        }
+                
+        $this->setFields($fields);
+        $this->setValidators($validators);
+    }
+    
+    public function btnUpload_click()
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $args = (object) $_REQUEST;
+        $resultadoParcial = FALSE;
+        
+        if ( !($_FILES['uploadXML']['type'] == 'text/xml') )
+        {
+            $this->addAlert(_M('O arquivo importado deve ser do tipo \'.xml\''));
+        }
+        else
+        {            
+            try
+            {
+                $busFile = new BusinessBasicBusFile();                
+                $busUrania = new BusinessAcademicBusUrania();
+                
+                $fileId = $busFile->insertFileSimple($_FILES['uploadXML']['tmp_name']);
+                $xmlUrania = new xmlUrania(file_get_contents($_FILES['uploadXML']['tmp_name']));
+                
+                $resultadoParcial = $busUrania->importarDados($args->periodId, $args->courseId, $args->courseVersion, $args->turnId, $args->unitId, $xmlUrania, false);
+                
+                if ( count($resultadoParcial->groupIds) > 0 )
+                {
+                    $disciplinasColunas = array('Curso', 'Disciplina');
+
+                    $tableOk = new MTableRaw('Disciplinas que serão inseridas', $resultadoParcial->disciplinasInfo, $disciplinasColunas);
+                    $this->addField($tableOk);
+                }
+                
+                if ( count($resultadoParcial->groupIdsFail) > 0 )
+                {
+                    foreach ( $resultadoParcial->groupIdsFail as $groupIdFail )
+                    {
+                        $disciplinasFail[] = $groupIdFail;
+                    }
+                    
+                    $tableFail = new MTableRaw('Disciplinas com problema que não serão inseridas', $disciplinasFail);
+                    $this->addField($tableFail);
+                }
+                
+                if ( count($xmlUrania->getDisciplinasNaoEncontradas()) > 0 )
+                {
+                    $tableDisciplinas = new MTableRaw('Disciplinas não encontradas no SAGU.', $xmlUrania->getDisciplinasNaoEncontradas());
+                    $this->addField($tableDisciplinas);
+                }
+                
+                if ( count($xmlUrania->getTurmasNaoEncontradas()) > 0 )
+                {
+                    $tableTurmas = new MTableRaw('Turmas não encontradas no SAGU.', $xmlUrania->getTurmasNaoEncontradas());
+                    $this->addField($tableTurmas);
+                }
+                
+                if ( count($resultadoParcial->professorFail) > 0 )
+                {
+                    foreach($resultadoParcial->professorFail as $professorFail)
+                    {
+                        $professores[] = $professorFail;
+                    }
+                    
+                    $tableProfessores = new MTableRaw('Código de professores no Urânia não encontrados no SAGU.', $professores);
+                    $this->addField($tableProfessores);
+                }
+            }
+            catch (Exception $e)
+            {
+                $this->addError($e->getMessage());
+            }
+        }
+        
+        $this->addField(new SHiddenField('fileId', $fileId));
+        
+        if ( $resultadoParcial )
+        {
+            $btns[] = new MButton('btnCancelar', _M('Cancelar importação', $module));
+            $btns[] = new MButton('btnConfirmar', _M('Confirmar importação', $module));
+            $this->addField(new MHContainer('divBtns', $btns));
+        }
+    }
+    
+    public function btnConfirmar_click()
+    {
+        $args = (object) $_REQUEST;
+        
+        try
+        {
+            $busFile = new BusinessBasicBusFile();                
+            $busUrania = new BusinessAcademicBusUrania();
+            $busGroup = new BusinessAcademicBusGroup();
+
+            $file = $busFile->getFile($args->fileId);
+            $xmlUrania = new xmlUrania(file_get_contents($file->filePath . $args->fileId));
+
+            $resultado = $busUrania->importarDados($args->periodId, $args->courseId, $args->courseVersion, $args->turnId, $args->unitId, $xmlUrania);
+
+            if ( count($resultado->groupIds) > 0 )
+            {
+                $msg = 'Dados importados com sucesso.<br>Disciplinas inseridas:<br>';
+
+                foreach ( $resultado->groupIds as $groupId )
+                {
+                    $group = $busGroup->getGroup($groupId);
+                    $msg .= $group->curriculumCurricularComponentName . '<br>';
+                }
+
+                $this->addInfo($msg);
+            }
+            else
+            {
+                $this->addInfo('Nenhuma disciplina importada.');
+            }
+        }
+        catch(Exception $e)
+        {
+            $this->addError($e->getMessage());
+        }
+    }
+    
+    public function btnCancelar_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $url = $MIOLO->GetActionURL($module, 'main:process:importacaoUrania');
+        
+        $this->page->redirect($url);
+    }
+    
+}
+?>

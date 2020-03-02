@@ -1,0 +1,532 @@
+<?php
+
+$MIOLO->uses('classes/cielo/FinCielo.class', 'finance');
+$MIOLO->uses('classes/cielo/FinCieloConfiguracao.class', 'finance');
+$MIOLO->uses('classes/cielo/FinCieloErro.class', 'finance');
+
+class FinCieloPedido
+{    
+    private $cielo;
+    
+    public $dadosEcNumero;
+    public $dadosEcChave;
+    
+    public $dadosPortadorNumero;
+    public $dadosPortadorVal;
+    public $dadosPortadorInd;
+    public $dadosPortadorCodSeg;
+    public $dadosPortadorNome;
+
+    public $dadosPedidoNumero;
+    public $dadosPedidoValor;
+    public $dadosPedidoMoeda = '986';
+    public $dadosPedidoData;
+    public $dadosPedidoDescricao;
+    public $dadosPedidoIdioma = 'PT';
+
+    public $formaPagamentoBandeira;
+    public $formaPagamentoProduto;
+    public $formaPagamentoParcelas;
+
+    public $urlRetorno;
+    public $autorizar = FinCieloConfiguracao::INDICADOR_AUTORIZAR_DIRETO;
+    public $capturar = 'false';
+
+    public $tid;
+    public $pan;
+    public $status;
+    public $urlAutenticacao;
+    
+    public $efetuadoPorPinPad = FALSE;
+    
+    public $erro;
+    
+    const STATUS_AUTORIZADO = 4;
+    const STATUS_CAPTURADO = 6;
+    const STATUS_CANCELADO = 9;
+    
+    public function __construct($sessionId = NULL)
+    {
+        $this->cielo = new FinCielo($sessionId);
+        
+        if ( $sessionId )
+        {
+            $pedido = $this->cielo->getSessionValue();
+            if ( $pedido->count() > 0 )
+            {
+                $this->fromString($pedido[0]);
+            }
+        }
+        
+        $this->urlRetorno = $this->cielo->returnURL();
+    }
+    
+    // Geradores de XML
+    private function XMLHeader()
+    {
+        return '<?xml version="1.0" encoding="' . FinCielo::ENCODING . '" ?>'; 
+    }
+
+    private function XMLDadosEc()
+    {
+        if ( !$this->dadosEcNumero )
+        {
+            $this->dadosEcNumero = $this->cielo->getLoja();
+        }
+        
+        if ( !$this->dadosEcChave )
+        {
+            $this->dadosEcChave = $this->cielo->getLojaChave();
+        }
+        
+        $msg = '<dados-ec>' . "\n      " .
+                    '<numero>'
+                            . $this->dadosEcNumero . 
+                    '</numero>' . "\n      " .
+                    '<chave>'
+                            . $this->dadosEcChave .
+                    '</chave>' . "\n   " .
+                '</dados-ec>';
+
+        return $msg;
+    }
+
+    private function XMLDadosPortador()
+    {
+        $msg = '<dados-portador>' . "\n      " . 
+                    '<numero>' 
+                            . $this->dadosPortadorNumero .
+                    '</numero>' . "\n      " .
+                    '<validade>'
+                            . $this->dadosPortadorVal .
+                    '</validade>' . "\n      " .
+                    '<indicador>'
+                            . $this->dadosPortadorInd .
+                    '</indicador>' . "\n      " .
+                    '<codigo-seguranca>'
+                            . $this->dadosPortadorCodSeg .
+                    '</codigo-seguranca>' . "\n   ";
+
+        // Verifica se Nome do Portador foi informado
+        if($this->dadosPortadorNome != null && $this->dadosPortadorNome != "")
+        {
+            $msg .= '   <nome-portador>' . $this->dadosPortadorNome . '</nome-portador>' . "\n   " ;
+        }
+
+        $msg .= '</dados-portador>';
+
+        return $msg;
+    }
+
+    private function XMLDadosCartao()
+    {
+        $msg = '<dados-cartao>' . "\n      " . 
+                    '<numero>' 
+                            . $this->dadosPortadorNumero .
+                    '</numero>' . "\n      " .
+                    '<validade>'
+                            . $this->dadosPortadorVal .
+                    '</validade>' . "\n      " .
+                    '<indicador>'
+                            . $this->dadosPortadorInd .
+                    '</indicador>' . "\n      " .
+                    '<codigo-seguranca>'
+                            . $this->dadosPortadorCodSeg .
+                    '</codigo-seguranca>' . "\n   ";
+
+        // Verifica se Nome do Portador foi informado				
+        if($this->dadosPortadorNome != null && $this->dadosPortadorNome != "")
+        {
+            $msg .= '   <nome-portador>' . $this->dadosPortadorNome . '</nome-portador>' . "\n   " ;
+        }
+
+        $msg .= '</dados-cartao>';
+
+        return $msg;
+    }
+
+    private function XMLDadosPedido()
+    {
+        $this->dadosPedidoData = date("Y-m-d") . "T" . date("H:i:s");
+        $msg = '<dados-pedido>' . "\n      " .
+                    '<numero>'
+                            . $this->dadosPedidoNumero . 
+                    '</numero>' . "\n      " .
+                    '<valor>'
+                            . $this->dadosPedidoValor .
+                    '</valor>' . "\n      " .
+                    '<moeda>'
+                            . $this->dadosPedidoMoeda .
+                    '</moeda>' . "\n      " .
+                    '<data-hora>'
+                            . $this->dadosPedidoData .
+                    '</data-hora>' . "\n      ";
+        if($this->dadosPedidoDescricao != null && $this->dadosPedidoDescricao != "")
+        {
+            $msg .= '<descricao>'. $this->dadosPedidoDescricao . '</descricao>' . "\n      ";
+        }
+
+        $msg .= '<idioma>' . $this->dadosPedidoIdioma . '</idioma>' . "\n   " . '</dados-pedido>';
+
+        return $msg;
+    }
+
+    private function XMLFormaPagamento()
+    {
+        
+        if ( !$this->formaPagamentoProduto )
+        {
+            if ( $this->formaPagamentoParcelas > 1 )
+            {
+                $this->formaPagamentoProduto = FinCieloConfiguracao::TIPO_PARCELAMENTO_LOJA;
+            }
+            else
+            {
+                $this->formaPagamentoProduto = 1;
+            }
+        }
+        
+        $msg = '<forma-pagamento>' . "\n      " .
+                    '<bandeira>' 
+                            . $this->formaPagamentoBandeira .
+                    '</bandeira>' . "\n      " .
+                    '<produto>'
+                            . $this->formaPagamentoProduto .
+                    '</produto>' . "\n      " .
+                    '<parcelas>'
+                            . $this->formaPagamentoParcelas .
+                    '</parcelas>' . "\n   " .
+                '</forma-pagamento>';
+
+        return $msg;
+    }
+
+    private function XMLUrlRetorno()
+    {
+        $msg = '<url-retorno>' . $this->urlRetorno . '</url-retorno>';
+
+        return $msg;
+    }
+
+    private function XMLAutorizar()
+    {
+        $msg = '<autorizar>' . $this->autorizar . '</autorizar>';
+
+        return $msg;
+    }
+
+    private function XMLCapturar()
+    {        
+        $msg = '<capturar>' . $this->capturar . '</capturar>';
+
+        return $msg;
+    }
+    
+    // Envia Requisição
+    public function enviar($vmPost, $transacao)
+    {
+        // ENVIA REQUISIÇÃO SITE CIELO
+        $vmResposta = $this->cielo->httprequest($this->cielo->getEndereco(), "mensagem=" . $vmPost);
+
+        $this->erro = FinCieloErro::verificaErro($vmPost, $vmResposta);
+
+        return simplexml_load_string($vmResposta);
+    }
+
+    // Requisições
+    public function requisicaoTransacao($incluirPortador)
+    {
+        $msg = $this->XMLHeader() . "\n" .
+        '<requisicao-transacao id="' . md5(date("YmdHisu")) . '" versao="' . FinCielo::VERSAO . '">' . "\n   "
+        . $this->XMLDadosEc() . "\n   ";
+        
+        if($incluirPortador == true)
+        {
+            $msg .= $this->XMLDadosPortador() . "\n   ";
+        }
+        $msg .= $this->XMLDadosPedido() . "\n   "
+                . $this->XMLFormaPagamento() . "\n   "
+                . $this->XMLUrlRetorno() . "\n   "
+                . $this->XMLAutorizar() . "\n   "
+                . $this->XMLCapturar() . "\n" ;
+
+        $msg .= '</requisicao-transacao>';
+
+        $objResposta = $this->enviar($msg, "Transacao");
+        
+        return $objResposta;
+    }
+
+    public function requisicaoTid()
+    {
+        $msg = $this->XMLHeader() . "\n" .
+        '<requisicao-tid id="' . md5(date("YmdHisu")) . '" versao ="' . FinCielo::VERSAO . '">' . "\n   "
+             . $this->XMLDadosEc() . "\n   " 
+             . $this->XMLFormaPagamento() . "\n" .
+        '</requisicao-tid>';
+
+        $objResposta = $this->enviar($msg, "Requisicao Tid");
+
+        return $objResposta;
+    }
+
+    public function requisicaoAutorizacaoPortador()
+    {
+        $msg = $this->XMLHeader() . "\n" .
+        '<requisicao-autorizacao-portador id="' . md5(date("YmdHisu")) . '" versao ="' . FinCielo::VERSAO . '">' . "\n"
+        . '<tid>' . $this->tid . '</tid>' . "\n   "
+        . $this->XMLDadosEc() . "\n   " 
+        . $this->XMLDadosCartao() . "\n   "
+        . $this->XMLDadosPedido() . "\n   "
+        . $this->XMLFormaPagamento() . "\n   "
+        . '<capturar-automaticamente>' . $this->capturar . '</capturar-automaticamente>' . "\n" .
+        '</requisicao-autorizacao-portador>';
+
+        $objResposta = $this->enviar($msg, "Autorizacao Portador");
+
+        return $objResposta;
+    }
+
+    public function requisicaoAutorizacaoTid()
+    {
+        $msg = $this->XMLHeader() . "\n"
+        . '<requisicao-autorizacao-tid id="' . md5(date("YmdHisu")) . '" versao="' . FinCielo::VERSAO . '">' . "\n  "
+        . '<tid>' . $this->tid . '</tid>' . "\n  "
+        . $this->XMLDadosEc() . "\n" .
+        '</requisicao-autorizacao-tid>';
+
+        $objResposta = $this->enviar($msg, "Autorizacao Tid");
+        
+        return $objResposta;
+    }
+
+    public function requisicaoCaptura($percentualCaptura = NULL, $anexo = NULL)
+    {
+        if ( !$percentualCaptura )
+        {
+            $percentualCaptura = $this->dadosPedidoValor;
+        }
+        
+        $msg = $this->XMLHeader() . "\n"
+        . '<requisicao-captura id="' . md5(date("YmdHisu")) . '" versao="' . FinCielo::VERSAO . '">' . "\n   "
+        . '<tid>' . $this->tid . '</tid>' . "\n   "
+        . $this->XMLDadosEc() . "\n   "
+        . '<valor>' . $percentualCaptura . '</valor>' . "\n";
+        
+        if($anexo != null && $anexo != "")
+        {
+            $msg .= '   <anexo>' . $anexo . '</anexo>' . "\n";
+        }
+        
+        $msg .= '</requisicao-captura>';
+
+        $objResposta = $this->enviar($msg, "Captura");
+        
+        return $objResposta;
+    }
+
+    public function requisicaoCancelamento()
+    {
+        $msg = $this->XMLHeader() . "\n" . 
+        '<requisicao-cancelamento id="' . md5(date("YmdHisu")) . '" versao="' . FinCielo::VERSAO . '">' . "\n   "
+         . '<tid>' . $this->tid . '</tid>' . "\n   "
+         . $this->XMLDadosEc() . "\n" .
+        '</requisicao-cancelamento>';
+
+        $objResposta = $this->enviar($msg, "Cancelamento");
+        
+        return $objResposta;
+    }
+
+    public function requisicaoConsulta()
+    {
+        $msg = $this->XMLHeader() . "\n" .
+        '<requisicao-consulta id="' . md5(date("YmdHisu")) . '" versao="' . FinCielo::VERSAO . '">' . "\n   "
+         . '<tid>' . $this->tid . '</tid>' . "\n   "
+         . $this->XMLDadosEc() . "\n" .
+        '</requisicao-consulta>';
+
+        $objResposta = $this->enviar($msg, "Consulta");
+        
+        return $objResposta;
+    }
+
+
+    // Transforma em/lê string
+    public function toString()
+    {
+        if ( $this->efetuadoPorPinPad )
+        {
+            $msg = $this->XMLHeader()
+            . '<objeto-pedido>'
+            . '<tid>' . $this->tid . '</tid>'
+            . '<status>' . $this->status . '</status>'
+            . '<pinpad>true</pinpad>'
+            . '</objeto-pedido>';
+        }
+        else
+        {
+            $msg = $this->XMLHeader()
+            . '<objeto-pedido>'
+            . '<tid>' . $this->tid . '</tid>'
+            . '<status>' . $this->status . '</status>'
+            . $this->XMLDadosEc()
+            . $this->XMLDadosPedido()
+            . $this->XMLFormaPagamento()
+            . '</objeto-pedido>';
+        }
+
+        return $msg;
+    }
+
+    public function fromString($str)
+    {
+        $DadosEc = 'dados-ec';
+        $DadosPedido = 'dados-pedido';
+        $DataHora = 'data-hora';
+        $FormaPagamento = 'forma-pagamento';
+
+        $XML = simplexml_load_string($str);
+
+        $this->tid = $XML->tid;
+        $this->status = $XML->status;
+        $this->dadosEcChave = $XML->$DadosEc->chave;
+        $this->dadosEcNumero = $XML->$DadosEc->numero;
+        $this->dadosPedidoNumero = $XML->$DadosPedido->numero;
+        $this->dadosPedidoData = $XML->$DadosPedido->$DataHora;
+        $this->dadosPedidoValor = $XML->$DadosPedido->valor;
+        $this->formaPagamentoBandeira = $XML->$FormaPagamento->bandeira;
+        $this->formaPagamentoProduto = $XML->$FormaPagamento->produto;
+        $this->formaPagamentoParcelas = $XML->$FormaPagamento->parcelas;
+        $this->efetuadoPorPinPad = MUtil::getBooleanValue($XML->pinpad);
+    }
+
+    // Traduz cógigo do Status
+    public function getStatus()
+    {
+        $status = NULL;
+
+        switch($this->status)
+        {
+            case "0": $status = "Criado";
+                break;
+            
+            case "1": $status = "Em andamento";
+                break;
+            
+            case "2": $status = "Autenticado";
+                break;
+            
+            case "3": $status = "Não autenticado";
+                break;
+            
+            case "4": $status = "Autorizado";
+                break;
+            
+            case "5": $status = "Não autorizado";
+                break;
+            
+            case "6": $status = "Capturado";
+                break;
+            
+            case "8": $status = "Não capturado";
+                break;
+            
+            case "9": $status = "Cancelado";
+                break;
+            
+            case "10": $status = "Em autenticação";
+                break;
+            
+            default: $status = "n/a";
+                break;
+        }
+
+        return $status;
+    }
+    
+    public function append($value)
+    {
+        $this->cielo->append($value);
+    }
+    
+    /**
+     * Função que formata um valor para o padrão do XML da Cielo.
+     * Ex.: 100,50 deve ser formatado para 10050
+     * 
+     * @param String $value
+     */
+    public static function formatarValorCielo($valor)
+    {        
+        $valorFormatado = NULL;
+        
+        $valor = str_replace(',', '.', $valor);
+        if ( is_numeric($valor) )
+        {        
+            if ( substr_count($valor, '.') == 0 )
+            {
+                $valorFormatado = $valor . '00';
+            }
+            elseif ( substr_count($valor, '.') == 1 )
+            {
+                $numero = substr($valor, 0, strpos($valor, '.'));
+                $decimais = substr($valor, strpos($valor, '.')+1);
+                
+                $valorFormatado = $numero;
+                if ( strlen($decimais) == 0 )
+                {
+                    $valorFormatado .= '00';
+                }
+                elseif ( strlen($decimais) == 1 )
+                {
+                    $valorFormatado .= $decimais . '0';
+                }
+                elseif ( strlen($decimais) == 2 )
+                {
+                    $valorFormatado .= $decimais;
+                }
+                else
+                {
+                    $valorFormatado .= substr($decimais, 0, 2);
+                }
+            }
+            else
+            {
+                $valorFormatado = '0';
+            }
+        }
+        else    
+        {
+            $valorFormatado = '0';
+        }
+        
+        return $valorFormatado;
+    }
+    
+    public function getSessionId()
+    {
+        return $this->cielo->getSessionId();
+    }
+    
+    public function limparPedidos()
+    {
+        return $this->cielo->limparSessao();
+    }
+    
+    public function registrarTransacao($xml)
+    {
+        $finCieloTransaction = new FinCieloTransaction();
+        $finCieloTransaction->tid = $this->tid;
+        $finCieloTransaction->cieloStatusId = $this->status;
+        $finCieloTransaction->numero = $this->dadosPedidoNumero;
+        $finCieloTransaction->valor = $this->dadosPedidoValor;
+        $finCieloTransaction->bandeira = $this->formaPagamentoBandeira;
+        $finCieloTransaction->xml = $xml;
+        $finCieloTransaction->save();
+
+        return $finCieloTransaction->cieloTransactionId;
+    }
+    
+}
+
+?>

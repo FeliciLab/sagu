@@ -1,0 +1,187 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Types da tabela fin.bankMovement
+ * Relaciona um log de arquivos de retorno
+ *
+ * @author Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ *
+ * @since
+ * Class created on 04/05/2015
+ */
+
+class FinCounterMovement extends SType
+{
+
+    public $counterMovementId;
+
+    public $openCounterId;
+
+    public $value;
+
+    public $movementDate;
+
+    public $operation;
+
+    public $speciesId;
+
+    public $observation;
+
+    public $invoiceId;
+
+    public $operationId;
+
+    public $costCenterId;
+
+    public $costCenterDescription;
+    
+    public $voucher;    
+    
+    public $bankAccountId;
+    
+    public $counterMovement;
+    
+    public $transferenciaDeCaixaId;
+    
+    public $movimentacaoEstornada;
+    
+    /**
+     * Dado um identificador de caixa, pega as movimentações deste
+     * 
+     * @param Integer $openCounterId Identificador do caixa "em movimento"
+     * 
+     * @return Array Dados das movimentações do dado caixa
+     */
+    public static function getMovimentacaoDoCaixaParaGrid($openCounterId)
+    {
+        $parametros = array();
+        
+        $sql = "
+             SELECT '',
+                    TO_CHAR(datetime, GETPARAMETER('BASIC', 'MASK_TIMESTAMP_DEFAULT')),
+                    '',
+                    '',
+                    (SELECT description FROM finspecies WHERE speciesid = '" . SAGU::getParameter('FINANCE', 'MONEY_SPECIES_ID') . "') as especie,
+                    ROUND(value, 2),
+                    operation,
+                    'Abertura de caixa',
+                    TRUE as cap,
+                    't' as movimentacaoEstornada,
+                    'f' as transferenciaDeCaixa
+               FROM finopencounter
+              WHERE opencounterid = ?
+              UNION 
+             SELECT fcm.counterMovementId::text,
+                    TO_CHAR(fcm.movementDate, GETPARAMETER('BASIC', 'MASK_TIMESTAMP_DEFAULT')),
+                    GETPERSONNAME(COALESCE(cs.fornecedorid ,fri.personid)), 
+                    TO_CHAR(COALESCE(ct.vencimento, fri.maturitydate)::date, GETPARAMETER('BASIC', 'MASK_DATE')),
+                    ES.description as especie,
+                    ROUND(fcm.value, 2), 
+                    fcm.operation,
+                    ( SELECT description
+                        FROM finoperation fo
+                       WHERE COALESCE(cl.operationid, fcm.operationid) = fo.operationid ) || ' - ' || COALESCE(cl.operationid, fcm.operationid) AS operacao,
+                    fcm.tituloid IS NOT NULL as cap,
+                    fcm.movimentacaoEstornada,
+                    (fcm.transferenciaDeCaixaId IS NOT NULL) as transferenciaDeCaixa
+               FROM fincountermovement fcm 
+          LEFT JOIN finreceivableinvoice fri
+                 ON fcm.invoiceid = fri.invoiceid
+          LEFT JOIN caplancamento cl
+                 ON fcm.counterMovementId = cl.counterMovementId
+          LEFT JOIN captitulo ct
+                 ON fcm.tituloid = ct.tituloid
+          LEFT JOIN capsolicitacaoparcela csp
+                 ON ct.solicitacaoparcelaid = csp.solicitacaoparcelaid
+          LEFT JOIN capsolicitacao cs
+                 ON csp.solicitacaoid = cs.solicitacaoid
+          LEFT JOIN finSpecies ES
+                 ON fcm.speciesid = ES.speciesid
+              WHERE fcm.openCounterId = ?
+              
+           ORDER BY 1
+
+        ";
+        
+        $parametros[] = $openCounterId;
+        $parametros[] = $openCounterId;
+        
+        return SDatabase::query($sql, $parametros);
+        
+    }
+    
+    /**
+     * Retorna a consulta das movimentações do módulo Financeiro
+     * 
+     * @return String
+     */
+    private static function getSQLMovimentacaoFin()
+    {
+        return " (SELECT 
+            fm.counterMovementId as id, 
+            TO_CHAR(fm.movementDate, '" . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_DEFAULT') . "'),
+            GETPERSONNAME(fri.personid), 
+            TO_CHAR(fri.maturitydate::date, '" . SAGU::getParameter('BASIC', 'MASK_DATE') . "'), 
+            ROUND(fm.value, 2), 
+            fm.operation, 
+            fm.operationid || ' - ' || (SELECT description FROM finoperation fo WHERE fm.operationid = fo.operationid) as operacao,
+            FALSE as cap
+        FROM fincountermovement fm 
+        INNER JOIN finreceivableinvoice fri 
+            ON fri.invoiceid = fm.invoiceid
+        WHERE fm.openCounterId = ?) ";
+        
+    }
+    
+    /**
+     * Retorna a consulta das movimentações do módulo Contas a pagar
+     * 
+     * @return String
+     */
+    private static function getSQLMovimentacoesCAP()
+    {
+        return " (SELECT
+            fm.counterMovementId as id, 
+            TO_CHAR(fm.movementDate, '" . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_DEFAULT') . "'),
+            GETPERSONNAME(s.fornecedorid), 
+            TO_CHAR(t.vencimento::date, '" . SAGU::getParameter('BASIC', 'MASK_DATE') . "'),  
+            ROUND(fm.value, 2),
+            fm.operation, 
+            cl.operationid || ' - ' || (SELECT description FROM finoperation fo WHERE cl.operationid = fo.operationid) as operacao,
+            TRUE as cap
+        FROM captitulo t
+        INNER JOIN capsolicitacaoparcela sp
+            ON t.solicitacaoparcelaid = sp.solicitacaoparcelaid
+        INNER JOIN capsolicitacao s
+            ON sp.solicitacaoid = s.solicitacaoid
+        INNER JOIN fincountermovement fm
+            ON fm.tituloid = t.tituloid
+        INNER JOIN caplancamento cl
+            ON t.tituloid = cl.tituloid
+        WHERE fm.openCounterId = ?) ";
+        
+    }    
+}
+?>

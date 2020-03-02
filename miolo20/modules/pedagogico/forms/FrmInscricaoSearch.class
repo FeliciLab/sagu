@@ -1,0 +1,267 @@
+<?php
+/**
+ * <--- Copyright 2005-2013 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Inscricoes
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ * Moises Heberle [moises@solis.com.br]
+ *
+ * @since
+ * Class created on 29/08/2013
+ */
+class FrmInscricaoSearch extends SSearchForm
+{
+    protected $campoBuscaGenerica = true;
+
+    /**
+     * Class constructor
+     */
+    public function __construct($data)
+    {
+        parent::__construct(_M('Localizar', 'basic'), new AcpInscricao(), array('inscricaoid'));
+    }
+
+    /**
+     *  Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $fields[] = new MDiv('divLimbo', null);
+        $fields[] = new sEscolha('buscaocorrenciacursoidS', null, _M('Ocorrência de curso'), new AcpOcorrenciaCursoLookup());
+        $fields[] = new sEscolha('buscaofertacursoidS', null, _M('Oferta de curso'), new AcpOfertaCurso());
+        $fields[] = new sEscolha('buscaofertaturmaidS', null, _M('Oferta de turma'), new AcpOfertaTurma());
+
+        $fields[] = $this->genericFields()->radioButtonGroup('buscapendentesS', $this->getRequestValue('buscapendentesS', DB_FALSE), _M('Exibir apenas pendentes'), SAGU::listYesNo());
+
+        $fields[] = $this->genericFields()->radioButtonGroup('incluircanceladosS', $this->getRequestValue('incluircanceladosS', DB_FALSE), _M('Exibir cancelados'), SAGU::listYesNo());
+
+        parent::defineFields($fields, $module, 'GrdInscricaoSearch', $validators);
+    }
+
+    public function confirmaInscritos()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $ids = $this->obterRegistrosSelecionados(false);
+
+        SDatabase::beginTransaction();
+
+        try
+        {
+
+            foreach ( $ids as $inscricaoId )
+            {
+                $inscricao = new AcpInscricao($inscricaoId, true);
+
+                if ( $inscricao->situacao != AcpInscricao::SITUACAO_PENDENTE )
+                {
+                    throw new Exception(_M('A inscrição de código @1 está com a situação diferente de Pendente.', $module, $inscricaoId));
+                }
+
+                $inscricao->alterarParaInscrito();
+            }
+
+            SDatabase::commit();
+
+            $MIOLO->information(_M('Inscrições confirmadas com sucesso.'));
+        }
+        catch (Exception $e)
+        {
+            SDatabase::rollback();
+            $this->AddError($e->getMessage());
+        }
+    }
+
+    public function cancelaInscritos()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $ids = $this->obterRegistrosSelecionados(true, 'acpinscricao.inscricaoid');
+
+        try
+        {
+            SDatabase::beginTransaction();
+
+            foreach ( $ids as $inscricaoId )
+            {
+                //cancela matriculas nas disciplinas
+                $inscricaoturmagruposearch = AcpInscricaoTurmaGrupo::obterInscricaoTurmaGrupo($inscricaoid);
+                if(AcpMatricula::obterMatriculaDaInscricaoTurmaGrupo($inscricaoturmagrupo->inscricaoturmagrupoid) != null)
+                {
+                foreach ( $inscricaoturmagruposearch as $cod => $inscricaoturmagrupo )
+                {
+                    $matriculas = AcpMatricula::obterMatriculaDaInscricaoTurmaGrupo($inscricaoturmagrupo->inscricaoturmagrupoid);
+
+                    foreach ( $matriculas as $cod => $matricula )
+                    {
+                        $matricula instanceof AcpMatricula;
+                        $matricula->cancelarMatricula();
+                    }
+                }
+                }
+                    $inscricao = new AcpInscricao($inscricaoId);
+                    $inscricao->cancelarInscricao();
+
+                    $inscricaoturmagrupo = new AcpInscricaoTurmaGrupo($matricula->inscricaoturmagrupoid);
+                //Caso o curso não for gratuito recalcula os titulos
+                if( $inscricaoturmagrupo->inscricao->ofertacurso->ocorrenciacurso->curso->gratuito == DB_FALSE )
+                {
+                     PrcTituloInscricao::cancelamentoFinanceiro($inscricaoid);
+                }
+            }
+
+            SDatabase::commit();
+
+            $MIOLO->information(_M('Inscrições canceladas com sucesso.'));
+        }
+        catch (Exception $e)
+        {
+            $this->AddError($e->getMessage());
+        }
+    }
+
+    public function historicoInscricao($args)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $inscricaoId = $args->inscricaoid;
+        $inscricao = new AcpInscricao($inscricaoId);
+
+        $movimento = new AcpMovimentoInscricao();
+        $movimento->inscricaoid = $inscricaoId;
+
+        $content[] = new SInformationField(array(
+            'columns' => 1,
+            'value' => array(
+                _M('Pessoa') => $inscricao->obterPessoa()->personid . ' - ' . $inscricao->obterPessoa()->name,
+            )
+        ));
+
+        $grid = $MIOLO->getUI()->getGrid($module, 'GrdMovimentoInscricao');
+        $grid->setData( $movimento->findForGrid($grid) );
+        $grid->disableColumnSorting();
+        $grid->disableExports();
+        $grid->disablePagination();
+
+        // a grid tem que ser inserida dentro de uma div quando for exibida em MPopup, senao, ocorre um fatal error.
+        $content[] = new MDiv('divEvitaFatalErrorNaPopup', $grid);
+
+        $fields[] = new MPopup('historico', $content, _M('Histórico de inscrição'));
+
+        return $fields;
+    }
+
+    public function getRequestValues()
+    {
+        $data = parent::getRequestValues();
+        $data['incluircancelados'] = $this->getRequestValue('incluircanceladosS', DB_FALSE);
+
+        return $data;
+    }
+
+    public function excluirMatricula($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $inscricaoid = MIOLO::_REQUEST('inscricaoid');
+
+        $naoPodeExcluir = array();
+/*
+        if ( PrcTituloInscricao::temMensalidadePaga($inscricaoid) )
+        {
+            $naoPodeExcluir[] = _M('- A inscrição já possui mensalidade(s) paga(s)');
+        }
+
+        if ( AcpInscricao::contarAvaliacoes($inscricaoid) > 0 )
+        {
+            $naoPodeExcluir[] = _M('- A inscrição já possui uma ou mais avaliação');
+        }
+
+        if ( AcpInscricao::contarFrequencias($inscricaoid) > 0 )
+        {
+            $naoPodeExcluir[] = _M('- A inscrição já possui uma ou mais frequência');
+        }*/
+
+        if ( count($naoPodeExcluir) > 0 )
+        {
+            $msg = _M('Não é possível excluir pelos seguintes motivos') . ':';
+            $msg .= '<br/>';
+            $msg .= implode('<br/>', $naoPodeExcluir);
+
+            $goto = $MIOLO->GetActionURL($module, $action, null, array('function' => 'search'));
+
+            $this->messageError($msg, $goto);
+        }
+        else
+        {
+            $msg = _M('Tem certeza que deseja prosseguir?');
+
+            $gotoOk = $MIOLO->GetActionURL($module, $action, null, array('function' => 'search', 'event' => 'excluirMatricula_click', 'inscricaoid' => $inscricaoid));
+            $gotoCancel = $MIOLO->GetActionURL($module, $action, null, array('function' => 'search'));
+
+            $MIOLO->confirmation($msg, $gotoOk, $gotoCancel);
+        }
+    }
+
+    public function excluirMatricula_click($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $inscricaoid = MIOLO::_REQUEST('inscricaoid');
+
+        $inscricao = new AcpInscricao($inscricaoid);
+
+        SDatabase::beginTransaction();
+        try
+        {
+            $ok = $inscricao->delete();
+            SDatabase::commit();
+        }
+        catch (Exception $ex)
+        {
+            SDatabase::rollback();
+            $msgErro = $ex->getMessage();
+        }
+
+        $goto = $MIOLO->GetActionURL($module, $action, null, array('function' => 'search'));
+        if ( $ok )
+        {
+            $this->messageSuccess(_M('Inscrição excluída com sucesso'), $goto);
+        }
+        else
+        {
+            $this->messageError(_M('Erro ao excluir inscrição </ br>' . $msgErro), $goto);
+        }
+    }
+}
+?>

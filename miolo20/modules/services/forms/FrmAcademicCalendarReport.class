@@ -1,0 +1,223 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulário para visualização do calendário acadêmico do curso
+ *
+ * @author Arthur Lehdermann [arthur@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ *
+ * @since
+ * Class created on 20/05/2011
+ */
+class FrmAcademicCalendarReport extends SForm
+{
+    /**
+     * Class constructor
+     */
+    public function __construct($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        parent::__construct(_M('Visualização de calendário acadêmico', $module), null, null);
+
+        // Desabilita alguns botões da toolbar
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+        
+        
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+
+        // Instancia os business
+        $busContract = new BusinessAcademicBusContract();
+        $busPerson = new BusinessBasicBusPerson();
+
+        // Obtém os dados da pessoa
+        $person = $busPerson->getPersonByMioloUserName(trim($MIOLO->getLogin()->id));
+
+        // Field period
+        $busPeriod = new BusinessAcademicBusPeriod();
+        $periodId = new MComboBox('periodId', strlen($this->getFormValue('periodId', $data->periodId)) > 0 ? $this->getFormValue('periodId', $data->periodId) : SAGU::getParameter('BASIC', 'CURRENT_PERIOD_ID'), _M('Período', $module), $busPeriod->listPeriod());
+        $periodId->setJsHint(_M('Selecione um período', $module));
+        $fields[] = $periodId;
+        $validators[] = new MRequiredValidator('periodId', _M('Período'));
+
+        // Contract options
+        $contractOptions = array();
+        $filters = new stdClass();
+        $filters->personId = $person->personId;
+        $contracts = $busContract->searchContract($filters);
+        foreach ( $contracts as $k => $value )
+        {
+            $contractOptions[$k] = array();
+            $contract = $busContract->getContract($value[0]);
+            $contractOptions[$k][] = $contract->contractId;
+            $contractOptions[$k][] = $contract->courseName;
+        }
+
+        // Field contract
+        $fields[] = new MSelection('contractId', $this->getFormValue('contractId', $data->contractId), _M('Contrato'), $contractOptions);
+        $validators[] = new MRequiredValidator('contractId', _M('Contrato'));
+
+        // Separator
+        $fields[] = new MSeparator();
+
+        // Botão localizar
+        $fields[] = new MButton('btnSearch', _M('Visualizar o calendário acadêmico', $module));
+
+        // Separator
+        $fields[] = new MSeparator();
+
+        // Div onde irá aparecer o calendário
+        $fields[] = new MDiv('divCalendar');
+
+        $this->SetFields($fields);
+        $this->SetValidators($validators);
+
+        parent::defineFields();
+    }
+
+    /**
+     * Monta o calendário acadêmico
+     *
+     * @param array $args
+     */
+    public function btnSearch_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        // Instancia os business
+        $busContract = new BusinessAcademicBusContract();
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+
+        try
+        {
+            // Obtém os dados do form
+            $periodId = MIOLO::_REQUEST('periodId');
+            $contractId = MIOLO::_REQUEST('contractId');
+
+            // Obtém o contrato
+            $contract = $busContract->getContract($contractId);
+
+            // Obtém o período letivo
+            $filters = new stdClass();
+            $filters->periodId = $periodId;
+            $filters->courseId = $contract->courseId;
+            $filters->courseVersion = $contract->courseVersion;
+            $filters->unitId = $contract->unitId;
+            $filters->turnId = $contract->turnId;
+            $learningPeriod = $busLearningPeriod->searchLearningPeriod($filters);
+            $learningPeriodId = $learningPeriod[0][0];
+
+            if ( strlen($learningPeriodId) <= 0 )
+            {
+                throw new Exception( _M('Período letivo não encontrado.', $module) );
+            }
+
+            $learningPeriod = $busLearningPeriod->getLearningPeriod($learningPeriodId);
+
+            // Begin e end date
+            $beginDate = $learningPeriod->beginDate;
+            $endDate = $learningPeriod->endDate;
+
+            // Parâmetros para fazer a filtragem de eventos
+            $opts = array();
+            $opts['courseId'] = $contract->courseId;
+            $opts['courseVersion'] = $contract->courseVersion;
+            $opts['turnId'] = $contract->turnId;
+            $opts['unitId'] = $contract->unitId;
+            $opts['personId'] = $contract->personId;
+
+            // Monta o calendário acadêmico
+            $rows = BasReports::getCalendarEvent($beginDate, $endDate, $opts);
+            $total = array();
+            $calendar = new MEventCalendar('calendar', htmlentities(_M('Calendário acadêmico')));
+            $calendar->setInitialDate($rows[0]->initialYearMonth);
+            foreach ( (array)$rows as $row )
+            {
+                if ( !isset($total[$row->month]) )
+                {
+                    $total[$row->month] = 0;
+                }
+
+                if ( strlen($row->events) > 0 )
+                {
+                    foreach ( explode("\n", $row->events) as $event )
+                    {
+                        $total[$row->month]++;
+                        $calendar->defineEvent($row->dateCalendar, htmlentities($event));
+                    }
+                }
+            }
+
+            if ( array_sum($total) > 0 )
+            {
+                // Gera totais
+                $array = array();
+                $months = SAGU::listMonths();
+                foreach ( (array)$months as $month => $name )
+                {
+                    $array[] = $total[$month];
+                }
+                $label = _M('Total de eventos encontrados: @1', $module, array_sum($total));
+                $table = new MTableRaw($label, array($array), array_values($months));
+                for ( $i = 0; $i < count($months); $i++ )
+                {
+                    $table->setCellAttribute(0, $i, 'align', 'center');
+                }
+
+                $fields[] = new MSeparator();
+                $fields[] = $table;
+                $fields[] = new MSeparator();
+                $fields[] = $calendar;
+            }
+            else
+            {
+                $this->AddError(_M('Nenhum evento encontrado para o período e curso informado.', $module));
+            }
+        }
+        catch (Exception $e)
+        {
+            $this->addError($e->getMessage());
+        }
+
+        $this->divCalendar->setInner($fields);
+    }
+}
+?>

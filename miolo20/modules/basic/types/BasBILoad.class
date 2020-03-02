@@ -1,0 +1,1202 @@
+<?php
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class definition for database entities
+ *
+ * @author Jader Fiegenbaum [jader@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jader Fiegenbaum [jader@solis.com.br]
+ *
+ * @since
+ * Class created on 29/01/2015
+ *
+ */
+class BasBILoad extends SType
+{
+    /**
+     * Obtém as configurações de base de dados do BI.
+     */ 
+    public static function getSaguDBConf()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $conf = new stdClass();
+        
+        // Obtém configurações da base do módulo basic.
+        $conf->system = $MIOLO->getConf('db.basic.system');
+        $conf->host = $MIOLO->getConf('db.basic.host');
+        // Troca localhost por 127.0.0.1 se necessário, pois DBLINK não funciona com DNS.
+        $conf->host = $conf->host == 'localhost' ? '127.0.0.1' : $conf->host;
+        $conf->port = $MIOLO->getConf('db.basic.port');
+        $conf->name = $MIOLO->getConf('db.basic.name');
+        $conf->user = $MIOLO->getConf('db.basic.user');
+        $conf->password = $MIOLO->getConf('db.basic.password');
+        
+        return $conf;
+    }
+    
+    
+    /**
+     * Faz a configuraç de base dados.
+     */
+    public static function configureConnection()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $conf = $MIOLO->getConf('db.bi.name');
+        
+        // Caso não tenha base de BI definida, faz a configuração pelo Sagu.
+        if ( strlen($conf) == 0 )
+        {
+            $conf = self::getSaguDBConf();
+            
+            // Define configurações da base BI no mesmo SGDB da base do Postgres.
+            $MIOLO->setConf('db.bi', $conf->system);
+            $MIOLO->setConf('db.bi.system', $conf->system);
+            $MIOLO->setConf('db.bi.host', $conf->host);
+            $MIOLO->setConf('db.bi.name', $conf->name .'_bi');
+            $MIOLO->setConf('db.bi.port', $conf->port);
+            $MIOLO->setConf('db.bi.user', $conf->user);
+            $MIOLO->setConf('db.bi.password', $conf->password);
+        }
+    }
+    
+   /**
+    * Cria base de dados do BI caso nã exista.
+    */
+    public static function createDatabase()
+    {
+        $MIOLO = MIOLO::getInstance();
+        self::configureConnection();
+        $dbName = $MIOLO->getConf('db.bi.name');
+        $result = SDatabase::query("SELECT count(*) FROM pg_database WHERE datname ILIKE '{$dbName}'");
+        
+        // Cria a base.
+        if ( $result[0][0] == 0 )
+        {
+            SDatabase::execute("CREATE DATABASE {$dbName} WITH TEMPLATE TEMPLATE0");
+        }
+    }
+    
+    /**
+     * Faz carga de dados para BI.
+     */
+    public static function BILoad()
+    {
+        if ( SAGU::getParameter('BASIC', 'MODULE_BI_INSTALLED') == 'NO' )
+        {
+            return true;
+        }
+        
+        $MIOLO = MIOLO::getInstance();
+        
+        self::createDatabase();
+        
+        // Base do Sagu.
+        $conf = self::getSaguDBConf();
+        
+        $db = $MIOLO->getDatabase('bi');
+
+        $sql = "
+        CREATE EXTENSION IF NOT EXISTS dblink;
+        drop table if exists carga CASCADE;
+        create table carga(inicio timestamp, fim timestamp);
+        insert into carga(inicio) values (now());
+
+        CREATE OR REPLACE FUNCTION bi_getcontractinvoice(IN _invoiceid integer, OUT _contractid int, OUT _courseid varchar, OUT _courseversion int, OUT _unitid int, OUT _turnid int) RETURNS SETOF record AS
+        $$
+        DECLARE
+            resultado RECORD;
+        BEGIN
+
+            SELECT G.contractid, G.courseid, G.courseversion, G.unitid, G.turnid 
+              INTO resultado 
+         FROM ONLY fininvoice A 
+         LEFT JOIN finEntry F ON (F.invoiceid = A.invoiceid) 
+         LEFT JOIN acdContract G ON (F.contractid = G.contractid) 
+             WHERE A.invoiceid=$1 
+               AND F.contractid IS NOT NULL
+          ORDER BY G.datetime desc limit 1;
+            _contractid:=resultado.contractid;
+            _courseid:=resultado.courseid;
+            _courseversion:=resultado.courseversion;
+            _unitid:=resultado.unitid;
+            _turnid:=resultado.turnid;
+
+            RETURN NEXT;
+        END;
+        $$ LANGUAGE 'plpgsql';
+
+        SELECT dblink_connect('myconn', 'hostaddr={$conf->host} port={$conf->port} dbname={$conf->name} user={$conf->user} password={$conf->password}');
+        SELECT dblink_connect('myco', 'hostaddr={$conf->host} port={$conf->port} dbname={$conf->name} user={$conf->user} password={$conf->password}');
+
+        --finreceivableinvoice
+        drop table IF EXISTS  finreceivableinvoice cascade;
+        create table finreceivableinvoice as 
+        select * from dblink('myconn', 'select username,datetime,ipaddress,invoiceid,personid,accountschemeid,costcenterid,parcelnumber,emissiondate,maturitydate,value,policyid,bankinvoiceid,automaticdebit,comments,incomesourceid,bankaccountid,sagu1invoiceid,sectorid,emissiontypeid,iscanceled,reasoncancellationid,isimported,referencematuritydate,invoiceiddependence,nominalvalue,balance,competencydate,titulodereferencia,senddate,returndate,returnfileid,sem_descontos,aglutinado  from only finreceivableinvoice') 
+        as t(
+         username               character varying        ,
+         datetime               timestamp with time zone ,
+         ipaddress              inet                     ,
+         invoiceid              integer                  ,
+         personid               bigint                   ,
+         accountschemeid        character varying(30)    ,
+         costcenterid           character varying(30)    ,
+         parcelnumber           integer                  ,
+         emissiondate           date                     ,
+         maturitydate           date                     ,
+         value                  numeric(14,4)            ,
+         policyid               integer                  , 
+         bankinvoiceid          character varying(30)    , 
+         automaticdebit         boolean                  ,
+         comments               text                     , 
+         incomesourceid         integer                  , 
+         bankaccountid          integer                  , 
+         sagu1invoiceid         character varying(20)    , 
+         sectorid               integer                  ,
+         emissiontypeid         integer                  ,
+         iscanceled             boolean                  ,
+         reasoncancellationid   integer                  ,
+         isimported             boolean                  ,
+         referencematuritydate  date                     ,
+         invoiceiddependence    integer                  ,
+         nominalvalue           numeric                  ,
+         balance                numeric                  ,
+         competencydate         date                     , 
+         titulodereferencia     integer                  , 
+         senddate               date                     , 
+         returndate             date                     , 
+         returnfileid           integer                  , 
+         sem_descontos          boolean                  ,
+         aglutinado             boolean                  );
+
+        --finentry
+        drop table IF EXISTS  finentry cascade;
+        create table finentry as 
+        select * from dblink('myconn', 'select username,datetime,ipaddress,entryid,invoiceid,operationid,entrydate,value,costcenterid,comments,bankreturncode,isaccounted,creationtype,contractid,learningperiodid,bankmovementid,incentivetypeid,accountschemeid,cielotransactionid,titulodereferencia from only finentry') 
+        as t(
+         username            character varying        ,
+         datetime            timestamp with time zone ,
+         ipaddress           inet                     ,
+         entryid             integer                  ,
+         invoiceid           integer                  ,
+         operationid         integer                  ,
+         entrydate           date                     ,
+         value               numeric(14,4)            ,
+         costcenterid        character varying(30)    ,
+         comments            text                     ,
+         bankreturncode      character varying(50)    ,
+         isaccounted         boolean                  ,
+         creationtype        character(1)             ,
+         contractid          integer                  ,
+         learningperiodid    integer                  ,
+         bankmovementid      integer                  ,
+         incentivetypeid     integer                  ,
+         accountschemeid     character varying(30)    ,
+         cielotransactionid  integer                  ,
+         titulodereferencia  integer                  
+         );
+
+        --finentry
+        drop table IF EXISTS  finoperation cascade;
+        create table finoperation as 
+        select * from dblink('myconn', 'select username,datetime,ipaddress,operationid,description,operationtypeid,isextinct,iscountermovement,operationgroupid,receivableorpayable,accountschemeid,useindiscounts,useininterests,useinfines  from only finoperation') 
+        as t(
+         username             character varying        ,
+         datetime             timestamp with time zone ,
+         ipaddress            inet                     ,
+         operationid          integer                  ,
+         description          text                     ,
+         operationtypeid      character(1)             ,
+         isextinct            boolean                  ,
+         iscountermovement    boolean                  ,
+         operationgroupid     character(1)             ,
+         receivableorpayable  character(1)             ,
+         accountschemeid      character varying(30)    ,
+         useindiscounts       boolean                  ,
+         useininterests       boolean                  ,
+         useinfines           boolean                  
+         );
+
+        --acdperiod
+        drop table IF EXISTS  acdperiod cascade;
+        create table acdperiod as 
+        select * from dblink('myconn', 'select username,datetime,ipaddress,periodid,description,enrollbookdate  from only acdperiod') 
+        as t(
+         username        character varying        ,
+         datetime        timestamp with time zone ,
+         ipaddress       inet                     ,
+         periodid        character varying(10)    ,
+         description     text                     ,
+         enrollbookdate  date                      
+         );
+
+        --cr_fin_lancamentos_contasreceber
+        drop table IF EXISTS  cr_fin_lancamentos_contasreceber cascade;
+        create table cr_fin_lancamentos_contasreceber as 
+        select * from dblink('myco', 'select data_contabil_lancamento,data_caixa,data_competencia,codigo_aluno,nome_aluno,titulo,parcela,vencimento,valor_lancamento,operacao,tipo_operacao,codigo_centro_de_custo,centro_de_custo,codigo_conta_contabil,codigo_contra_partida,observacoes_titulo,origem,codigo_local_pagamento,local_pagamento,usuario_do_lancamento,lancamento_de_caixa,nosso_numero,data_envio_ao_banco,ocorrencia_bancaria,modulo_de_vinculo,curso,periodo_academico,data_inicial,mes_ano_inicial,data_final,mes_ano_final,codigo_do_centro,nome_do_centro,codigo_do_lancamento,codigo_da_operacao,codigo_do_retorno_bancario  from cr_fin_lancamentos_contasreceber(''2013/01/01'', date(now()), \'CO\') union all 
+                                      select data_contabil_lancamento,data_caixa,data_competencia,codigo_aluno,nome_aluno,titulo,parcela,vencimento,valor_lancamento,operacao,tipo_operacao,codigo_centro_de_custo,centro_de_custo,codigo_conta_contabil,codigo_contra_partida,observacoes_titulo,origem,codigo_local_pagamento,local_pagamento,usuario_do_lancamento,lancamento_de_caixa,nosso_numero,data_envio_ao_banco,ocorrencia_bancaria,modulo_de_vinculo,curso,periodo_academico,data_inicial,mes_ano_inicial,data_final,mes_ano_final,codigo_do_centro,nome_do_centro,codigo_do_lancamento,codigo_da_operacao,codigo_do_retorno_bancario  from cr_fin_lancamentos_contasreceber(''2013/01/01'', date(now()), \'CA\') ')
+        as t(
+            data_contabil_lancamento VARCHAR,
+            data_caixa VARCHAR,
+            data_competencia VARCHAR,
+            codigo_aluno BIGINT,
+            nome_aluno VARCHAR,
+            titulo INT,
+            parcela INT,
+            vencimento VARCHAR,
+            valor_lancamento NUMERIC,
+            operacao TEXT,
+            tipo_operacao CHAR,
+            codigo_centro_de_custo VARCHAR,
+            centro_de_custo TEXT,
+            codigo_conta_contabil VARCHAR,
+            codigo_contra_partida VARCHAR,
+            observacoes_titulo TEXT,
+            origem VARCHAR,
+            codigo_local_pagamento INT,
+            local_pagamento TEXT,
+            usuario_do_lancamento VARCHAR,
+            lancamento_de_caixa VARCHAR,
+            nosso_numero VARCHAR,
+            data_envio_ao_banco VARCHAR,
+            ocorrencia_bancaria VARCHAR,
+            modulo_de_vinculo VARCHAR,
+            curso VARCHAR,
+            periodo_academico VARCHAR,
+            data_inicial VARCHAR,
+            mes_ano_inicial VARCHAR,
+            data_final VARCHAR,
+            mes_ano_final VARCHAR,
+            codigo_do_centro INT,
+            nome_do_centro TEXT,
+            codigo_do_lancamento INT,
+            codigo_da_operacao INT,
+            codigo_do_retorno_bancario VARCHAR
+        );
+
+        -- no banco de origem
+        CREATE OR REPLACE FUNCTION bi_balance(integer, date) RETURNS numeric
+            LANGUAGE sql
+            AS \$_$
+        SELECT SUM( CASE WHEN A.operationTypeId = 'D' THEN ( 1 * B.value )
+                         WHEN A.operationTypeId = 'C' THEN ( -1 * B.value )
+                    END
+                  )
+          FROM finOperation A,
+               finEntry B
+         WHERE A.operationId = B.operationId
+           AND B.invoiceId = $1
+           AND B.entrydate <= $2
+        \$_$;
+
+        CREATE OR REPLACE FUNCTION balance(integer) RETURNS numeric
+            LANGUAGE sql
+            AS \$_$
+        SELECT SUM( CASE WHEN A.operationTypeId = 'D' THEN ( 1 * B.value )
+                         WHEN A.operationTypeId = 'C' THEN ( -1 * B.value )
+                    END
+                  )
+          FROM finOperation A,
+               finEntry B
+         WHERE A.operationId = B.operationId
+           AND B.invoiceId = $1
+        \$_$;
+
+        --
+        DROP SCHEMA IF EXISTS bi CASCADE;
+        CREATE SCHEMA bi ;
+
+        SELECT dblink_connect('conn', 'hostaddr={$conf->host} port={$conf->port} dbname={$conf->name} user={$conf->user} password={$conf->password}');
+        drop table IF EXISTS bi.titulos cascade;
+        create table bi.titulos as
+        SELECT * FROM dblink('conn','SELECT distinct 
+               A.invoiceid                                                               AS \"Titulo\", 
+               A.personid                                                                AS \"Cod.Pessoa\", 
+               getpersonname(A.personid)                                                 AS \"Pessoa\", 
+               getcourseoccurrencedescription( (SELECT _courseid from bi_getcontractinvoice(A.invoiceid)), (SELECT _courseversion from bi_getcontractinvoice(A.invoiceid)),(SELECT _unitid from bi_getcontractinvoice(A.invoiceid)),(SELECT _turnid from bi_getcontractinvoice(A.invoiceid)))                                                                  AS \"Curso Versao\",
+               getcoursename((SELECT _courseid from bi_getcontractinvoice(A.invoiceid))) AS \"Curso\",
+               date_part(\'day\'  , A.maturityDate)                                        AS \"Dia Vencimento\",
+               date_part(\'month\', A.maturityDate)                                        AS \"Mes Vencimento\",
+               date_part(\'year\' , A.maturityDate)                                        AS \"Ano Vencimento\",       
+               TO_CHAR(A.maturityDate, getParameter(\'BASIC\', \'MASK_DATE\'))::VARCHAR    AS \"Data Vencimento\",       
+               date_part(\'day\'  , ( SELECT max(aa.entrydate)::timestamp 
+                   FROM finentry aa
+                  WHERE aa.invoiceid = a.invoiceid AND aa.operationid in (SELECT operationid from finoperation where operationgroupid =\'P\' )
+               ))                                                                        AS \"Dia Pagamento\",
+               date_part(\'month\', ( SELECT max(aa.entrydate)::timestamp
+                   FROM finentry aa
+                  WHERE aa.invoiceid = a.invoiceid AND aa.operationid in (SELECT operationid from finoperation where operationgroupid =\'P\' )
+               ))                                                                        AS \"Mes Pagamento\",
+               date_part(\'year\' , ( SELECT max(aa.entrydate)::timestamp
+                   FROM finentry aa
+                  WHERE aa.invoiceid = a.invoiceid AND aa.operationid in (SELECT operationid from finoperation where operationgroupid =\'P\' )
+               ))                                                                        AS \"Ano Pagamento\",       
+               ( SELECT to_char(max(aa.entrydate)::timestamp with time zone, \'DD/MM/YYYY\'::text) AS to_char
+                   FROM finentry aa
+                  WHERE aa.invoiceid = a.invoiceid AND aa.operationid in (SELECT operationid from finoperation where operationgroupid =\'P\' )
+               )                                                                         AS \"Data Pagamento\",
+               ( SELECT max(aa.entrydate) AS to_char
+                   FROM finentry aa
+                  WHERE aa.invoiceid = a.invoiceid AND aa.operationid in (SELECT operationid from finoperation where operationgroupid =\'P\' )
+               ) - A.maturitydate                                                        AS \"Dias ate Pagamento\", 
+               (select bbb.periodid from acdgroup aaa inner join acdlearningperiod bbb on (aaa.learningperiodid = bbb.learningperiodid) inner join acdenroll ccc on (aaa.groupid=ccc.groupid) where ccc.contractid = (SELECT _contractid from bi_getcontractinvoice(A.invoiceid)) and A.maturitydate between begindate and enddate limit 1)                            AS \"Periodo\",
+               getunitdescription((SELECT _unitid from bi_getcontractinvoice(A.invoiceid))) AS \"Unidade\",
+               A.value                                                                      AS \"Valor\", 
+               A.nominalvalue                                                               AS \"Valor Nominal\",
+               balance(A.invoiceid)                                                         AS \"Saldo\",
+               (SELECT distinct invoiceid from finentry inner join fin.negotiationgeneratedentries using (entryid) where generated=\'f\' and invoiceid=A.invoiceid)                                                              AS \"Fechado por Negociacao\",       
+               (SELECT distinct invoiceid from finentry inner join fin.negotiationgeneratedentries using (entryid) where generated=\'t\' and invoiceid=A.invoiceid)                                                              AS \"Criado por Negociacao\",
+               (SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) AS \"Contrato\",
+               (SELECT distinct description from only finincentivetype where incentivetypeid = (SELECT incentivetypeid from  finincentive where valueispercent = \'t\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1)) as \"Incentivo 1\",
+               (SELECT value from  finincentive where valueispercent = \'t\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1) as \"Percentual Incentivo 1\",
+
+               (SELECT distinct description from only finincentivetype where incentivetypeid = (SELECT incentivetypeid from  finincentive where valueispercent = \'t\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1 offset 1)) as \"Incentivo 2\",
+               (SELECT value from  finincentive where valueispercent = \'t\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1 offset 1) as \"Percentual Incentivo 2\",
+
+               (SELECT distinct description from only finincentivetype where incentivetypeid = (SELECT incentivetypeid from  finincentive where valueispercent = \'t\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1 offset 2)) as \"Incentivo 3\", 
+               (SELECT value from  finincentive where valueispercent = \'t\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1 offset 2) as \"Percentual Incentivo 3\",   
+
+               CASE WHEN ( COALESCE( (SELECT value from  finincentive where valueispercent = \'t\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1),0) + 
+               COALESCE( (SELECT value from  finincentive where valueispercent = \'t\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1 offset 1),0) +       
+               COALESCE( (SELECT value from  finincentive where valueispercent = \'t\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1 offset 2),0) )>100 THEN 100 ELSE
+                COALESCE( (SELECT value from  finincentive where valueispercent = \'t\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1),0) + 
+                COALESCE( (SELECT value from  finincentive where valueispercent = \'t\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1 offset 1),0) +       
+                COALESCE( (SELECT value from  finincentive where valueispercent = \'t\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1 offset 2),0)
+               END as \"Total Percentual Incentivo\" ,     
+
+               (SELECT distinct description from only finincentivetype where incentivetypeid = (SELECT incentivetypeid from  finincentive where valueispercent = \'f\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1)) as \"Incentivo 4\",
+               (SELECT value from  finincentive where valueispercent = \'f\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1) as \"Valor Incentivo 4\",
+
+               (SELECT distinct description from only finincentivetype where incentivetypeid = (SELECT incentivetypeid from  finincentive where valueispercent = \'f\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1 offset 1)) as \"Incentivo 5\",
+               (SELECT value from  finincentive where valueispercent = \'f\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1 offset 1) as \"Valor Incentivo 5\",
+
+               (SELECT distinct description from only finincentivetype where incentivetypeid = (SELECT incentivetypeid from  finincentive where valueispercent = \'f\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1 offset 2)) as \"Incentivo 6\", 
+               (SELECT value from  finincentive where valueispercent = \'f\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1 offset 2) as \"Valor Incentivo 6\",
+
+               COALESCE( (SELECT value from  finincentive where valueispercent = \'f\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1),0) +       
+               COALESCE( (SELECT value from  finincentive where valueispercent = \'f\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1 offset 1),0) +       
+               COALESCE( (SELECT value from  finincentive where valueispercent = \'f\' and contractid =(SELECT max(contractid) as contractid from fininvoice inner join finentry using (invoiceid) where invoiceid = A.invoiceid) and A.maturityDate between startdate and enddate limit 1 offset 2),0) as \"Total Valor Incentivo\"
+        from only finreceivableinvoice A
+        where extract(\'Year\' from A.maturitydate)>=2013
+          and A.iscanceled=\'f\'') AS t(
+         \"Titulo\"                      integer                ,
+         \"Cod.Pessoa\"                  bigint                 ,
+         \"Pessoa\"                      character varying      ,
+         \"Curso Versao\"                character varying      ,
+         \"Curso\"                       character varying      ,
+         \"Dia Vencimento\"              double precision       ,
+         \"Mes Vencimento\"              double precision       ,
+         \"Ano Vencimento\"              double precision       ,
+         \"Data Vencimento\"             character varying      ,
+         \"Dia Pagamento\"               double precision       ,
+         \"Mes Pagamento\"               double precision       ,
+         \"Ano Pagamento\"               double precision       ,
+         \"Data Pagamento\"              text                   ,
+         \"Dias ate Pagamento\"          integer                ,
+         \"Periodo\"                     character varying(10)  ,
+         \"Unidade\"                     character varying      ,
+         \"Valor\"                       numeric(14,4)          ,
+         \"Valor Nominal\"               numeric                ,
+         \"Saldo\"                       numeric                ,
+         \"Fechado por Negociacao\"      integer                ,
+         \"Criado por Negociacao\"       integer                ,
+         \"Contrato\"                    integer                ,
+         \"Incentivo 1\"                 text                   ,
+         \"Percentual Incentivo 1\"      numeric(14,4)          ,
+         \"Incentivo 2\"                 text                   ,
+         \"Percentual Incentivo 2\"      numeric(14,4)          ,
+         \"Incentivo 3\"                 text                   ,
+         \"Percentual Incentivo 3\"      numeric(14,4)          ,
+         \"Total Percentual Incentivo\"  numeric                ,
+         \"Incentivo 4\"                 text                   ,
+         \"Valor Incentivo 4\"           numeric(14,4)          ,
+         \"Incentivo 5\"                 text                   ,
+         \"Valor Incentivo 5\"           numeric(14,4)          ,
+         \"Incentivo 6\"                 text                   ,
+         \"Valor Incentivo 6\"           numeric(14,4)          ,
+         \"Total Valor Incentivo\"       numeric                );
+
+
+        update bi.titulos set \"Incentivo 2\"=null, \"Percentual Incentivo 2\"=null where \"Incentivo 1\"=\"Incentivo 2\" and \"Percentual Incentivo 1\"=\"Percentual Incentivo 2\";
+        update bi.titulos set \"Incentivo 3\"=null, \"Percentual Incentivo 3\"=null where \"Incentivo 1\"=\"Incentivo 3\" and \"Percentual Incentivo 1\"=\"Percentual Incentivo 3\";
+        update bi.titulos set \"Incentivo 3\"=null, \"Percentual Incentivo 3\"=null where \"Incentivo 2\"=\"Incentivo 3\" and \"Percentual Incentivo 2\"=\"Percentual Incentivo 3\";
+
+        ------------------------------------------
+        -- BI MATRICULAS
+        -----------------------------------------
+        drop table IF EXISTS  bi.matriculas ;
+        -----------------------------------------
+        -- 2015/1
+        -----------------------------------------
+        CREATE TABLE bi.matriculas AS
+        SELECT * FROM dblink('myconn','
+                          SELECT A.enrollId::int                                                     AS \"Cod.Matricula\",
+                        E.periodid::text                                                             AS \"Periodo\",
+                        B.contractid::int                                                            AS \"Contrato\",
+                        getunitdescription(B.unitid)::text                                           AS \"Unidade\",
+                        C.personId::int                                                              AS \"Cod.Pessoa\",
+                        D.groupid::int                                                               AS \"Cod.Turma\",
+                        A.dateenroll::date                                                           AS \"Data Matricula\",
+                        date_part(\'day\'  , A.dateenroll)::int                                        AS \"Dia Matricula\",
+                        date_part(\'month\', A.dateenroll)::int                                        AS \"Mes Matricula\",
+                        date_part(\'year\' , A.dateenroll)::int                                        AS \"Ano Matricula\",
+                        C.name::text                                                                 AS \"Nome Pessoa\",
+                        (CASE WHEN C.sex=\'M\' then \'Masculino\' else \'Feminino\' end)::text             AS \"Sexo\",
+                        B.courseId::text                                                             AS \"Cod.Curso\",
+                        (J.name||\' - \'||B.courseversion||\' - \'||I.description||\' - \'||H.description)::text AS \"Curso Versão\",
+                        J.name                                                                        AS \"Curso\",
+                        N.name::text                                                                 AS \"Centro\",
+                        G.description::text                                                          AS \"Estado Matricula\",
+                        TO_CHAR(A.dateCancellation, \'dd/mm/yyyy\')::text                              AS \"Data Cancelamento\",
+                        M.description::text                                                          AS \"Motivo Cancelamento\",
+                        E.finalaverage::numeric                                                      AS \"Media Final\",
+                        B.courseVersion::int                                                         AS \"Versao Curso\",
+                        TO_CHAR(B.conclusiondate, \'dd/mm/yyyy\')::text                              AS \"Data Conclusao Curso\",
+                        obternotaouconceitofinal(A.enrollid)::text                                   AS \"Nota Final\",
+                        A.frequency::numeric                                                         AS \"Frequencia Final\",                
+                        E.description::text                                                          AS \"Periodo Letivo\",
+                        getunitdescription(K.unitid)::text                                           AS \"Unidade Oferta\",
+                        (K.curricularcomponentid||\' / \'||K.curricularcomponentversion||\' - \'||L.name)::text AS \"Disciplina Ofertada\",
+                        getprofessorstext(D.groupid,\', \')::text                                       AS \"Professor\",
+                        C.cityid::int                                                                AS \"Cidade Aluno\",
+                        (case when A.isinternet=\'t\' then \'Portal\' else \'Secretaria\' end)             AS \"Origem Matricula\",
+                        (    SELECT count(distinct EE.periodid)
+                               FROM acdEnroll AA
+                         INNER JOIN acdContract BB             ON (AA.contractId = BB.contractId)
+                         INNER JOIN ONLY basPhysicalPerson CC  ON (BB.personId = CC.personId)
+                         INNER JOIN acdGroup DD                ON (AA.groupId = DD.groupId)
+                         INNER JOIN acdlearningperiod EE       ON (EE.learningPeriodId = DD.learningPeriodId)
+                              WHERE BB.contractid=B.contractid)                                      AS \"Semestres Matriculados\",
+                        case when (    SELECT count(distinct EE.periodid)
+                                         FROM acdEnroll AA
+                                   INNER JOIN acdContract BB             ON (AA.contractId = BB.contractId)
+                                   INNER JOIN ONLY basPhysicalPerson CC  ON (BB.personId = CC.personId)
+                                   INNER JOIN acdGroup DD                ON (AA.groupId = DD.groupId)
+                                   INNER JOIN acdlearningperiod EE       ON (EE.learningPeriodId = DD.learningPeriodId)
+                                        WHERE BB.contractid=B.contractid)=1 then \'Calouro\' else \'Veterano\' end AS \"Status Aluno\",
+                        CASE WHEN A.statusid in (3,4,5,6,8) then \'NÃO APROVADO\' ELSE \'APROVADO\' END AS \"Status Matricula\",
+                        obtem_situacao_contrato(B.contractid, E.periodid) AS \"Situação do Contrato\",
+                        coalesce(C.location,\'\')||\', \'||coalesce(C.number,\'\')||\' - \'||coalesce(C.complement,\'\')||\' \'||coalesce(C.neighborhood,\'\')||\' \'||coalesce(CC.name,\'\')||\' - \'||coalesce(C.zipcode,\'\') as \"Endereco\",
+                        coalesce(C.email,\'\')||\' / \'||coalesce(C.emailalternative,\'\') as \"Email\",
+                        coalesce(C.residentialphone,\'\')||\' / \'||coalesce(C.workphone,\'\')||\' / \'||coalesce(C.cellphone,\'\')||\' / \'||coalesce(C.messagephone,\'\')||\'(\'||coalesce(C.messagecontact,\'\')||\')\' as \"Fone\",
+                        (C.datebirth::date-date(now()))/365.25 as \"Idade\",
+                        case when ((C.datebirth::date-date(now()))/365.25)<=26 then  \'Até 26 anos\'
+                             when ((C.datebirth::date-date(now()))/365.25)<=37 then  \'De 27 até 37 anos\' 
+                             when ((C.datebirth::date-date(now()))/365.25)<=47 then  \'De 38 até 47 anos\' 
+                             when ((C.datebirth::date-date(now()))/365.25)<=57 then  \'De 48 até 57 anos\' 
+                             when ((C.datebirth::date-date(now()))/365.25)>57 then  \'58 anos ou mais\' 
+                             else \'Não Informado\' end as \"Faixa Etaria\"
+               FROM acdEnroll A
+         INNER JOIN acdContract B             ON (A.contractId = B.contractId)
+         INNER JOIN ONLY basPhysicalPerson C  ON (B.personId = C.personId)
+         INNER JOIN bascity CC                ON (C.cityid=CC.cityid)
+         INNER JOIN acdGroup D                ON (A.groupId = D.groupId)
+         INNER JOIN acdlearningperiod E       ON (E.learningPeriodId = D.learningPeriodId)
+         INNER JOIN acdCourseVersion F        ON (F.courseId = B.courseId AND F.courseVersion = B.courseVersion)
+         INNER JOIN acdEnrollStatus G         ON (A.statusId = G.statusId)
+         INNER JOIN basTurn H                 ON (H.turnId = B.turnId)
+         INNER JOIN basUnit I                 ON (I.unitId = B.unitId)
+         INNER JOIN acdCourse J               ON (B.courseId = J.courseId)
+         INNER JOIN acdcurriculum K           ON (D.curriculumid=K.curriculumid)
+         INNER JOIN acdcurricularcomponent L  ON (L.curricularcomponentid=K.curricularcomponentid and L.curricularcomponentversion=K.curricularcomponentversion)
+          LEFT JOIN acdreason M                ON (M.reasonid=A.reasoncancellationid)
+          LEFT JOIN acdCenter N                ON (N.centerid=J.centerid)
+              WHERE E.periodid=\'2015/1\''
+             ) AS t(
+                \"Cod.Matricula\"           integer                 ,
+                \"Periodo\"                 text   ,
+                \"Contrato\"                integer                 ,
+                \"Unidade\"                 text       ,
+                \"Cod.Pessoa\"              integer                  ,
+                \"Cod.Turma\"               integer                 ,
+                \"Data Matricula\"          date                    ,
+                \"Dia Matricula\"           int        ,
+                \"Mes Matricula\"           int        ,
+                \"Ano Matricula\"           int        ,
+
+                \"Nome Pessoa\"             text  ,
+                \"Sexo\"                    text                    ,
+                \"Cod.Curso\"               text   ,
+                \"Curso Versão\"            text,
+                \"Curso\"                   text                    ,
+                \"Centro\"                  text                    ,
+                \"Estado Matricula\"        text                    ,
+                \"Data Cancelamento\"       text                    ,
+                \"Motivo Cancelamento\"     text                    ,	
+                \"Media Final\"             numeric        ,
+                \"Versao Curso\"            integer                 ,
+                \"Data Conclusao Curso\"    text,
+                \"Nota Final\"              text       ,
+                \"Frequencia Final\"        numeric        ,
+
+                \"Periodo Letivo\"          text                    ,
+                \"Unidade Oferta\"          text       ,
+                \"Disciplina Ofertada\"     text                    ,
+                \"Professor\"               text                    ,
+                \"Cidade Aluno\"            int    ,
+                \"Origem Matricula\"        text                    ,	
+                \"Semestres Matriculados\"  int                  ,
+                \"Status Aluno\"            text                  ,
+                \"Status Matricula\"        text,
+                \"Situação Contrato\"       text,
+                \"Endereco\"   text,
+                \"Email\"      text,
+                \"Fone\"       text,
+                \"Idade\" text,
+                \"Faixa Etaria\" text     );
+        -----------------------------------------
+        -- 2014/2
+        -----------------------------------------
+        INSERT INTO bi.matriculas 
+        SELECT * FROM dblink('myconn','
+                          SELECT A.enrollId::int                                                              AS \"Cod.Matricula\",
+                        E.periodid::text                                                             AS \"Periodo\",
+                        B.contractid::int                                                            AS \"Contrato\",
+                        getunitdescription(B.unitid)::text                                           AS \"Unidade\",
+                        C.personId::int                                                              AS \"Cod.Pessoa\",
+                        D.groupid::int                                                               AS \"Cod.Turma\",
+                        A.dateenroll::date                                                           AS \"Data Matricula\",
+                        date_part(\'day\'  , A.dateenroll)::int                                        AS \"Dia Matricula\",
+                        date_part(\'month\', A.dateenroll)::int                                        AS \"Mes Matricula\",
+                        date_part(\'year\' , A.dateenroll)::int                                        AS \"Ano Matricula\",
+                        C.name::text                                                                 AS \"Nome Pessoa\",
+                        (CASE WHEN C.sex=\'M\' then \'Masculino\' else \'Feminino\' end)::text             AS \"Sexo\",
+                        B.courseId::text                                                             AS \"Cod.Curso\",
+                        (J.name||\' - \'||B.courseversion||\' - \'||I.description||\' - \'||H.description)::text AS \"Curso Versão\",
+                        J.name                                                                        AS \"Curso\",
+                        N.name::text                                                                 AS \"Centro\",
+                        G.description::text                                                          AS \"Estado Matricula\",
+                        TO_CHAR(A.dateCancellation, \'dd/mm/yyyy\')::text                              AS \"Data Cancelamento\",
+                        M.description::text                                                          AS \"Motivo Cancelamento\",
+                        E.finalaverage::numeric                                                      AS \"Media Final\",
+                        B.courseVersion::int                                                         AS \"Versao Curso\",
+                        TO_CHAR(B.conclusiondate, \'dd/mm/yyyy\')::text                              AS \"Data Conclusao Curso\",
+                        obternotaouconceitofinal(A.enrollid)::text                                   AS \"Nota Final\",
+                        A.frequency::numeric                                                         AS \"Frequencia Final\",                
+                        E.description::text                                                          AS \"Periodo Letivo\",
+                        getunitdescription(K.unitid)::text                                           AS \"Unidade Oferta\",
+                        (K.curricularcomponentid||\' / \'||K.curricularcomponentversion||\' - \'||L.name)::text AS \"Disciplina Ofertada\",
+                        getprofessorstext(D.groupid,\', \')::text                                       AS \"Professor\",
+                        C.cityid::int                                                                AS \"Cidade Aluno\",
+                        (case when A.isinternet=\'t\' then \'Portal\' else \'Secretaria\' end)             AS \"Origem Matricula\",
+                        (    SELECT count(distinct EE.periodid)
+                               FROM acdEnroll AA
+                         INNER JOIN acdContract BB             ON (AA.contractId = BB.contractId)
+                         INNER JOIN ONLY basPhysicalPerson CC  ON (BB.personId = CC.personId)
+                         INNER JOIN acdGroup DD                ON (AA.groupId = DD.groupId)
+                         INNER JOIN acdlearningperiod EE       ON (EE.learningPeriodId = DD.learningPeriodId)
+                              WHERE BB.contractid=B.contractid)                                      AS \"Semestres Matriculados\",
+                        case when (    SELECT count(distinct EE.periodid)
+                                         FROM acdEnroll AA
+                                   INNER JOIN acdContract BB             ON (AA.contractId = BB.contractId)
+                                   INNER JOIN ONLY basPhysicalPerson CC  ON (BB.personId = CC.personId)
+                                   INNER JOIN acdGroup DD                ON (AA.groupId = DD.groupId)
+                                   INNER JOIN acdlearningperiod EE       ON (EE.learningPeriodId = DD.learningPeriodId)
+                                        WHERE BB.contractid=B.contractid)=1 then \'Calouro\' else \'Veterano\' end AS \"Status Aluno\",
+                        CASE WHEN A.statusid in (3,4,5,6,8) then \'NÃO APROVADO\' ELSE \'APROVADO\' END AS \"Status Matricula\",
+                        obtem_situacao_contrato(B.contractid, E.periodid) AS \"Situação do Contrato\",
+                        coalesce(C.location,\'\')||\', \'||coalesce(C.number,\'\')||\' - \'||coalesce(C.complement,\'\')||\' \'||coalesce(C.neighborhood,\'\')||\' \'||coalesce(CC.name,\'\')||\' - \'||coalesce(C.zipcode,\'\') as \"Endereco\",
+                        coalesce(C.email,\'\')||\' / \'||coalesce(C.emailalternative,\'\') as \"Email\",
+                        coalesce(C.residentialphone,\'\')||\' / \'||coalesce(C.workphone,\'\')||\' / \'||coalesce(C.cellphone,\'\')||\' / \'||coalesce(C.messagephone,\'\')||\'(\'||coalesce(C.messagecontact,\'\')||\')\' as \"Fone\",
+                        (C.datebirth::date-date(now()))/365.25 as \"Idade\",
+                        case when ((C.datebirth::date-date(now()))/365.25)<=26 then  \'Até 26 anos\'
+                             when ((C.datebirth::date-date(now()))/365.25)<=37 then  \'De 27 até 37 anos\' 
+                             when ((C.datebirth::date-date(now()))/365.25)<=47 then  \'De 38 até 47 anos\' 
+                             when ((C.datebirth::date-date(now()))/365.25)<=57 then  \'De 48 até 57 anos\' 
+                             when ((C.datebirth::date-date(now()))/365.25)>57 then  \'58 anos ou mais\' 
+                             else \'Não Informado\' end as \"Faixa Etaria\"
+               FROM acdEnroll A
+         INNER JOIN acdContract B             ON (A.contractId = B.contractId)
+         INNER JOIN ONLY basPhysicalPerson C  ON (B.personId = C.personId)
+         INNER JOIN bascity CC                ON (C.cityid=CC.cityid) 
+         INNER JOIN acdGroup D                ON (A.groupId = D.groupId)
+         INNER JOIN acdlearningperiod E       ON (E.learningPeriodId = D.learningPeriodId)
+         INNER JOIN acdCourseVersion F        ON (F.courseId = B.courseId AND F.courseVersion = B.courseVersion)
+         INNER JOIN acdEnrollStatus G         ON (A.statusId = G.statusId)
+         INNER JOIN basTurn H                 ON (H.turnId = B.turnId)
+         INNER JOIN basUnit I                 ON (I.unitId = B.unitId)
+         INNER JOIN acdCourse J               ON (B.courseId = J.courseId)
+         INNER JOIN acdcurriculum K           ON (D.curriculumid=K.curriculumid)
+         INNER JOIN acdcurricularcomponent L  ON (L.curricularcomponentid=K.curricularcomponentid and L.curricularcomponentversion=K.curricularcomponentversion)
+          LEFT JOIN acdreason M                ON (M.reasonid=A.reasoncancellationid)
+          LEFT JOIN acdCenter N                ON (N.centerid=J.centerid)
+              WHERE E.periodid=\'2014/2\''
+             ) AS t(
+                \"Cod.Matricula\"           integer                 ,
+                \"Periodo\"                 text   ,
+                \"Contrato\"                integer                 ,
+                \"Unidade\"                 text       ,
+                \"Cod.Pessoa\"              integer                  ,
+                \"Cod.Turma\"               integer                 ,
+                \"Data Matricula\"          date                    ,
+                \"Dia Matricula\"           int        ,
+                \"Mes Matricula\"           int        ,
+                \"Ano Matricula\"           int        ,
+
+                \"Nome Pessoa\"             text  ,
+                \"Sexo\"                    text                    ,
+                \"Cod.Curso\"               text   ,
+                \"Curso Versão\"            text,
+                \"Curso\"                   text                    ,
+                \"Centro\"                  text                    ,
+                \"Estado Matricula\"        text                    ,
+                \"Data Cancelamento\"       text                    ,
+                \"Motivo Cancelamento\"     text                    ,	
+                \"Media Final\"             numeric        ,
+                \"Versao Curso\"            integer                 ,
+                \"Data Conclusao Curso\"    text,
+                \"Nota Final\"              text       ,
+                \"Frequencia Final\"        numeric        ,
+
+                \"Periodo Letivo\"          text                    ,
+                \"Unidade Oferta\"          text       ,
+                \"Disciplina Ofertada\"     text                    ,
+                \"Professor\"               text                    ,
+                \"Cidade Aluno\"            int    ,
+                \"Origem Matricula\"        text                    ,	
+                \"Semestres Matriculados\"  int                  ,
+                \"Status Aluno\"            text                  ,
+                \"Status Matricula\"        text,
+                \"Situação Contrato\"       text,
+                \"Endereco\"   text,
+                \"Email\"      text,
+                \"Fone\"       text,
+                \"Idade\" text,
+                \"Faixa Etaria\" text     );
+        -----------------------------------------
+        -- 2014/1
+        -----------------------------------------
+        INSERT INTO bi.matriculas 
+        SELECT * FROM dblink('myconn','
+                          SELECT A.enrollId::int                                                              AS \"Cod.Matricula\",
+                        E.periodid::text                                                             AS \"Periodo\",
+                        B.contractid::int                                                            AS \"Contrato\",
+                        getunitdescription(B.unitid)::text                                           AS \"Unidade\",
+                        C.personId::int                                                              AS \"Cod.Pessoa\",
+                        D.groupid::int                                                               AS \"Cod.Turma\",
+                        A.dateenroll::date                                                           AS \"Data Matricula\",
+                        date_part(\'day\'  , A.dateenroll)::int                                        AS \"Dia Matricula\",
+                        date_part(\'month\', A.dateenroll)::int                                        AS \"Mes Matricula\",
+                        date_part(\'year\' , A.dateenroll)::int                                        AS \"Ano Matricula\",
+                        C.name::text                                                                 AS \"Nome Pessoa\",
+                        (CASE WHEN C.sex=\'M\' then \'Masculino\' else \'Feminino\' end)::text             AS \"Sexo\",
+                        B.courseId::text                                                             AS \"Cod.Curso\",
+                        (J.name||\' - \'||B.courseversion||\' - \'||I.description||\' - \'||H.description)::text AS \"Curso Versão\",
+                        J.name                                                                        AS \"Curso\",
+                        N.name::text                                                                 AS \"Centro\",
+                        G.description::text                                                          AS \"Estado Matricula\",
+                        TO_CHAR(A.dateCancellation, \'dd/mm/yyyy\')::text                              AS \"Data Cancelamento\",
+                        M.description::text                                                          AS \"Motivo Cancelamento\",
+                        E.finalaverage::numeric                                                      AS \"Media Final\",
+                        B.courseVersion::int                                                         AS \"Versao Curso\",
+                        TO_CHAR(B.conclusiondate, \'dd/mm/yyyy\')::text                              AS \"Data Conclusao Curso\",
+                        obternotaouconceitofinal(A.enrollid)::text                                   AS \"Nota Final\",
+                        A.frequency::numeric                                                         AS \"Frequencia Final\",                
+                        E.description::text                                                          AS \"Periodo Letivo\",
+                        getunitdescription(K.unitid)::text                                           AS \"Unidade Oferta\",
+                        (K.curricularcomponentid||\' / \'||K.curricularcomponentversion||\' - \'||L.name)::text AS \"Disciplina Ofertada\",
+                        getprofessorstext(D.groupid,\', \')::text                                       AS \"Professor\",
+                        C.cityid::int                                                                AS \"Cidade Aluno\",
+                        (case when A.isinternet=\'t\' then \'Portal\' else \'Secretaria\' end)             AS \"Origem Matricula\",
+                        (    SELECT count(distinct EE.periodid)
+                               FROM acdEnroll AA
+                         INNER JOIN acdContract BB             ON (AA.contractId = BB.contractId)
+                         INNER JOIN ONLY basPhysicalPerson CC  ON (BB.personId = CC.personId)
+                         INNER JOIN acdGroup DD                ON (AA.groupId = DD.groupId)
+                         INNER JOIN acdlearningperiod EE       ON (EE.learningPeriodId = DD.learningPeriodId)
+                              WHERE BB.contractid=B.contractid)                                      AS \"Semestres Matriculados\",
+                        case when (    SELECT count(distinct EE.periodid)
+                                         FROM acdEnroll AA
+                                   INNER JOIN acdContract BB             ON (AA.contractId = BB.contractId)
+                                   INNER JOIN ONLY basPhysicalPerson CC  ON (BB.personId = CC.personId)
+                                   INNER JOIN acdGroup DD                ON (AA.groupId = DD.groupId)
+                                   INNER JOIN acdlearningperiod EE       ON (EE.learningPeriodId = DD.learningPeriodId)
+                                        WHERE BB.contractid=B.contractid)=1 then \'Calouro\' else \'Veterano\' end AS \"Status Aluno\",
+                        CASE WHEN A.statusid in (3,4,5,6,8) then \'NÃO APROVADO\' ELSE \'APROVADO\' END AS \"Status Matricula\",
+                        obtem_situacao_contrato(B.contractid, E.periodid) AS \"Situação do Contrato\",
+                        coalesce(C.location,\'\')||\', \'||coalesce(C.number,\'\')||\' - \'||coalesce(C.complement,\'\')||\' \'||coalesce(C.neighborhood,\'\')||\' \'||coalesce(CC.name,\'\')||\' - \'||coalesce(C.zipcode,\'\') as \"Endereco\",
+                        coalesce(C.email,\'\')||\' / \'||coalesce(C.emailalternative,\'\') as \"Email\",
+                        coalesce(C.residentialphone,\'\')||\' / \'||coalesce(C.workphone,\'\')||\' / \'||coalesce(C.cellphone,\'\')||\' / \'||coalesce(C.messagephone,\'\')||\'(\'||coalesce(C.messagecontact,\'\')||\')\' as \"Fone\",
+                        (C.datebirth::date-date(now()))/365.25 as \"Idade\",
+                        case when ((C.datebirth::date-date(now()))/365.25)<=26 then  \'Até 26 anos\'
+                             when ((C.datebirth::date-date(now()))/365.25)<=37 then  \'De 27 até 37 anos\' 
+                             when ((C.datebirth::date-date(now()))/365.25)<=47 then  \'De 38 até 47 anos\' 
+                             when ((C.datebirth::date-date(now()))/365.25)<=57 then  \'De 48 até 57 anos\' 
+                             when ((C.datebirth::date-date(now()))/365.25)>57 then  \'58 anos ou mais\' 
+                             else \'Não Informado\' end as \"Faixa Etaria\"
+               FROM acdEnroll A
+         INNER JOIN acdContract B             ON (A.contractId = B.contractId)
+         INNER JOIN ONLY basPhysicalPerson C  ON (B.personId = C.personId)
+         INNER JOIN bascity CC                ON (C.cityid=CC.cityid)
+         INNER JOIN acdGroup D                ON (A.groupId = D.groupId)
+         INNER JOIN acdlearningperiod E       ON (E.learningPeriodId = D.learningPeriodId)
+         INNER JOIN acdCourseVersion F        ON (F.courseId = B.courseId AND F.courseVersion = B.courseVersion)
+         INNER JOIN acdEnrollStatus G         ON (A.statusId = G.statusId)
+         INNER JOIN basTurn H                 ON (H.turnId = B.turnId)
+         INNER JOIN basUnit I                 ON (I.unitId = B.unitId)
+         INNER JOIN acdCourse J               ON (B.courseId = J.courseId)
+         INNER JOIN acdcurriculum K           ON (D.curriculumid=K.curriculumid)
+         INNER JOIN acdcurricularcomponent L  ON (L.curricularcomponentid=K.curricularcomponentid and L.curricularcomponentversion=K.curricularcomponentversion)
+          LEFT JOIN acdreason M                ON (M.reasonid=A.reasoncancellationid)
+          LEFT JOIN acdCenter N                ON (N.centerid=J.centerid)
+              WHERE E.periodid=\'2014/1\''
+             ) AS t(
+                \"Cod.Matricula\"           integer                 ,
+                \"Periodo\"                 text   ,
+                \"Contrato\"                integer                 ,
+                \"Unidade\"                 text       ,
+                \"Cod.Pessoa\"              integer                  ,
+                \"Cod.Turma\"               integer                 ,
+                \"Data Matricula\"          date                    ,
+                \"Dia Matricula\"           int        ,
+                \"Mes Matricula\"           int        ,
+                \"Ano Matricula\"           int        ,
+
+                \"Nome Pessoa\"             text  ,
+                \"Sexo\"                    text                    ,
+                \"Cod.Curso\"               text   ,
+                \"Curso Versão\"            text,
+                \"Curso\"                   text                    ,
+                \"Centro\"                  text                    ,
+                \"Estado Matricula\"        text                    ,
+                \"Data Cancelamento\"       text                    ,
+                \"Motivo Cancelamento\"     text                    ,	
+                \"Media Final\"             numeric        ,
+                \"Versao Curso\"            integer                 ,
+                \"Data Conclusao Curso\"    text,
+                \"Nota Final\"              text       ,
+                \"Frequencia Final\"        numeric        ,
+
+                \"Periodo Letivo\"          text                    ,
+                \"Unidade Oferta\"          text       ,
+                \"Disciplina Ofertada\"     text                    ,
+                \"Professor\"               text                    ,
+                \"Cidade Aluno\"            int    ,
+                \"Origem Matricula\"        text                    ,	
+                \"Semestres Matriculados\"  int                  ,
+                \"Status Aluno\"            text                  ,
+                \"Status Matricula\"        text,
+                \"Situação Contrato\"       text,
+                \"Endereco\"   text,
+                \"Email\"      text,
+                \"Fone\"       text,
+                \"Idade\" text,
+                \"Faixa Etaria\" text     );
+        -----------------------------------------
+        -- 2013/2
+        -----------------------------------------
+        INSERT INTO bi.matriculas 
+        SELECT * FROM dblink('myconn','
+                          SELECT A.enrollId::int                                                              AS \"Cod.Matricula\",
+                        E.periodid::text                                                             AS \"Periodo\",
+                        B.contractid::int                                                            AS \"Contrato\",
+                        getunitdescription(B.unitid)::text                                           AS \"Unidade\",
+                        C.personId::int                                                              AS \"Cod.Pessoa\",
+                        D.groupid::int                                                               AS \"Cod.Turma\",
+                        A.dateenroll::date                                                           AS \"Data Matricula\",
+                        date_part(\'day\'  , A.dateenroll)::int                                        AS \"Dia Matricula\",
+                        date_part(\'month\', A.dateenroll)::int                                        AS \"Mes Matricula\",
+                        date_part(\'year\' , A.dateenroll)::int                                        AS \"Ano Matricula\",
+                        C.name::text                                                                 AS \"Nome Pessoa\",
+                        (CASE WHEN C.sex=\'M\' then \'Masculino\' else \'Feminino\' end)::text             AS \"Sexo\",
+                        B.courseId::text                                                             AS \"Cod.Curso\",
+                        (J.name||\' - \'||B.courseversion||\' - \'||I.description||\' - \'||H.description)::text AS \"Curso Versão\",
+                        J.name                                                                        AS \"Curso\",
+                        N.name::text                                                                 AS \"Centro\",
+                        G.description::text                                                          AS \"Estado Matricula\",
+                        TO_CHAR(A.dateCancellation, \'dd/mm/yyyy\')::text                              AS \"Data Cancelamento\",
+                        M.description::text                                                          AS \"Motivo Cancelamento\",
+                        E.finalaverage::numeric                                                      AS \"Media Final\",
+                        B.courseVersion::int                                                         AS \"Versao Curso\",
+                        TO_CHAR(B.conclusiondate, \'dd/mm/yyyy\')::text                              AS \"Data Conclusao Curso\",
+                        obternotaouconceitofinal(A.enrollid)::text                                   AS \"Nota Final\",
+                        A.frequency::numeric                                                         AS \"Frequencia Final\",                
+                        E.description::text                                                          AS \"Periodo Letivo\",
+                        getunitdescription(K.unitid)::text                                           AS \"Unidade Oferta\",
+                        (K.curricularcomponentid||\' / \'||K.curricularcomponentversion||\' - \'||L.name)::text AS \"Disciplina Ofertada\",
+                        getprofessorstext(D.groupid,\', \')::text                                       AS \"Professor\",
+                        C.cityid::int                                                                AS \"Cidade Aluno\",
+                        (case when A.isinternet=\'t\' then \'Portal\' else \'Secretaria\' end)             AS \"Origem Matricula\",
+                        (    SELECT count(distinct EE.periodid)
+                               FROM acdEnroll AA
+                         INNER JOIN acdContract BB             ON (AA.contractId = BB.contractId)
+                         INNER JOIN ONLY basPhysicalPerson CC  ON (BB.personId = CC.personId)
+                         INNER JOIN acdGroup DD                ON (AA.groupId = DD.groupId)
+                         INNER JOIN acdlearningperiod EE       ON (EE.learningPeriodId = DD.learningPeriodId)
+                              WHERE BB.contractid=B.contractid)                                      AS \"Semestres Matriculados\",
+                        case when (    SELECT count(distinct EE.periodid)
+                                         FROM acdEnroll AA
+                                   INNER JOIN acdContract BB             ON (AA.contractId = BB.contractId)
+                                   INNER JOIN ONLY basPhysicalPerson CC  ON (BB.personId = CC.personId)
+                                   INNER JOIN acdGroup DD                ON (AA.groupId = DD.groupId)
+                                   INNER JOIN acdlearningperiod EE       ON (EE.learningPeriodId = DD.learningPeriodId)
+                                        WHERE BB.contractid=B.contractid)=1 then \'Calouro\' else \'Veterano\' end AS \"Status Aluno\",
+                        CASE WHEN A.statusid in (3,4,5,6,8) then \'NÃO APROVADO\' ELSE \'APROVADO\' END AS \"Status Matricula\",
+                        obtem_situacao_contrato(B.contractid, E.periodid) AS \"Situação do Contrato\",
+                        coalesce(C.location,\'\')||\', \'||coalesce(C.number,\'\')||\' - \'||coalesce(C.complement,\'\')||\' \'||coalesce(C.neighborhood,\'\')||\' \'||coalesce(CC.name,\'\')||\' - \'||coalesce(C.zipcode,\'\') as \"Endereco\",
+                        coalesce(C.email,\'\')||\' / \'||coalesce(C.emailalternative,\'\') as \"Email\",
+                        coalesce(C.residentialphone,\'\')||\' / \'||coalesce(C.workphone,\'\')||\' / \'||coalesce(C.cellphone,\'\')||\' / \'||coalesce(C.messagephone,\'\')||\'(\'||coalesce(C.messagecontact,\'\')||\')\' as \"Fone\",
+                        (C.datebirth::date-date(now()))/365.25 as \"Idade\",
+                        case when ((C.datebirth::date-date(now()))/365.25)<=26 then  \'Até 26 anos\'
+                             when ((C.datebirth::date-date(now()))/365.25)<=37 then  \'De 27 até 37 anos\' 
+                             when ((C.datebirth::date-date(now()))/365.25)<=47 then  \'De 38 até 47 anos\' 
+                             when ((C.datebirth::date-date(now()))/365.25)<=57 then  \'De 48 até 57 anos\' 
+                             when ((C.datebirth::date-date(now()))/365.25)>57 then  \'58 anos ou mais\' 
+                             else \'Não Informado\' end as \"Faixa Etaria\"
+               FROM acdEnroll A
+         INNER JOIN acdContract B             ON (A.contractId = B.contractId)
+         INNER JOIN ONLY basPhysicalPerson C  ON (B.personId = C.personId)
+         INNER JOIN bascity CC                ON (C.cityid=CC.cityid)
+         INNER JOIN acdGroup D                ON (A.groupId = D.groupId)
+         INNER JOIN acdlearningperiod E       ON (E.learningPeriodId = D.learningPeriodId)
+         INNER JOIN acdCourseVersion F        ON (F.courseId = B.courseId AND F.courseVersion = B.courseVersion)
+         INNER JOIN acdEnrollStatus G         ON (A.statusId = G.statusId)
+         INNER JOIN basTurn H                 ON (H.turnId = B.turnId)
+         INNER JOIN basUnit I                 ON (I.unitId = B.unitId)
+         INNER JOIN acdCourse J               ON (B.courseId = J.courseId)
+         INNER JOIN acdcurriculum K           ON (D.curriculumid=K.curriculumid)
+         INNER JOIN acdcurricularcomponent L  ON (L.curricularcomponentid=K.curricularcomponentid and L.curricularcomponentversion=K.curricularcomponentversion)
+          LEFT JOIN acdreason M                ON (M.reasonid=A.reasoncancellationid)
+          LEFT JOIN acdCenter N                ON (N.centerid=J.centerid)
+              WHERE E.periodid=\'2013/2\''
+             ) AS t(
+                \"Cod.Matricula\"           integer                 ,
+                \"Periodo\"                 text   ,
+                \"Contrato\"                integer                 ,
+                \"Unidade\"                 text       ,
+                \"Cod.Pessoa\"              integer                  ,
+                \"Cod.Turma\"               integer                 ,
+                \"Data Matricula\"          date                    ,
+                \"Dia Matricula\"           int        ,
+                \"Mes Matricula\"           int        ,
+                \"Ano Matricula\"           int        ,
+
+                \"Nome Pessoa\"             text  ,
+                \"Sexo\"                    text                    ,
+                \"Cod.Curso\"               text   ,
+                \"Curso Versão\"            text,
+                \"Curso\"                   text                    ,
+                \"Centro\"                  text                    ,
+                \"Estado Matricula\"        text                    ,
+                \"Data Cancelamento\"       text                    ,
+                \"Motivo Cancelamento\"     text                    ,	
+                \"Media Final\"             numeric        ,
+                \"Versao Curso\"            integer                 ,
+                \"Data Conclusao Curso\"    text,
+                \"Nota Final\"              text       ,
+                \"Frequencia Final\"        numeric        ,
+
+                \"Periodo Letivo\"          text                    ,
+                \"Unidade Oferta\"          text       ,
+                \"Disciplina Ofertada\"     text                    ,
+                \"Professor\"               text                    ,
+                \"Cidade Aluno\"            int    ,
+                \"Origem Matricula\"        text                    ,	
+                \"Semestres Matriculados\"  int                  ,
+                \"Status Aluno\"            text                  ,
+                \"Status Matricula\"        text,
+                \"Situação Contrato\"       text,
+                \"Endereco\"   text,
+                \"Email\"      text,
+                \"Fone\"       text,
+                \"Idade\" text,
+                \"Faixa Etaria\" text
+             );
+        -----------------------------------------
+        -- 2013/1
+        -----------------------------------------
+        INSERT INTO bi.matriculas 
+        SELECT * FROM dblink('myconn','
+                          SELECT A.enrollId::int                                                              AS \"Cod.Matricula\",
+                        E.periodid::text                                                             AS \"Periodo\",
+                        B.contractid::int                                                            AS \"Contrato\",
+                        getunitdescription(B.unitid)::text                                           AS \"Unidade\",
+                        C.personId::int                                                              AS \"Cod.Pessoa\",
+                        D.groupid::int                                                               AS \"Cod.Turma\",
+                        A.dateenroll::date                                                           AS \"Data Matricula\",
+                        date_part(\'day\'  , A.dateenroll)::int                                        AS \"Dia Matricula\",
+                        date_part(\'month\', A.dateenroll)::int                                        AS \"Mes Matricula\",
+                        date_part(\'year\' , A.dateenroll)::int                                        AS \"Ano Matricula\",
+                        C.name::text                                                                 AS \"Nome Pessoa\",
+                        (CASE WHEN C.sex=\'M\' then \'Masculino\' else \'Feminino\' end)::text             AS \"Sexo\",
+                        B.courseId::text                                                             AS \"Cod.Curso\",
+                        (J.name||\' - \'||B.courseversion||\' - \'||I.description||\' - \'||H.description)::text AS \"Curso Versão\",
+                        J.name                                                                        AS \"Curso\",
+                        N.name::text                                                                 AS \"Centro\",
+                        G.description::text                                                          AS \"Estado Matricula\",
+                        TO_CHAR(A.dateCancellation, \'dd/mm/yyyy\')::text                              AS \"Data Cancelamento\",
+                        M.description::text                                                          AS \"Motivo Cancelamento\",
+                        E.finalaverage::numeric                                                      AS \"Media Final\",
+                        B.courseVersion::int                                                         AS \"Versao Curso\",
+                        TO_CHAR(B.conclusiondate, \'dd/mm/yyyy\')::text                              AS \"Data Conclusao Curso\",
+                        obternotaouconceitofinal(A.enrollid)::text                                   AS \"Nota Final\",
+                        A.frequency::numeric                                                         AS \"Frequencia Final\",                
+                        E.description::text                                                          AS \"Periodo Letivo\",
+                        getunitdescription(K.unitid)::text                                           AS \"Unidade Oferta\",
+                        (K.curricularcomponentid||\' / \'||K.curricularcomponentversion||\' - \'||L.name)::text AS \"Disciplina Ofertada\",
+                        getprofessorstext(D.groupid,\', \')::text                                       AS \"Professor\",
+                        C.cityid::int                                                                AS \"Cidade Aluno\",
+                        (case when A.isinternet=\'t\' then \'Portal\' else \'Secretaria\' end)             AS \"Origem Matricula\",
+                        (    SELECT count(distinct EE.periodid)
+                               FROM acdEnroll AA
+                         INNER JOIN acdContract BB             ON (AA.contractId = BB.contractId)
+                         INNER JOIN ONLY basPhysicalPerson CC  ON (BB.personId = CC.personId)
+                         INNER JOIN acdGroup DD                ON (AA.groupId = DD.groupId)
+                         INNER JOIN acdlearningperiod EE       ON (EE.learningPeriodId = DD.learningPeriodId)
+                              WHERE BB.contractid=B.contractid)                                      AS \"Semestres Matriculados\",
+                        case when (    SELECT count(distinct EE.periodid)
+                                         FROM acdEnroll AA
+                                   INNER JOIN acdContract BB             ON (AA.contractId = BB.contractId)
+                                   INNER JOIN ONLY basPhysicalPerson CC  ON (BB.personId = CC.personId)
+                                   INNER JOIN acdGroup DD                ON (AA.groupId = DD.groupId)
+                                   INNER JOIN acdlearningperiod EE       ON (EE.learningPeriodId = DD.learningPeriodId)
+                                        WHERE BB.contractid=B.contractid)=1 then \'Calouro\' else \'Veterano\' end AS \"Status Aluno\",
+                        CASE WHEN A.statusid in (3,4,5,6,8) then \'NÃO APROVADO\' ELSE \'APROVADO\' END AS \"Status Matricula\",
+                        obtem_situacao_contrato(B.contractid, E.periodid) AS \"Situação do Contrato\",
+                        coalesce(C.location,\'\')||\', \'||coalesce(C.number,\'\')||\' - \'||coalesce(C.complement,\'\')||\' \'||coalesce(C.neighborhood,\'\')||\' \'||coalesce(CC.name,\'\')||\' - \'||coalesce(C.zipcode,\'\') as \"Endereco\",
+                        coalesce(C.email,\'\')||\' / \'||coalesce(C.emailalternative,\'\') as \"Email\",
+                        coalesce(C.residentialphone,\'\')||\' / \'||coalesce(C.workphone,\'\')||\' / \'||coalesce(C.cellphone,\'\')||\' / \'||coalesce(C.messagephone,\'\')||\'(\'||coalesce(C.messagecontact,\'\')||\')\' as \"Fone\",
+                        (C.datebirth::date-date(now()))/365.25 as \"Idade\",
+                        case when ((C.datebirth::date-date(now()))/365.25)<=26 then  \'Até 26 anos\'
+                             when ((C.datebirth::date-date(now()))/365.25)<=37 then  \'De 27 até 37 anos\' 
+                             when ((C.datebirth::date-date(now()))/365.25)<=47 then  \'De 38 até 47 anos\' 
+                             when ((C.datebirth::date-date(now()))/365.25)<=57 then  \'De 48 até 57 anos\' 
+                             when ((C.datebirth::date-date(now()))/365.25)>57 then  \'58 anos ou mais\' 
+                             else \'Não Informado\' end as \"Faixa Etaria\"
+               FROM acdEnroll A
+         INNER JOIN acdContract B             ON (A.contractId = B.contractId)
+         INNER JOIN ONLY basPhysicalPerson C  ON (B.personId = C.personId)
+         INNER JOIN bascity CC                ON (C.cityid=CC.cityid)
+         INNER JOIN acdGroup D                ON (A.groupId = D.groupId)
+         INNER JOIN acdlearningperiod E       ON (E.learningPeriodId = D.learningPeriodId)
+         INNER JOIN acdCourseVersion F        ON (F.courseId = B.courseId AND F.courseVersion = B.courseVersion)
+         INNER JOIN acdEnrollStatus G         ON (A.statusId = G.statusId)
+         INNER JOIN basTurn H                 ON (H.turnId = B.turnId)
+         INNER JOIN basUnit I                 ON (I.unitId = B.unitId)
+         INNER JOIN acdCourse J               ON (B.courseId = J.courseId)
+         INNER JOIN acdcurriculum K           ON (D.curriculumid=K.curriculumid)
+         INNER JOIN acdcurricularcomponent L  ON (L.curricularcomponentid=K.curricularcomponentid and L.curricularcomponentversion=K.curricularcomponentversion)
+          LEFT JOIN acdreason M                ON (M.reasonid=A.reasoncancellationid)
+          LEFT JOIN acdCenter N                ON (N.centerid=J.centerid)
+              WHERE E.periodid=\'2013/1\''
+             ) AS t(
+                \"Cod.Matricula\"           integer                 ,
+                \"Periodo\"                 text   ,
+                \"Contrato\"                integer                 ,
+                \"Unidade\"                 text       ,
+                \"Cod.Pessoa\"              integer                  ,
+                \"Cod.Turma\"               integer                 ,
+                \"Data Matricula\"          date                    ,
+                \"Dia Matricula\"           int        ,
+                \"Mes Matricula\"           int        ,
+                \"Ano Matricula\"           int        ,
+
+                \"Nome Pessoa\"             text  ,
+                \"Sexo\"                    text                    ,
+                \"Cod.Curso\"               text   ,
+                \"Curso Versão\"            text,
+                \"Curso\"                   text                    ,
+                \"Centro\"                  text                    ,
+                \"Estado Matricula\"        text                    ,
+                \"Data Cancelamento\"       text                    ,
+                \"Motivo Cancelamento\"     text                    ,	
+                \"Media Final\"             numeric        ,
+                \"Versao Curso\"            integer                 ,
+                \"Data Conclusao Curso\"    text,
+                \"Nota Final\"              text       ,
+                \"Frequencia Final\"        numeric        ,
+
+                \"Periodo Letivo\"          text                    ,
+                \"Unidade Oferta\"          text       ,
+                \"Disciplina Ofertada\"     text                    ,
+                \"Professor\"               text                    ,
+                \"Cidade Aluno\"            int    ,
+                \"Origem Matricula\"        text                    ,	
+                \"Semestres Matriculados\"  int                  ,
+                \"Status Aluno\"            text                  ,
+                \"Status Matricula\"        text,
+                \"Situação Contrato\"       text,
+                \"Endereco\"   text,
+                \"Email\"      text,
+                \"Fone\"       text,
+                \"Idade\" text,
+                \"Faixa Etaria\" text
+             );
+        --IDX
+
+        create index idx_matriculas_estado_matr_contrato_periodo on bi.matriculas(\"Estado Matricula\",\"Contrato\",\"Periodo\");
+        drop view IF EXISTS  bi.param_proesc_prouni ;
+        drop view IF EXISTS  bi.param_periodo;
+        drop view IF EXISTS  bi.param_undiade;
+        drop view IF EXISTS  bi.param_curso  ;
+        create view bi.param_proesc_prouni  as select distinct \"Incentivo 1\" as incentivo  from bi.titulos where \"Incentivo 1\" ilike '%proesc%' union all select distinct \"Incentivo 1\" as proesc  from bi.titulos where \"Incentivo 1\" ilike '%prouni%' order by 1;
+        create view bi.param_periodo as select distinct \"Periodo\"     as periodo from bi.titulos                                      order by 1;
+        create view bi.param_undiade as select distinct \"Unidade\"     as unidade from bi.titulos                                      order by 1;
+        create view bi.param_curso   as select distinct \"Curso\"       as curso   from bi.titulos                                      order by 1;
+        create view bi.param_incentivo_receita   as select distinct \"Incentivo 1\" as incentivo_receita  from bi.titulos where \"Incentivo 1\" ilike '%fies%';
+
+        --Indices
+         CREATE INDEX idx67 on finentry(\"accountschemeid\");
+         CREATE INDEX idx75 on finentry(\"bankmovementid\");
+         CREATE INDEX idx76 on finentry(\"bankreturncode\");
+         CREATE INDEX idx77 on finentry(\"cielotransactionid\");
+         CREATE INDEX idx79 on finentry(\"comments\");
+         CREATE INDEX idx81 on finentry(\"contractid\");
+         CREATE INDEX idx82 on finentry(\"costcenterid\");
+         CREATE INDEX idx84 on finentry(\"creationtype\");
+         CREATE INDEX idx87 on finentry(\"datetime\");
+         CREATE INDEX idx91 on finentry(\"entrydate\");
+         CREATE INDEX idx92 on finentry(\"entryid\");
+         CREATE INDEX idx93 on finentry(\"incentivetypeid\");
+         CREATE INDEX idx95 on finentry(\"invoiceid\");
+         CREATE INDEX idx100 on finentry(\"ipaddress\");
+         CREATE INDEX idx101 on finentry(\"isaccounted\");
+         CREATE INDEX idx106 on finentry(\"learningperiodid\");
+         CREATE INDEX idx112 on finentry(\"operationid\");
+         CREATE INDEX idx129 on finentry(\"titulodereferencia\");
+         CREATE INDEX idx133 on finentry(\"username\");
+         CREATE INDEX idx136 on finentry(\"value\");
+         CREATE INDEX idx68 on finoperation(\"accountschemeid\");
+         CREATE INDEX idx86 on finoperation(\"datetime\");
+         CREATE INDEX idx88 on finoperation(\"description\");
+         CREATE INDEX idx98 on finoperation(\"ipaddress\");
+         CREATE INDEX idx103 on finoperation(\"iscountermovement\");
+         CREATE INDEX idx104 on finoperation(\"isextinct\");
+         CREATE INDEX idx110 on finoperation(\"operationgroupid\");
+         CREATE INDEX idx111 on finoperation(\"operationid\");
+         CREATE INDEX idx113 on finoperation(\"operationtypeid\");
+         CREATE INDEX idx118 on finoperation(\"receivableorpayable\");
+         CREATE INDEX idx130 on finoperation(\"useindiscounts\");
+         CREATE INDEX idx131 on finoperation(\"useinfines\");
+         CREATE INDEX idx132 on finoperation(\"useininterests\");
+         CREATE INDEX idx134 on finoperation(\"username\");
+         CREATE INDEX idx69 on finreceivableinvoice(\"accountschemeid\");
+         CREATE INDEX idx71 on finreceivableinvoice(\"automaticdebit\");
+         CREATE INDEX idx72 on finreceivableinvoice(\"balance\");
+         CREATE INDEX idx73 on finreceivableinvoice(\"bankaccountid\");
+         CREATE INDEX idx74 on finreceivableinvoice(\"bankinvoiceid\");
+         CREATE INDEX idx78 on finreceivableinvoice(\"comments\");
+         CREATE INDEX idx80 on finreceivableinvoice(\"competencydate\");
+         CREATE INDEX idx83 on finreceivableinvoice(\"costcenterid\");
+         CREATE INDEX idx85 on finreceivableinvoice(\"datetime\");
+         CREATE INDEX idx89 on finreceivableinvoice(\"emissiondate\");
+         CREATE INDEX idx90 on finreceivableinvoice(\"emissiontypeid\");
+         CREATE INDEX idx94 on finreceivableinvoice(\"incomesourceid\");
+         CREATE INDEX idx96 on finreceivableinvoice(\"invoiceid\");
+         CREATE INDEX idx97 on finreceivableinvoice(\"invoiceiddependence\");
+         CREATE INDEX idx99 on finreceivableinvoice(\"ipaddress\");
+         CREATE INDEX idx102 on finreceivableinvoice(\"iscanceled\");
+         CREATE INDEX idx105 on finreceivableinvoice(\"isimported\");
+         CREATE INDEX idx107 on finreceivableinvoice(\"maturitydate\");
+         CREATE INDEX idx109 on finreceivableinvoice(\"nominalvalue\");
+         CREATE INDEX idx114 on finreceivableinvoice(\"parcelnumber\");
+         CREATE INDEX idx115 on finreceivableinvoice(\"personid\");
+         CREATE INDEX idx116 on finreceivableinvoice(\"policyid\");
+         CREATE INDEX idx117 on finreceivableinvoice(\"reasoncancellationid\");
+         CREATE INDEX idx119 on finreceivableinvoice(\"referencematuritydate\");
+         CREATE INDEX idx120 on finreceivableinvoice(\"returndate\");
+         CREATE INDEX idx121 on finreceivableinvoice(\"returnfileid\");
+         CREATE INDEX idx123 on finreceivableinvoice(\"sagu1invoiceid\");
+         CREATE INDEX idx124 on finreceivableinvoice(\"sectorid\");
+         CREATE INDEX idx125 on finreceivableinvoice(\"sem_descontos\");
+         CREATE INDEX idx126 on finreceivableinvoice(\"senddate\");
+         CREATE INDEX idx128 on finreceivableinvoice(\"titulodereferencia\");
+         CREATE INDEX idx135 on finreceivableinvoice(\"username\");
+         CREATE INDEX idx137 on finreceivableinvoice(\"value\");
+         CREATE INDEX idx1 on bi.matriculas(\"Ano Matricula\");
+         CREATE INDEX idx4 on bi.matriculas(\"Centro\");
+         CREATE INDEX idx5 on bi.matriculas(\"Cidade Aluno\");
+         CREATE INDEX idx6 on bi.matriculas(\"Cod.Curso\");
+         CREATE INDEX idx7 on bi.matriculas(\"Cod.Matricula\");
+         CREATE INDEX idx9 on bi.matriculas(\"Cod.Pessoa\");
+         CREATE INDEX idx10 on bi.matriculas(\"Cod.Turma\");
+         CREATE INDEX idx11 on bi.matriculas(\"Contrato\");
+         CREATE INDEX idx14 on bi.matriculas(\"Curso\");
+         CREATE INDEX idx17 on bi.matriculas(\"Data Cancelamento\");
+         CREATE INDEX idx18 on bi.matriculas(\"Data Matricula\");
+         CREATE INDEX idx21 on bi.matriculas(\"Dia Matricula\");
+         CREATE INDEX idx25 on bi.matriculas(\"Disciplina Ofertada\");
+         CREATE INDEX idx26 on bi.matriculas(\"Estado Matricula\");
+         CREATE INDEX idx28 on bi.matriculas(\"Frequencia Final\");
+         CREATE INDEX idx35 on bi.matriculas(\"Media Final\");
+         CREATE INDEX idx36 on bi.matriculas(\"Mes Matricula\");
+         CREATE INDEX idx39 on bi.matriculas(\"Motivo Cancelamento\");
+         CREATE INDEX idx40 on bi.matriculas(\"Nome Pessoa\");
+         CREATE INDEX idx41 on bi.matriculas(\"Nota Final\");
+         CREATE INDEX idx42 on bi.matriculas(\"Origem Matricula\");
+         CREATE INDEX idx47 on bi.matriculas(\"Periodo\");
+         CREATE INDEX idx48 on bi.matriculas(\"Periodo Letivo\");
+         CREATE INDEX idx50 on bi.matriculas(\"Professor\");
+         CREATE INDEX idx52 on bi.matriculas(\"Semestres Matriculados\");
+         CREATE INDEX idx53 on bi.matriculas(\"Sexo\");
+         CREATE INDEX idx54 on bi.matriculas(\"Status Aluno\");
+         CREATE INDEX idx58 on bi.matriculas(\"Unidade\");
+         CREATE INDEX idx60 on bi.matriculas(\"Unidade Oferta\");
+         CREATE INDEX idx66 on bi.matriculas(\"Versao Curso\");
+         CREATE INDEX idx2 on bi.titulos(\"Ano Pagamento\");
+         CREATE INDEX idx3 on bi.titulos(\"Ano Vencimento\");
+         CREATE INDEX idx8 on bi.titulos(\"Cod.Pessoa\");
+         CREATE INDEX idx12 on bi.titulos(\"Contrato\");
+         CREATE INDEX idx13 on bi.titulos(\"Criado por Negociacao\");
+         CREATE INDEX idx15 on bi.titulos(\"Curso\");
+         CREATE INDEX idx16 on bi.titulos(\"Curso Versao\");
+         CREATE INDEX idx19 on bi.titulos(\"Data Pagamento\");
+         CREATE INDEX idx20 on bi.titulos(\"Data Vencimento\");
+         CREATE INDEX idx22 on bi.titulos(\"Dia Pagamento\");
+         CREATE INDEX idx23 on bi.titulos(\"Dia Vencimento\");
+         CREATE INDEX idx24 on bi.titulos(\"Dias ate Pagamento\");
+         CREATE INDEX idx27 on bi.titulos(\"Fechado por Negociacao\");
+         CREATE INDEX idx29 on bi.titulos(\"Incentivo 1\");
+         CREATE INDEX idx30 on bi.titulos(\"Incentivo 2\");
+         CREATE INDEX idx31 on bi.titulos(\"Incentivo 3\");
+         CREATE INDEX idx32 on bi.titulos(\"Incentivo 4\");
+         CREATE INDEX idx33 on bi.titulos(\"Incentivo 5\");
+         CREATE INDEX idx34 on bi.titulos(\"Incentivo 6\");
+         CREATE INDEX idx37 on bi.titulos(\"Mes Pagamento\");
+         CREATE INDEX idx38 on bi.titulos(\"Mes Vencimento\");
+         CREATE INDEX idx43 on bi.titulos(\"Percentual Incentivo 1\");
+         CREATE INDEX idx44 on bi.titulos(\"Percentual Incentivo 2\");
+         CREATE INDEX idx45 on bi.titulos(\"Percentual Incentivo 3\");
+         CREATE INDEX idx46 on bi.titulos(\"Periodo\");
+         CREATE INDEX idx49 on bi.titulos(\"Pessoa\");
+         CREATE INDEX idx51 on bi.titulos(\"Saldo\");
+         CREATE INDEX idx55 on bi.titulos(\"Titulo\");
+         CREATE INDEX idx56 on bi.titulos(\"Total Percentual Incentivo\");
+         CREATE INDEX idx57 on bi.titulos(\"Total Valor Incentivo\");
+         CREATE INDEX idx59 on bi.titulos(\"Unidade\");
+         CREATE INDEX idx61 on bi.titulos(\"Valor\");
+         CREATE INDEX idx62 on bi.titulos(\"Valor Incentivo 4\");
+         CREATE INDEX idx63 on bi.titulos(\"Valor Incentivo 5\");
+         CREATE INDEX idx64 on bi.titulos(\"Valor Incentivo 6\");
+         CREATE INDEX idx65 on bi.titulos(\"Valor Nominal\");
+
+        create view bi.carga as select * from carga;
+
+        update carga set fim=now();            
+        ";
+        
+        return $db->execute($sql);
+    }
+    
+}
+?>

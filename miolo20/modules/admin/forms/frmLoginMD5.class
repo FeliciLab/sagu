@@ -1,0 +1,192 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file form Login MD5
+ *
+ * @author Leovan Tavares da Silva [leovan] [leovan@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Leovan Tavares da Silva [leovan@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 14/06/2006
+ *
+ **/
+ 
+class frmLoginMD5 extends MForm
+{
+    public $countTries;
+
+    function __construct()
+    {
+        parent::__construct('Login MD5');
+        $this->page->AddScript('md5.js');
+        $this->AddJsCode($this->doChallengeResponse());
+        $this->OnSubmit('doChallengeResponse()');
+        $this->EventHandler();
+    }
+
+    function CreateFields()
+    {
+        $login = $this->manager->GetLogin();
+        $challenge = uniqid(rand());
+
+        // get the e-mail configured in miolo.conf
+        $contactEmail = $this->manager->getConf('theme.email');
+
+        // where should I return to?
+        $return_to = $this->getFormValue('return_to',MIOLO::_Request('return_to'));
+
+        if(!$return_to)
+        {
+            $return_to = $this->manager->history->Top();
+        }
+
+
+        $this->countTries = $this->GetFormValue('tries');
+
+        if ( $this->countTries == '' )
+        {
+            $this->countTries = 1;
+        }
+
+
+        // define the formfields
+        $fields = array(
+            new MTextField('uid',$login->iduser,'Login',20),
+            new MPasswordField('pwd','',_M('Senha','admin'),20),
+            new MTextLabel('username',$login->user,'Nome',40),
+            new HyperLink('mail', _M('E-mail de contato', 'admin'), 'mailto:'.$contactEmail, _M('E-mail de contato', 'admin')),
+            new MHiddenField('challenge', $challenge),
+            new MHiddenField('response', ''),
+            new MHiddenField('tries', ''),
+            new MHiddenField('return_to', '')
+        );
+        $this->SetFields($fields);
+        $buttons = array(
+            new MButton('btnLogin', 'Login'),
+            new MButton('btnLogout', 'Logout')
+        );
+        $this->SetButtons($buttons);
+
+        $helpMsg = _M('Você precisa informar um nome de usuário e senha válidos, a fim de entrar em sessão', 'admin');
+        $this->AddButton(new FormButton('btnHelp', _M('Ajuda', 'admin'), "alert('$helpMsg')"));
+
+        $this->btnLogin->visible = !$this->isAuthenticated();
+        $this->btnLogout->visible = $this->isAuthenticated();
+        $this->uid->readonly = $this->isAuthenticated();
+        $this->pwd->visible = !$this->isAuthenticated();
+        $this->username->visible = $this->isAuthenticated();
+    }
+
+    function btnLogin_click()
+    {
+        $this->manager->LogMessage('[LOGIN] Validating login information');
+
+        // Max login tryes
+        $max_tries = 3;
+
+        // autenticar usuário e obter dados do login
+        $uid = $this->GetFormValue('uid');
+        $pwd = $this->GetFormValue('pwd');
+        $challenge = $this->GetFieldValue('challenge');
+        $response = $this->GetFieldValue('response');
+
+        if ( $this->LoginPermitted($uid) )
+        {
+           if ( $this->manager->GetAuth()->Authenticate($uid, $challenge, $response) )
+           {
+               $return_to = $this->GetFormValue('return_to');
+               // ToDo: voltar para onde estava...
+               if ( $return_to )
+               {
+                  $url = $return_to;
+               }
+               else
+               {
+                  $url = $this->manager->GetActionURL('admin','login');
+               }
+               $this->page->Redirect($url);
+            }
+            else
+            {
+               if ( $this->countTries < $max_tries )
+               {
+                  $err = 'Erro na identificação do usuário!' . ' - Restam ' . ( $max_tries - $this->countTries) .
+                         ' ' . 'tentativa(s).';
+                  $this->countTries++;
+
+                  $this->SetFormValue('tries', $this->countTries);
+                  $pwd = null;
+                  $this->AddError($err);
+               }
+               else
+               {
+                   throw new ELoginException('Erro na identificação do usuário!');
+               }
+            }
+        }
+        else
+        {
+            throw new ELoginException('Login denied');
+        }
+    }
+
+    function btnLogout_click()
+    {
+        $this->page->Redirect($this->manager->GetActionURL('main','logout'));
+    }
+
+    function LoginPermitted($uid)
+    {
+       return true;
+    }
+
+    function isAuthenticated()
+    {
+        return $this->manager->GetAuth()->isLogged();
+    }
+
+    function doChallengeResponse()
+    {
+       $code = "function doChallengeResponse() { \n".
+               "  form = document.$this->name;\n".
+               "  str = form.uid.value + \":\" + \n" .
+               "        MD5(form.pwd.value) + \":\" + \n" .
+               "        form.challenge.value; \n".
+               "  form.pwd.value = \"\";\n".
+               "  form.response.value = MD5(str);\n".
+               "  return true;\n".
+               "}\n";
+       return $code;
+    }
+}
+
+?>

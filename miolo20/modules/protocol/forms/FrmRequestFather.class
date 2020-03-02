@@ -1,0 +1,283 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulario pai do passo a passo Convenios
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Moises Heberle [moises@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 2011/03/29
+ *
+ */
+class FrmRequestFather extends SStepByStepForm
+{
+    public function finalizeButton_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+
+        $formData1 = $this->getStepDataByForm('FrmRequest');
+        $formData2 = $this->getStepData();
+
+        try
+        {
+            $busRequest = new BusinessProtocolBusRequestPtc();
+            $BusDocumentPtc = new BusinessProtocolBusDocumentPtc();
+            $busRequiredDocument = new BusinessProtocolBusRequiredDocument();
+            $busFile = new BusinessBasicBusFile();
+            $busSubject = new BusinessProtocolBusSubject();
+
+            $busRequest->beginTransaction();
+
+            $reqDocs = $busRequiredDocument->listRequiredDocument($formData1->subjectId);
+            
+            $requestData = new PtcRequest();
+            $requestData->personId = $formData1->personId;
+            $requestData->subjectId = $formData1->subjectId;
+            $requestData->description = $formData1->description;
+            $requestData->number = $formData1->number;
+            $requestData->statusId = $formData1->statusId;
+            $requestData->currentSubjectId = $formData2->currentSubjectId;
+            $requestData->currentSectorId = $formData2->currentSectorId;
+            $requestData->currentLevel = SAGU::NVL($formData2->currentLevel, 1);
+            $requestData->sectorId = $formData1->sectorId;
+            
+            $dataSubject = $busSubject->getSubject($requestData->subjectId);
+            
+            $cobraTaxa = PtcSubject::cobrarTaxaPrimeiraSolicitacao($formData1);
+
+            if ( $dataSubject->taxValue <= 0 || ($cobraTaxa == DB_FALSE && $dataSubject->taxValue > 0) )
+            {
+                $requestData->statusId = PtcRequest::STATUS_RUNNING;
+            }
+
+            if ( strlen($formData1->contractId) > 0 )
+            {
+                $busContract = new BusinessAcademicBusContract();
+                $contract = $busContract->getContract($formData1->contractId);
+                
+                $requestData->courseId = $contract->courseId;
+                $requestData->courseVersion = $contract->courseVersion;
+                $requestData->turnId = $contract->turnId;
+                $requestData->unitId = $contract->unitId;
+            }
+            
+            $requestId = $busRequest->insertRequest($requestData);
+
+            if (count($reqDocs) > 0)
+            {
+                foreach ($reqDocs as $row)
+                {
+                    list ($requiredDocumentId,
+                          $description) = $row;
+
+                    $id = 'file' . $requiredDocumentId;
+                    unset($fileId);
+                    
+                    $isScannedDocument = $this->getFormValue('scannedDocumentfile' . $requiredDocumentId);
+                    
+                    if(!$isScannedDocument)
+                    {
+                        if ( strlen($_FILES[$id]['name']) > 0 )
+                        {
+                            $fData = new BasFile();
+                            $fData->contentType = $_FILES[$id]['type'];
+                            $fData->uploadFileName = $_FILES[$id]['name'];
+
+                            $fileId = $busFile->insertFile($fData, $_FILES[$id]['tmp_name']);
+                        }
+                        
+                    }
+                    else
+                    {
+                        $fileName = $MIOLO->getLogin()->id . '_scannedimage_document_file' . $requiredDocumentId . '.jpg';
+                        $filePath = $MIOLO->getConf("home.modules") . '/protocol/html/tmp/';
+                            
+                        $fData = new BasFile();
+                        $fData->contentType = 'image/jpeg';
+                        $fData->uploadFileName = $fileName;
+
+                        $fileId = $busFile->insertFile($fData, $filePath . $fileName);
+                            
+                        unlink($filePath . $fileName);
+                        
+                    }
+
+                    $docData = new PtcDocument();
+                    $docData->requestId = $requestId;
+                    $docData->description = $this->getFormValue('description' . $requiredDocumentId);
+                    $docData->fileId = $fileId;
+
+                    $BusDocumentPtc->insertDocument($docData);
+                }
+            }
+
+            if ( is_numeric(SAGU::getParameter($module, 'ATTACHED_DOCUMENTS_NUMBER')) && SAGU::getParameter($module, 'ATTACHED_DOCUMENTS_NUMBER') > 0)
+            {
+                for ( $i=1; $i <= SAGU::getParameter($module, 'ATTACHED_DOCUMENTS_NUMBER'); $i++ )
+                {
+                    $attdescription = $this->getFormValue('attdescription' . $i);
+                    $isScannedDocument = $this->getFormValue('scannedDocumentattfile' . $i);
+                    unset($fileId);
+
+                    if ( strlen($attdescription) > 0 )
+                    {
+                        if(!$isScannedDocument)
+                        {
+                            $id = 'attfile' . $i;
+
+                            if ( strlen($_FILES[$id]['name']) > 0 )
+                            {
+                                $fData = new BasFile();
+                                $fData->contentType = $_FILES[$id]['type'];
+                                $fData->uploadFileName = $_FILES[$id]['name'];
+
+                                $fileId = $busFile->insertFile($fData, $_FILES[$id]['tmp_name']);
+                            }
+                            
+                        }
+                        else
+                        {
+                            $fileName = $MIOLO->getLogin()->id . '_scannedimage_document_attfile' . $i . '.jpg';
+                            $filePath = $MIOLO->getConf("home.modules") . '/protocol/html/tmp/';
+                            
+                            $fData = new BasFile();
+                            $fData->contentType = 'image/jpeg';
+                            $fData->uploadFileName = $fileName;
+
+                            $fileId = $busFile->insertFile($fData, $filePath . $fileName);
+                            
+                            unlink($filePath . $fileName);
+                            
+                        }
+                        
+                        $docData = new PtcDocument();
+                        $docData->requestId = $requestId;
+                        $docData->description = $attdescription;
+                        $docData->fileId = $fileId;
+
+                        $BusDocumentPtc->insertDocument($docData);
+                        
+                    }
+                }
+            }
+
+            //
+            // campos personalizados
+            //
+            $this->loadCustomFields();
+            if ( count($this->mioloCustomFields) > 0 )
+            {
+                $this->saveCustomFields($requestId);
+            }
+            
+            $busRequest->commit();
+            
+            // Verifica se é do tipo 'solicitação de reposição de aula' e se a pessoa é coordenador para mandar email.
+            if ( $requestData->subjectId == SAGU::getParameter('PROTOCOL', 'TIPO_PROTOCOLO_REPOSICAO_AULA') )
+            {
+                $busCourseCoordinator = new BusinessAcademicBusCourseCoordinator();
+                if ( $busCourseCoordinator->isCourseCoordinator($requestData->personId) )
+                {
+                    $preferencias = $busCourseCoordinator->obterPreferenciasDoCoordenador($requestData->personId);
+
+                    if ( $preferencias[2] == DB_TRUE )
+                    {
+                        $busPerson = new BusinessBasicBusPhysicalPerson();
+
+                        $person = $busPerson->getPhysicalPerson($requestData->personId);
+                        $personName = $person->name;
+                        $personEmail = $person->email;
+
+                        $tags = array( '$DESCRIPTION' => $requestData->description );
+
+                        // Business email and company
+                        $busEmail = new BusinessBasicBusEmail();
+                        $busCompany = new BusinessBasicBusCompany();
+                        $emailId = SAGU::getParameter('PROTOCOL', 'REPOSICAO_AULA_EMAIL_ID');
+
+                        if ( $emailId != 0 )
+                        {
+                            $dataEmail = $busEmail->getEmail($emailId);
+                            $dataCompany = $busCompany->getCompany(SAGU::getParameter('BASIC', 'DEFAULT_COMPANY_CONF'));
+
+                            // Parameters
+                            $from = strtolower($dataEmail->from);
+                            $fromName = $dataCompany->acronym;
+                            $recipient[$personName] = strtolower($personEmail);
+                            $subject = $dataEmail->subject;
+                            $body = strtr($dataEmail->body, $tags);
+
+                            $mail = new sendEmail($from, $fromName, $recipient, $subject, $body, array());
+
+                            $mail->sendEmail();
+                        }
+                    }
+                }
+            }
+
+            // mensagem de insercao
+            $msg = SAGU::getParameter('PROTOCOL', 'REQUEST_AUTOMATIC_NUMBER') == 'YES' ?
+                    _M('Solicitação número @1 inserida com sucesso', $module, $busRequest->lastRequestNumber) :
+                    SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED_INFO');
+            
+            parent::finalizeButton_click($args);
+            
+            SAGU::information( $msg, $MIOLO->getActionURL ( $module, $action, null, array ( 'function'=>'search' ) ) );
+        }
+        catch (Exception $e)
+        {
+            parent::finalizeButton_click($args);
+            
+            $this->addError($e->getMessage());
+        }   
+    }
+    
+    public function loadCustomFields()
+    {
+        $data = sstepbystepform::getAllStepDataStatic();
+        $subjectId = $data['subjectId'];
+        $customFieldIds = BasCustomField::getCustomFieldIdsBySubject($subjectId);
+        $fields = array();
+        
+        // Carrega e exibe campos personalizados
+        if ( count($customFieldIds) > 0 && strlen($subjectId) > 0 )
+        {
+            $customizedId = $subjectId;
+//            $cfData = BasCustomField::getFieldValuesById($customFieldIds, $customizedId);
+            $cfData = new stdClass();
+            $customFields = $this->mioloCustomFields = BasCustomField::listByCustomFieldIds($customFieldIds);
+            $fields = $this->generateCustomFields($customFields, $cfData);
+        }
+
+        return $fields;
+    }
+}
+?>

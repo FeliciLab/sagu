@@ -1,0 +1,452 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Luís Augusto Weber Mercado [luis_augusto@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Luís Augusto Weber Mercado [luis_augusto@solis.com.br]
+ * 
+ * @since
+ * Arquivo criado em 26/03/2015
+ *
+ **/
+class FrmEditorDeSQL extends SForm
+{
+    
+    /**
+     * Operações SQL que não são permitidas (por fins de segurança)
+     * 
+     * @var Array 
+     */
+    private static $operacoesNaoPermitidas = array("UPDATE", "DELETE", "INSERT");
+    
+    private $usuarioLeitura;
+    
+    /**
+     * Construtor da classe
+     * 
+     */
+    public function __construct()
+    {
+        $module = MIOLO::getCurrentModule();
+        
+        parent::__construct(_M("Editor de SQLs", $module), null, null);
+        
+        $this->addStyleFile('m_grids.css');
+        $this->disableToolbar();
+                                
+    }
+    
+    /**
+     * Método para definir os fields
+     * 
+     */
+    public function defineFields()
+    {
+        $page = MIOLO::_REQUEST("pn_page");
+        
+        $fields = array();
+        
+        $fields[] = new MDiv("edsqlInputContainer", array(            
+            new MLabel(_M("Informe uma consulta SQL")),
+            new MMultiLineField("edsqlTxtAreaSQL")
+            
+        ));
+        
+        $fields[] = new MButton("edsqlBtnExecutarSQL", _M("Executar"), SForm::getAjaxAction("executaAcaoSQL", "edsqlDivResultado"));
+        
+        $resultado =  new MDiv("edsqlDivResultado", "");
+        
+        if ( strlen($page) > 0 || MIOLO::_REQUEST('orderby') )
+        {
+            $args = new stdClass();
+            $args->edsqlTxtAreaSQL = MIOLO::_REQUEST("edsqlTxtAreaSQL");
+            
+            $resultado = new MDiv("edsqlDivResultado", $this->executaAcaoSQL($args));
+        }
+        
+        $fields[] = $resultado;
+        
+        parent::defineFields(array("fields" => $fields));
+        
+        $this->recuperaValorCampoSQL();
+        
+    }
+    
+    /**
+     * Salva a consulta SQL na sessão
+     * 
+     */
+    public function salvaValorCampoSQL($valor)
+    {
+        MIOLO::getInstance()->session->setValue("edsqlConsulta", $valor);
+        
+    }
+    
+    /**
+     * Pega o valor armazenado na sessão e seta no campo de SQL
+     * 
+     */
+    public function recuperaValorCampoSQL()
+    {
+        $valor = addslashes(MIOLO::getInstance()->session->getValue("edsqlConsulta"));
+        
+        $js = ""
+            . "document.getElementById('edsqlTxtAreaSQL').value = '{$valor}';";
+        
+        $this->AddJsCode($js);
+        
+    }
+    
+    /**
+     * Evento do botão "Executar" do formulário
+     * 
+     * @param Array $args Argumentos enviados via AJAX
+     */
+    public function executaAcaoSQL($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        // Gera um usuário randômico
+        if ( !$this->getUsuarioLeitura() )
+        {
+            $this->setUsuarioLeitura('user_' . rand());
+        }
+        
+        try
+        {
+            // Altera do usuário logado para o usuário temporário criado, e seta permissão apenas de leitura
+            SDatabase::insertDbUser($this->getUsuarioLeitura());
+            SDatabase::gerarUsuarioComPermissaoDeLeitura($this->getUsuarioLeitura());
+            SDatabase::changeConnectionUser($this->getUsuarioLeitura());
+            
+            $query = $this->validaQuery($args->edsqlTxtAreaSQL);
+            $this->salvaValorCampoSQL($query);
+            $infoColunas = $this->getInformacaoColunasPorQuery($query);
+            
+            if( $query )
+            {
+                $gridFormatada = $this->getGridComDadosFormatados($query, $infoColunas);
+                
+                // Altera do usuário com permissão de leitura para usuário logado
+                SDatabase::changeConnectionUser($MIOLO->getLogin()->id);
+            
+                if( $gridFormatada )
+                {
+                    $this->salvaInformacaoGridSessao($infoColunas->nomes, $gridFormatada->data);
+
+                    return array($gridFormatada);
+                }
+            }
+            
+            throw new Exception(_M("Informe alguma instrução SQL válida (aceita-se apenas SELECT's)!"));
+        }
+        catch ( Exception $e )
+        {
+            // Altera do usuário com permissão de leitura para usuário logado
+            SDatabase::changeConnectionUser($MIOLO->getLogin()->id);
+            
+            $MIOLO->session->set('edsqlTxtAreaSQL', $args->edsqlTxtAreaSQL);
+            $this->addError($e->getMessage());
+        }
+    }
+    
+    /**
+     * Salva as informações da grid na sessão
+     * 
+     * @param Array $colunas Colunas da grid
+     * @param Array $dados Dados da grid
+     */
+    public function salvaInformacaoGridSessao($colunas, $dados)
+    {
+        // Junta os dados e salva na sessão
+        MIOLO::getInstance()->session->setValue("edsqlGridData", array_merge(array(array_values($colunas)), $dados));
+        
+    }
+    
+    /**
+     * OVERRIDE do método getGridData()
+     * 
+     * Pega os dados da grid armazenados na sessão
+     * 
+     * @see SForm::getGridData()
+     * 
+     * @return Array Array com os dados da grid
+     */
+    public function getGridData()
+    {
+        return MIOLO::getInstance()->session->getValue("edsqlGridData");
+        
+    }
+    
+    /**
+     * Valida uma dada Query
+     * 
+     * @param String $query Query a ser verificada
+     * 
+     * @return String|Boolean SQL se $query for válida, FALSE caso contrário
+     */
+    public function validaQuery($query)
+    {
+        $regex = implode("|", FrmEditorDeSQL::$operacoesNaoPermitidas);
+        
+        $retorno = !preg_match("/{$regex}/i", $query) ? $query : false;
+        
+        return $retorno ? rtrim($query, "; ") : false;
+        
+    }
+    
+    /**
+     * Pega um row do resultado da consulta
+     * 
+     * 
+     * @param String $sql Consulta SQL
+     * 
+     * @return Array Com um row do resultado
+     */
+    private function getRowExemplo($sql)
+    {
+        $query = SDatabase::query($sql);
+        
+        return $query[0];
+        
+    }
+    
+    /**
+     * Dado um objeto SGrid, formata os dados deste
+     * 
+     * @param String $query String SQL que gera os dados da grid
+     * @param Objeto $infoColunas Informações das colunas profindos do método
+     * FrmEditorDeSQL::getInformacaoColunasPorQuery()
+     * 
+     * @see FrmEditorDeSQL::getInformacaoColunasPorQuery()
+     * 
+     * @return SGrid Com os dados formatados, NULL se nâo houver dados
+     */
+    public function getGridComDadosFormatados($query, $infoColunas)
+    {
+        $grid = new SGrid(null, $this->getColunas($infoColunas), null);
+        $grid->setQuery($query, MIOLO::getCurrentModule());
+        $grid->clearActions();
+        $dados = $grid->getData();
+        
+        if( count($dados) === 0 )
+        {
+            $this->AddError(_M("A busca com a consulta informada não retornou dados."));
+            
+            return null;
+            
+        }
+        
+        // Verifica se precisa formatar
+        if( $this->precisaFormatar($infoColunas->tipos) )
+        {
+            $grid->data = $this->getDadosFormatados($dados, $infoColunas->tipos);
+                        
+        }
+        
+        return $grid;
+        
+    }
+    
+    /**
+     * Pega as informações das colunas baseada na query
+     * 
+     * @param String $query String SQL
+     * 
+     * @return stdClass Objeto com as informações das colunas ($obj): 
+     * $obj->nomes = Nomes das colunas;
+     * $obj->tipos = Tipo das colunas
+     */
+    public function getInformacaoColunasPorQuery($query)
+    {
+        if ( stristr($query, 'limit') === false )
+        {
+            $query .= " LIMIT 1 ";
+        }
+        
+        $rowExemplo = $this->getRowExemplo($query);
+        
+        $obj = new stdClass();
+
+        $obj->nomes = SDatabase::getQueryColumns($query);
+        $obj->tipos = SDatabase::getQueryTypes($query);
+
+        // Verifica os tipos de dados
+        for( $i = 0; $i < count($obj->tipos); $i++ )
+        {
+            $obj->tipos[$i] = $this->getTipoCorretoColunaBaseadoEmValor($obj->tipos[$i], $rowExemplo[$i]);
+
+        }
+        
+        return $obj;
+        
+    }
+    
+    /**
+     * Pega as colunas e às converte a um objeto MGridColumn
+     * 
+     * @param Objeto $infoColunas Informações das colunas profindos do método
+     * FrmEditorDeSQL::getInformacaoColunasPorQuery()
+     * 
+     * @see FrmEditorDeSQL::getInformacaoColunasPorQuery()
+     * 
+     * @return Array Array com objetos MGridColumn
+     */
+    public function getColunas($infoColunas)
+    {
+        $colunas = array();
+        
+        $nomes = $infoColunas->nomes;
+        $tipos = $infoColunas->tipos;
+        
+        foreach( $nomes as $i => $nome )
+        {
+            $colunas[] = new MGridColumn($nome, sRelatorioPDF::getColAlign($tipos[$i]), false, null, true, null, true);
+                        
+        }
+        
+        return $colunas;
+        
+    }
+    
+    /**
+     * Função que retorna o tipo correto baseado no valor
+     * Pois pode acontecer que, em alguns casos, haja uma data em uma String
+     * 
+     * @param String $tipo Tipo informado
+     * @param String $valor Valor
+     * @return String Tipo de acordo com o valor da variável
+     */
+    public function getTipoCorretoColunaBaseadoEmValor($tipo, $valor)
+    {
+        // Se o tipo da coluna for 'text' ou 'varchar', verifica se o valor da primeira linha é uma data. Se for, troca o tipo da coluna.
+        if ( $tipo == "text" || $tipo == "varchar" )
+        {
+            if ( SAGU::isDate($valor) )
+            {
+                $tipo = "date";
+                
+            }
+            else if ( is_numeric($valor) )
+            {
+                $tipo = "int4";
+                
+            }
+            
+        }
+        
+        return $tipo;
+        
+    }
+    
+    /**
+     * Verifica se há a necessidade de formatar os dados
+     * 
+     * @param Array $tipos Array com os tipos das colunas
+     * @return Boolean TRUE se necessário, FALSE caso contrário
+     */
+    public function precisaFormatar($tipos)
+    {
+        // Verifica se algum dos tipos que necessitam informaçãoes
+        // está entre os tipos das colunas
+        return in_array("float8", $tipos)
+            || in_array("decimal", $tipos)
+            || in_array("numeric", $tipos)
+            || in_array("date", $tipos)
+            || in_array("timestamp", $tipos)
+            || in_array("timestamptz", $tipos)
+            || in_array("boolean", $tipos);
+        
+    }
+    
+    /**
+     * Formata os dados
+     * 
+     * @param Array $dados Dados da grid
+     * @param Array $tipos Tipos dos dados
+     * 
+     * @return Array Dados formatados
+     */
+    public function getDadosFormatados($dados, $tipos)
+    {
+        foreach( $dados as $i => $row )
+        {
+            foreach( $row as $j => $valor )
+            {
+                $dados[$i][$j] = $this->getDadoFormatado($valor, $tipos[$j]);
+
+            }
+
+        }
+        
+        return $dados;
+        
+    }
+    
+    /**
+     * Formata um dado valor em função do seu tipo
+     * 
+     * @param String $valor Valor do dado
+     * @param String $tipo Tipo do dado
+     * 
+     * @return Mixed Dado formatado
+     */
+    public function getDadoFormatado($valor, $tipo)
+    {
+        if ( in_array($tipo, array("float8", "decimal", "numeric")) )
+        {
+            return number_format($valor, 2, ",", ".");
+            
+        }
+        else if ( $tipo == "date" )
+        {
+            return !SAGU::validaData($valor) ? date('d/m/Y', strtotime($valor)) : $valor;
+            
+        }
+        else if ( $tipo == "timestamptz" || $tipo == "timestamp" )
+        {
+            return date("d/m/Y H:i", strtotime($valor));
+
+        }
+        else if ( $tipo == "boolean" )
+        {
+            return SAGU::getYesNo($valor);
+
+        }
+        
+        return $valor;
+        
+    }
+    
+    public function getUsuarioLeitura()
+    {
+        return $this->usuarioLeitura ? $this->usuarioLeitura : $_SESSION['usuarioLeitura'];
+    }
+
+    public function setUsuarioLeitura($usuarioLeitura)
+    {
+        $this->usuarioLeitura = $_SESSION['usuarioLeitura'] = $usuarioLeitura;
+    }
+}
+?>

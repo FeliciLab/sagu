@@ -1,0 +1,181 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda. e
+ * Univates - Centro Universitário.
+ * 
+ * Este arquivo é parte do programa Gnuteca.
+ * 
+ * O Gnuteca é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * @author Nataniel I. da Silva [nataniel@solis.coop.br]
+ *
+ * @version $Id$
+ * 
+ * @since
+ * Class created on 27/08/2014
+ *
+ **/
+
+MIOLO::uses('/classes/NFeSP/NFSeSP.class.php', 'finance');
+
+class FrmNfePaulistanaBusca extends SSearchForm
+{
+    protected $campoBuscaGenerica = true;
+    
+    public function __construct($data)
+    {
+        parent::__construct(_M('Localizar', $module), new FinEmissaoLoteNfe());
+    }
+    
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $fields[] = new MDiv('divLimbo');
+        
+        parent::defineFields($fields, $module, 'GrdNfePaulistanaBusca', $validators);
+    }
+    
+    public function popupVizualisarNFes($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+                
+        $fields = array();
+        
+        // Obtem informacao das nfes
+        $dataGrid = FinNfe::obtemNFesParaConsulta($args->emissaoLoteNfeId);
+        
+        $grid = $MIOLO->getUI()->getGrid($module, 'GrdNFesResumo');
+        $grid->setData($dataGrid);
+        
+        $fields[] = new MDiv('divGrid', $grid);
+        
+        MPopup::show('popupVizualisarResumo', $fields,_M("Notas fiscais do lote: $args->loteRetornado"));
+    }
+    
+    public function verificaPermissaoCancelamento()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $notaFiscal = MIOLO::_REQUEST('numeroNotaFiscal');
+        $nfeId = MIOLO::_REQUEST('nfeId');
+
+        // Caso tenha vindo do estorno de pagamento
+        if ( MIOLO::_REQUEST('returnTo') == 'reverseInvoice' )
+        {
+            $returnTo = $MIOLO->GetActionURL('finance', 'main:register:invoice:reverseInvoice', null, array('invoiceId' => MIOLO::_REQUEST('invoiceId'), 'function' => 'reverse'));
+        }
+        
+        if ( $MIOLO->checkAccess('FrmNfePaulistanaCancelamento', A_ADMIN, false, true) )
+        {
+            $msg = _M("Você realmente deseja emitir o cancelamento da nota fiscal eletrônica $notaFiscal?");
+
+            $args = array('nfeId' => $nfeId, 'numeroNotaFiscal' => $notaFiscal, 'returnTo' => MIOLO::_REQUEST('returnTo'), 'invoiceId' => MIOLO::_REQUEST('invoiceId'));
+            $eventOk = 'cancelarNFe';
+            $eventCancel = null;
+            $gotoOK = $MIOLO->getActionURL($module, 'main:process:nfePaulistana', null, $args);
+            $gotoCancel = $MIOLO->getActionURL($module, 'main:process:nfePaulistana', null, array());
+
+            $fields[] = MPrompt::Question($msg, $gotoOK, SAGU::NVL($returnTo, $gotoCancel), $eventOk, $eventCancel);
+            
+            $this->SetFields($fields);
+        }
+        else
+        {
+            $goto = $MIOLO->getActionURL($module, 'main:process:nfePaulistana', null, array());
+            $MIOLO->error(_M('O usuário não tem permissão para executar o processo de cancelamento de nota fiscal. Entre em contato com o responsável.'), $goto);
+        }
+    }
+    
+    public function cancelarNFe($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $event = MIOLO::_REQUEST('__EVENTTARGETVALUE');
+        $nfeId = MIOLO::_REQUEST('nfeId');
+        $senhaCertificado = MIOLO::_REQUEST('senhaCertificado');
+        $numeroNotaFiscal = MIOLO::_REQUEST('numeroNotaFiscal');
+
+        // Caso tenha vindo do estorno de pagamento
+        if ( MIOLO::_REQUEST('returnTo') == 'reverseInvoice' )
+        {
+            $returnTo = $MIOLO->GetActionURL('finance', 'main:register:invoice:reverseInvoice', null, array('invoiceId' => MIOLO::_REQUEST('invoiceId'), 'function' => 'reverse'));
+        }
+        
+        $home = 'main:process:nfePaulistana';
+                
+        // Evento de cancelar da popup de senha do certificado
+        if ( 'btnRefuse:click' == $event )
+        {
+            $MIOLO->page->Redirect(SAGU::NVL($returnTo, $MIOLO->GetActionURL($module, $home)));
+            return;
+        }
+        // Se a senha não foi informada, monta popup informando que a senha deve ser informada para efetuar o cancelamento
+        else if ( !strlen($senhaCertificado) > 0 )
+        {
+            $fld = new MPasswordField('senhaCertificado', null, _M('Senha do certificado digital'));
+
+            $message = '<b>' . _M('Informe a senha do certificado digital para prosseguir com o cancelamento.') . '</b>';
+            $label = _M("Cancelamento da nota fiscal: $numeroNotaFiscal");
+            $fields[] = new MPopupConfirm($message, $label, null, null, $fld);
+            
+            $this->addFields($fields);
+            return;
+        }
+        else if ( 'btnConfirm:click' == $event )
+        {
+            try
+            {
+                $goto = $MIOLO->getActionURL($module, $home, null, array());
+                
+                $data = FinNfe::obtemInformacoesDoPrestador($nfeId);
+                $nfse = new NFSeSP($data->completePath, $data->filePath, $senhaCertificado);
+                $nfse->ccmPrestador = $data->codigoMunicipio;
+                $nfse->cnpjPrestador = str_replace(array('.', '-', '/'), '', $data->cnpj);
+                
+                $retorno = $nfse->cancelNFe(array($numeroNotaFiscal));
+                                
+                if ( count($retorno->Erro) > 0 )
+                {
+                    $msgErro = _M("Não foi possível executar a solicitação de cancelamento da nota $numeroNotaFiscal. <br>");
+                    foreach ( $retorno->Erro as $erro )
+                    {
+                        $msgErro .= $erro->Codigo . ' - ' . utf8_decode($erro->Descricao) . '<br>';
+                    }
+                    throw new Exception($msgErro);
+                }
+                
+                if ( $retorno->Cabecalho->Sucesso == true )
+                {
+                    // Atualiza o status da nfe para cancelada
+                    FinNfe::atualizaSituacaoNFe($nfeId);
+                    
+                    $msg = _M("Cancelamento da nota $numeroNotaFiscal efetuado com sucesso.");
+                    $MIOLO->information($msg, SAGU::NVL($returnTo, $goto));
+                }
+            }
+            catch ( Exception $e )
+            {
+                $MIOLO->error($e->getMessage(), SAGU::NVL($returnTo, $goto));
+            }
+        }
+    }
+        
+}
+
+?>

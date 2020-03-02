@@ -1,0 +1,204 @@
+<?php
+
+/**
+ * JQuery Mobile Sagu basic form.
+ *
+ * @author Felipe Ferreira [felipe_ferreira@solis.com.br]
+ *
+ * \b Maintainers: \n
+ *
+ * @since
+ * Creation date 2015/02/18
+ *
+ * \b Organization: \n
+ * SOLIS - Cooperativa de Solu?§??es Livres \n
+ *
+ * \b Copyright: \n
+ * Copyright (c) 2012 SOLIS - Cooperativa de Solu?§??es Livres \n
+ *
+ * \b License: \n
+ * Licensed under GPLv2 (for further details read the COPYING file or http://www.gnu.org/licenses/gpl.html)
+ *
+ */
+$MIOLO->uses('classes/prtReciboProtocolo.class.php', 'portal');
+
+class FrmProtocoloBusca extends SForm
+{
+ 
+     public function __construct()
+    {
+        parent::__construct(_M('Solicitação de Protocolo', 'basic'));
+    }
+    
+     public function createFields()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        $fields[] = new MButton('btnAdicionarSolicitacao', _M('Adicionar solicitação', $module));
+		
+        $busRequest = new BusinessProtocolBusRequestPtc();
+        $busRequestStatus = new BusinessProtocolBusRequestStatus();
+        $busSubject = new BusinessProtocolBusSubject();
+        
+        // Obtém o usuário da pessoa logada e obtém os dados dela
+        $mioloUserName = trim($MIOLO->getLogin()->id);
+        $busPerson = new BusinessBasicBusPerson();
+        $personData = $busPerson->getPersonByMioloUserName($mioloUserName);
+        
+        $filters = new stdClass();
+        $filters->personId = $personData->personId;
+   
+        $gridDataAberto = $busRequest->searchRequest($filters, true);
+        foreach ($gridDataAberto as $a)
+        {
+            $filtersSubject = new stdClass();
+            $filtersSubject->subjectId = $a[4];
+            $dataDescription = $busSubject->searchSubject($filtersSubject);
+            
+            $filtersStatus = new stdClass();
+            $filtersStatus->requestStatusId = $a[6];
+            $dataStatus = $busRequestStatus->listResquestStatus($filtersStatus);
+            
+            $grdProtocolo = array();
+            $grdProtocolo[] = $a[0];
+            $grdProtocolo[] = $a[5];
+            $grdProtocolo[] = $dataDescription[0][1];
+            $grdProtocolo[] = $a[10];
+            $grdProtocolo[] = $dataStatus[0][1];
+
+            $matrizProtocolo[] = $grdProtocolo;
+        }
+
+        // Grid
+        $grdResults = $MIOLO->getUI()->getGrid($module, 'GrdProtocolo', $filters);
+        $grdResults->setData($matrizProtocolo);
+        $div = new MDiv('divgridopen', $grdResults);
+        $div->addBoxStyle("width", '100%');
+        $fields[] = new MBaseGroup('grpAbertas', _M('Solicitações'), array($div));
+        $fields[] = new MDiv('divinfo');    
+        parent::defineFields(array('fields' => $fields));
+    }
+    
+     public function cancelar_click()
+    {      
+            $module = MIOLO::getCurrentModule();
+            $MIOLO = MIOLO::getInstance();            
+            $requestid = MIOLO::_REQUEST('requestid');
+            
+            $urlSim = $MIOLO->GetActionURL($module, 'main:resmedica:protocolo', '', array('event' => 'btnSim_click', 'requestid' => $requestid));
+            $urlNao = $MIOLO->GetActionURL($module, 'main:resmedica:protocolo');
+            $MIOLO->question(_M('Tem certeza que deseja cancelar solicitação?', $module, null), $urlSim, $urlNao);
+    }
+    
+    public function popupinfo($args = null)
+    {    
+            $MIOLO = MIOLO::getInstance();
+            $busFile = $MIOLO->getBusiness('basic', 'BusFile');
+            $requestid = $args->requestid;
+            $busRequest = $MIOLO->getBusiness('protocol', 'BusRequestPtc');
+              
+            $mioloUserName = trim($MIOLO->getLogin()->id);
+            $busPerson = new BusinessBasicBusPerson();
+            $personData = $busPerson->getPersonByMioloUserName($mioloUserName); 
+            
+            $recibo = new prtReciboProtocolo($requestid, $personData->personId);
+            $txtInfo = $recibo->gerarRecibo();
+            
+            // Campos personalizados
+            $request = $busRequest->getRequest($requestid);
+            $customFieldIds = BasCustomField::getCustomFieldIdsBySubject($request->subjectId);
+            $values = BasCustomField::getLabelAndValues($customFieldIds, $requestid);
+
+            
+            foreach ( $values as $label => $value )
+            {
+                $label = strtoupper($label);
+                $txtInfo .= "\n{$label}: {$value}";
+            }
+
+            $dlgFields[] = $txtField =  new MMultiLineField('txtInfo', $txtInfo, '', 50, 12, 60);
+            $txtField->setReadOnly(TRUE);
+            
+            $link = $MIOLO->getConf('home.url') . "/download.php?filename={$recibo->obterArquivo()}";
+            $link = str_replace('/miolo20/', '/miolo26/', $link);
+            $linkArquivo = new MText('lnkArquivo', '<a href="' . $link . '" target="_blank">' . _M('Imprimir comprovante') . '</a>');
+            $linkArquivo->addStyle('font-size', '18px');
+            
+            $dlgFields[] = new MDiv('divLink',$linkArquivo);
+            
+            $flds[] = $aplicar = new MButton('fecharVisualizacao', _M('Fechar visualização', 'services'), SForm::getAjaxAction('fecharVisualizacao', 'divPopup', false));
+            
+            $dlgFields[] = new MDiv('divPopup', $flds);
+                
+            MPopup::show('popupVizualizarSolicitacao',$dlgFields,'Visualização da solicitação');
+        
+    }
+    
+    public function fecharVisualizacao()
+    {
+        MPopup::remove();
+    }
+    
+    public function gerarDocumento_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $requestid = MIOLO::_REQUEST('requestid');
+
+        $filePath = $MIOLO->getModulePath('portal', 'reports/comprovanteProtocolo.jrxml');
+        $filePath = str_replace('/miolo20/', '/miolo26/', $filePath);
+
+        // forca chamada do parametro para verificar validacao
+        $param = SAGU::getParameter('BASIC', 'DEFAULT_COMPANY_CONF');
+
+        $busRequest = new BusinessProtocolBusRequestPtc();
+        $filters = new stdClass();
+        $filters->requestId = $requestid;
+
+        $dataNumber = $busRequest->searchRequest($filters, true);
+        $saguPath = $MIOLO->getConf("home.modules"). '/basic/reports/';
+        $saguPath = str_replace('miolo26', 'miolo20', $saguPath);
+        $report = new MJasperReport();
+        $report->executeJRXML($filePath, array(
+            'str_SAGU_PATH' => $saguPath,
+            'number' => $dataNumber[0][5],
+        ));
+    }
+    
+    public function btnSim_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $requestid = MIOLO::_REQUEST('requestid');
+        
+        $busRequest = new BusinessProtocolBusRequestPtc();
+
+        // HARDCODE
+        if ( $busRequest->updateRequestStatus($requestid, 4) )
+        {
+            $url = $MIOLO->getActionURL($module, 'main:resmedica:protocolo');
+            $this->page->redirect($url);
+            $this->messageSuccess(_M('Solicitação cancelada', $module), $url);   
+        }
+    }
+    
+    public function btnNao_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $url = $MIOLO->getActionURL($module, 'main:protocolo');
+        $this->page->redirect($url);
+    }
+    
+    public function btnAdicionarSolicitacao_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $this->page->redirect($MIOLO->getActionURL($module, 'main:resmedica:protocolo', NULL, array('new' => 1)));
+    }
+}
+?>

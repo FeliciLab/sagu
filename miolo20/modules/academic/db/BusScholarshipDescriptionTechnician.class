@@ -1,0 +1,289 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * This class contains methods to get, search and list data from the
+ * tables used by the scholarship description technician report.
+ *
+ * @author Andre Chagas Dias [andre@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ *
+ * @since
+ * This class was created 03/12/2008
+ *
+ **/
+
+class BusinessAcademicBusScholarshipDescriptionTechnician extends sBusiness
+{
+    public function getContractTopCourseData($contractId)
+    {
+        $sql = 'SELECT CASE WHEN A.externalCourseId IS NOT NULL
+                            THEN B.name
+                            ELSE CASE WHEN A.internalContractId IS NOT NULL
+                                      THEN   (SELECT G.shortName 
+                                                FROM unit_acdContract F
+                                           LEFT JOIN acdCourse G
+                                                     ON ( F.courseId = G.courseId )
+                                               WHERE F.contractId = A.internalContractId)
+                                      ELSE   (SELECT G.shortName
+                                                FROM unit_acdcourseoccurrence F
+                                           LEFT JOIN acdCourse G
+                                                     ON ( F.courseId = G.courseId )
+                                               WHERE A.internalCourseOccurrenceId = F.courseId 
+                                                 AND A.internalCourseOccurrenceVersion = F.courseVersion
+                                                 AND A.internalTurnId = F.turnId
+                                                 AND A.internalUnitId = F.unitId    )
+                                       END
+                            END as courseName,
+                       CASE WHEN A.externalConclusionDate IS NOT NULL
+                            THEN TO_CHAR(A.externalConclusionDate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')
+                            ELSE (SELECT TO_CHAR(H.conclusionDate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')
+                                    FROM unit_acdContract H
+                                   WHERE H.contractId = A.internalContractId)
+                             END,
+                       CASE WHEN A.externalConclusionInstitutionId IS NOT NULL
+                            THEN (SELECT F.shortName 
+                                    FROM basLegalPerson F
+                                   WHERE F.personId = A.externalConclusionInstitutionId)
+                            ELSE CASE WHEN     A.internalContractId IS NOT NULL
+                                            OR A.internalCourseOccurrenceId IS NOT NULL
+                                      THEN (SELECT F.name 
+                                              FROM basCompanyConf F
+                                             WHERE companyId = ?)
+                                       END
+                             END
+                  FROM unit_acdContract A
+             LEFT JOIN acdExternalCourse B
+                       ON ( A.externalCourseId = B.externalCourseId )
+                 WHERE A.contractId = ?';
+
+        $args = array( SAGU::getParameter('BASIC', 'DEFAULT_COMPANY_CONF') , $contractId );
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        list ($courseData->topCourse,
+              $courseData->topCourseConclusionDate,
+              $courseData->topCourseInstitution ) = $result[0];
+
+        return $courseData;
+    }
+
+    public function getContractPhysicalPersonData($contractId)
+    {
+        $sql = 'SELECT B.personId,
+                       B.name,
+                       TO_CHAR(B.dateBirth,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       C.name,
+                       C.stateId,
+                       F.content,
+                       F.organ,
+                       E.nationality,
+                       G.content
+                  FROM unit_acdContract A
+             LEFT JOIN basPhysicalPerson B
+                       ON (B.personId = A.personId)
+             LEFT JOIN basCity C
+                       ON ( B.cityIdBirth = C.cityId )
+             LEFT JOIN basState D
+                       ON ( C.stateId = D.stateId )
+             LEFT JOIN basCountry E
+                       ON ( D.countryId = E.countryId )
+             LEFT JOIN basDocument F
+                       ON ( A.personId = F.personId AND F.documentTypeId = ? )
+             LEFT JOIN basDocument G
+                       ON ( A.personId = G.personId AND G.documentTypeId = ? )          
+                 WHERE A.contractId = ?';
+
+        $args = array( SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG'),
+                       SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF'),
+                       $contractId                   );
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        list( $personData->personId,
+              $personData->personName,
+              $personData->dateBirth,
+              $personData->cityBirth,
+              $personData->stateIdBirth,
+              $personData->rgContent,
+              $personData->rgOrgan,
+              $personData->nationality,
+              $personData->cpf ) = $result[0];
+
+        return $personData;
+    }
+
+    public function getContractCourseEnrolled($contractId)
+    {
+
+        $sql = '     SELECT C.shortName,
+                            C.recognitionDocumentNumber,
+                            TO_CHAR(A.conclusionDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                            EXTRACT( YEAR FROM A.conclusionDate ),
+                            D.name
+                       FROM unit_acdContract A
+                  LEFT JOIN unit_acdcourseoccurrence B
+                            ON (     A.courseId = B.courseId
+                                 AND A.courseVersion = B.courseVersion
+                                 AND A.turnId = B.turnId
+                                 AND A.unitId = B.unitId )
+                  LEFT JOIN acdCourse C
+                            ON ( B.courseId = C.courseId )
+                  LEFT JOIN acdKnowledgeArea D
+                              ON ( C.knowledgeAreaId = D.knowledgeAreaId )
+                      WHERE A.contractId = ?';
+
+
+        $args = array( $contractId );
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        list( $courseData->companyName,
+              $courseData->recognitionDocumentNumber,
+              $courseData->conclusionDate,
+              $courseData->conclusionYear,              
+              $courseData->knowledgeArea                ) = $result[0];
+
+        return $courseData;
+
+    }
+
+    public function getContractCurricularComponentsCoursed($contractId)
+    {
+
+        $sql = 'SELECT  EXTRACT( YEAR FROM E.beginDate ) as year,
+                        E.curricularComponentId,
+                        E.name,
+                        E.academicNumberhours,
+                        B.numberHourExploitation,
+                        ( SELECT I.description 
+                            FROM acdEnrollStatus I
+                           WHERE B.statusId = I.statusId ) as status,
+                       CASE WHEN C.useConcept
+                       THEN (    SELECT COALESCE( O.concept, \'\')::TEXT
+                                   FROM acdDegreeEnroll O 
+                             INNER JOIN acdDegree P 
+                                        ON(     O.degreeId = P.degreeId 
+                                            AND P.parentDegreeId IS NULL 
+                                            AND O.enrollId = B.enrollId )
+                             )
+                       ELSE (    SELECT ROUND( O.note::NUMERIC, \'' . SAGU::getParameter('BASIC', 'GRADE_ROUND_VALUE') . '\')::TEXT 
+                                   FROM acdDegreeEnroll O 
+                             INNER JOIN acdDegree P 
+                                        ON(     O.degreeId = P.degreeId 
+                                            AND P.parentDegreeId IS NULL 
+                                            AND O.enrollId = B.enrollId ) 
+                            ) 
+                        END,
+                        E.academicCredits
+                  FROM unit_acdContract A
+             LEFT JOIN unit_acdEnroll B
+                       ON( A.contractId = B.contractId )
+             LEFT JOIN unit_acdGroup C
+                       ON( B.groupId = C.groupId )
+             LEFT JOIN unit_acdcurriculum D
+                       ON(     C.curriculumId = D.curriculumId
+                           AND D.courseId = A.courseId
+                           AND D.courseVersion = A.courseVersion
+                           AND D.turnId = A.turnId
+                           AND D.unitId = A.unitId
+                           AND D.showInScholarshipDescription )
+             LEFT JOIN acdCurricularComponent E
+                       ON ( D.curricularComponentId = E.curricularComponentId ) 
+                 WHERE A.contractId = ?';
+
+        $args = array( $contractId );
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        return $result;
+
+    }
+
+    public function getCourseHourTotal($contractId)
+    {
+        $sql = '     SELECT B.hourTotal
+                       FROM unit_acdContract A
+                  LEFT JOIN acdCourseVersion B
+                            ON(    A.courseId = B.courseId
+                               AND A.courseVersion = B.courseVersion )
+                  LEFT JOIN unit_acdcourseoccurrence C
+                            ON (     A.courseId = C.courseId
+                                 AND A.courseVersion = C.courseVersion
+                                 AND A.turnId = C.turnId
+                                 AND A.unitId = C.unitId )
+                  LEFT JOIN acdCourse D
+                            ON ( C.courseId = D.courseId )
+                      WHERE A.contractId = ?
+                      LIMIT 1';
+
+
+        $args = array( $contractId );
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        $hourTotal->hourTotal = $result[0][0];
+
+        return $hourTotal;
+
+    }
+    
+    public function getContractCourseCapabilities($contractId)
+    {
+         $sql = '    SELECT B.description
+                       FROM unit_acdContract A
+                 INNER JOIN acdCourseAbility B
+                            ON ( A.courseId = B.courseId )
+                      WHERE A.contractId = ?
+                    ORDER BY B.courseAbilityId';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, array($contractId)));
+
+        return $result;
+    }
+
+    public function contractTechnicianExists($contractId)
+    {
+        $sql = 'SELECT A.courseId,
+                       B.formationLevelId     
+                  FROM unit_acdContract A
+            INNER JOIN acdCourse B
+                       ON( A.courseId = B.courseId )
+                 WHERE A.contractId = ?';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, array($contractId)));
+        
+        list( $contractTechnician->contractId,
+              $contractTechnician->formationLevelId ) = $result[0];
+
+        return $contractTechnician;
+    }
+
+}
+
+?>

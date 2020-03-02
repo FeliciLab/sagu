@@ -1,0 +1,1299 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * This file handles the connection and actions for finReceivableInvoicePupil table
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Rafael Luís Spengler [rafael@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 13/12/2005
+ *
+ **/
+
+$MIOLO = MIOLO::getInstance();
+$MIOLO->uses( 'db/BusReceivableInvoice.class', 'finance' );
+
+/**
+ * Class to manipulate the finReceivableInvoice table
+ */
+class BusinessFinanceBusReceivableInvoicePupil extends BusinessFinanceBusReceivableInvoice
+{
+    private $module;
+    
+    private $firstInvoiceId;
+    
+    private $currentParcelNumber;
+
+    /**
+     * This attribute is an object used by the receivableInvoiceGeneration method,
+     * which breaks out as follows:
+     *
+     * generationData
+     * |
+     * +- totalIncomeForecasts: shows the number of income forecasts that need to be
+     * |                         processed.
+     * +- receivableInvoice: an array where the key is the invoice number. Each item
+     *    |                  of it contains two attributes named invoice and entries,
+     *    |                  explained below.
+     *    +- invoice: contains a FinReceivableInvoice object with all the information
+     *    |           about the generated invoice.
+     *    +- entries: contains all entries which composes the invoice.
+     */
+    public $generationData;
+    
+    public $busContract;
+    
+    public $busPolicy;
+    
+    public $busPricePolicy;
+    
+    public $busEntry;
+    
+    public $busDefaultOperations;
+
+    /**
+     * Class constructor to instantiate a new database connection. This makes possible to use transactions
+     */
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $this->module = 'finance';
+        
+        parent::__construct();
+        
+        // business
+        $this->busContract = new BusinessAcademicBusContract();
+        $this->busPolicy = new BusinessFinanceBusPolicy();
+        $this->busPricePolicy = new BusinessFinanceBusPricePolicy();
+        $this->busEntry = new BusinessFinanceBusEntry();
+        $this->busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+    }
+
+    /**
+     * Get the respectively value for the month for a specific group of income forecasts
+     *
+     * @author: William Prigol Lopes [william@solis.coop.br]
+     *
+     * @param $data (object): An object containing the necessary parameters to return the value
+     *
+     * @return (float): balance for the month specified in parameters for income forecasts
+     */
+    private function getIncomeForecastBalance($data)
+    {
+        $sql = '     SELECT sum( ( A.value * (CASE WHEN B.operationTypeId = \'D\' THEN 1 
+                                                   WHEN B.operationTypeId = \'C\' THEN -1 
+                                               END)
+                                 )
+                               )
+                       FROM finIncomeForecast A
+                 INNER JOIN finOperation B
+                      USING (operationId)
+                 INNER JOIN acdContract C
+                      USING (contractId)
+                      WHERE C.personId = ?
+                        AND extract(MONTH FROM A.maturityDate) = ? 
+                        AND extract(YEAR FROM A.maturityDate) = ? ';
+        
+        $args = array( $data->personId, $data->month, $data->year );
+        
+        $return = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+        return ( string ) $return[0][0];
+    }
+
+    /**
+     * Generate the receivable invoices for every nonprocessed entry
+     * at finIncomeForecast table. If something goes wrong, a ROLLBACK
+     * is executed. Otherwise, the changes are COMMIT.
+     *
+     * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+     * @maintainer William Prigol Lopes [william@solis.coop.br]
+     * @lastModification: 26/01/2005 - Include income forecast close operation for each invoice created
+     *
+     * @param $data An object containing the necessary parameters to generate the receivable invoices.
+     *
+     * @return Return true if everything gone right. Otherwise, return false.
+     *
+     */
+    public function generateReceivableInvoices($inData)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $this->module;
+        $action = MIOLO::getCurrentAction();
+
+        $keepGoing = true;
+        // 
+        // Verify if the data information is not specified for only a person or contract
+        //
+        if ((strlen( $inData->personId ) == 0) || (strlen( $inData->contractId ) == 0))
+        {
+            // Verify on system if the invoice log do not contain a register
+            $invoiceLog = new finInvoiceLog( );
+            $invoiceLog->month = $inData->month;
+            $invoiceLog->year = $inData->year;
+            $invoiceLog->generationDate = date( SAGU::getParameter('BASIC', 'MASK_DATE_PHP') );
+            $invoiceLog->generationType = 'P';
+            
+            $sql = ' SELECT TO_CHAR(generationDate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')
+                       FROM finInvoiceLog
+                      WHERE month = ?
+                        AND year = ?
+                        AND generationType = ? ';
+            
+            $args = array( $invoiceLog->month, $invoiceLog->year, $invoiceLog->generationType );
+            
+            $res = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+        }
+        if (! is_array( $res[0] ))
+        {
+            //
+            // Verify if the data information is not specified for only a person or contract (same as above)
+            //
+            if ((strlen( $inData->personId ) == 0) || (strlen( $inData->contractId ) == 0))
+            {
+                $sql = ' INSERT INTO finInvoiceLog
+                                   ( month,
+                                     year,
+                                     generationDate,
+                                     generationType )
+                            VALUES (?, ?, TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') ,?) ';
+                
+                $args = array( $invoiceLog->month, $invoiceLog->year, $invoiceLog->generationDate, $invoiceLog->generationType );
+                
+                $keepGoing = $this->getDatabase()->execute( SAGU::prepare( $sql, $args ) );
+                unset( $args );
+            }
+            if ($keepGoing)
+            {
+                // Select all income forecasts to be processed
+                $busIncomeForecast = new BusinessFinanceBusIncomeForecast();
+                
+                $filters = new stdClass();
+                $filters->isProcessed = DB_FALSE;
+                $filters->isSupressed = DB_FALSE;
+                $filters->maturityMonth = $inData->month;
+                $filters->maturityYear = $inData->year;
+                $filters->personId = $inData->personId;
+                $filters->contractId = $inData->contractId;
+                $incomeForecasts = $busIncomeForecast->searchIncomeForecast($filters);
+                
+                // For each record, insert a new receivable invoice and
+                // create the invoice entries.
+                $totalRegs = count( $incomeForecasts );
+                $oldContractId = '';
+                $parcelNumber = 0;
+                
+                $generatedInvoices = array();
+                
+                // Get default operations
+                $dataDefaultOperations = $this->busDefaultOperations->getDefaultOperations();
+
+                $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+                
+                $busBankAccount = new BusinessFinanceBusBankAccount();
+
+                $busIncomeSource = new BusinessFinanceBusIncomeSource();
+
+                // Generate statistics
+                $this->generationData->totalIncomeForecasts = $totalRegs;
+                if ($totalRegs > 0)
+                {
+                    $incomeForecast = array();
+                    for ( $i=0; $i<$totalRegs && $keepGoing; $i++ )
+                    {
+                        $data = new stdClass();
+                        list ( $data->userName,
+                               $data->dateTime,
+                               $data->ipAddress,
+                               $data->incomeForecastId,
+                               $data->contractId,
+                               $data->operationId,
+                               $data->description,
+                               $data->operationTypeId,
+                               $data->accountSchemeId,
+                               $data->description,
+                               $data->costCenterId,
+                               $data->description,
+                               $data->value,
+                               $data->comments,
+                               $data->recordDate,
+                               $data->maturityDate,
+                               $data->isAccounted,
+                               $data->isProcessed,
+                               $data->isGenerated,
+                               $data->incentiveId,
+                               $data->isSupressed,
+                               $data->learningPeriodId,
+                               $data->personId,
+                               $data->courseId, 
+                               $data->courseVersion, 
+                               $data->turnId,
+                               $data->unitId,
+                               $data->maturityDay,
+                               $data->bankAccountId,
+                               $data->incomeSourceId,
+                               $data->personName ) = $incomeForecasts[$i];
+                               
+                        $data->maturityYear = SAGU::getDatePart($data->maturityDate, 'YEAR');
+                        $data->maturityMonth = SAGU::getDatePart($data->maturityDate, 'MONTH');
+                        
+                        // RN_0002 - Se não houver data definida no contrato, pegar do parâmetro
+                        if ( strlen($data->maturityDay) == 0 )
+                        {
+                            $data->maturityDay = SAGU::getParameter('BASIC', 'MATURITY_DAY');
+                        }
+                        
+                        $learningPeriod = $busLearningPeriod->getLearningPeriodByDate($data->courseId, $data->courseVersion, $data->turnId, $data->unitId, $data->maturityDate);
+                        
+                        if ( is_null($learningPeriod) )
+                        {
+                            $msg = _M('Não foi possível gerar um título com data de vencimento @1, pois não foi encontrado um período letivo que envolva esta data e possua uma política válida.', $module, $data->maturityDate) . '<br />';
+                            $msg .= _M('Assegure-se de que exista um período letivo com as seguintes informações:', $module) . '<br />';
+                            $msg .= _M('Curso:', $module) . ' ' . $data->courseId . '/' . $data->courseVersion . '<br />';
+                            $msg .= _M('Turno:', $module) . ' ' . $data->turnId . '<br />';
+                            $msg .= _M('Unidade:', $module) . ' ' . $data->unitId . '<br />';
+                            $msg .= _M('A data @1 deve estar entre as datas de início e fim do período.', $module, $data->maturityDate) . '<br />';
+                            $msg .= _M('Não é possível continuar a geração sem uma política definida.', $module);
+                            throw new Exception($msg);
+                        }
+                        
+                        // If no incomeSourceId defined for income forecast, use default one
+                        if ( strlen($data->incomeSourceId) == 0 )
+                        {
+                            $data->incomeSourceId = SAGU::getParameter('FINANCE', 'INCOME_SOURCE_ID');
+                            $incomeSource = $busIncomeSource->getIncomeSource($data->incomeSourceId);
+                            if ( strlen($incomeSource->incomeSourceId) == 0 )
+                            {
+                                throw new Exception(_M('Valor do parâmetro INCOME_SOURCE_ID é @1, porém não foi encontrada uma origem com este código.', $module, $data->incomeSourceId));                                
+                            }
+                        }
+                        
+                        $data->policyId = $learningPeriod->policyId;
+                        $parcelNumber++;
+                        
+                        if (strlen($data->bankAccountId) == 0)
+                        {
+                            throw new Exception(_M('Conta bancária não encontrada. Favor cadastrar uma conta bancária.', $module));
+                        }
+                        //
+                        // Create a new invoice each time the contract id changes
+                        //
+                        if ($data->contractId != $oldContractId)
+                        {
+                            $busBankTarget = new BusinessFinanceBusBankTarget();
+                            $hasBankTarget = $busBankTarget->hasBankTarget( $data->contractId );
+
+                            $maturityDate = $this->getSystemFormattedDate( $data->maturityYear, $data->maturityMonth, $data->maturityDay );
+                            while ( (int)SAGU::formatDate( $maturityDate, 'mm' ) != (int)$data->maturityMonth )
+                            {
+                                $maturityDate = SAGU::addIntervalInDate( $maturityDate, 'd', '1', '-' );
+                            }
+                                                        
+                            // Look for existing invoices. If found, just update entries. Otherwise, insert a new one.
+                            $filters = new stdClass();
+                            $filters->personId = $data->personId;
+                            $filters->maturityDate = $maturityDate;
+                            $filters->costCenterId = $data->costCenterId;
+                            
+                            $receivableInvoice = $this->searchReceivableInvoice($filters);
+                            // If an invoice with same maturity date was found, use it
+                            if ( strlen($receivableInvoice[0][0]) > 0 )
+                            {
+                                $receivableInvoice = $this->getReceivableInvoice($receivableInvoice[0][0]);
+                            }
+                            // If no matching invoice found, insert a new one
+                            else
+                            {
+                                $receivableInvoice = new FinReceivableInvoice( );
+                                $receivableInvoice->personId = $data->personId;
+                                $receivableInvoice->accountSchemeId = $data->accountSchemeId;
+                                $receivableInvoice->costCenterId = $data->costCenterId;
+                                $receivableInvoice->courseId = $data->courseId;
+                                $receivableInvoice->courseVersion = $data->courseVersion;
+                                $receivableInvoice->unitId = $data->unitId;
+                                $receivableInvoice->parcelNumber = $parcelNumber;
+                                $receivableInvoice->maturityDate = $maturityDate;
+                                $receivableInvoice->value = 0;
+                                $receivableInvoice->policyId = $data->policyId;
+                                $receivableInvoice->automaticDebit = $hasBankTarget;
+                                $receivableInvoice->incomeSourceId = $data->incomeSourceId;
+                                $receivableInvoice->bankAccountId = $data->bankAccountId;
+                                $receivableInvoice->referenceMaturityDate = $maturityDate;
+                                $receivableInvoice->isCanceled = DB_FALSE;
+                                $receivableInvoice->invoiceId = $this->insertReceivableInvoice( $receivableInvoice );
+                            }
+                            
+                            if ( $receivableInvoice->invoiceId === false )
+                            {
+                                $keepGoing = false;
+                            }
+                            else
+                            {
+                                // This is used on the final update to set the correct
+                                // invoice balance for every generated invoice.
+                                $generatedInvoices[] = $receivableInvoice->invoiceId;
+                                
+                                // ---
+                                $icData = new stdClass();
+                                $icData->personId = $data->personId;
+                                $icData->month = $data->maturityMonth;
+                                $icData->year = $data->maturityYear;
+                                // ---
+
+                                $incomeForecast[$data->contractId]->contractId = $data->contractId;
+                                $incomeForecast[$data->contractId]->operationId = $dataDefaultOperations->closeIncomeForecastOperation;
+                                $incomeForecast[$data->contractId]->accountSchemeId = $data->accountSchemeId;
+                                $incomeForecast[$data->contractId]->costCenterId = $data->costCenterId;
+                                $incomeForecast[$data->contractId]->value = $this->getIncomeForecastBalance( $icData );
+                                $incomeForecast[$data->contractId]->comments = '';
+                                $incomeForecast[$data->contractId]->learningPeriodId = $data->learningPeriodId;
+                                $maturityDate = $this->getSystemFormattedDate( $data->maturityYear, $data->maturityMonth, $data->maturityDay );
+                                while ( (int)SAGU::formatDate( $maturityDate, 'mm' ) != (int)$data->maturityMonth )
+                                {
+                                    $maturityDate = SAGU::addIntervalInDate( $maturityDate, 'd', '1', '-' );
+                                }
+                                $incomeForecast[$data->contractId]->maturityDate = $maturityDate;
+                                $incomeForecast[$data->contractId]->isGenerated = true;
+                                $incomeForecast[$data->contractId]->isProcessed = true;
+                                
+                                // Generate statistics
+                                $receivableInvoice->personName = $data->personName;
+                                $this->generationData->receivableInvoice[$receivableInvoice->invoiceId]->invoiceData = clone ($receivableInvoice);
+                            }
+                            
+                            $oldContractId = $data->contractId;
+                            $parcelNumber = 0;
+                        }
+                        
+                        $entry = new FinEntry();
+                        $entry->invoiceId = $receivableInvoice->invoiceId;
+                        $entry->operationId = $data->operationId;
+                        $entry->isAccounted = DB_FALSE;
+                        
+                        // If system should agglutinate entries with same operation id
+                        if ( SAGU::getParameter('FINANCE', 'AGGLUTINATE_INVOICE_ENTRIES') == 'YES' )
+                        {
+                            // Look for an existing entry with that operation id and not accounted
+                            $tmpEntry = $this->busEntry->searchEntry($entry);
+                            // If any entry found
+                            if ( count($tmpEntry) > 0 )
+                            {
+                                $entry->entryId = $tmpEntry[0][0];
+                                // Sum values
+                                $entry->value = SAGU::calcNumber($data->value . ' + ' . $tmpEntry[0][5]);
+                                // Concatenate a new comment, for history keeping
+                                $entry->comments = $tmpEntry[0][11] . "\n" . _M('Valor @1 aglutinado em @2', 'finance', $data->value, SAGU::formatDate(SAGU::getDateNow(), SAGU::getParameter('BASIC', 'MASK_DATE')));
+                            }
+                        }
+                        
+                        $entry->entryDate = $this->getSystemformattedDate( $data->maturityYear, $data->maturityMonth, '01' );
+                        $entry->costCenterId = $data->costCenterId;
+                        $entry->creationType = 'A'; // automatic generation
+                        
+                        // If an entry id exists, just update the record
+                        if ( strlen($entry->entryId) > 0 )
+                        {
+                            // Value will come from the sum of $data->value with entry's current value
+                            $keepGoing = $this->busEntry->updateEntry($entry);
+                        }
+                        // If no entry id exist, insert a new entry
+                        else
+                        {
+                            // Use $data value as entry value
+                            $entry->value = $data->value;
+                            $keepGoing = ( strlen($this->busEntry->insertEntry($entry)) > 0 );
+                        }
+                        
+                        // Mark each income forecast as processed, so that it won't be processed anymore
+                        $sql = 'UPDATE finIncomeForecast
+                                   SET isProcessed = \'' . DB_TRUE . '\',
+                                       invoiceId = \'' . $receivableInvoice->invoiceId . '\'
+                                 WHERE incomeForecastId = ' . $data->incomeForecastId;
+
+                        $keepGoing = $this->getDatabase()->execute( $sql );
+                        
+                        // Statistical information 
+                        $entry = new stdClass();
+                        $entry->operationId = $data->operationId;
+                        $entry->value = $data->value;
+                        $entry->costCenterId = $data->costCenterId;
+                        $this->generationData->receivableInvoice[$receivableInvoice->invoiceId]->entries[] = $entry;
+                    }
+                    
+                    if ($keepGoing && count( $generatedInvoices ) > 0)
+                    {
+                        // Set all invoices balance to the correct value
+                        $sql = 'UPDATE finInvoice
+                                   SET value = balance(invoiceId)
+                                 WHERE invoiceId IN (' . implode( $generatedInvoices, ',' ) . ')';
+
+                        $keepGoing = $this->getDatabase()->execute( $sql );
+                        
+                        // Get invoice balance to show
+                        foreach ( $generatedInvoices as $gi )
+                        {                            
+                            $sql = 'SELECT balance(?)';
+                            $balance = $this->getDatabase()->query( SAGU::prepare( $sql, $gi ) );
+                            $this->generationData->receivableInvoice[$gi]->balance = $balance[0][0];
+                        }
+                    }
+                    
+                    // Insert the income forecasts to close the specific period for income forecasts
+                    if ( count($incomeForecast) > 0 )
+                    {
+                        foreach ( $incomeForecast as $if )
+                        {
+                            $incomeForecastId = $busIncomeForecast->insertIncomeForecast($if);
+                            
+                            $keepGoing = strlen($incomeForecastId) > 0;
+                            
+                            if ( ! $keepGoing )
+                            {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        else
+        {
+            throw new Exception(_M('O processo já foi executado para este período.', $module ) . ' ' . SAGU::getMonth( $inData->month ) . ' - ' . $inData->year . ' ' . _M('em', $module) . ' ' . $res[0][0]);
+        }
+        
+        return $keepGoing;
+    }
+
+    /**
+     * Gera titulos para matricula
+     * 
+     * FIXME: Renomear este metodo, pois nao utiliza mais acd.Enroll.Summary.
+     * FIXME: Quebrar este metodo em pequenos pedacos
+     *
+     * @param int $contractId
+     * @param int $learningPeriodId
+     */
+    public function generateReceivableInvoicesFromEnrollSummaries($contractId, $learningPeriodId = null, $isWebServices = false)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $contract = $this->busContract->getContract($contractId, $isWebServices);
+
+        //Obter turma do contrato
+        $busClass = new BusinessAcademicBusClass();
+        $busClassPupil = new BusinessAcademicBusClassPupil();
+        $busEnroll = new BusinessAcademicBusEnroll();
+
+        $contractClass = $busClassPupil->getContractCurrentClass($contractId, $isWebServices);
+
+        if (strlen($contractClass->classId) <= 0)
+        {
+            throw new Exception(_M('Não foi possível obter a turma atual do aluno. Verifique se ele está devidamente vinculado a uma turma no cadastro de aluno da turma', $module));
+        }
+
+        $busCurriculum = new BusinessAcademicBusCurriculum();
+
+        // obter informações sobre precificação do curso
+        $busPrice = new BusinessFinanceBusPrice();
+        $price = $busPrice->getCurrentPrice($contract->courseId, $contract->courseVersion, $contract->turnId, $contract->unitId);
+
+        $busPricePolicy = new BusinessFinanceBusPricePolicy();
+
+        if ( strlen($price->value) <= 0 )
+        {
+            $msg = _M('Não há valor definido para o curso @1, turno @2, unidade @3.', $module, $contract->courseId . '/' . $contract->courseVersion, $contract->turnId, $contract->unitId) . ' ' .
+                   _M('Verifique as datas de validade no cadastro de preços.', $module);
+
+            throw new Exception($msg);
+        }
+
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+
+        // obter informações contábeis
+        $busCourseAccount = new BusinessAccountancyBusCourseAccount();
+        $filters = new stdClass();
+        $filters->courseId = $contract->courseId;
+        $filters->courseVersion = $contract->courseVersion;
+        $filters->unitId = $contract->unitId;
+        $courseAccount = $busCourseAccount->getCourseAccount($filters);
+
+        if ( strlen($courseAccount->costCenterId) <= 0 )
+        {
+            $msg = _M('Nenhum centro de custo registrado para o curso @1, turno @2, unidade @3.', $module, $contract->courseId . '/' . $contract->courseVersion, $contract->turnId, $contract->unitId) . ' ' .
+                   _M('Verifique o formulário de cadastro de plano de contas e centro de custo para um curso.', $module);
+
+            throw new Exception($msg);
+        }
+
+        // obter origem padrão
+        $incomeSourceId = SAGU::getParameter('FINANCE', 'INCOME_SOURCE_ID');
+        $busIncomeSource = new BusinessFinanceBusIncomeSource();
+        $incomeSource = $busIncomeSource->getIncomeSource($incomeSourceId);
+        if ( strlen($incomeSource->incomeSourceId) <= 0 )
+        {
+            throw new Exception(_M('Valor do parâmetro INCOME_SOURCE_ID é @1, porém não foi encontrada uma origem com este código.', $module, $incomeSourceId));
+        }
+
+        // obter conta bancária padrão
+        $busBankAccount = new BusinessFinanceBusBankAccount();
+        $bankAccount = $busBankAccount->getBankAccount($price->bankAccountId);
+        if ( strlen($bankAccount->bankAccountId) <= 0 )
+        {
+            throw new Exception(_M('Conta bancária não encontrada. Favor cadastrar uma conta bancária.', $module));
+        }
+
+        // obter tipo de emissão padrão
+        $emissionTypeId = SAGU::getParameter('BASIC', 'DEFAULT_EMISSION_TYPE_ID');
+        $busEmissionType = new BusinessFinanceBusEmissionType();
+        $emissionType = $busEmissionType->getEmissionType($emissionTypeId);
+        if ( strlen($emissionType->emissionTypeId) <= 0 )
+        {
+            throw new Exception(_M('Valor do parâmetro DEFAULT_EMISSION_TYPE_ID é @1, porém nao foi encontrada uma conta bancária com este código', $module, $emissionTypeId));
+        }
+
+        // processar cada período letivo individualmente
+        $parcelsNumber = $busEnroll->getParcelsNumber($contractId, $learningPeriodId, $isWebServices);
+        $multiplier = $busEnroll->getTotalCredits($contractId, $learningPeriodId, $isWebServices);
+        $learningPeriod = $busLearningPeriod->getLearningPeriod($learningPeriodId, $isWebServices);
+        $classPeriod = $busClass->getSemesterContract($contractId);
+
+        // o valor total a ser pago pode ser fixo ou ir de acordo com o multiplicador do resumo de matrícula
+        $totalValue = ($price->valueIsFixed == DB_TRUE) ? $price->value : SAGU::calcNumber($price->value . ' * ' . $multiplier);
+
+        $parcelValue = SAGU::calcNumber($totalValue . ' / ' . $parcelsNumber, true, 2);
+
+        // calcular a primeira parcela computando as eventuais diferenças de arredondamento
+        $firstParcelValue = $parcelValue;//SAGU::calcNumber($totalValue . ' - (' . $parcelValue . ' * (' . $parcelsNumber . ' - 1))', true, 2);
+
+        if ( $price->valueIsFixed == DB_FALSE )
+        {
+            $periodCredits = $busEnroll->getCreditsAvailableForEnroll($contract->contractId, $classPeriod, $contractClass->classId, $learningPeriod->learningPeriodId);
+
+            if (SAGU::getParameter('ACADEMIC', 'ENROLL_BASED_ON_CURRICULUM') == 'YES' || $periodCredits <= 0)
+            {
+                $credits = $busCurriculum->getPeriodCredits($contract->courseId, $contract->courseVersion, $contract->turnId, $contract->unitId, $classPeriod);
+
+                if ( strlen($credits) > 0 )
+                {
+                    $periodCredits = $credits;
+                }
+                else
+                {
+                    throw new Exception( _M('Não foram encontrados créditos para este período', $module) );
+                }
+            }
+
+            if ($periodCredits != $multiplier)
+            {
+                $parcelValue = SAGU::calcNumber($parcelValue . '*' . $multiplier . '/' . $periodCredits, true, 2);
+
+                if ($firstParcelValue < $parcelValue)
+                {
+                    $firstParcelValue = $parcelValue;
+                }
+            }
+        }
+
+        $referenceParcelValue = $parcelValue;
+
+        // will contain all generated invoices
+        $invoices = array();
+        
+        // utilizar um controle diferente para a parcela que é salva no título para evitar
+        // saltos no número de parcelas decorrentes de aglutinações
+        $this->currentParcelNumber = 1;
+        
+        // gerar um título para cada parcela, salvo casos de aglutinação
+        $this->firstInvoiceId = null; // Primeiro invoiceId inserido (para ser utilizado como pai dos proximos a serem inseridos)
+        
+        for ( $parcelNumber = 1; $parcelNumber <= $parcelsNumber; $parcelNumber++ )
+        {
+            $invoiceId = $this->processParcelNumber($parcelNumber, $firstParcelValue, $referenceParcelValue, $price, $classPeriod, $contract, $learningPeriod, $courseAccount, $incomeSource, $bankAccount, $emissionType);
+            
+            // add generated/modified invoice to the list of generated invoices
+            if ( strlen($invoiceId) > 0 && !in_array($invoiceId, $invoices) )
+            {
+                $invoices[] = $invoiceId;
+            }
+        }
+            
+        $busEnrollFee = new BusinessFinanceBusEnrollFee();
+        $busIncentive = new BusinessFinanceBusIncentive();
+        for ( $i=0; $i<count($invoices); $i++ )
+        {
+            // gerar as taxas de matrícula sobre os títulos gerados
+            if ( ! $busEnrollFee->generateEnrollFeeByInvoiceId($invoices[$i]) )
+            {
+                throw new Exception(_M('Erro gerando taxas de matrícula.', $module));
+            }
+
+            // gerar incentivos
+            if ( ! $busIncentive->generateContractIncentivesByPeriod($contractId, $learningPeriodId) )
+            {
+                throw new Exception(_M('Erro gerando incentivos.', $module));
+            }
+
+            // atualizar valor dos títulos gerados
+            if ( ! $this->updateInvoiceBalance($invoices[$i]) )
+            {
+                throw new Exception(_M('Erro atualizando o saldo do título', $module));
+            }
+        }
+
+        return $invoices;
+    }
+
+    /**
+     * @return int
+     */
+    private function processParcelNumber($parcelNumber, $firstParcelValue, $referenceParcelValue, $price, $classPeriod, $contract, $learningPeriod, $courseAccount, $incomeSource, $bankAccount, $emissionType)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $defaultOperations = $this->busDefaultOperations->getDefaultOperations();
+        $parcelValue = $referenceParcelValue;
+
+        $policy = $this->getParcelPolicy($price, $parcelNumber, $classPeriod);
+
+        if (strlen($policy->policyId) <= 0)
+        {
+            throw new Exception(_M('Não foi possível obter a política de cobrança. Verifique o cadastro de preço.', $module));
+        }
+
+        // se vencimento deve ser calculado de acordo com o início e fim do período letivo
+        $maturityDay = $contract->maturityDay;
+        if ( strlen($maturityDay) <= 0 )
+        {
+            throw new Exception(_M('Dia de vencimento não definido para o contrato @1.', $module, $contract->contractId));
+        }
+
+        $maturityMonth = SAGU::getDatePart($learningPeriod->beginDate, 'MONTH');
+        $maturityYear = SAGU::getDatePart($learningPeriod->beginDate, 'YEAR');
+        $maturityDate = SAGU::toDefaultDate($maturityDay . '/' . $maturityMonth . '/' . $maturityYear, 'dd/mm/yyyy');
+
+        // adicionar à data base de vencimento a quantidade de meses, de acordo com o
+        // número da parcela que está sendo calculada
+        // se vencimento já passou, define data como hoje ou se a primeira deve ser a visa
+        if ( (SAGU::dateDiff($maturityDate, SAGU::getDateNow()) > 0) && ( ($parcelNumber <> 1) && ($price->firstParcelAtSight == DB_TRUE) ) )
+        {
+            $maturityDate = SAGU::addIntervalInDAte($maturityDate, 'm', $parcelNumber-2);
+        }
+        else
+        {
+            $maturityDate = SAGU::addIntervalInDAte($maturityDate, 'm', $parcelNumber-1);
+        }
+
+        // obter novo mês de vencimento a partir da data de vencimento
+        $maturityMonth = SAGU::getDatePart($maturityDate, 'MONTH');
+
+        // diminuir um dia do vencimento até que a data caia dentro do mês desejado
+        while ( (int)SAGU::getDatePart($maturityDate, 'MONTH') != (int)$maturityMonth )
+        {
+            $maturityDate = SAGU::addIntervalInDate($maturityDate, 'd', '1', '-');
+        }
+
+        if ( SAGU::getParameter('FINANCE', 'ANTECIPATED_MATURITY_DATE') == DB_TRUE )
+        {
+           if ( ((SAGU::dateDiff($maturityDate, SAGU::getDateNow()) <= 0) || (SAGU::dateDiff($maturityDate, SAGU::getDateNow()) > 0) )  && ($parcelNumber == 1 && $price->firstParcelAtSight == DB_TRUE) )
+           {
+               if ( in_array(SAGU::formatDate(SAGU::getDateNow(), 'd'), array(1,2,3,4,5)) )
+               {
+                    $maturityDate = SAGU::addIntervalInDate(SAGU::getDateNow(), 'd', '1', '+');
+               }
+               if ( SAGU::formatDate(SAGU::getDateNow(), 'd') == 7 )
+               {
+                    $maturityDate = SAGU::addIntervalInDate(SAGU::getDateNow(), 'd', '2', '+');
+               }
+               if ( SAGU::formatDate(SAGU::getDateNow(), 'd') == 6 )
+               {
+                    $maturityDate = SAGU::addIntervalInDate(SAGU::getDateNow(), 'd', '3', '+');
+               }
+           }
+           else if ( (SAGU::dateDiff($maturityDate, SAGU::getDateNow()) > 0) && ($parcelNumber > 1) )
+           {
+               if ( SAGU::formatDate($maturityDate, 'd') == 1 )
+               {
+                    $maturityDate = SAGU::addIntervalInDate($maturityDate, 'd', '2', '-');
+               }
+               if ( SAGU::formatDate($maturityDate, 'd') == 7 )
+               {
+                    $maturityDate = SAGU::addIntervalInDate($maturityDate, 'd', '1', '-');
+               }
+           }
+        }
+        else
+        {  //// se vencimento já passou, define data como hoje ou se a primeira deve ser a visa
+            if ( $parcelNumber == 1 && $price->firstParcelAtSight == DB_TRUE )
+            {
+                $maturityDate = SAGU::getDateNow();
+            }
+        }
+
+        // normalmente a data de referência é igual à data de vencimento
+        $referenceMaturityDate = $maturityDate;
+
+        $invoiceId = null;
+        if ( SAGU::getParameter('FINANCE', 'AGGLUTINATE_SAME_MATURITY_INVOICES') == 'YES' )
+        {
+            // se já existe um título com mesmo vencimento, utilizar existente
+            $filters = new stdClass();
+            $filters->personId = $contract->personId;
+            $filters->referenceMaturityDate = $referenceMaturityDate;
+            $search = $this->searchReceivableInvoice($filters);
+
+            if ( count($search) > 0 )
+            {
+                $invoiceId = $search[0][0];
+            }
+        }
+        else
+        {
+            // procurar por outro título com mesmo número de parcela e mesmo período letivo
+            // se já existe um título com mesmo vencimento, utilizar existente
+            $filters = new stdClass();
+            $filters->personId = $contract->personId;
+            $filters->learningPeriodId = $learningPeriod->learningPeriodId;
+            $filters->parcelNumber = $parcelNumber;
+            $filters->isClosed = SAGU::getParameter('BASIC', 'DB_FALSE');
+            $search = $this->searchReceivableInvoice($filters);
+
+            if ( count($search) > 0 )
+            {
+                $invoiceId = $search[0][0];
+            }
+
+            //Verifica o valor dos títulos já pagos referentes a parcela
+            //Por exemplo, se o aluno já pagou alguns títulos e está fazendo o ajuste, precisando pagar apenas a diferença
+            $filters->contractId = $contract->contractId;
+            $filters->isClosed = SAGU::getParameter('BASIC', 'DB_TRUE');
+
+            $payedValue = 0;
+        }
+
+        $entry = new FinEntry();
+        $entry->invoiceId = $invoiceId;
+        $entry->isAccounted = DB_FALSE;
+        $entry->creationType = 'A'; // gerado automaticamente pelo sistema
+        $entry->costCenterId = $courseAccount->costCenterId;
+        $entry->entryDate = SAGU::getDateNow();
+        $entry->contractId = $contract->contractId;
+        $entry->learningPeriodId = $learningPeriod->learningPeriodId;
+        
+        //Garantindo os dados do período letivo, para checagem se aluno é calouro
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $periodoLetivo = $busLearningPeriod->getLearningPeriod($learningPeriod->learningPeriodId);
+        
+        // casos especias para primeira parcela
+        $msg = '';
+        if ( $parcelNumber == 1 )
+        {
+            // operação da primeira parcela para calouros
+            if ( $this->busContract->isFreshmanByPeriod($contract->contractId, $periodoLetivo->periodId) )
+            {
+                $entry->operationId = $defaultOperations->enrollOperation;
+                if ( strlen($entry->operationId) <= 0 )
+                {
+                    $msg = _M('Operação de matrícula não definida.', $module);
+                }
+            }
+            else
+            {
+                $busMovementContract = new BusinessAcademicBusMovementContract();
+                $lastMovement = $busMovementContract->getLastMovementContract($contract->contractId);
+                
+                // Mudança de curso/turno: primeira parcela de aluno que realiza a matrícula pela primeira vez e forma de ingresso é transferência interna                
+                if( $lastMovement->stateContractId ==  SAGU::getParameter('ACADEMIC', 'STATE_CONTRACT_ID_INTERNAL_TRANSFER_FROM')) // TRANSFERENCIA INTERNA DE
+                {
+                    $operacao = _M('Mudança de curso/turno', $module);
+                    $entry->operationId = $defaultOperations->courseTransferOperation;
+                }
+                // Transferido: primeira parcela de aluno que realiza a matrícula pela primeira vez e forma de ingresso é transferência externa;                
+                elseif( $lastMovement->stateContractId == '2' ) // TRANSFERENCIA EXTERNA DE
+                {
+                    $operacao = _M('Transferidos', $module);
+                    $entry->operationId = $defaultOperations->transferOperation;
+                }
+                // Reingresso: primeira parcela de aluno que retorna (tinha trancamento e está reingressando) à instituição;                
+                elseif( $lastMovement->stateContractId == SAGU::getParameter('ACADEMIC', 'STATE_CONTRACT_ID_LOCKED') ) // TRANCAMENTO
+                {
+                    $operacao = _M('Reingressos', $module);
+                    $entry->operationId = $defaultOperations->reentryOperation;
+                }
+                else
+                {
+                    // Renovação: primeira parcela de alunos que não se enquadram nos casos anteriores
+                    $operacao = _M('Renovação de matrícula', $module);
+                    $entry->operationId = $defaultOperations->renewalOperation;
+                }
+                
+                if ( strlen($entry->operationId) <= 0 )
+                {
+                    $msg = _M('Operação de @1 não definida.', $module, $operacao);
+                }
+            }
+            
+            // se alguma das operações padrão não estiver definida, abortar operação
+            if ( strlen($msg) > 0 )
+            {
+                throw new Exception($msg . ' ' . _M('Verifique o cadastro de operações padrão.', $module));
+            }
+            
+            $entryValue = $firstParcelValue;
+        }
+        else
+        {
+            // operação das demais parcelas, proveniente da política
+            $entry->operationId = $policy->operationId;
+            $entryValue = $parcelValue;
+        }
+
+        $payedFilters = $entry;
+        $payedFilters->parcelNumber = $parcelNumber;
+
+        $payedValue = $this->getPayedValue($payedFilters);
+
+        if ( $payedValue < $entryValue )
+        {
+            $entryValue = SAGU::calcNumber($entryValue . '-' . $payedValue);
+        }
+        else
+        {
+            return;
+        }
+
+        // se não existe um título com mesmo vencimento, criar novo
+        if ( is_null($invoiceId) )
+        {
+            $invoice = new FinReceivableInvoice();
+            $invoice->personId = $contract->personId;
+            $invoice->accountSchemeId = $courseAccount->accountSchemeId;
+            $invoice->costCenterId = $courseAccount->costCenterId;
+            // utilizar um controle diferente para a parcela que é salva no título para evitar
+            // saltos no número de parcelas decorrentes de aglutinações
+            $invoice->parcelNumber = $parcelNumber;
+            $invoice->emissionDate = SAGU::getDateNow();
+            $invoice->policyId = $policy->policyId;
+            $invoice->isCanceled = DB_FALSE;
+            $invoice->isImported = DB_FALSE;
+            $invoice->incomeSourceId = $incomeSource->incomeSourceId;
+            $invoice->bankAccountId = $bankAccount->bankAccountId;
+            $invoice->emissionTypeId = $emissionType->emissionTypeId;
+            $invoice->maturityDate = $maturityDate;
+            $invoice->referenceMaturityDate = $referenceMaturityDate;
+            // valor inicial a ser atualizado no fim do processo
+            $invoice->value = 0;
+
+            if ( MUtil::getBooleanValue(SAGU::getParameter('FINANCE', 'DEPENDENCE_INVOICE_ENABLED')) )
+            {
+                $invoice->invoiceIdDependence = $this->firstInvoiceId;
+            }
+
+            $invoiceId = $this->insertReceivableInvoice($invoice);
+            if ( strlen($this->firstInvoiceId) <= 0 )
+            {
+                $this->firstInvoiceId = $invoiceId;
+            }
+
+            // incrementar a parcela atual somente quando um novo título é gerado
+            $this->currentParcelNumber++;
+        }
+
+        if ( strlen($invoiceId) <= 0 )
+        {
+            throw new Exception(_M('Erro ao tentar gerar o título', $module));
+        }
+        else
+        {
+            $entry->invoiceId = $invoiceId;
+        }
+
+        
+        //Remove a dependência de títulos caso o parâmetro estiver desabilitado
+        if( SAGU::getParameter('FINANCE', 'DEPENDENCE_INVOICE_ENABLED') == DB_FALSE )
+        {
+            if ( ! $this->removeInvoiceIdDependence($invoiceId) )
+            {
+                throw new Exception( _M('Erro ao remover dependência do título @1', $module, $invoiceId) );
+            }
+        }
+        
+        // se já existir um lançamento igual, agrupar valor (se assim configurado)
+        if ( SAGU::getParameter('FINANCE', 'AGGLUTINATE_INVOICE_ENTRIES') == 'YES' )
+        {
+            $filters = new stdClass();
+            $filters->invoiceId = $entry->invoiceId;
+            $filters->isAccounted = DB_FALSE;
+            $filters->creationType = $entry->creationType;
+            $filters->costCenterId = $entry->costCenterId;
+            $filters->operationId = $entry->operationId;
+            $filters->contractId = $entry->contractId;
+            $filters->learningPeriodId = $entry->learningPeriodId;
+
+            $search = $this->busEntry->searchEntry($filters);
+
+            if ( count($search) > 0 )
+            {
+                $entry = $this->busEntry->getEntry($search[0][0]);
+            }
+        }
+
+        // se não existe um lançamento compatível (ou não está configurado para aglutinar)
+        if ( is_null($entry->entryId) )
+        {
+            // gerar comentários diferenciados quando preço for fixo ou não for
+            if ( $price->valueIsFixed == DB_TRUE )
+            {
+                $entry->comments = _M('Parcela @1 de @2, baseada no preço de curso @3.', $module, $parcelNumber, $parcelsNumber, 'R$ ' . SAGU::formatNumber($price->value, 2));
+            }
+            else
+            {
+                $entry->comments = _M('Parcela @1 de @2, baseada em @3 créditos.', $module, $parcelNumber, $parcelsNumber, SAGU::formatNumber($multiplier, 2));
+            }
+
+            $entry->value = $entryValue;
+
+            if ( ! ( strlen($this->busEntry->insertEntry($entry)) > 0 ) )
+            {
+                throw new Exception( _M('Erro ao inserir entrada para o título @1', $module, $entry->invoiceId) );
+            }
+        }
+        // se existe um lançamento que pode ser aglutinado
+        else
+        {
+            if ($parcelNumber == 1)
+            {
+                if ( $entry->value < $entryValue)
+                {
+                    $entryValue = SAGU::calcNumber($entryValue . '-' . $entry->value);
+                }
+                else
+                {
+                    $entryValue = SAGU::calcNumber($entry->value . '-' . $entryValue);
+                }
+            }
+            else
+            {
+                $entryValue = SAGU::calcNumber($entryValue . '-' . $entry->value);
+            }
+
+            // somar o valor deste lançamento ao valor já existente
+            $entry->value = SAGU::calcNumber($entry->value . ' + ' . $entryValue);
+
+            // Concatenar um comentário informando da aglutinação efetuada
+            $entry->comments = $entry->comments . "\n" . _M('Valor @1 aglutinado em @2', 'finance', SAGU::formatNumber($entryValue, 2), SAGU::formatDate(SAGU::getDateNow(), SAGU::getParameter('BASIC', 'MASK_DATE')));
+
+            if ( ! $this->busEntry->updateEntry($entry) )
+            {
+                throw new Exception( _M('Erro ao alterar entrada do título @1', $module, $entry->invoiceId) );
+            }
+        }
+        
+        return $invoiceId;
+    }
+
+    /**
+     * @return stdClass 
+     */
+    private function getParcelPolicy($price, $parcelNumber, $classPeriod)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $policyFilter = new stdClass();
+        $policyFilter->courseId = $price->courseId;
+        $policyFilter->courseVersion = $price->courseVersion;
+        $policyFilter->turnId = $price->turnId;
+        $policyFilter->unitId = $price->unitId;
+        $policyFilter->startDate = $price->startDate;
+        $policyFilter->parcelNumber = $parcelNumber;
+        $policyFilter->semester = $classPeriod;
+
+        $policyData = $this->busPricePolicy->getSpecificPricePolicy($policyFilter);
+        $policy = new stdClass();
+        
+        if (count($policyData) > 0)
+        {
+            $policy = $this->busPolicy->getPolicy($policyData[0][6]);
+        }
+        else
+        {
+            $policyFilter->parcelNumber = '';
+            $policyData = $this->busPricePolicy->getSpecificPricePolicy($policyFilter);
+
+            if (count($policyData) > 0)
+            {
+                $policy = $this->busPolicy->getPolicy($policyData[0][6]);
+            }
+            else
+            {
+                $policyFilter->semester = '';
+                $policyFilter->parcelNumber = $parcelNumber;
+
+                $policyData = $this->busPricePolicy->getSpecificPricePolicy($policyFilter);
+
+                if (count($policyData) > 0)
+                {
+                    if( strlen($policyData[0][6]) > 0 )
+                    {
+                        $policy = $this->busPolicy->getPolicy($policyData[0][6]);
+                    }
+                }
+                else
+                {
+                    $policyFilter->parcelNumber = '';
+
+                    $policyData = $this->busPricePolicy->getSpecificPricePolicy($policyFilter);                            
+                    if( strlen($policyData[0][6]) > 0 )
+                    {
+                        $policy = $this->busPolicy->getPolicy($policyData[0][6]);
+                    }
+                }
+            }
+        }
+        
+        return $policy;
+    }
+    
+    public function getPayedValue($filters)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+        $defaultOperations = $this->busDefaultOperations->getDefaultOperations();
+
+        $sql = ' SELECT ROUND(sum(A.value), ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ')
+                   FROM finEntry A
+             INNER JOIN finReceivableInvoice B
+                     ON (B.invoiceId = A.invoiceId)
+                  WHERE A.contractId = ?
+                    AND A.learningPeriodId = ?
+                    AND B.parcelNumber = ?
+                    AND A.operationId = ? 
+                    AND ( balance(A.invoiceid) = 0 AND EXISTS (SELECT 1
+                                                                 FROM finEntry X
+                                                                WHERE X.invoiceId = A.invoiceId
+                                                                  AND X.operationId = ?) )';
+
+        $args = array($filters->contractId,
+                      $filters->learningPeriodId,
+                      $filters->parcelNumber,
+                      $filters->operationId,
+                      $defaultOperations->paymentOperation);
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        if ($result[0][0] > 0)
+        {
+            return $result[0][0];
+        }
+
+        return 0;
+    }
+
+
+    /**
+     * Realiza uma transferencia de periodo letivo para títulos de um contrato
+     * Funcao utilizada primordialmente na transferencia de turno (FrmTurnTransfer)
+     *
+     * @param type $contractId
+     * @param type $learningPeriodIdOld
+     * @param type $learningPeriodIdNew
+     * @param type $classId
+     * 
+     * @return array Informacoes dos titulos transferidos
+     */
+    public function transferInvoice($contractId, $learningPeriodIdOld, $learningPeriodIdNew, $classId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $busReceivableInvoice = new BusinessFinanceBusReceivableInvoice();
+        $busContract = new BusinessAcademicBusContract();
+        $busCurriculum = new BusinessAcademicBusCurriculum();
+        $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+        $busPrice = new BusinessFinanceBusPrice();
+        $busClass = new BusinessAcademicBusClass();
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $busEntry = new BusinessFinanceBusEntry();
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $busInvoice = new BusinessFinanceBusInvoice();
+        
+        $contract = $this->busContract->getContract($contractId);
+        $coursePrice = $busPrice->getCurrentPrice($contract->courseId, $contract->courseVersion, $contract->turnId, $contract->unitId);
+        $classPeriod = $busClass->getSemesterContract($contractId);
+        $learningPeriodNew = $busLearningPeriod->getLearningPeriod($learningPeriodIdNew);
+        $defaultOperations = $this->busDefaultOperations->getDefaultOperations();
+        //
+        // Obtem carga horaria prevista
+        $hoursAvailable = $busEnroll->getHoursAvailableForEnroll($contractId, $classPeriod, $classId, $learningPeriodIdNew);
+        if ( ( SAGU::getParameter('ACADEMIC', 'ENROLL_BASED_ON_CURRICULUM') == 'YES' ) || ( $hoursAvailable == 0 ) )
+        {
+            $hoursAvailable = $busCurriculum->getPeriodHours($contract->courseId, $contract->courseVersion, $contract->turnId, $contract->unitId, $classPeriod);
+        }
+        
+        // Horas contratadas
+        $multiplier = $busEnroll->getContractEnrolledHours($contractId, $learningPeriodIdOld);
+        
+        // Valor novo turno
+        $value = SAGU::calcNumber(" ({$coursePrice->value} * {$multiplier}) / {$hoursAvailable} ");
+
+        // Obtem titulos
+        $filters = new stdClass();
+        $filters->contractId = $contractId;
+        $filters->learningPeriodId = $learningPeriodIdOld;
+        $filters->isExpired = DB_FALSE;
+        $filters->isCanceled = DB_FALSE;
+        $invoices = (array) $busReceivableInvoice->searchReceivableInvoice($filters);
+        
+        $parcelsNumber = strlen($contract->parcelsNumber) > 0 ? $contract->parcelsNumber : $learningPeriodNew->parcelsNumber;
+        
+        // Obter valor por parcela: $value / $parcelsNumber
+        $parcelValue = SAGU::calcNumber("{$value} / {$parcelsNumber}");
+        $extraEntryValue = 0; // Valor diferenca quando uma parcela ja foi paga adiantada e deve ser somado na proxima parcela
+        $table = array();
+        foreach ( $invoices as $i => $invoice )
+        {
+            $invoice = $busReceivableInvoice->getReceivableInvoice($invoice[0]);
+
+            // Busca pelos titulos deste invoice
+            $filters = new stdClass();
+            $filters->invoiceId = $invoice->invoiceId;
+            $filters->operationId = $defaultOperations->monthlyFeeOperation; // Filtra apenas por operacao tipo MENSALIDADE
+            $entries = (array) $this->busEntry->searchEntry($filters);
+
+            // Percorre as entradas (entry)
+            $sumEntryValue = 0; // Valor total dos titulos
+            foreach ( $entries as $entry )
+            {
+                $entryId = $entry[0];
+                if ( strlen($entryId) > 0 )
+                {
+                    $entry = $this->busEntry->getEntry($entryId);
+                    $sumEntryValue = SAGU::calcNumber(" {$sumEntryValue} + {$entry->value} "); // incrementa
+                }
+            }
+
+            // Verifica pagamento adiantado
+            $diffValue = SAGU::calcNumber(" {$parcelValue} - {$sumEntryValue} ", true); // Calcula diferenca (de quanto era a parcela anterior com a parcela atual)
+            $balance = $busInvoice->getInvoiceBalance($invoice->invoiceId);
+            if ( $balance == 0 ) // Indica que ja pagou adiantado a parcela
+            {
+                // Adiciona a diferenca para ser somada no proximo entry (proxima parcela)
+                $extraEntryValue = SAGU::calcNumber("{$extraEntryValue} + {$diffValue}");
+            }
+            else
+            {
+                // Insere um novo titulo com a diferenca do valor da parcela do turno ANTERIOR
+                $entry->value = SAGU::calcNumber("{$diffValue} + {$extraEntryValue}");
+                $entry->learningPeriodId = $learningPeriodIdNew; // Novo periodo letivo do turno
+                $entry->comments = _M('Título gerado a partir do processo de transferência de turno.', $module);
+                $this->busEntry->insertEntry($entry);
+                
+                $extraEntryValue = 0; // Zera o valor extra
+            }
+
+            // Table
+            $std = new stdClass();
+            $std->entryId = $entry->entryId;
+            $std->entryValue = $entry->value;
+            $std->maturityDate = $invoice->maturityDate;
+            $table[] = $std;
+        }
+        
+        // Caso a ULTIMA parcela ja tenha sido paga, deve inserir um novo Invoice e Entry
+        if ( $extraEntryValue != 0 )
+        {
+            // Insere um novo Invoice ( invoice->parcelsNumber + 1 )
+            // Utiliza o ultimo objeto do foreach acima
+            $invoice->invoiceId = null;
+            $invoice->parcelNumber ++;
+            $invoiceId = $busReceivableInvoice->insertReceivableInvoice($invoice);
+            
+            // Insere novo entry
+            // Utiliza o ultimo objeto do foreach acima
+            $entry->entryId = null;
+            $entry->entryDate = SAGU::getDateNow();
+            $entry->invoiceId = $invoiceId;
+            $entry->value = $extraEntryValue;
+            $entry->learningPeriodId = $learningPeriodIdNew; // Novo periodo letivo do turno
+            $entry->comments = _M('Título gerado a partir do processo de transferência de turno.', $module);
+            $this->busEntry->insertEntry($entry);
+        }
+
+        return $table;
+    }
+    
+    public function getTotalPayedValue($contractId, $learningPeriodId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+        $defaultOperations = $this->busDefaultOperations->getDefaultOperations();
+
+        $sql = ' SELECT ROUND(sum(B.value), ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ')
+                   FROM finReceivableInvoice B
+                  INNER JOIN finEntry A
+                     ON (B.invoiceId = A.invoiceId)
+                  WHERE A.contractId = ?
+                    AND A.learningPeriodId = ?
+                    AND ( balance(A.invoiceid) = 0 AND EXISTS (SELECT 1
+                                                                 FROM finEntry X
+                                                                WHERE X.invoiceId = A.invoiceId 
+                                                                AND X.operationId IN (?) ) )';
+
+        $args = array($contractId,
+                      $learningPeriodId,
+                      $defaultOperations->paymentOperation);
+        
+        $result1 = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        $sql = ' SELECT count(*)
+                   FROM (SELECT DISTINCT parcelNumber
+                           FROM finReceivableInvoice A
+                          INNER JOIN finEntry B
+                             ON (B.invoiceId = A.invoiceId)
+                          WHERE B.contractId = ?
+                            AND B.learningPeriodId = ?
+                            AND ( balance(A.invoiceId) = 0 AND EXISTS ( SELECT 1
+                                                                          FROM finEntry X
+                                                                         WHERE X.invoiceId = A.invoiceId
+                                                                         AND X.operationId IN (?) ) ) ) AS sel ';
+        $result2 = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        $return = new stdClass();
+
+        $return->payedValue = $result1[0][0] > 0 ? $result1[0][0] : 0;
+        $return->payedParcels = $result2[0][0] > 0 ? $result2[0][0] : 0;
+
+        return $return;
+    }
+    
+}

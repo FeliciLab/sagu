@@ -1,0 +1,264 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Receivable invoice remittance to bank 341 (Itaú)
+ *
+ * @author Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ *
+ * @since
+ * Class created on 22/06/2011
+ *
+ * */
+
+/**
+ * Form to control income forecast generation
+ * */
+class FrmRemittanceInvoice341 extends SForm
+{
+    private $home;
+
+    /**
+     * Class constructor
+     * */
+    public function __construct($data)
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        parent::__construct(_M('Itaú', $module), $object, $pkey);
+    }
+
+    /**
+     * Default method to define fields
+     * */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $this->toolbar->disableButton('tbBtnNew');
+        $this->toolbar->disableButton('tbBtnSave');
+        $this->toolbar->disableButton('tbBtnDelete');
+        $this->toolbar->disableButton('tbBtnSearch');
+        $this->toolbar->disableButton('tbBtnPrint');
+        
+        // Informações da conta bancária
+        $businessBankAccount = new BusinessFinanceBusBankAccount();
+        $data->bankAccountId = $this->getFormValue('bankAccountId', $data->bankAccountId);
+        $data->bankId = '341';
+        $dataBankAccount = $businessBankAccount->listBankAccount($data);
+        
+        // Verifica se a conta bancária especificada está registrada
+        if ( is_array($dataBankAccount[0]) )
+        {
+            $field = new MSelection('bankAccountId', $this->getFormValue('bankAccountId', $data->bankAccountId), _M('Código da conta bancária', $module), $dataBankAccount);
+            $field->setAutoSubmit(true);
+            $fields[] = $field;
+            $validators[] = new MRequiredValidator('bankAccountId', _M('Código da conta bancária', $module));
+        }
+        else
+        {
+            $this->addError(_M('Não há contas bancárias registradas. Por favor, registre uma conta bancária e retorne a este processo para continuar.', $module));
+            $fields[] = new MHiddenField('bankAccountId', $this->getFormValue('bankAccountId', $data->bankAccountId));
+        }
+
+        $bankAccountId = $this->getFormValue('bankAccountId', $data->bankAccountId);                
+        $bankId = $businessBankAccount->getBankIdByBankAccountId($bankAccountId);
+        
+        // Obtém as contas bancárias, se existe alguma selecionada cria o restante dos campos
+        if ( strlen($bankId) > 0 )
+        {
+            $flds[] = new MTextLabel('message1', _M('Somente serão enviados a remessa os títulos gerados para a conta bancária do banco para o qual a remessa será gerada', $module));
+            $flds[] = new MTextLabel('message2', _M('Somente serão enviados a remessa os títulos cuja política tenha o tipo de cobrança: COM REGISTRO', $module));
+            $flds[] = new MTextLabel('message3', _M('Somente serão enviados a remessa os títulos que ainda não foram enviados em outra remessa ou sofreram alterações', $module));
+            $flds[] = new MTextLabel('message4', _M('A pessoa vinculada ao título não pode ter data de falecimento preenchida', $module));
+            $flds[] = new MTextLabel('message5', _M('O saldo do título deve ser superior a @1 reais', $module, SAGU::getParameter('BASIC', 'MINIMAL_VALUE_TO_PRINT_INVOICE')));
+            $flds[] = new MTextLabel('message6', _M('O título não pode ter débito automático habilitado', $module));
+            
+            $fields[] = new MBaseGroup('bsgInfo', _M('Informações'), $flds, 'vertical');
+            
+            // Verifica se a remessa do banco existe
+            $MIOLO->getClass($module, 'RemittanceInvoice');
+            if ( RemittanceInvoice::remittanceExists($bankId) )
+            {
+                //Obtem a sequência
+                $bankRemittanceSequence = $businessBankAccount->getBankAccount($bankAccountId);                
+                if ( strlen($bankRemittanceSequence->bankRemittanceSequence) > 0 )
+                {
+                    $dataSequence = $bankRemittanceSequence->bankRemittanceSequence;
+                    $dataSequence++;
+                }
+                else
+                {
+                    $dataSequence = 1;
+                }                
+                // Adiciona o javascript
+                $MIOLO->page->addScript(SAGU::ABSOLUTE_URL_JS_FILES . 'sagu.js');
+
+                //Filtrar por
+                $options = array( array( _M('Data de emissão', $module), 1 ),
+                    array( _M('Data de vencimento', $module), 2 ) );
+                $filterByLabel = new MText('filterByLabel', _M('Filtrar por', $module) . ':');
+                $filterByLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                $filterBy = new MRadioButtonGroup('filterBy', '', $options, is_null($this->getFormValue('filterBy', $data->filterBy)) ? 1 : $this->getFormValue('filterBy', $data->filterBy), null, 'horizontal');
+                $filterBy->setShowLabel(false);
+                $fields[] = new MHContainer('hctInstructionsField', array( $filterByLabel, $filterBy ));
+                
+                // Data inicial
+                $beginDateLabel = new MText('beginDateLabel', _M('Data inicial', $module) . ':');
+                $beginDateLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                $beginDateLabel->setClass('m-caption m-caption-required');
+                $beginDate = new MCalendarField('beginDate', $this->getFormValue('beginDate', $data->beginDate), '', SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+                $validators[] = new MDATEDMYValidator('beginDate', _M('Data inicial', $module), 'required');
+                $validators[] = new MRequiredValidator('beginDate', _M('Data inicial', $module));
+                
+                $fields[] = new MHContainer('hctbeginDate', array( $beginDateLabel, $beginDate ));
+
+                // Data de emissão final
+                $endDateLabel = new MText('andEmissionDateLabel', _M('Data final', $module) . ':');
+                $endDateLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                $endDateLabel->setClass('m-caption m-caption-required');
+                $endDate = new MCalendarField('endDate', $this->getFormValue('endDate', $data->endDate), '', SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+                $validators[] = new MDATEDMYValidator('endDate', _M('Data final', $module), 'required');
+                $validators[] = new MRequiredValidator('endDate', _M('Data final', $module));
+                
+                $fields[] = new MHContainer('hctendDate', array( $endDateLabel, $endDate ));
+                                
+                $businessPolicy = new BusinessFinanceBusPolicy();
+                $dataPolicy = $businessPolicy->listPolicy();
+
+                $fields[] = new MButton('btnGerar', _M('Gerar', $module));
+            }
+            else
+            {
+                $this->addError(_M('Desculpe, este banco não tem suporte para geração de remessas. Por favor, selecione outro banco.', $module));
+            }
+        }
+        
+        parent::defineFields();
+        $this->setFields($fields);
+        $this->setValidators($validators);
+    }
+
+    /**
+     * Event triggered when user set new from the toolbar
+     */
+    public function btnGerar_click($sender = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        //Dados do formulário
+        $data = $this->getTypesData();
+                
+        //Gera a remessa
+        try {
+            $MIOLO->getClass($module, 'RemittanceInvoice341');
+            $bankRemittance = new RemittanceInvoice341($data);
+        }
+        catch(Exception $e)
+        {
+            $MIOLO->error($e->getMessage());
+        }
+        
+        //Exibe basegroup com informações da remessa gerada        
+        $totalGenerated = count($bankRemittance->history);
+        $totalNonGenerated = count($bankRemittance->invoicesWithTooMuchDiscount);        
+        $flds[] = new MTextLabel('lblTitulosGerados', ( $totalGenerated > 0 ? $totalGenerated : '0' ), _M('Total de títulos gerados', $module));
+        $flds[] = new MTextLabel('lblTitulosNaoGerados', ( $totalNonGenerated > 0 ? $totalNonGenerated : '0' ), _M('Total de títulos não gerados', $module));
+        $flds[] = new MTextLabel('lblValorTotal', ( $bankRemittance->trailerValue > 0 ? $bankRemittance->trailerValue : '0' ), _M('Valor total gerado', $module));
+        
+        $fields[] = new MBaseGroup('bsgInfo', _M('Informações da remessa'), $flds, 'vertical');                
+       
+        //Adiciona Nome da remessa e conteudo em campo oculto para que o arquvo possa ser gerado        
+        if( count($bankRemittance->history) > 0 )
+        {
+            if ( strlen($bankRemittance->fileData->file) )
+            {
+                $busFile = new BusinessBasicBusFile();
+                $opts = array('permission' => true);
+                $fields[] = new MButton('btnGetFile', _M('Baixar arquivo', $module), $busFile->getUrl($bankRemittance->fileData->fileId, $opts));
+            }
+
+            $fields[] = new MButton('btnShowInvoices', _M('Exibir detalhes', $module), "javascript:document.getElementById('divInvoices').style.display='block'");
+            
+            $colNames = array(
+                _M('Código do título', $module),
+                _M('Código da pessoa', $module),
+                _M('Nome', $module),
+                _M('Valor', $module)
+            );
+            
+            foreach( $bankRemittance->history as $cod=>$linha )
+            {
+                $dataGrid[] = $linha;
+            }
+            
+            $divFields[] = new MTableRaw(_M('Detalhes para remessa bancária @1', $module, '341'), $dataGrid, $colNames, true);            
+        }
+        else
+        {
+            $this->addInfo(_M('Não foram encontrados títulos para o período selecionado. Verifique se os títulos ja não foram enviados em outra remessa', $module));
+        }
+        
+        if( count($bankRemittance->invoicesWithTooMuchDiscount) > 0 )
+        {
+            $colNames = array( _M('Código do título', $module) );
+            $divFields[] = new MTableRaw(_M('Títulos com desconto maior de 90% não são suportados pelo sistema do Itaú', $module), $bankRemittance->invoicesWithTooMuchDiscount, $colNames, true);
+        }
+        
+        $divInvoices = new MDiv('divInvoices', $divFields);
+        $divInvoices->addBoxStyle('display', 'none');
+        $fields[] = $divInvoices;                
+        
+        $this->addFields($fields);
+    }
+    
+    /**
+     * Get the data from form and returns as a object
+     */
+    public function getTypesData()
+    {
+        $data->bankAccountId = $this->getFormValue('bankAccountId');
+        
+        //Filtro por data de emissao ou data de vencimento
+        if( $this->getFormValue('filterBy') == '1' )
+        {
+            $data->beginEmissionDate = $this->getFormValue('beginDate');
+            $data->endEmissionDate = $this->getFormValue('endDate');
+        }
+        else
+        {
+            $data->beginMaturityDate = $this->getFormValue('beginDate');
+            $data->endMaturityDate = $this->getFormValue('endDate');
+        }
+        $data->onlyRegistered = DB_TRUE; //Gera somente para os títulos onde o tipo de cobrança da política é COM REGISTRO
+
+        return $data;
+    }
+}
+
+?>

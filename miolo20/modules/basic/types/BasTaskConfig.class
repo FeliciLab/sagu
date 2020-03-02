@@ -1,0 +1,467 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class definition for database entities
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ *
+ * @since
+ * Class created on 06/04/2011
+ */
+/**
+ * Types do cadastro de solicitações
+ */
+class BasTaskConfig extends SType
+{
+    /*
+     * Table fields
+     */
+    
+    /**
+     * Código da solicitação
+     */
+    protected $taskConfigId;
+
+   /**
+    * Código do usuário
+    */
+    protected $idUser;
+
+    /**
+    * Código do usuário
+    */
+    protected $idGroup;
+
+    /**
+     * Descrição
+     */
+    protected $description;
+
+    /**
+     * @type array
+     */
+    protected $taskConfigGroup = array();
+
+    /**
+     * Atributo contendo a lista de idUser's relacionados
+     *
+     * Quando a tabela bas.taskConfig conter um valor no idUser, o array terá apenas um valor.
+     * Quando a tabela bas.taskConfig conter um idGroup, o array terá todos os id's de usuários pertencentes à este grupo.
+     *
+     * @type array
+     */
+    protected $users = array();
+    
+    /**
+     * Visível apenas para quem está atribuida
+     * 
+     * @type boolean
+     */
+    protected $visibleOnlyToAssigned;
+    
+    /**
+     * Array com BasSystemTask's
+     *
+     * @var array
+     */
+    protected $systemTask;
+    
+
+    /**
+     * Construtor da classe
+     *
+     * @param (integer) $taskConfigId Chave primária da tabela
+     */
+    public function __construct($taskConfigId = null)
+    {
+        if ( !is_null($taskConfigId) )
+        {
+            $this->taskConfigId = $taskConfigId;
+            $this->populate();
+        }
+    }
+
+    /*
+     * Common methods
+     */
+
+    /**
+     * Detecta se o salvar deve inserir um novo (no caso de chave primária não definida)
+     * ou se deve apenas atualizar um registro já existente (no caso de chave primária já definida)
+     *
+     * @return TRUE no caso de sucesso. Caso contrário, FALSE.
+     */
+    public function save()
+    {
+        // Se chave primária não está definida, assume que deva ser feito insert
+        $filters = new stdClass();
+        $filters->taskConfigId = $this->taskConfigId;
+        if ( !count(BasTaskConfig::searchGrid($filters)) > 0 )
+        {
+            $retVal = $this->insert();
+        }
+        // Se chave primária definida, assume que deva ser feito update
+        else
+        {
+            $retVal = $this->update();
+        }
+
+        if ( $retVal )
+        {
+            $filters = new stdClass();
+            $filters->taskConfigId = $this->taskConfigId;
+            foreach ( (array) BasTaskConfigGroup::search($filters) as $row )
+            {
+                $row->delete();
+            }
+            
+            $row = new BasTaskConfigGroup();
+            foreach ( (array) $this->taskConfigGroup as $row )
+            {
+                $row->taskConfigId = $this->taskConfigId;
+                $row->save();
+            }
+        }
+
+        return $retVal;
+    }
+
+    /**
+     * Exclui da base de dados o objeto atual
+     *
+     * @return TRUE no caso de sucesso. Caso contrário, FALSE.
+     */
+    public function delete()
+    {
+        foreach ( (array) $this->taskConfigGroup as $row )
+        {
+            $row->delete();
+        }
+
+        $sql = 'DELETE FROM bas.taskConfig
+                      WHERE taskConfigId = ?';
+
+        $args[] = $this->taskConfigId;
+
+        $result = SDatabase::execute($sql, $args);
+        
+        if ( $result)
+        {
+            $this->taskConfigId = null;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Duplica o registro atual.
+     *
+     * @return TRUE no caso de sucesso. Caso contrário, FALSE.
+     */
+    public function duplicate()
+    {
+        $badge = clone($this);
+        $badge->taskConfigId = null;
+
+        return $badge;
+    }
+
+    /**
+     * Retorna uma lista de objetos do tipo desta classe com os resultados da busca.
+     *
+     * @param (stdClass) $filters Objeto contendo todos os campos pesquisáveis do objeto atual
+     */
+    public function search($filters)
+    {
+        $sql = 'SELECT taskConfigId,
+                       description,
+                       iduser,
+                       idgroup
+                  FROM bas.taskConfig';
+
+        $where = '';
+        if ( $filters->taskConfigId )
+        {
+            $where .= ' AND taskConfigId = ?';
+            $args[] = $filters->taskConfigId;
+        }
+        if ( $filters->description )
+        {
+            $where .= ' AND description ILIKE UNACCENT(?)';
+            $args[] = $filters->description . '%';
+        }
+        if ( $filters->idUser )
+        {
+            $where .= ' AND idUser = ?';
+            $args[] = $filters->idUser;
+        }
+        if ( $filters->idGroup )
+        {
+            $where .= ' AND idGroup = ?';
+            $args[] = $filters->idGroup;
+        }
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5);
+        }
+
+        $result = SDatabase::query($sql, $args);
+        $retVal = array();
+
+        for ( $i=0; $i<count($result); $i++ )
+        {
+            $retVal[] = new BasTaskConfig($result[$i][0]);
+        }
+
+        return $retVal;
+    }
+
+    /**
+     * Retorna um array com os resultados da busca.
+     *
+     * @param (stdClass) $filters Objeto contendo todos os campos pesquisáveis do objeto atual
+     */
+    public function searchGrid($filters)
+    {
+        $sql = 'SELECT A.taskConfigId,
+                   A.description,
+                   A.iduser,
+                   B.login,
+                   A.idgroup,
+                   C.m_group
+              FROM bas.taskConfig A
+              LEFT JOIN miolo_user B
+              ON (A.iduser = B.iduser)
+              LEFT JOIN miolo_group C
+              ON (A.idgroup = C.idgroup)';
+
+        $where = '';
+        if ( $filters->taskConfigId )
+        {
+            $where .= ' AND A.taskConfigId = ?';
+            $args[] = $filters->taskConfigId;
+        }
+        if ( $filters->description )
+        {
+            $where .= ' AND A.description ILIKE UNACCENT(?)';
+            $args[] = $filters->description . '%';
+        }
+        if ( $filters->idUser )
+        {
+            $where .= ' AND A.idUser = ?';
+            $args[] = $filters->idUser;
+        }
+        if ( $filters->idGroup )
+        {
+            $where .= ' AND A.idGroup = ?';
+            $args[] = $filters->idGroup;
+        }
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5);
+            $result = SDatabase::query($sql, $args);
+        }
+        
+        return $result;
+    }
+
+    /**
+     * Lista todos os registros da bas.taskConfig
+     *
+     * @param $filters Array
+     * <br><b>filterGroupUser</b> (integer) Filtrar apenas por grupos do usuario
+     *
+     * @return (array) Registeros da tab
+     */
+    public static function listRecords($filters = null)
+    {
+        $sql = '    SELECT DISTINCT A.taskConfigId,
+                                    A.description
+                               FROM bas.taskConfig A';
+
+        $args = array();
+
+        //Filtra por pendencias que possuem grupos daquele usuario
+        if ( strlen($filters->filterGroupUser) > 0 )
+        {
+            $sql .= ' INNER JOIN (SELECT _A.taskconfigid
+                               FROM bas.taskConfigGroup _A
+                         INNER JOIN miolo_groupUser _B
+                                 ON (_B.idGroup = _A.idGroup)
+                              WHERE _B.idUser = ?) B
+                              ON B.taskconfigid = A.taskconfigId';
+            $args[] = $filters->filterGroupUser;
+        }
+
+        $result = SDatabase::query($sql, $args);
+        
+        return $result;
+    }
+
+    /*
+     * Private methods
+     */
+
+    /**
+     * Chamado pelo construtor, quando este recebe os dados de chave primária
+     */
+    private function populate()
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $sql = 'SELECT taskConfigId,
+                       description,
+                       iduser,
+                       idgroup,
+                       visibleOnlyToAssigned,
+                       username,
+                       TO_CHAR(datetime, \'' . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . '\')
+                  FROM bas.taskConfig
+                 WHERE taskConfigId = ?';
+
+        $args[] = $this->taskConfigId;
+
+        $result = SDatabase::query($sql, $args);
+
+        if ( strlen($result[0][0]) <= 0 )
+        {
+            $module = SAGU::getFileModule(__FILE__);
+            throw new Exception(_M('Solicitação @1 inexistente.', $module, $this->taskConfigId));
+        }
+
+        list ( $this->taskConfigId,
+               $this->description,
+               $this->idUser,
+               $this->idGroup,
+               $this->visibleOnlyToAssigned,
+               $this->userName,
+               $this->dateTime ) = $result[0];
+
+        if ( strlen($this->taskConfigId) > 0 )
+        {
+            $filters = new stdClass();
+            $filters->taskConfigId = $this->taskConfigId;
+            $this->taskConfigGroup = BasTaskConfigGroup::search($filters);
+        }
+
+        //Verifica se deve pegar o idUser ou idGroup, dependendo com valor
+        if ( strlen($this->idUser) > 0 )
+        {
+            $this->users = array($this->idUser);
+        }
+        else if ( strlen($this->idGroup) > 0 )
+        {
+            $busGroupUser = new BusinessAdminGroupUser();
+            $groupUsers = $busGroupUser->listUsersByGroup($this->idGroup);
+
+            foreach ( (array) $groupUsers->result as $user )
+            {
+                $this->users[] = $user[0];
+            }
+        }
+    }
+
+    /**
+     * Insere um novo registro com base nas informações da classe
+     */
+    private function insert()
+    {
+        $sql = 'SELECT nextval(\'bas.taskconfig_taskconfigid_seq\')';
+        $result = SDatabase::query($sql);
+        $newId  = $result[0][0];
+
+        $sql = 'INSERT INTO bas.taskConfig
+                            ( taskconfigId,
+                              description,
+                              iduser,
+                              idgroup,
+                              visibleOnlyToAssigned)
+                     VALUES ( ?,
+                              ?,
+                              ?,
+                              ?,
+                              ?)';
+
+        $args[] = $this->taskConfigId = $newId;
+        $args[] = $this->description;
+        $args[] = $this->idUser;
+        $args[] = $this->idGroup;
+        $args[] = $this->visibleOnlyToAssigned;
+
+        $result = SDatabase::execute($sql, $args);
+ 
+        return $result;
+    }
+
+    /**
+     * Atualiza um registro existente com base nas informações da classe
+     */
+    private function update()
+    {
+        $sql = 'UPDATE bas.taskConfig
+                   SET description = ?,
+                       iduser = ?,
+                       idgroup = ?,
+                       visibleOnlyToAssigned = ?
+                 WHERE taskConfigId = ?';
+
+        $args[] = $this->description;
+        $args[] = $this->idUser;
+        $args[] = $this->idGroup;
+        $args[] = $this->visibleOnlyToAssigned;
+        $args[] = $this->taskConfigId;
+
+        return SDatabase::execute($sql, $args);
+    }
+    
+    /**
+     *
+     * @return array
+     */
+    public function getSystemTask()
+    {
+        if ( !isset($this->systemTask) && ( strlen($this->taskConfigId) > 0 ) )
+        {
+            $filters = new stdClass();
+            $filters->taskConfigId = $this->taskConfigId;
+            
+            $this->systemTask = (array) BasSystemTask::search($filters);
+        }
+        
+        return $this->systemTask;
+    }
+    
+    public static function tarefaTeste()
+    {
+        return true;
+    }
+}
+?>

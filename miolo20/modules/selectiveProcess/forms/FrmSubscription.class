@@ -1,0 +1,468 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulario responsavel pela inscricao no processo seletivo.
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 03/01/2011
+ */
+class FrmSubscription extends SStepByStepForm
+{
+    private $hasActiveSelectiveProcess = true;
+    
+    
+    public function __construct($steps = null)
+    {
+        if (!$steps->disableConstruct)
+        {
+            parent::__construct(null, $steps, __CLASS__, new SprSubscription(), array('subscriptionId'));
+
+            // Desabilita botões da MToolbar
+            $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);            
+            $this->toolbar->enableButton(MToolBar::BUTTON_BACK);
+        }
+    }
+
+    public function createFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+        
+        if ( $this->isFirstAccess() )
+        {
+            $_SESSION['selectiveProcessId'] = null;
+        }
+        
+        $_SESSION['personIdSelected'] = null;
+
+        // Carrega os dados da inscrição
+        $allData = $this->getStepData();
+        $stepData = $this->getStepDataByForm(__CLASS__);
+        $subscriptionId = MIOLO::_REQUEST('subscriptionId', $stepData->subscriptionId);
+
+        if ( strlen($subscriptionId) > 0 )
+        {
+            $sprSubscription = new SprSubscription($subscriptionId);
+            $stepData = $sprSubscription;
+
+            // Obtém o processo seletivo
+            $sprSelectiveProcess = new SprSelectiveProcess($stepData->selectiveProcessId);
+        }
+
+        //Se não for módulo de serviço trata campo pessoa nesse passo
+        if ( !SAGU::userIsFromServices() )
+        {
+            $arrayProcessoSeletivo = SprSelectiveProcess::listNormal('selectiveProcessId DESC');
+        }
+        else
+        {
+            $arrayProcessoSeletivo = SprSelectiveProcess::_list();
+        }
+                
+        try
+        {
+            if ( strlen($subscriptionId) > 0 && $function != SForm::FUNCTION_DELETE )
+            {
+                // Verifica se o processo seletivo está aberto
+                $openSelectionProcess = false;
+                foreach ( (array)$arrayProcessoSeletivo as $selectiveProcess )
+                {
+                    if( $selectiveProcess[0] == $sprSelectiveProcess->selectiveProcessId )
+                    {
+                        $openSelectionProcess = true;
+                    }
+                }
+
+                // Caso esteja fechado impede a edição
+                if( !$openSelectionProcess )
+                {
+                    $msg = _M('Não é mais possível editar esta inscrição pois o processo seletivo @1 já foi encerrado.', $module, $sprSelectiveProcess->description);
+                    throw new Exception($msg);
+                }
+            }
+        }
+        catch ( Exception $e )
+        {
+            $MIOLO->error($e->getMessage());
+            return;
+        }
+
+        // Campo processo seletivo
+        if ( !strlen($subscriptionId) > 0 )
+        {
+            $selectiveProcessIdLabel = new MText('selectiveProcessIdLabel', _M('Processo seletivo', $module) . ':');
+            $selectiveProcessIdLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+            $selectiveProcessIdLabel->setClass('m-caption m-caption-required');
+
+            if ( count($arrayProcessoSeletivo)>0 )
+            {          
+                $selectiveProcessIdField = new MSelection('selectiveProcessId', $this->getRequestValue('selectiveProcessId', $stepData->selectiveProcessId), NULL, $arrayProcessoSeletivo, null, _M('Processo seletivo no qual será feita inscrição'));
+                
+                if ( !SAGU::userIsFromServices() ) // Quando estiver via sistema, exibir a etapa do processo seletivo selecionado
+                {
+                    $selectiveProcessIdField->addAttribute('onchange', SForm::getAjaxAction('changeSelectiveProcessId', 'divSteps'));
+                }
+                $fldsSPR[] = new MHContainer('selectiveProcessIdCnt', array($selectiveProcessIdLabel, $selectiveProcessIdField));
+
+                // divSteps
+                if ( !SAGU::userIsFromServices() )
+                {
+                    $selectiveProcessId = $this->getRequestValue('selectiveProcessId', $stepData->selectiveProcessId);
+                    $stepId = $this->getRequestValue('stepId', $stepData->stepId);
+                    $divStepsContent = null;
+                    if ( ( strlen($stepId) > 0 ) && ( strlen($selectiveProcessId) > 0 ) )
+                    {
+                        $filters = new stdClass();
+                        $filters->selectiveProcessId = $selectiveProcessId;
+                        $filters->stepId = $stepId;
+
+                        $divStepsContent = $this->changeSelectiveProcessId( $filters );
+                    }
+                    $fldsSPR[] = new MDiv('divSteps', $divStepsContent);
+                }
+                
+                $fields[] = new MBaseGroup('bsgSPR', _M('Selecione o processo seletivo', $module), $fldsSPR );
+                $validators[] = new MRequiredValidator('selectiveProcessId', _M('Processo seletivo', $module));
+            }
+            else
+            {
+                $this->hasActiveSelectiveProcess = false;
+                if ( SAGU::getEventName() != 'nextStepButton:click' )
+                {
+                    $this->AddInfo(_M('Não há nenhum processo seletivo ocorrendo no momento',$module).'.');
+                }
+            }
+        }
+        else // Quando for edição, não permite que altere o processo seletivo
+        {
+            $fields[] = new SHiddenField('selectiveProcessId', $stepData->selectiveProcessId);
+            $selectiveProcessIdLabel = new MText('selectiveProcessIdLabel', _M('Processo seletivo', $module) . ':');
+            $selectiveProcessIdLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+            $selectiveProcessIdField = new MTextLabel('selectiveProcessId', $sprSelectiveProcess->description);
+            $fldsSPR[] = new MHContainer('selectiveProcessIdCnt', array($selectiveProcessIdLabel, $selectiveProcessIdField));
+            $fields[] = new MBaseGroup('bsgSPR', _M('Selecione o processo seletivo', $module), $fldsSPR );
+        }
+
+        //Se não for módulo de serviço trata campo pessoa nesse passo
+        if ( !SAGU::userIsFromServices() )
+        {            
+            // Campo pessoa
+            if ( !strlen($subscriptionId) > 0 )
+            {
+                $fields[] = new SLookupContainer('personIdSelected', strlen($this->getRequestValue('personIdSelected')) > 0 ? $this->getRequestValue('personIdSelected') : $allData->personIdSelected, array(
+                    'label' => _M('Pessoa', $module),
+                    'item' => 'PhysicalPerson',
+                    'module' => 'basic',
+                    'hint' => _M('Pessoa que será inscrita processo seletivo selecionado (caso exista)', $module),
+                ));
+            }
+            else // Quando for edição, não permite que altere o inscrito
+            {
+                $fields[] = new MHiddenField('subscriptionId', $subscriptionId);
+                $subscriptionIdLabel = new MText('subscriptionIdLabel', _M('Pessoa', $module) . ':');
+                $subscriptionIdLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+                $subscriptionIdField = new MTextLabel('subscriptionId', $sprSubscription->physicalPerson->name);
+                $fields[] = new MHContainer('subscriptionIdCnt', array($subscriptionIdLabel, $subscriptionIdField));
+            }
+        }
+
+        $fields[] = new MSeparator();
+        $fields[] = SAGU::getRequiredLegend();
+        $fields[] = new MSeparator();
+
+        $this->setFields($fields);
+        $this->setValidators($validators);
+    }
+
+    public function nextStepButton_click($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $data = $this->getData();        
+        $data->stepId = $this->getRequestValue('stepId');
+        
+        $_args = array();
+        $_args['step1done'] = 1;
+        $_args['stepId'] = $data->stepId;
+
+        try
+        {
+            $sprSelectiveProcess = new SprSelectiveProcess($data->selectiveProcessId);
+            $firstStepChecked = ( $data->stepId == $sprSelectiveProcess->steps[0]->stepId );
+            $hasSelectedPerson = strlen($data->personIdSelected) > 0;
+            $currentStep = $sprSelectiveProcess->getCurrentStep();
+            
+            
+            //Se não for módulo de serviço trata campo pessoa nesse passo
+            if ( !SAGU::userIsFromServices() )
+            {
+                $arrayProcessoSeletivo = SprSelectiveProcess::listNormal();
+                $forServices = 'FALSE';
+            }
+            else
+            {
+                $arrayProcessoSeletivo = SprSelectiveProcess::_list();
+                $forServices = 'TRUE';
+            }
+            
+
+            //
+            // Quando estiver via sistema
+            //
+            if ( !SAGU::userIsFromServices() )
+            {
+                // 
+                if ( $hasSelectedPerson )
+                {
+                    $filters = new stdClass();
+                    $filters->personId = $data->personIdSelected;
+                    $filters->selectiveProcessId = $data->selectiveProcessId;
+                    $subscription = current(SprSubscription::search($filters));
+                    
+                    if ( !$subscription && !$firstStepChecked )
+                    {
+                        throw new Exception( _M('Esta pessoa ainda não possui uma inscrição no processo seletivo selecionado, portanto, só pode ser inscrita na primeira etapa.', $module) );
+                    }
+                }
+                else if ( ! $firstStepChecked && ( strlen($data->subscriptionId) <= 0 ) )
+                {
+                    // Quando estiver via sistema, nao selecionar uma pessoa e selecionar uma etapa que NAO é a primeira, bloquear
+                    throw new Exception( _M('Você só pode inscrever uma nova pessoa na primeira etapa.', $module) );
+                }
+            }
+
+            // Verifica se o processo seletivo está aberto
+            $openSelectionProcess = false;            
+            foreach ( (array)$arrayProcessoSeletivo as $selectiveProcess )
+            {
+                if( $selectiveProcess[0] == $data->selectiveProcessId )
+                {
+                    $openSelectionProcess = true;
+                }
+            }
+
+            // Caso esteja fechado impede a edição
+            if( !$openSelectionProcess )
+            {
+                $msg = _M('Não é mais possível editar esta inscrição pois o processo seletivo @1 já foi encerrado.', $module, $sprSelectiveProcess->description);
+                throw new Exception($msg);
+            }
+
+            if( SAGU::userIsFromServices() )
+            {
+                if ( !(strlen($currentStep->stepId) > 0) )
+                {
+                    throw new Exception( _M('Não existe uma etapa vigente para este processo seletivo.', $module) );
+                }
+            }
+
+            // Verifica se inscrito esta como APROVADO na etapa anterior, caso NAO, bloqueia inscrição.
+            // Pega a etapa atual , caso ela NAO seja a primeira (seja > 0)
+            $checkStepId = null;
+            foreach ( (array)$sprSelectiveProcess->steps as $i => $step )
+            {
+                if ( ($step->isCurrent == DB_TRUE) && ($i > 0) )
+                {
+                    // Obtem etapa ANTERIOR a esta (que é a atual)
+                    $checkStepId = $sprSelectiveProcess->steps[$i-1]->stepId;
+                }
+            }
+
+            if( !SAGU::userIsFromServices() )
+            {
+                // Se nao foi aprovado na etapa anterior, bloqueia inscricao
+                //Pode significar tambem que nao participou da etapa anterior / nao possui inscricao ainda, caso que deve ser bloqueado tambem.
+                if ( !$this->checkPunctuationThePreviousStep($data) )
+                {
+                    throw new Exception( _M('A pessoa selecionada não participou ou não foi aprovada na etapa anterior à etapa selecionada.', $module) );
+                }
+
+                // Caso funcionario tentar inserir uma inscricao de pessoa que ja possui, bloquear
+                if ( !SAGU::userIsFromServices() && (!strlen($data->selectiveProcessId) > 0) )
+                {
+                    $filters = new stdClass();
+                    $filters->selectiveProcessId = $data->selectiveProcessId;
+                    $filters->personId = $data->personIdSelected;
+                    if ( count(SprSubscription::search($filters)) > 0 )
+                    {
+                        throw new Exception( _M('Esta pessoa já possui uma inscrição para este processo seletivo. Para editar, deve ser buscado por esta pessoa/inscrição na tela de inscrições e clicar na ação de Editar.', $module) );
+                    }
+                }
+            }
+
+            // Condicoes tratadas no handler subscription.inc
+            $sprSP = new sprSelectiveProcess($data->selectiveProcessId);
+            if ( !(strlen($sprSP->socialEconomicFormId) > 0) ) // Quando nao existe formulario socioeconomico, nao exibir esta etapa.
+            {
+                $_args['disable_socioeconomic'] = 1;
+            }
+
+            if ( !(count($currentStep->stepDocuments) > 0) ) // Caso nao exista documentos, nao exibir esta etapa.
+            {
+                $_args['disable_document'] = 1;
+            }
+        }
+        catch (Exception $e)
+        {
+            $this->AddError($e->getMessage());
+            return;
+        }
+        
+        $_SESSION['personIdSelected'] = $this->getFormValue('personIdSelected');
+
+        parent::nextStepButton_click($_args);
+    }
+    
+    public function nextStepButton()
+    {
+        return $this->hasActiveSelectiveProcess ? parent::nextStepButton() : new MDiv();
+    }
+
+    /**
+     * Caso o processo seletivo tenha uma etapa anterior a corrente verifica 
+     * se a pessoa que está se inscrevendo teve status aprovado.
+     * 
+     * Caso seja passado $data->stepId, sera verificado sua etapa anterior,
+     *  senao, a etapa anterior da atual.
+     *  
+     * 
+     *
+     * @param stdClass $data dados do formulário
+     * @return boolean
+     */
+    public function checkPunctuationThePreviousStep($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $sprSelectiveProcess = new SprSelectiveProcess($data->selectiveProcessId);
+        $approved = true;
+        
+        // Verifica se inscrito esta como APROVADO na etapa anterior, caso NAO, bloqueia inscrição.
+        // Pega a etapa atual , caso ela NAO seja a primeira (seja > 0)
+        $checkStepId = null;
+        foreach ( (array)$sprSelectiveProcess->steps as $i => $step )
+        {
+            $condition = (strlen($data->stepId) > 0) ? ($data->stepId == $step->stepId) : ($step->isCurrent == DB_TRUE);
+            if ( ($condition) && ($i > 0) )
+            {
+                // Obtem etapa ANTERIOR a esta (que é a atual)
+                $checkStepId = $sprSelectiveProcess->steps[$i-1]->stepId;
+            }
+        }
+
+        if ( strlen($checkStepId) > 0 )
+        {
+            // Obtem inscricao deste usuario , caso exista
+            $filters = new stdClass();
+
+            if( (strlen($data->selectiveProcessId)>0) && (strlen($data->personIdSelected)>0) )
+            {
+                $filters = new stdClass();
+                $filters->selectiveProcessId = $data->selectiveProcessId;
+                $filters->personId = $data->personIdSelected;
+                $subscriptionId = SprSubscription::getSubscriptionId($data->selectiveProcessId, $data->personIdSelected);
+
+                if( strlen($subscriptionId)>0 )
+                {
+                    $sprSubscription = new SprSubscription($subscriptionId);
+
+                    if ( count($sprSubscription->subscriptionStepInfo) > 0 )
+                    {
+                        // Percorre informacoes das etapas
+                        foreach ( (array) $sprSubscription->subscriptionStepInfo as $ssInfo )
+                        {
+                            // Verifica se estado foi APROVADO
+                            if ( $ssInfo->stepId == $checkStepId )
+                            {
+                                $approved = ($ssInfo->subscriptionStatusId == SprSubscriptionStatus::CLASSIFIED);
+                                break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        $approved = false;
+                    }
+                }
+            }
+        }
+        
+        return $approved;
+    }
+    
+    
+    /**
+     * Evento chamado ao alterar o selection processo seletivo
+     *
+     * @param stdClass $args
+     * @return array
+     */
+    public function changeSelectiveProcessId($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $filters = new stdClass();
+        $filters->selectiveProcessId = $args->selectiveProcessId;
+        
+        $stepLabel = new MText(rand(), _M('Etapa', $module) . ':');
+        $stepLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $stepLabel->setClass('m-caption');
+        $step = new MSelection('stepId', $args->stepId, null, null, null, _M('Etapas do processo seletivo escolhido'));
+        $step->options = SprStep::listRecords($filters);
+        $fields[] = new MHContainer(rand(), array($stepLabel, $step));
+
+        return $fields;
+    }
+    
+    /**
+     * Sobrescreve metodo remover
+     *
+     * @param stdClass $sender
+     * @param boolean $success 
+     */
+    public function tbBtnDelete_confirm($sender = NULL, $success)
+    {
+        $subscriptionId = $this->getRequestValue('subscriptionId');
+        $sprSubscription = new SprSubscription($subscriptionId);
+        $ok = $sprSubscription->delete();
+        
+        parent::tbBtnDelete_confirm($sender, $ok);
+    }
+    
+    public function cancelButton()
+    {
+        return SAGU::getCancelButtonSubscription();
+    }
+}
+?>

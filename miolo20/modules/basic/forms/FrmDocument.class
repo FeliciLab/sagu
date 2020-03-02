@@ -1,0 +1,654 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Document form
+ *
+ * @author Daniel Afonso Heisler [daniel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ *
+ * @since
+ * Class created on 05/09/2005
+ *
+ **/
+
+/**
+ * Form to manipulate a document type
+ **/
+class FrmDocument extends MForm
+{
+    /**
+     * Class constructor
+     **/
+    public function __construct()
+    {
+        $module = MIOLO::getCurrentModule();
+
+        if ( MIOLO::_request('function') == 'insert' )
+        {
+            parent::__construct(_M('Inserir', $module));
+        }
+        else
+        {
+            parent::__construct(_M('Atualizar', $module));
+        }
+
+        $this->setHelp(get_class($this), MIOLO::getCurrentModule(), MIOLO::getCurrentAction());
+
+        if (($f = $this->page->request('cpaint_function')) != "")
+        {
+            $this->manager->getTheme()->clearContent();
+            $this->$f($this->page->request('cpaint_argument'));
+            $this->page->generateMethod = 'generateAJAX';
+        }
+        else
+        {
+             $this->defineFields();
+             $this->eventHandler();
+        }
+    }
+
+    /**
+     * Default method to define fields
+     **/
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+
+        $businessDocument = new BusinessBasicBusDocument();
+
+        $toolBar = new MToolBar('toolBar',$MIOLO->getActionURL($module,$action));
+        $toolBar->disableButton('tbBtnPrint');
+
+        if ( $function == 'insert' )
+        {
+            $toolBar->disableButton('tbBtnDelete');
+            $toolBar->disableButton('tbBtnSave');
+        }
+
+        $fields[] = $toolBar;
+
+        if ( in_array($function,array('update', 'delete')) )
+        {
+            $personId = MIOLO::_request('personId');
+            $documentTypeId = MIOLO::_request('documentTypeId');
+            $documentTypeIdGet = $documentTypeId;
+            $fields[] = new MHiddenField('documentTypeId', $documentTypeId);
+
+            $data = $businessDocument->getDocument($personId, $documentTypeId);
+            $data->{'content'.$data->documentTypeId} = $data->content;
+        }
+
+        $fields[] = new MSeparator('');
+
+        //Field person
+        $personLabel = new MText('personLabel', _M('Pessoa',$module).':');
+        $personLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $personLabel->setClass('m-caption m-caption-required');
+        $personId = new MLookupTextField('personId', $this->getFormValue('personId', $data->personId), '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), null, null, 'personName', 'basic', 'Person', null, null, true);
+        $personId->setJsHint(_M('Informe o código da pessoa',$module));
+        $validatorPerson = new MIntegerValidator('personId', '', 'required');
+        $personName = new MTextField('personName', $this->getFormValue('personName', $data->personName), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $personName->setJsHint(_M('Nome da pessoa',$module));
+        $personName->setReadOnly(true);
+        $hctPerson = new MHContainer('hctPerson', array($personLabel, $personId, $personName));
+        $hctPerson->setShowLabel(true);
+        $fields[] = $hctPerson;
+
+        if ( $function == 'insert' )
+        {
+            $fields[] = new MButton('btnLoad', _M('Carregar',$module), "{$this->getName()}.submit();");
+        }
+
+        if ( strlen($personId->value)>0 )
+        {
+            $business = new BusinessBasicBusDocumentType();
+            $documentType = $business->listDocumentType();
+
+            $business = new BusinessBasicBusPhysicalPerson();
+            $physicalPerson = $business->getPhysicalPerson($personId->value);
+
+            $business = new BusinessBasicBusLegalPerson();
+            $legalPerson = $business->getLegalPerson($personId->value);
+
+            if ( count($physicalPerson) > 0 && count($legalPerson) > 0 )
+            {
+                $personType = '';
+            }
+            elseif ( count($physicalPerson) > 0 )
+            {
+                $personType = 'P';
+                $personSex  = $physicalPerson->sex;
+            }
+            elseif ( count($legalPerson) > 0 )
+            {
+                $personType = 'L';
+            }
+            else
+            {
+                $personType = null;
+            }
+
+            //AJAX definitions
+            $MIOLO->getRequiredJS4Ajax();
+            $url = str_replace('&amp;', '&',$this->manager->getCurrentURL());
+
+            //document containers
+            if ( count($documentType)>0 )
+            {
+                foreach ( $documentType as $row )
+                {
+                    $z++;
+                    list ( $documentTypeId,
+                           $documentTypeName,
+                           $documentTypeMask,
+                           $documentTypeSex,
+                           $documentTypePersonType,
+                           $documentTypeMinAge,
+                           $documentTypeMaxAge,
+                           $documentTypeNeedDeliver,
+                           $documentTypeIsBlockEnroll,
+                           $documentTypeFillHint ) = $row;
+
+                    //person type
+                    if ( strtolower($documentTypePersonType) == strtolower($personType) ||
+                         strlen(trim($documentTypePersonType)) == 0 )
+                    {
+                        //sex
+                        if ( strtolower($personType) != 'p' ||
+                             ( strtolower($personType) == 'p' &&
+                               ( strtolower($personSex) == strtolower($documentTypeSex) ||
+                                 strtolower($documentTypeSex) == '' ) ) )
+                        {
+
+                            //age
+                            if ( strtolower($personType) != 'p' ||
+                                 ( strtolower($personType) == 'p' &&
+                                   ( $businessDocument->checkMaxAge(MIOLO::_request('personId'), $documentTypeId) == DB_TRUE && $businessDocument->checkMinAge(MIOLO::_request('personId'), $documentTypeId) == DB_TRUE
+                                   )
+                                 )
+                               )
+                            {
+                                $toolBar->enableButton('tbBtnSave');
+                                $data = $businessDocument->getDocument($personId->value, $documentTypeId);
+
+                                //AJAX
+                                $code = '
+                                            var parameters' . $documentTypeId . ' = new Array()
+                                            parameters' . $documentTypeId . '[0]  = \'' . $documentTypeId . '\'
+                                            parameters' . $documentTypeId . '[1]  = \'' . $personId->value . '\'
+
+                                            function insertFields' . $documentTypeId . '()
+                                            {
+                                                xGetElementById(\'divMore' . $documentTypeId . '\').innerHTML = \'Loading...<img src="/images/loading.gif"/>\';
+                                                MIOLO_ajaxCall("' . $url . '", "POST", "ajax_btnMore", parameters' . $documentTypeId . ', updateMoreData' . $documentTypeId . ', "TEXT");
+                                            }
+
+                                            function updateMoreData' . $documentTypeId . '(result)
+                                            {
+                                                xGetElementById(\'divMore' . $documentTypeId . '\').innerHTML = result;
+                                                MIOLO_parseAjaxJavascript(result);
+                                            }
+                                        ';
+
+                                $this->page->AddJsCode($code);
+
+                                eval('$flds[] = new MHiddenField(\'documentTypeId' . $documentTypeId . '\',\'true\');');
+
+                                if ( strlen($documentTypeFillHint) > 0 )
+                                {
+                                    eval('$divFillHint' . $documentTypeId . ' = new MHContainer(\'divFillHint' . $documentTypeId . '\');');
+                                    eval('$divFillHint' . $documentTypeId . '->addControl(new MText(\'txtFillHint' . $documentTypeId . '\', \'' . $documentTypeFillHint . '\'));');
+                                    eval('$flds[] = $divFillHint' . $documentTypeId . ';');
+                                }
+
+                                eval('$value3 = $this->getFormValue(\'content' . $documentTypeId . '\', $data->content);');
+
+                                eval('$content' . $documentTypeId . ' = new MTextField(\'content' . $documentTypeId . '\', $value3, \'' . _M('Conteúdo', $module) . '\', 20);');
+                                eval('$content' . $documentTypeId . '->setJsHint(\'' . _M('Informe o conteúdo do documento', $module) . '\');');
+                                if ( $documentTypeId == SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF') )
+                                {
+                                    $validators[$documentTypeId][]  = new MCPFValidator('content' . $documentTypeId, _M('CPF',$module), 'optional');
+                                }
+
+                                //Se não tem valor, default false
+                                $isDeliveredValue = $data->isDelivered ? $data->isDelivered : 'f';
+                                eval('$isDelivered' . $documentTypeId . ' = new MSelection(\'isDelivered' . $documentTypeId . '\', $isDeliveredValue, \'' . _M('Foi entregue', $module) . '\', array(\'t\' => \'' . _M('Sim', $module) . '\',\'f\' => \'' . _M('Não', $module) . '\'));');
+                                eval('$isDelivered' . $documentTypeId . '->setJsHint(\'' . _M('Informe se foi entregue', $module) . '\');');
+                                eval('$validators[' . $documentTypeId . '][] = new MRequiredValidator(\'isDelivered' . $documentTypeId . '\');');
+
+                                //Se não tem valor, default false
+                                $isExcusedValue = $data->isExcused ? $data->isExcused : 'f';
+                                eval('$isExcused' . $documentTypeId . ' = new MSelection(\'isExcused' . $documentTypeId . '\', $isExcusedValue, \'' . _M('É dispensado', $module) . '\', array(\'t\' => \'' . _M('Sim', $module) . '\',\'f\' => \'' . _M('Não', $module) . '\'));');
+                                eval('$isExcused' . $documentTypeId . '->setJsHint(\'' . _M('Informe se é dispensado', $module) . '\');');
+                                eval('$validators[' . $documentTypeId . '][] = new MRequiredValidator(\'isExcused' . $documentTypeId . '\');');
+
+                                eval('$more' . $documentTypeId . ' = new MButton(\'more' . $documentTypeId . '\', \'' . _M('Mais', $module) . '\', \'insertFields' . $documentTypeId . '()\');');
+
+                                eval('$hctMain' . $documentTypeId . ' = new MHContainer(\'hctMain' . $documentTypeId . '\',array($content' . $documentTypeId . ',   $isDelivered' . $documentTypeId . ', $isExcused' . $documentTypeId . ', $more' . $documentTypeId . '));');
+                                eval('$hctMain' . $documentTypeId . '->showLabel = true;');
+                                eval('$flds[] = $hctMain' . $documentTypeId . ';');
+
+                                eval('$divMore' . $documentTypeId . ' = new MDiv(\'divMore' . $documentTypeId . '\');');
+                                eval('$flds[] = $divMore' . $documentTypeId . ';');
+
+                                eval('$bsg' . $documentTypeId . ' = new BaseGroup(\'bsg' . $documentTypeId . '\', \'' . _M('Documento', $module) . ': ' . $documentTypeName . '\', $flds, \'vertical\');');
+                                eval('$bsg' . $documentTypeId . '->showLabel = true;');
+                                eval('$bsg' . $documentTypeId . '->width = \'48%\';');
+
+                                if ( ($function == 'update' && $documentTypeId == $documentTypeIdGet) ||
+                                     ($function == 'insert') )
+                                {
+                                    $arrayDocuments[] = $documentTypeId;
+                                }
+                                unset($flds);
+                            }
+                        }
+                    }
+                }//foreach
+
+                //show document containers
+                $x = 1;
+                $y = 0;
+
+                $validators2[] = $validatorPerson;
+
+                if ( count($arrayDocuments)>0 )
+                {
+                    $personId->setReadOnly(true);
+
+                    foreach ( $arrayDocuments as $documentTypeId )
+                    {
+                        foreach ( $validators[$documentTypeId] as $valid )
+                        {
+                            $validators2[] = $valid;
+                        }
+                        if ( ($x % 2) == 0 )
+                        {
+                            eval('$hct' . $y . ' = new MHContainer(\'hct\',array($bsg' . $documentTypeIdOld . ', $bsg' .  $documentTypeId . '));');
+                            eval('$hct' . $y . '->showLabel = true;');
+                            eval('$fields[] = $hct' . $y . ';');
+                            $y++;
+                        }
+                        else
+                        {
+                            $documentTypeIdOld = $documentTypeId;
+                            if ( count($arrayDocuments) == $x || $function == 'update' )
+                            {
+                                eval('$hct' . $y . ' = new MHContainer(\'hct\',array($bsg' . $documentTypeIdOld . '));');
+                                eval('$hct' . $y . '->showLabel = true;');
+                                eval('$fields[] = $hct' . $y . ';');
+                            }
+                        }
+                        $x++;
+                    }
+                }
+                else
+                {
+                     $this->addError(_M('Não foram encontrados documentos que podem ser cadastrados para a pessoa informada.', $module));
+                }
+            }
+        }
+        //end Containers
+
+        $fields[] = new MSeparator();
+
+        if ( $function == 'update' )
+        {
+            $fields[] = new MTextLabel('lastModification', '[' . $data->userName . ' - ' . $data->dateTime . ']', _M('Última modificação',$module));
+            $fields[] = new MSeparator();
+        }
+
+        $this->setFields($fields);
+        if ( count($validators2) > 0 )
+        {
+            $this->setValidators($validators2);
+        }
+        $this->setLabelWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $this->setShowPostButton(false);
+        $this->setClose($MIOLO->getActionURL($module,substr($action,0,strrpos($action,':'))));
+        $this->page->onLoad('document.' . $this->name . '.personId.focus();');
+    }
+
+    public function ajax_btnMore($parameters)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        list( $documentTypeId,
+              $personId ) = explode(',', $parameters[0]);
+
+        $businessDocument = new BusinessBasicBusDocument();
+        $data = $businessDocument->getDocument($personId, $documentTypeId);
+
+        eval('$cityId' . $documentTypeId . ' = new MLookupTextField(\'cityId' . $documentTypeId . '\', $this->getFormValue(\'cityId' . $documentTypeId . '\',$data->cityId), \'' . _M('Código da cidade', $module) . '\', 8, null, null, \'cityName' . $documentTypeId . '\', $module, \'City\', null, null, true);');
+        eval('$cityId' . $documentTypeId . '->setJsHint(\'' . _M('Informe o código da cidade do documento', $module) . '\');');
+
+        eval('$cityName' . $documentTypeId . ' = new MTextField(\'cityName' . $documentTypeId . '\', $this->getFormValue(\'cityName' . $documentTypeId . '\', $data->cityName), \'' . _M('Nome da cidade', $module) . '\', 20);');
+        eval('$cityName' . $documentTypeId . '->setReadOnly(true);');
+
+        eval('$hctCity' . $documentTypeId . ' = new MHContainer(\'hctCity' . $documentTypeId . '\',array($cityId' . $documentTypeId . ', $cityName' . $documentTypeId . '));');
+        eval('$hctCity' . $documentTypeId . '->showLabel = true;');
+        eval('$flds[] = $hctCity' . $documentTypeId . ';');
+
+        eval('$organ' . $documentTypeId . ' = new MTextField(\'organ' . $documentTypeId . '\', $this->getFormValue(\'organ' . $documentTypeId . '\', $data->organ), \'' . _M('Instituição expeditora', $module) . '\', 6);');
+        eval('$organ' . $documentTypeId . '->setJsHint(\'' . _M('Informe a entidade emissora do documento', $module) . '\');');
+
+        eval('$dateExpedition' . $documentTypeId . ' = new MCalendarField(\'dateExpedition' . $documentTypeId . '\', $this->getFormValue(\'dateExpedition' . $documentTypeId . '\', $data->dateExpedition), \'' . _M('Expedição',$module) . '\', 10);');
+        eval('$dateExpedition' . $documentTypeId . '->setJsHint(\'' . _M('Informe a data de expedição do documento',$module) . '\');');
+        eval('$validators[' . $documentTypeId . '] = new MDateDMYValidator(\'dateExpedition' . $documentTypeId . '\', \'' . _M('Expedição', $module) . '\', \'optional\');');
+
+        eval('$hctGeneral' . $documentTypeId . ' = new MHContainer(\'hctGeneral' . $documentTypeId . '\',array($organ' . $documentTypeId . ', $dateExpedition' . $documentTypeId . '));');
+        eval('$hctGeneral' . $documentTypeId . '->showLabel = true;');
+        eval('$flds[] = $hctGeneral' . $documentTypeId . ';');
+
+
+        eval('$obs' . $documentTypeId . '= new MMultiLineField(\'obs' . $documentTypeId . '\', $this->getFormValue(\'obs' . $documentTypeId . '\',$data->obs), \'' . _M('Obs', $module) . '\', 20, 3, 35);');
+        eval('$obs' . $documentTypeId . '->setJsHint(\'' . _M('Se necessário, preencha com alguma observação importante', $module) . '\');');
+
+        eval('$hctObs' . $documentTypeId . ' = new MHContainer(\'hctObs' . $documentTypeId . '\',array($obs' . $documentTypeId . '));');
+        eval('$hctObs' . $documentTypeId . '->showLabel = true;');
+        eval('$flds[] = $hctObs' . $documentTypeId . ';');
+
+        if ( count($validators) > 0 )
+        {
+            $this->setValidators($validators);
+            $val = $this->GenerateScript();
+        }
+
+        $this->manager->getTheme()->setContent($flds);
+    }
+
+    /**
+     * Event triggered when user chooses New from the toolbar
+     **/
+    public function tbBtnNew_click($sender=NULL)
+    {
+    }
+
+    /**
+     * Event triggered when user chooses Delete from the toolbar
+     **/
+    public function tbBtnDelete_click($sender=NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $data = $this->getTypesData();
+        $opts = array('event' => 'tbBtnDelete_confirm',
+                      'function' => 'delete',
+                      'personId' => MIOLO::_request('personId'),
+                      'documentTypeId' => MIOLO::_request('documentTypeId'));
+
+        $gotoYes = $MIOLO->getActionURL( $module, $action, null, $opts );
+        $goto = SAGU::getStackBackUrl();
+        $gotoNo  = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+        $msg = SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE');
+        $caption = _M('Questão',$module);
+        $MIOLO->question($msg, $gotoYes, $gotoNo);
+    }
+
+    /**
+     * Event triggered when user chooses Yes from the Delete prompt dialog
+     **/
+    public function tbBtnDelete_confirm($sender=NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $business = new BusinessBasicBusDocument();
+        $ok = $business->deleteDocument($this->personId->value, $this->documentTypeId->value);
+
+        if ( $ok )
+        {
+            $msg = SAGU::getParameter('BASIC', 'MSG_RECORD_DELETED');
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Informação',$module);
+            $MIOLO->information($msg, $goto);
+        }
+        else
+        {
+            $msg = _M('Erro executando a operação solicitada.',$module);
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Erro',$module);
+            $MIOLO->error( $msg, $goto, $caption );
+        }
+    }
+
+    /**
+     * Event triggered when user chooses Save from the toolbar
+     **/
+    public function tbBtnSave_click($sender=NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+
+        $data = $this->getTypesData();
+
+        $business = new BusinessBasicBusDocument();
+        $busDocumentType = new BusinessBasicBusDocumentType();
+
+        $document = new basDocument();
+        $document->personId = $data->personId;
+        $documentSearch  = new basDocument();
+
+        $isFreeDocumentsToRegister = true;
+
+        foreach ( $data->data as $documentTypeId => $value )
+        {
+            //Foreach para testar se nenhum documento é duplo
+            unset($searchRegisteredDocument);
+
+            if ( (strlen($value['content']) > 0) && (strlen($documentTypeId) > 0) && (($documentTypeId==SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG'))||($documentTypeId==SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF')))  )
+            {
+                $filters1->content = $value['content'];
+                $filters1->documentTypeId = $documentTypeId;
+                $filters1->nonPersonId = $data->personId;
+
+                $searchRegisteredDocument = $business->searchDocument($filters1);
+            }
+
+            if ( is_array($searchRegisteredDocument) && (count($searchRegisteredDocument) > 0) )
+            {
+                //Já tem cadastrado este documento
+                $isFreeDocumentsToRegister = false;
+                $documentRegistered[] = $documentTypeId;
+            }
+            $opts["content$documentTypeId"] = $value['content'];
+            $opts["cityId$documentTypeId"] = $this->{'cityId'.$documentTypeId}->value;
+            $opts["cityName$documentTypeId"] = $this->{'cityName'.$documentTypeId}->value;
+            $opts["organ$documentTypeId"] = $this->{'organ'.$documentTypeId}->value;
+            $opts["dateExpedition$documentTypeId"] = $this->{'dateExpedition'.$documentTypeId}->value;
+            $opts["isDelivered$documentTypeId"] = $this->{'isDelivered'.$documentTypeId}->value;
+            $opts["isExcused$documentTypeId"] = $this->{'isExcused'.$documentTypeId}->value;
+            $opts["obs$documentTypeId"] = $this->{'obs'.$documentTypeId}->value;
+        }
+
+        if ( $isFreeDocumentsToRegister == false )
+        {
+            foreach($documentRegistered as $key1 => $value1)
+            {
+                $value2  = $busDocumentType->getDocumentType($value1);
+
+                $value3 .= $value2->name . ', ';
+            }
+
+            $value3 = substr($value3, 0, strlen($value3)-2);
+            $msg = _M('Estes documentos já foram registrados',$module) . '<BR>' . $value3;
+            $goto = SAGU::getStackBackUrl();
+            $opts['function']   = 'insert';
+            $opts['personId']   = $data->personId;
+            $opts['personName'] = $data->personName;
+            $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action, null, $opts);
+            $caption = _M('Erro',$module);
+            $MIOLO->error( $msg, $goto, $caption );
+        }
+
+        if ( $isFreeDocumentsToRegister == true )
+        {
+            foreach ( $data->data as $documentTypeId => $value )
+            {
+                $document->documentTypeId = $documentTypeId;
+                $document->content = $value['content'];
+                $document->isDelivered = $value['isDelivered'];
+                $document->obs = $value['obs'];
+                $document->cityId = $value['cityId'];
+                $document->organ = $value['organ'];
+                $document->dateExpedition = $value['dateExpedition'];
+                $document->isExcused = $value['isExcused'];
+
+                if ( $function == 'update' )
+                {
+                    $msg = SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED');
+                    $ok  = $business->updateDocument($document);
+                    if ( !$ok )
+                    {
+                        break;
+                    }
+                }
+                else
+                {
+                    $msg = SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED');
+                    $documentSearch->personId = $this->personId->value;
+                    $documentSearch->documentTypeId = $document->documentTypeId;
+                    $res = $business->searchDocument($documentSearch);
+
+                    if ( count($res) == 0 )
+                    {
+                        if ( strlen($document->content)>0 )
+                        {
+                            $ok  = $business->insertDocument($document);
+                            if ( !$ok )
+                            {
+                                break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        $ok  = $business->updateDocument($document);
+                        if ( !$ok )
+                        {
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if ( $ok )
+            {
+                $opts = array('personIdS'       => $this->personId->value,
+                                'documentTypeIdS' => $this->documentTypeId->value);
+
+                if ( $function == 'update' )
+                {
+                    $caption = _M('Informação', $module);
+                    $MIOLO->information($msg, $MIOLO->getActionURL( $module, $action, null, $opts));
+                }
+                else
+                {
+                    $goto = $MIOLO->getActionURL( $module, $action, null, $opts);
+                    $opts = array('function'=>'insert');
+                    $gotoYes = $MIOLO->getActionURL($module, $action, null, $opts);
+                    $caption = _M('Questão',$module);
+                    $MIOLO->question($msg, $gotoYes, $goto);
+                }
+            }
+            else
+            {
+                $msg = _M('Erro executando a operação solicitada.',$module);
+                $goto = SAGU::getStackBackUrl();
+                $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+                $caption = _M('Erro',$module);
+                $MIOLO->error( $msg, $goto, $caption );
+            }
+        }
+    }
+
+    /**
+     * Method to gather all information from the form fields
+     * and put them on a database compatible object
+     **/
+    public function getTypesData()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $data = new BasDocument();
+        $vars = get_object_vars($data);
+
+        foreach ( $vars as $var => $value )
+        {
+            if ( $this->$var && $var != 'name' )
+            {
+                eval('$data->' . $var . ' = $this->' . $var . '->value;');
+            }
+        }
+
+        $data->personName = $this->personName->value;
+        $business = new BusinessBasicBusDocumentType();
+        $documentType = $business->ListDocumentType();
+
+        foreach ( $documentType as $row )
+        {
+            list ( $documentTypeId,
+                   $documentTypeName,
+                   $documentTypeMask,
+                   $documentTypeSex,
+                   $documentTypePersonType,
+                   $documentTypeMinAge,
+                   $documentTypeMaxAge,
+                   $documentTypeNeedDeliver ) = $row;
+
+            eval('$o = "{$this->documentTypeId' . $documentTypeId . '->value}";');
+            if ( $o == true )
+            {
+                eval('$data->data[' . $documentTypeId . '][\'content\']        = "{$this->content' . $documentTypeId . '->value}";');
+                eval('$data->data[' . $documentTypeId . '][\'isDelivered\']    = "{$this->getFormValue(\'isDelivered' . $documentTypeId . '\')}";');
+                eval('$data->data[' . $documentTypeId . '][\'cityId\']         = "{$this->getFormValue(\'cityId' . $documentTypeId . '\')}";');
+                eval('$data->data[' . $documentTypeId . '][\'organ\']          = "{$this->getFormValue(\'organ' . $documentTypeId . '\')}";');
+                eval('$data->data[' . $documentTypeId . '][\'dateExpedition\'] = "{$this->getFormValue(\'dateExpedition' . $documentTypeId . '\')}";');
+                eval('$data->data[' . $documentTypeId . '][\'obs\']            = "{$this->getFormValue(\'obs' . $documentTypeId . '\')}";');
+                eval('$data->data[' . $documentTypeId . '][\'isExcused\']      = "{$this->getFormValue(\'isExcused' . $documentTypeId . '\')}";');
+            }
+        }
+
+        return $data;
+    }
+}

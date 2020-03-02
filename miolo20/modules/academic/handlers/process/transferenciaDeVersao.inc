@@ -1,0 +1,53 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Augusto A. Silva [augusto@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Augusto A. Silva [augusto@solis.coop.br]
+ *
+ * @since
+ * Class created on 06/09/2013
+ */
+define('TRANSFERENCIA_EM_LOTE', 'em_lote');
+define('TRANSFERENCIA_UNITARIA', 'unitaria');
+
+$MIOLO->trace('file:' . $_SERVER['SCRIPT_NAME']);
+$module = $MIOLO->getCurrentModule();
+$action = 'main:process:transferenciaDeVersao';
+
+$navbar->addOption(_M('Transferência de versão de curso', $module), $module, $action);
+access::insert('Transferência de versão curso', $action, 'default-16x16.png');
+
+//Checa as permissões
+$MIOLO->checkAccess('FrmTransferenciaDeVersao', A_EXECUTE, true, true);
+
+$i=1;
+$steps[$i++] = new SStepInfo('FrmTransferenciaDeVersaoDadosContratuais', _M('Dados contratuais', $module), $module);
+$steps[$i++] = new SStepInfo('FrmTransferenciaDeVersaoResumo',  _M('Resumo', $module), $module);
+
+$content = SStepByStepForm::getCurrentForm($steps);
+
+$theme->clearContent();
+$theme->insertContent($content);
+?>

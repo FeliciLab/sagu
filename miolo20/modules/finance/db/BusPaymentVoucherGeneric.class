@@ -1,0 +1,221 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file handles the connection and actions for fingenericVoucherPayment table
+ *
+ * @author Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * 
+ * @since
+ * Class created on 02/01/2006
+ *
+ **/
+
+/**
+ * Class to manipulate the fingenericVoucherPayment table
+ **/
+class BusinessFinanceBusPaymentVoucherGeneric extends sBusiness
+{
+   /**
+    * Generete a new learning period
+    * 
+    * @param $data (object): acdPeriod object
+    *
+    * @return (boolean): True if succed otherwise fails
+    *
+    */
+    public function getPaymentVoucherGeneric($data)
+    { 
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        if (strlen($data->personId) > 0)
+        {
+           $where['A.personId = ?'] = $data->personId;
+        }
+
+        if ( strlen($data->anotherHistory > 0) )
+        {
+            $xwhere = " AND (C.operationId = '"  . addslashes($data->anotherHistory) . "' OR C.operationId = '" . addslashes($data->operationId) . "') ";
+        }
+        else
+        {
+            $where['C.operationId = ?'] = $data->operationId;
+        }
+        
+       $where["A.maturityDate BETWEEN TO_DATE( ? , 'dd/mm/yyyy' )"] = $data->beginDate;
+       $where["TO_DATE( ? , 'dd/mm/yyyy' )"] = $data->endDate;
+
+       $strWhere = implode(' AND ', array_keys($where)) . $xwhere;
+       $maskDate = SAGU::getParameter('BASIC', 'MASK_DATE');
+       $realRoundValue = SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE');
+
+       $sql =   "SELECT A.personId,
+                    B.name AS personname,
+                    ROUND(C.value, {$realRoundValue}),
+                    C.operationid,
+                    D.description,
+                    D.operationTypeId,
+                    TO_CHAR( A.maturityDate, '{$maskDate}' ),
+                    E.courseid,
+                    G.name,
+                    extract(month FROM A.maturityDate) || '/' || extract(year FROM A.maturityDate) AS datePeriod,
+                    C.contractId,
+                    A.invoiceId
+          FROM ONLY finreceivableinvoice A
+         INNER JOIN ONLY basperson B
+                 ON ( A.personid = B.personid )
+         INNER JOIN finentry C
+                 ON ( A.invoiceid = C.invoiceid )
+         INNER JOIN finoperation D
+                 ON ( C.operationid = D.operationid )
+         INNER JOIN acdlearningperiod E
+                 ON ( C.learningperiodid = E.learningperiodid )
+          LEFT JOIN acdcourseOccurrence F
+                 ON ( E.courseid = F.courseid
+                     AND E.courseversion = F.courseversion
+                     AND E.turnid = F.turnid
+                     AND E.unitid = F.unitid )
+          LEFT JOIN acdcourse G
+                 ON ( F.courseid = G.courseid )
+              WHERE {$strWhere}
+           GROUP BY 1,2,3,4,5,6,7,8,9,10,11,12
+           ORDER BY 7, 11, 3 ";
+  
+        $db     = $this->getDatabase();
+        $result = $db->Query( SAGU::prepare( $sql, array_values($where) ) );
+
+        return $result;
+    }
+
+
+   /**
+    * Generete a new learning period
+    * 
+    * @param $data (object): acdPeriod object
+    *
+    * @return (boolean): True if succed otherwise fails
+    *
+    */
+    public function getPaymentVoucherGenericInvoice($data)
+    {
+ 
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        // Verifica se a constante está setada na tabela de parâmetros
+        // pega operação de padrão de matrícula (para pegar o valor do mensal do aluno - valor do título)   
+        $db     = $this->getDatabase();
+        $sql = 'SELECT enrolloperation from findefaultoperations';
+        $ok = $db->Query($sql);
+        if ( strlen( $ok[0][0] ) >! 0 )
+        {
+            $goto = strlen( $goto ) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Erro', $module );
+            $msg     = _M('enrollOperation não está declarada na tabela de configurações do financeiro', $module);
+            $MIOLO->error( $msg, $goto, $caption );
+        }
+ 
+        // Busca dados de todas as pessoas que tem desconto em folha
+      $sql = ' SELECT A.personId,
+                      (SELECT name 
+                        FROM ONLY basPerson 
+                       WHERE basPerson.personId = A.personId) AS personName,
+                      (SELECT SUM(AA.value) 
+                         FROM finEntry AA
+                        WHERE A.invoiceId = AA.invoiceId 
+                          AND operationId = ?) AS valueEntry,
+                      ROUND (D.value, 2) AS percentDiscount,
+                      D.valueIsPercent,
+                      D.contractId,
+                      count(A.personId)
+                      FROM ONLY finReceivableInvoice A 
+                          INNER JOIN (SELECT invoiceId 
+                                       FROM (SELECT entryId,
+                                                    invoiceId, 
+                                                    operationId 
+                                               FROM finEntry 
+                                              WHERE operationId = ? ' ;
+        $args[] = $ok[0][0];
+        $args[] = $data->operationId;
+        if(strlen( $data->anotherHistory > 0 ) )
+        { 
+            $sql    .= ' OR operationId = ? ';
+            $args[] = $data->anotherHistory;
+        }    
+        $sql .= '                                                    ) AS A
+                    INNER JOIN ONLY finReceivableInvoice B 
+                        USING (invoiceId) 
+                    WHERE maturityDate >= TO_DATE( ? , \'' .SAGU::getParameter('BASIC', 'MASK_DATE') .'\' )
+                    AND maturityDate <= TO_DATE( ? , \'' .SAGU::getParameter('BASIC', 'MASK_DATE') .'\' ) ) AS C
+                    USING (invoiceId)
+                         LEFT OUTER JOIN acdContract B
+                                 ON (A.personId = B.personId 
+                                AND A.courseId = B.courseId
+                                AND A.courseVersion = B.courseVersion 
+                                AND A.unitId = B.unitId)
+                         LEFT OUTER JOIN (SELECT contractId,
+                                                 value, 
+                                                 valueIsPercent, 
+                                                 startDate, 
+                                                 endDate,
+                                                 incentiveId,
+                                                 cancellationDate
+                                            FROM finIncentive ) AS D
+                                 ON (B.contractId = D.contractId
+                                AND CASE WHEN D.cancellationDate IS NULL 
+                                         THEN (A.maturityDate BETWEEN startDate AND endDate)
+                                         ELSE (A.maturityDate BETWEEN startDate AND D.cancellationDate )
+                                         END ) 
+        WHERE B.contractId = ? ';
+        $args[] = $data->beginDate;
+        $args[] = $data->endDate;
+        $args[] = $data->contractId;
+        if(strlen($data->personId > 0) )
+        {
+            $sql    .= '  AND A.personId = ? ';
+            $args[] = $data->personId;
+        }
+        
+        $sql .= ' GROUP BY 1,2,4,5,6, A.invoiceId';  
+ 
+        $db     = $this->getDatabase();
+
+        $result = $db->Query( SAGU::prepare( $sql, $args ));
+
+
+        return $result;
+    }
+
+
+}
+
+?>

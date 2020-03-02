@@ -1,0 +1,293 @@
+<?php
+/**
+ * <--- Copyright 2011-2011 de Facimed - Faculdade de Ciências Biométricas de Cacoal.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Employee form
+ *
+ * @author Alessandro Rodrigues da Cruz [cpd@facimed.edu.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Equipe Solis [sagu2@solis.coop.br]
+ *
+ * @since
+ * Class created on 21/03/2011
+ *
+ **/
+
+class FrmDispatch extends SManagementForm
+{
+    /**
+     * Class constructor
+     **/
+    public function __construct()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+
+        parent::__construct(new PtcDispatch(), array('dispatchId'), 'BusDispatch', _M('Parecer', $module));
+    }
+
+    /**
+     * Default method to define fields
+     **/
+    public function defineFields()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+
+        $requestId = MIOLO::_REQUEST('requestId');
+
+        try
+        {
+            if ( strlen($function) > 0 && $function != SForm::FUNCTION_INSERT)
+            {
+                throw new Exception(_M('Função indisponível', $module));
+            }
+
+            $busRequest = new BusinessProtocolBusRequestPtc();
+            $dataRequest = $busRequest->getRequestComplete($requestId);
+
+            if ( $dataRequest->statusId != PtcRequest::STATUS_RUNNING )
+            {
+                throw new Exception(_M('O estado da solicitação não permite registro de pareceres.', $module));
+            }
+           
+            //Obtendo dados do usuário logado
+            //Login
+            $loginUser = $MIOLO->GetLogin();
+            //PhysicalPersonEmployee
+            $businessPhysicalPersonEmployee = new BusinessBasicBusPhysicalPersonEmployee();
+            $person = $businessPhysicalPersonEmployee->getPersonByMioloUserName($loginUser->id);
+
+            if ( !(is_object($person)) )
+            {
+                throw new Exception(_M('Para acessar este formulário, o usuário precisa ser um funcionário. Verifique o cadastro de funcionários em Básico::Pessoa::Pessoa::Funcionário.', $module));
+            }
+
+            //Employee
+            $busEmployee = new BusinessBasicBusEmployee();
+
+            $employee = $busEmployee->getEmployeeForPersonId($person->personId);
+
+            if ( strlen($employee->sectorId) <= 0 )
+            {
+                throw new Exception(_M('Para acessar este formulário, o usuário precisa estar vinculado a um setor. Verifique o cadastro de funcionários em Básico::Pessoa::Pessoa::Funcionário.', $module));
+            }
+
+            $fields[] = new MTextLabel('number', $dataRequest->number, _M('Número da solicitação', $module));
+            $fields[] = new MTextLabel('subject', $dataRequest->subjectDescription, _M('Assunto', $module));
+            $fields[] = new MTextLabel('currentSector', $dataRequest->currentSectorName, _M('Setor atual', $module));
+            $fields[] = new MHiddenField('requestId', $dataRequest->requestId);
+            $fields[] = new MHiddenField('sectorId', $dataRequest->currentSectorId);
+            $fields[] = new MHiddenField('subjectId', $dataRequest->currentSubjectId);
+            $fields[] = new MHiddenField('level', SAGU::NVL($dataRequest->currentLevel, 1));
+            $fields[] = new MHiddenField('forwardedSubjectId', $dataRequest->currentSubjectId);
+            $fields[] = new MHiddenField('forwardedLevel', $dataRequest->currentLevel + 1);
+
+            $fields[] = new MSeparator();
+
+            //Field description
+            $descriptionLabel = new MText('descriptionLabel', _M('Parecer', $module) . ':');
+            $descriptionLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $descriptionLabel->setClass('m-caption m-caption-required');
+            $description = new MEditor('description');
+            $description->setJsHint(_M('Digite o parecer',$module));
+            $description->setWidth( SAGU::getParameter('BASIC', 'FIELD_EDITOR_SIZE') );
+            $fields[] = new MHContainer('hctDescription', array($descriptionLabel, $description));
+
+            $busSubjectSector = new BusinessProtocolBusSubjectSector();
+            $sectorsList = $busSubjectSector->getSubjectSectorByLevel($dataRequest->subjectId, ($dataRequest->currentLevel + 1));
+
+            $busDispatch = new BusinessProtocolBusDispatch();
+            $lastDispatch = $busDispatch->getRequestLastDispatch($dataRequest->requestId);
+            $fecharValue = MIOLO::_REQUEST('fecharProtocolo');
+            
+            if ( strlen($lastDispatch->requestId) > 0 && $fecharValue == 0 && $dataRequest->currentLevel != '1' )
+            {
+                $fields[] = new MHiddenField('replySectorId', $lastDispatch->sectorId);
+                $fields[] = new MHiddenField('replyLevel', $lastDispatch->level);
+
+                $btnReply = new MButton('btnReply', _M('Encaminhar ao nível anterior'));
+
+                $btn[] = $btnReply;
+            }
+
+            $btnSend = new MButton('btnSend', _M('Encaminhar ao próximo nível'));
+            
+            if ( $busSubjectSector->permiteFecharProtocolo($dataRequest->subjectId,  $dataRequest->currentLevel) )
+            {
+                // Encaminhar ou fechar protocolo
+                $fecharProtocoloLabel  = new MLabel(':');
+                $fecharProtocoloLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                
+                $fecharOptions = array( 
+                    array(_M('Encaminhar protocolo', $module), 0),
+                    array(_M('Fechar protocolo', $module), 1)
+                );
+
+                $fecharProtocolo = new MRadioButtonGroup('fecharProtocolo', '', $fecharOptions, 0, null, 'horizontal');
+                $fecharProtocolo->setAutoPostBack(true);
+            
+                $fields[] = new MHContainer('hctFechar', array($fecharProtocoloLabel, $fecharProtocolo));
+            }
+            
+            if ( $fecharValue == 0 )
+            {
+                if ( count($sectorsList) > 1 )
+                {
+                    $fields[] = new MSelection('forwardedSectorId', $this->getFormValue('forwardedSectorId'), _M('Encaminhar para', $module), $sectorsList);
+                    $validators[] = new MRequiredValidator('forwardedSectorId', _M('Encaminhar para', $module));
+                }
+                elseif ( count($sectorsList) == 1 )
+                {
+                    $fields[] = new MHiddenField('forwardedSectorId', $sectorsList[0][0]);
+                    $fields[] = $currentSector = new MTextField('forwardedSectorName', $sectorsList[0][1], _M('Encaminhar para'), SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+                    $currentSector->setReadOnly(true);
+                }
+                else
+                {
+                    $btnSend = new MButton('btnSend', 'Finalizar');
+                    $fields[] = new MHiddenField('closeRequest', SAGU::getParameter('BASIC', 'DB_TRUE'));
+                }
+            }
+            else
+            {
+                $btnSend = new MButton('btnSend', 'Finalizar');
+                $fields[] = new MHiddenField('closeRequest', SAGU::getParameter('BASIC', 'DB_TRUE'));
+            }
+                
+            $btn[] = $btnSend;
+
+            $hctButtons = new MHContainer('hctButtons', $btn);
+
+            $fields[] = $hctButtons;
+
+            $this->setFields($fields);
+            $this->setValidators($validators);
+        }
+        catch (Exception $e)
+        {
+            $this->addError($e->getMessage());
+        }
+    }
+
+    public function btnReply_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $data = $this->getData();
+
+        $dispatchData = new PtcDispatch();
+
+        $dispatchData->requestId = $data->requestId;
+        $dispatchData->description = $data->description;
+        $dispatchData->subjectId = $data->subjectId;
+        $dispatchData->sectorId = $data->sectorId;
+        $dispatchData->level = $data->level;
+        $dispatchData->forwardedSubjectId = $data->subjectId;
+        $dispatchData->forwardedSectorId = $data->replySectorId;
+        $dispatchData->forwardedLevel = $data->replyLevel;
+
+        try
+        {
+            if ( strlen($data->description) == 0 )
+            {
+                throw new Exception(_M('O campo "Parecer" é obrigatório.'));
+            }
+            
+            $busRequest = new BusinessProtocolBusRequestPtc();
+
+
+            $busRequest->beginTransaction();
+
+            $this->busObject->insertDispatch($dispatchData);
+
+            $busRequest->updateRequestSector($dispatchData->requestId, $dispatchData->forwardedSectorId, $dispatchData->forwardedLevel);
+
+            $busRequest->commit();
+
+            SAGU::information(SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED_INFO'), $MIOLO->getActionURL($module, 'main:process:request', null, array('function'=>SForm::FUNCTION_UPDATE, 'requestId'=>$dispatchData->requestId)));
+        }
+        catch (Exception $e)
+        {
+            $this->addError($e->getMessage());
+        }
+    }
+
+    public function btnSend_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $data = $this->getData();
+        
+        $dispatchData = new PtcDispatch();
+
+        $dispatchData->requestId = $data->requestId;
+        $dispatchData->description = $data->description;
+        $dispatchData->subjectId = $data->subjectId;
+        $dispatchData->sectorId = $data->sectorId;
+        $dispatchData->level = $data->level;
+
+        if ( $data->closeRequest != SAGU::getParameter('BASIC', 'DB_TRUE') )
+        {
+            $dispatchData->forwardedSubjectId = $data->subjectId;
+            $dispatchData->forwardedSectorId = $data->forwardedSectorId;
+            $dispatchData->forwardedLevel = $data->forwardedLevel;
+        }
+
+        try
+        {
+            if ( strlen($data->description) == 0 )
+            {
+                throw new Exception(_M('O campo "Parecer" é obrigatório.'));
+            }
+            
+            $busRequest = new BusinessProtocolBusRequestPtc();
+
+            SDatabase::beginTransaction();
+
+            $this->busObject->insertDispatch($dispatchData);
+
+            if ( $data->closeRequest == SAGU::getParameter('BASIC', 'DB_TRUE') )
+            {
+                $busRequest->updateRequestStatus($dispatchData->requestId, PtcRequest::STATUS_CLOSED);
+            }
+            else
+            {
+                $busRequest->updateRequestSector($dispatchData->requestId, $dispatchData->forwardedSectorId, $dispatchData->forwardedLevel);
+            }
+
+            SDatabase::commit();
+            
+            SAGU::information(SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED_INFO'), $MIOLO->getActionURL($module, 'main:process:request', null, array('function'=>SForm::FUNCTION_UPDATE, 'requestId'=>$dispatchData->requestId)));
+        }
+        catch (Exception $e)
+        {
+            SDatabase::rollback();
+            $this->addError($e->getMessage());
+        }
+    }
+}
+?>

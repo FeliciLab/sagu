@@ -1,0 +1,757 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulario onde é informado as informacoes da pessoa.
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Cristian Edson Göhl [cristian@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 03/01/2011
+ */
+class FrmPersonalInformation extends SStepByStepForm
+{
+    public function __construct($steps = null)
+    {
+        if (!isset($steps->disableConstruct))
+        {
+            parent::__construct(null, $steps, __CLASS__);
+            $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+            
+        }
+    }
+    
+    /**
+     * Define fields, não é utilizado, apenas para ajustes após a criação dos
+     * campos do createFields. - Ticket #38267
+     */
+    public function defineFields()
+    {
+        parent::defineFields();
+        
+        $function = MIOLO::_REQUEST('function');
+        
+        if ( ( SAGU::getParameter('basic', 'ENABLE_FIELD_PASSWORD_IN_PHYSICALPERSON_REGISTER') == DB_TRUE ) && ( $function == 'insert' ) )
+        {
+            $this->page->OnLoad("document.getElementById('mioloUserPasswd').focus();");
+        }
+        else
+        {
+            $this->page->OnLoad("document.getElementById('personName').focus();");
+        }
+    }
+
+    public function createFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+                
+        // Load data
+        $allData = $this->getStepData();
+        $stepData = $this->getStepDataByForm(__CLASS__); 
+        
+        try
+        {
+            $sprSP = new SprSelectiveProcess($allData->selectiveProcessId);
+
+            $mioloUserName = trim($MIOLO->getLogin()->id);
+            if( (!strlen($mioloUserName)>0) && ($sprSP->requireAuthentication == DB_TRUE) )
+            {
+                throw new Exception(_M('Usuário não logado ou sem permissão para acessar este passo.', $module));
+            }
+        }
+        catch (Exception $e)
+        {
+            $MIOLO->error($e->getMessage());
+        }
+        
+        $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+        
+        // Verifica se o cpf e a data de nascimento são referentes a uma pessoa já existente no sistema
+        if ( strlen($allData->cpf) > 0 && strlen($allData->dateBirth) > 0 )
+        {
+            $busDocument = new BusinessBasicBusDocument();
+            // Verifica se o documento ja existe na base de dados
+            $filters = new stdClass();
+            $filters->documentTypeId = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF');
+            $filters->content = $allData->cpf;
+            $documents = $busDocument->searchDocument($filters, true);
+
+            if ( count($documents) > 0 )
+            {
+                $filters = new stdClass();
+                $filters->personId = $documents[0]->personId;
+                $filters->dateBirth = $allData->dateBirth;
+
+                $searchPerson = $busPhysicalPerson->searchPhysicalPerson($filters);
+
+                if( count($searchPerson)>0 )
+                {
+                    $allData->personIdSelected = $filters->personId;
+                    $fields[] = new SHiddenField('personIdSelected', $allData->personIdSelected);
+                }
+            }
+        }
+
+        $sprSP = new SprSelectiveProcess($allData->selectiveProcessId);
+        
+        if ( ((strlen($allData->subscriptionId) > 0) || (strlen($allData->personIdSelected) > 0)) && $this->isFirstAccess() )
+        {
+            if (strlen($allData->subscriptionId) > 0)
+            {
+                $sprSubscription = new SprSubscription( $allData->subscriptionId );
+                $stepData = $sprSubscription->physicalPerson;
+
+                // Carrega dados de formacao
+                $stepData->institutionName = $sprSubscription->institutionName;
+                $stepData->courseName = $sprSubscription->courseName;
+                $stepData->conclusionYear = $sprSubscription->conclusionYear;
+                $stepData->degreeName = $sprSubscription->degreeName;
+                $stepData->formationLevelId = $sprSubscription->formationLevelId;
+
+                // Carrega dados do vínculo empregatícios
+                $stepData->workEmployerName = $sprSubscription->physicalPerson->workEmployerName;
+                $stepData->workFunction = $sprSubscription->physicalPerson->workFunction;
+                $stepData->workStartDate = $sprSubscription->physicalPerson->workStartDate;
+                $stepData->workEndDate = $sprSubscription->physicalPerson->workEndDate;
+            }
+            else
+            {
+                $busDocument = new BusinessBasicBusDocument();
+                if ( strlen($allData->personIdSelected) > 0 )
+                {
+                    $physicalPerson = $busPhysicalPerson->getPhysicalPerson( $allData->personIdSelected );
+                    $physicalPerson->documents = $busDocument->searchDocument( (object) array('personId' => $physicalPerson->personId) , true);
+
+                    $stepData = $physicalPerson;
+                }
+            }
+
+            $stepData->personName = $stepData->name;
+
+            foreach ((array)$stepData->documents as $document)
+            {
+                if ($document->documentTypeId == SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG'))
+                {
+                    $stepData->rg = $document->content;
+                    $stepData->rgOrgao = $document->organ;
+                }
+                
+                if ($document->documentTypeId == SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF'))
+                {
+                    $stepData->cpf = $document->content;
+                }
+                
+                
+            }
+        }
+        
+        $filtro->personId = $stepData->personId;        
+        $busDadosBancariosDaPessoa = new BusinessFinanceBusDadosBancariosDaPessoa();
+        $dadosBancarios = $busDadosBancariosDaPessoa->getDadosBancariosDaPessoa($filtro);
+                        
+        //Popula os campos customizados
+        $this->getCustomFields('FrmPersonalInformation', $stepData->personId);
+        
+        // Código da pessoa
+        $fields[] = new MHiddenField('personId', $stepData->personId);
+
+        // MIOLO username
+        $fields[] = new MHiddenField('mioloUserName', $stepData->mioloUserName);
+
+        /*
+         * Dados gerais
+         */
+        if ( ( SAGU::getParameter('basic', 'ENABLE_FIELD_PASSWORD_IN_PHYSICALPERSON_REGISTER') == DB_TRUE ) && ( $function == 'insert' ) )
+        {
+            // Field miolo userpassword
+            $mioloUserPasswdLabel = new MText('mioloUserPasswdLabel', _M('Senha',$module) . ':');
+            $mioloUserPasswdLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $mioloUserPasswd = new MPasswordField('mioloUserPasswd', $this->getFormValue('mioloUserPasswd'), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'), _M("Informe sua senha para acesso às informações do portal. Caso não informada, será gerada automáticamente."));
+            $mioloUserPasswd->setJsHint(_M('Informe o nome de usuário da pessoa',$module));
+            $bgrFields[] = new MHContainer('hctMioloUserName', array($mioloUserPasswdLabel, $mioloUserPasswd));
+        }
+
+        // Nome
+        $personNameLabel = new MLabel(_M('Nome', $module) . ':');
+        $personNameLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $personNameLabel->setClass('m-caption m-caption-required');
+        $personName = new MTextField('personName', $stepData->personName, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $personName->setJsHint(_M('Informe o nome', $module));
+        $bgrFields[] = new MHContainer('personNameCnt', array($personNameLabel, $personName));
+        $validators[] = new MRequiredValidator('personName', _M('Nome', $module));
+
+        // E-mail
+        $emailLabel = new MLabel(_M('E-mail', $module) . ':');
+        $emailLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $emailLabel->setClass('m-caption m-caption-required');
+        $email = new MTextField('email', trim($stepData->email), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $email->setJsHint(_M('Informe o e-mail', $module));
+        $bgrFields[] = new MHContainer('emailCnt', array($emailLabel, $email));
+        $validators[] = new MEmailValidator('email', _M('E-mail', $module), 'required');
+
+        // RG
+        $rgLabel = new MLabel(_M('Identidade (RG)', $module) . ':');
+        $rgLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $rgLabel->setClass('m-caption m-caption-required');
+        $rg = new MTextField('rg', $stepData->rg, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_LOOKUP_SIZE'));
+        $rg->setJsHint(_M('Informe a identidade (RG)', $module));
+        $bgrFields[] = new MHContainer('rgCnt', array($rgLabel, $rg));
+        $validators[] = new MRequiredValidator('rg', _M('Identidade (RG)', $module));
+
+        // Orgao RG
+        $rgOrgaoLabel = new MLabel(_M('Órgão expedidor do RG', $module) . ':');
+        $rgOrgaoLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $rgOrgaoLabel->setClass('m-caption m-caption-required');
+        $rgOrgao = new MTextField('rgOrgao', $stepData->rgOrgao, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_LOOKUP_SIZE'));
+        $rgOrgao->setJsHint(_M('Informe o órgão expedidor do RG', $module));
+        $bgrFields[] = new MHContainer('rgOrgaoCnt', array($rgOrgaoLabel, $rgOrgao));
+        $validators[] = new MRequiredValidator('rgOrgao', _M('Órgão expedidor do RG', $module));
+
+        // Field cpf
+        $cpfLabel = new MText('cpfLabel', _M('CPF',$module) . ':');
+        $cpfLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $cpfLabel->setClass('m-caption m-caption-required');
+        $cpfValue = strlen($allData->cpf) > 0 ? $allData->cpf : $stepData->cpf;
+        $cpf = new MTextField('cpf', $cpfValue, NULL, SAGU::getParameter('BASIC', 'FIELD_MONETARY_SIZE'));
+        $cpf->setJsHint(_M('Informe seu CPF',$module));
+        $validators[]  = new MCPFValidator('cpf', _M('CPF',$module), 'required');
+        $hctCpf = new MHContainer('hctPerson', array($cpfLabel, $cpf));
+        $hctCpf->setShowLabel(true);
+        $bgrFields[] = $hctCpf;
+
+        if ( strlen($cpfValue) > 0 )
+        {
+            $cpf->setReadOnly(true);
+        }
+        // Pais de nascimento
+        $busCountry = new BusinessBasicBusCountry();
+        $countryIdBirthLabel = new MText('countryIdBirthLabel', _M('Nacionalidade', $module) . ':');
+        $countryIdBirthLabel->setClass('m-caption m-caption-required');
+        $countryIdBirthLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+        $stepData->countryIdBirth = ( ($function == 'insert') && (!(strlen($stepData->countryIdBirth) > 0)) ) ? SAGU::getParameter('BASIC', 'DEFAULT_COUNTRY_ID') : $stepData->countryIdBirth;
+        $countryIdBirth = new MSelection('countryIdBirth', $stepData->countryIdBirth, null, $busCountry->listCountry());
+        $countryIdBirth->setJsHint( _M('Informe sua nacionalidade', $module) );
+        $validators[] = new MRequiredValidator('countryIdBirth', _M('Nacionalidade', $module));
+        $bgrFields[] = new MHContainer('countryIdBirthHct', array($countryIdBirthLabel, $countryIdBirth));
+
+        // Sexo
+        $sexLabel = new MText('sexLabel', _M('Sexo',$module) . ':');
+        $sexLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $sexLabel->setClass('m-caption m-caption-required');
+        $sex = new MSelection('sex', $stepData->sex, null, SAGU::listSex());
+        $sex->setJsHint(_M('Informe o sexo',$module));
+        $validators[] = new MRequiredValidator('sex', _M('Sexo',$module));
+        $bgrFields[] = new MHContainer('sexCnt', array($sexLabel, $sex));
+
+        // Data de nascimento
+        $dateBirthLabel = new MText('dateBirthLabel', _M('Data de nascimento', $module) . ':');
+        $dateBirthLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+        $dateBirthLabel->setClass('m-caption m-caption-required');
+        $dateBirthValue = strlen($allData->dateBirth) > 0 ? $allData->dateBirth : $stepData->dateBirth;
+        $dateBirth = new MCalendarField('dateBirth', $dateBirthValue, null, SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+        $dateBirth->setJsHint(_M('Informe a data de nascimento', $module));
+        $validators[] = new MDateDMYValidator('dateBirth', _M('Data de nascimento', $module), 'required');
+        $bgrFields[] = new MHContainer('dateBirthCnt', array($dateBirthLabel, $dateBirth));
+
+        // Nome da mae
+        $motherNameLabel = new MText('motherNameLabel', _M('Nome da mãe', $module) . ':');
+        $motherNameLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+        $motherNameLabel->setClass('m-caption m-caption-required');
+        $motherName = new MTextField('motherName', $stepData->motherName, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $motherName->setJsHint( _M('Informe o nome da mãe', $module) );
+        $validators[] = new MRequiredValidator('motherName', _M('Nome da mãe', $module));
+        $bgrFields[] = new MHContainer('motherNameCnt', array($motherNameLabel, $motherName));
+
+        // Nome do pai
+        $fatherNameLabel = new MText('fatherNameLabel', _M('Nome do pai', $module) . ':');
+        $fatherNameLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+        $fatherName = new MTextField('fatherName', $stepData->fatherName, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $fatherName->setJsHint( _M('Informe o nome do pai', $module) );
+        $bgrFields[] = new MHContainer('fatherNameCnt', array($fatherNameLabel, $fatherName));
+
+        // Telefone residencial
+        $residentialPhoneLabel = new MText('residentialPhoneLabel', _M('Telefone', $module) . ':');
+        $residentialPhoneLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $residentialPhoneLabel->setClass('m-caption m-caption-required');
+        $residentialPhone = new sPhoneField('residentialPhone', $stepData->residentialPhone, _M('Telefone', $module), SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_LOOKUP_SIZE'));
+        $residentialPhone->setIsRequired(true);
+        $residentialPhone->setJsHint(_M('Informe o telefone celular ou residencial', $module));
+        $bgrFields[] = new MHContainer('residentialPhoneCnt', array($residentialPhoneLabel, $residentialPhone));
+
+        // Telefone comercial
+        $workPhoneLabel = new MText('workPhoneLabel', _M('Telefone comercial', $module) . ':');
+        $workPhoneLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $workPhone = new sPhoneField('workPhone', $stepData->workPhone, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_LOOKUP_SIZE'));
+        $workPhone->setJsHint(_M('Informe o telefone comercial', $module));
+        $bgrFields[] = new MHContainer('workPhoneCnt', array($workPhoneLabel, $workPhone));
+
+        // Estado civil
+        $busMaritalStatus = new BusinessBasicBusMaritalStatus();
+        $maritalStatusLabel = new MText('maritalStatusLabel', _M('Estado civil', $module) . ': ');
+        $maritalStatusLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $maritalStatusId = new MSelection('maritalStatusId', $stepData->maritalStatusId, '', $busMaritalStatus->listMaritalStatus());
+        $maritalStatusId->setJsHint(_M('Selecione o estado civil', $module));
+        $bgrFields[] = new MHContainer('matiralStatusCnt', array($maritalStatusLabel, $maritalStatusId));
+
+        // Origem etnica
+        $busEO = new BusinessBasicBusEthnicOrigin();
+        $ethnicOriginIdLabel = new MText('ethnicOriginIdLabel', _M('Origem étnica', $module) . ': ');
+        $ethnicOriginIdLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $ethnicOriginIdLabel->setClass('m-caption m-caption-required');
+        $ethnicOriginId = new MSelection('ethnicOriginId', $stepData->ethnicOriginId, '', $busEO->listEthnicOrigin());
+        $validators[] = new MRequiredValidator('ethnicOriginId', _M('Origem étnica', $module), 'required');
+        $bgrFields[] = new MHContainer('ethnicOriginCnt', array($ethnicOriginIdLabel, $ethnicOriginId));
+
+        // Deseja receber e-mail
+        $sentEmailLabel = new MText('sentEmailLabel', _M('Deseja receber e-mail', $module) . ': ');
+        $sentEmailLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $option = strlen($stepData->sentEmail) > 0 ? $stepData->sentEmail : DB_TRUE;
+        $sentEmail = new MRadioButtonGroup('sentEmail', '', SAGU::listYesNo(1), $option, null, 'horizontal');
+        $sentEmail->setShowLabel(false);
+        $bgrFields[] = new MHContainer('sentEmailCnt', array($sentEmailLabel, $sentEmail));
+
+        // Necessidade especial
+        $busSN = new BusinessBasicBusSpecialNecessity();
+        $specialNecessityLabel = new MText('specialNecessityLabel', _M('Necessidade especial', $module) . ' : ');
+        $specialNecessityLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $specialNecessityLabel->setClass('m-caption m-caption-required');
+        $specialNecessityOption = strlen($stepData->specialNecessityId) > 0 ? $stepData->specialNecessityId : SAGU::getParameter('basic', 'NO_SPECIAL_NECESSITY_ID');
+        $specialNecessityId = new MSelection('specialNecessityId', $specialNecessityOption, '', $busSN->listSpecialNecessity());
+        $validators[] = new MRequiredValidator('specialNecessityId', _M('Necessidade especial', $module), 'required');
+        $bgrFields[] = new MHContainer('specialNecessityCnt', array($specialNecessityLabel, $specialNecessityId));
+
+        // Descricao da necessidade especial
+        $specialNecessityDescriptionLabel = new MText('specialNecessityDescriptionLabel', _M('Descrição da necessidade especial', $module) . ':');
+        $specialNecessityDescriptionLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $specialNecessityDescription = new MTextField('specialNecessityDescription', $stepData->specialNecessityDescription, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $specialNecessityDescription->setJsHint(_M('Informe a descrição da(s) necessidade(s) especial(is)', $module));
+        $bgrFields[] = new MHContainer('specialNecessityDescriptionCnt', array($specialNecessityDescriptionLabel, $specialNecessityDescription));
+
+        $fields[] = new MBaseGroup('bgrGeneralData', _M('Dados gerais', $module), $bgrFields, 'vertical');
+
+        // Campos de País, Estado e Cidade.
+        $divGeoData = new sDivCamposDeDadosGeograficos('divGeographicData', $stepData);
+        $validators = $divGeoData->obterValidacoesDosCamposDeDadosGeograficos($validators);
+
+        // Bairro
+        $neighborhoodLabel = new MLabel(_M('Bairro', $module) . ':');
+        $neighborhoodLabel->setClass('m-caption m-caption-required');
+        $neighborhoodLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+        $neighborhood = new MTextField('neighborhood', $stepData->neighborhood, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $neighborhood->setJsHint(_M('Informe o logradouro.', $module));
+        $neighborhoodCnt = new MHContainer('neighborhoodCnt', array($neighborhoodLabel, $neighborhood));
+        $validators[] = new MRequiredValidator('neighborhood', _M('Bairro',$module));
+
+        // Location type
+        $busLocationType = new BusinessBasicBusLocationType();
+        $locationTypeIdLabel = new MText('locationTypeIdLabel', _M('Tipo de logradouro',$module) . ':');
+        $locationTypeIdLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $locationTypeIdLabel->setClass('m-caption m-caption-required');
+        $locationTypeId = new MSelection('locationTypeId', $stepData->locationTypeId, '', $busLocationType->listLocationType(), false, '');
+        $locationTypeId->setJsHint(_M('Informe o tipo de logradouro da pessoa', $module));
+        $locationTypeCnt = new MHContainer('locationTypeIdCnt', array($locationTypeIdLabel, $locationTypeId));
+        $validators[] = new MRequiredValidator('locationTypeId', _M('Tipo de logradouro',$module));
+
+        // Logradouro
+        $locationLabel = new MLabel(_M('Logradouro', $module) . ':');
+        $locationLabel->setClass('m-caption m-caption-required');
+        $locationLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+        $location = new MTextField('location', $stepData->location, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $location->setJsHint(_M('Informe o logradouro.', $module));
+        $locationCnt = new MHContainer('locationCnt', array($locationLabel, $location));
+        $validators[] = new MRequiredValidator('location', _M('Logradouro',$module));
+
+        // Número
+        $numberLabel = new MLabel(_M('Número', $module) . ':');
+        $numberLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+        $numberLabel->setClass('m-caption m-caption-required');
+        $number = new MTextField('number', $stepData->number, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $number->setJsHint(_M('Informe o número', $module));
+        $numberCnt = new MHContainer('numberCnt', array($numberLabel, $number));
+        $validators[] = new MRequiredValidator('number', _M('Número',$module));
+
+        // Complemento
+        $complementLabel = new MLabel(_M('Complemento', $module) . ':');
+        $complementLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+        $complementLabel->setClass('m-caption m-caption');
+        $complement = new MTextField('complement', $stepData->complement, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $complement->setJsHint(_M('Informe o complemento, se houver.', $module));
+        $complementCnt = new MHContainer('complementCnt', array($complementLabel, $complement));
+
+        // CEP
+        $zipCodeLabel = new MLabel(_M('CEP', $module) . ':');
+        $zipCodeLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+        $zipCodeLabel->setClass('m-caption m-caption-required');
+        $zipCode = new MTextField('zipCode', str_replace('-','',$stepData->zipCode), null, SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'), _M('Somenete números. Ex.: 99999999.',$module));
+        $zipCode->setJsHint(_M('Informe o CEP', $module));
+        $zipCodeCnt = new MHContainer('zipCodeCnt', array($zipCodeLabel, $zipCode));
+        $validators[] = new MRegExpValidator('zipCode', _M('CEP',$module), '^[0-9]{5,8}$', 'required');
+
+        $bsg = new MBaseGroup('bsgGeographicData', _M('Endereço', $module), array($divGeoData, $neighborhoodCnt, $locationTypeCnt, $locationCnt, $numberCnt, $complementCnt, $zipCodeCnt), 'vertical');
+        $fields[] = $bsg;
+
+        /*
+         * FORMACAO
+         */
+        // Caso foi definido no processo seletivo que deve requisitar informacoes de formacao
+        if ( $sprSP->hasFormationLevelInfo == DB_TRUE )
+        {
+            unset($bgrFields);
+
+            // Instituicao
+            $institutionNameLabel = new MText('institutionNameLabel', _M('Instituição', $module) . ': ');
+            $institutionNameLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $institutionNameLabel->setClass('m-caption m-caption-required');
+            $institutionName = new MTextField('institutionName', $stepData->institutionName, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $institutionName->setJsHint( _M('Informe o nome da instituição', $module) );
+            $validators[] = new MRequiredValidator('institutionName', _M('Instituição', $module));
+            $bgrFields[] = new MHContainer('institutionNameCnt', array($institutionNameLabel, $institutionName));
+
+            // Curso
+            $courseNameLabel = new MText('courseNameLabel', _M('Curso', $module) . ': ');
+            $courseNameLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $courseName = new MTextField('courseName', $stepData->courseName, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $courseName->setJsHint( _M('Informe o nome do curso', $module) );
+            $bgrFields[] = new MHContainer('courseNameCnt', array($courseNameLabel, $courseName));
+
+            // Ano
+            $conclusionYearLabel = new MText('conclusionYearLabel', _M('Ano', $module) . ': ');
+            $conclusionYearLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $conclusionYearLabel->setClass('m-caption m-caption-required');
+            $conclusionYear = new MTextField('conclusionYear', $stepData->conclusionYear, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+            $conclusionYear->setJsHint( _M('Informe o ano de conclusão', $module) );
+            $validators[] = new MIntegerValidator('conclusionYear', _M('Ano', $module), 'required');
+            $bgrFields[] = new MHContainer('conclusionYearCnt', array($conclusionYearLabel, $conclusionYear));
+
+            // Titulacao
+            $degreeNameLabel = new MText('degreeNameLabel', _M('Titulação', $module) . ': ');
+            $degreeNameLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $degreeName = new MTextField('degreeName', $stepData->degreeName, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $degreeName->setJsHint( _M('Informe a titulação', $module) );
+            $bgrFields[] = new MHContainer('degreeNameCnt', array($degreeNameLabel, $degreeName));
+
+            // Nivel de formacao
+            $busFormationLevel = new BusinessAcademicBusFormationLevel();
+            $formationLevelIdLabel = new MText('formationLevelIdLabel', _M('Nível',$module) . ':');
+            $formationLevelIdLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $formationLevelId = new MSelection('formationLevelId', $stepData->formationLevelId, null, $busFormationLevel->listFormationLevel());
+            $formationLevelId->setJsHint(_M('Informe o nível de formação',$module));
+            $bgrFields[] = new MHContainer('formationLevelIdCnt', array($formationLevelIdLabel, $formationLevelId));
+
+            $fields[] = new MBaseGroup('bgrFormation', _M('Formação', $module), $bgrFields, 'vertical');
+        }
+
+        /*
+         * Dados do vínculo empregatício
+         */
+        if ( $sprSP->hasEmploymentInfo == DB_TRUE ) // Caso foi definido no processo seletivo que deve requisitar informacoes de formacao
+        {
+            unset($_fields);
+
+            // Instituição em que trabalha
+            $workEmployerNameLabel = new MText('workEmployerNameLabel', _M('Instituição em que trabalha', $module) . ': ');
+            $workEmployerNameLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $workEmployerName = new MTextField('workEmployerName', $stepData->workEmployerName, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $workEmployerName->setJsHint( _M('Informe o nome da instituição em que trabalha', $module) );
+            $_fields[] = new MHContainer('workEmployerNameCnt', array($workEmployerNameLabel, $workEmployerName));
+
+            // Cargo
+            $workFunctionLabel = new MText('workFunctionLabel', _M('Cargo', $module) . ': ');
+            $workFunctionLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $workFunction = new MTextField('workFunction', $stepData->workFunction, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $workFunction->setJsHint( _M('Informe o cargo exercido no trabalho', $module) );
+            $_fields[] = new MHContainer('workFunctionCnt', array($workFunctionLabel, $workFunction));
+
+            // Início
+            $workStartDateLabel = new MText('workStartDateLabel', _M('Início', $module) . ':');
+            $workStartDateLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+            $workStartDate = new MCalendarField('workStartDate', $stepData->workStartDate, _M('Início', $module), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+            $workStartDate->setJsHint(_M('Informe a data de início', $module));
+            $workStartDateCnt = $mhcd = new MHContainer('workStartDateCnt', array($workStartDateLabel, $workStartDate));
+            $mhcd->setShowLabel(false);
+            $_fields[] = new MDiv('divByDate', $workStartDateCnt);
+
+            // Término
+            $workEndDateLabel = new MText('workEndDateLabel', _M('Término', $module) . ':');
+            $workEndDateLabel->setWidth( SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE') );
+            $workEndDate = new MCalendarField('workEndDate', $stepData->workEndDate, _M('Término', $module), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+            $workEndDate->setJsHint(_M('Informe a data de término', $module));
+            $workEndDateCnt = $mhcd2 = new MHContainer('workEndDateLabel', array($workEndDateLabel, $workEndDate));
+            $mhcd2->setShowLabel(false);
+            $_fields[] = new MDiv('divEndDate', $workEndDateCnt);
+            
+            
+            //Verifica se eh exigido o vinculo empregaticio, 
+            //se sim então vai fazer os requerimentos
+            if( $sprSP->exigirVinculoEmpregaticio == DB_TRUE ) 
+            {
+                //Validacao NOME
+                $workEmployerNameLabel->setClass('m-caption m-caption-required');                
+                $validators[] = new MRequiredValidator('workEmployerName', _M('Instituição em que trabalha', $module));
+                
+                //validacao CARGO
+                $workFunctionLabel->setClass('m-caption m-caption-required');
+                $validators[] = new MRequiredValidator('workFunction', _M('Cargo', $module));
+                
+                //validacao DATA INICIO
+                $workStartDateLabel->setClass('m-caption m-caption-required');
+                $workStartDate->setValidator(new MDateDMYValidator('workStartDate', _M('Início', $module), 'required'));
+            }
+            
+            $fields[] = new MBaseGroup('bgrEmploymentInfo', _M('Dados do vínculo empregatício', $module), $_fields, 'vertical');
+        }
+
+        //$button = new Mbutton('btnLimpar', _M('Limpar formulário', $module), 'javascript:document.forms[0].reset();');
+        //$fields[] = $button;
+
+        //$fields[] = SAGU::getRequiredLegend();
+        
+        if( $sprSP->permiteDadosBancarios == DB_TRUE )
+        {
+            $busBank = new BusinessFinanceBusBank();
+            $options = $busBank->listBank();
+
+            $dadosBancarioLabel = new MText('dadosBancarioLabel', _M('Banco').':');
+            $dadosBancarioLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $dadosBancarioLabel->setClass('m-caption m-caption');
+            $dadosBancario = new MComboBox('dadosBancario', $this->getFormValue('dadosBancario', strlen($stepData->dadosBancario) > 0 ? $stepData->dadosBancario : $dadosBancarios->dadosBancario), null, $options);
+            $dadosBancario->addAttribute('onchange', SForm::getAjaxAction('obterCamposAgenciaEConta', 'divDadosBanco', false));
+            $hctDadosBancario = new MHContainer('hctDadosBancario', array($dadosBancarioLabel,$dadosBancario));
+            
+            $observacaoLabel = new MText('observacaoLabel', _M('Observação').':');
+            $observacaoLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $observacaoLabel->setClass('m-caption m-caption');
+            $observacao = new MMultiLineField('observacao', $this->getFormValue('observacao',strlen($data->observacao) > 0 ? $data->observacao : $dadosBancarios->observacao), null, 100, 5, 31);
+            $hctObservacao = new MHContainer('hctObservacao', array($observacaoLabel, $observacao));
+            
+            if( strlen($stepData->dadosBancario) > 0 )
+            {
+                $mDiv = new MDiv('divDadosBanco', $this->obterCamposAgenciaEConta($stepData));
+            }
+            else if( count($dadosBancarios)> 0 )
+            {
+                $mDiv = new MDiv('divDadosBanco', $this->obterCamposAgenciaEConta($dadosBancarios));
+            }
+            else
+            {
+                $mDiv = new MDiv('divDadosBanco');
+            }
+            
+            $fields[] = new MBaseGroup('bgDadosBancario', _M('Dados banacários'), array($hctDadosBancario, $mDiv, $hctObservacao), null, 'vertical');
+        }
+        
+        if( $sprSP->permiteClassificarEnem == DB_TRUE )
+        {
+            //Moda a chave do array
+            foreach($sprSP->anosEnemValidos as $cod => $ano )
+            {
+                $anosEnemValidos[$ano] = $ano;
+            }
+            $anosEnemValidos[2014] = 2014;
+            $anosEnem = new MSelection('anoEnem', strlen($sprSubscription->anoEnem) > 0 ? $sprSubscription->anoEnem : $allData->anoEnem, _M('Ano do ENEM').':', $anosEnemValidos, false, _M('Ano que prestou ENEM e deseja concorrer para o Processo Seletivo'));
+            $numeroInscricao = new MTextField('inscricaoEnem', strlen($sprSubscription->numeroInscricao) > 0 ? $sprSubscription->numeroInscricao : $allData->inscricaoEnem, _M('Número da inscrição').':', 10, _M('Número de inscrição no ano que selecionou acima',$module));
+            $senhaEnem = new MTextField('senhaEnem', strlen($sprSubscription->inscricaoEnem) > 0 ? $sprSubscription->inscricaoEnem : $allData->senhaEnem, _M('Senha do ENEM*').':', 10, _M('Senha cadastrada para o ENEM no Ano e Inscrição mencionados acima',$module));
+            $fields[] = new MBaseGroup('dadosEnem', _M('Dados ENEM'), array($anosEnem, $numeroInscricao, $senhaEnem), null, 'vertical');
+        }
+
+        $this->setFields($fields);
+        $this->setValidators($validators);
+
+        $this->getCustomFieldValues();
+        
+        $this->addField(SAGU::getRequiredLegend());
+        
+        $residentialPhone->label = '';
+    }
+    
+    public function obterCamposAgenciaEConta($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $bankId = $args->phpFunction == 'obterCamposAgenciaEConta' ? $args->dadosBancario_sel : $args->dadosBancario;
+                
+        if( strlen($bankId) > 0 )
+        {               
+            $busBank = new BusinessFinanceBusBank();
+            $banco = $busBank->getBank($bankId);
+
+            $agenciaDigitoLabel = new MText('agenciaDigitoLabel', _M('Agência/Dígito', $module).':');
+            $agenciaDigitoLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $agenciaDigitoLabel->setClass('m-caption m-caption');
+
+            $agencia = new MTextField('agencia', $this->getFormValue('agencia', $args->agencia), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $validatorsAgencia = new MRequiredValidator('agencia', _M('Agência'), $banco->tamanhoCampoAgencia);
+            $validatorsAgencia->min = $banco->tamanhoCampoAgencia;
+            $validatorsAgencia->type = 'optional';
+            $validatorsAgencia->mask = $banco->mascaraAgencia;
+
+            $digitoAgencia = new MTextField('digitoAgencia', $this->getFormValue('digitoAgencia', $args->digitoAgencia), null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+            $validatorsDigitoAgencia = new MRequiredValidator('digitoAgencia', _M('Dígito(Agência)'), $banco->tamanhoDvAgencia);
+            $validatorsDigitoAgencia->min = $banco->tamanhoDvAgencia;
+            $validatorsDigitoAgencia->type = 'optional';
+
+            $validators[] = $validatorsAgencia;
+            $validators[] = $validatorsDigitoAgencia;
+
+            $fld[] = $hctAgenciaDigito = new MHContainer('hctAgenciaDigito', array($agenciaDigitoLabel, $agencia, $digitoAgencia));
+
+            $contaDigitoLabel = new MText('contaDigitoLabel', _M('Conta/Dígito', $module).':');
+            $contaDigitoLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $contaDigitoLabel->setClass('m-caption m-caption');
+
+            $conta = new MTextField('conta', $this->getFormValue('conta', $args->conta), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $validatorsConta = new MRequiredValidator('conta', _M('Conta'), $banco->tamanhoCampoConta);
+            $validatorsConta->min = $banco->tamanhoCampoConta;
+            $validatorsConta->type = 'optional';
+            $validatorsConta->mask = $banco->mascaraConta;
+
+            $digitoConta = new MTextField('digitoConta', $this->getFormValue('digitoConta', $args->digitoConta), null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+            $validatorsDigitoConta = new MRequiredValidator('digitoConta', _M('Dígito(Conta)'), $banco->tamanhoDvConta);
+            $validatorsDigitoConta->min = $banco->tamanhoDvConta;
+            $validatorsDigitoConta->type = 'optional';
+
+            $validators[] = $validatorsConta;
+            $validators[] = $validatorsDigitoConta;
+
+            $fld[] = $hctAgenciaDigito = new MHContainer('hctContaDigito', array($contaDigitoLabel,$conta, $digitoConta));
+            
+            $this->setFields($fld);
+            $this->setValidators($validators);
+            
+        }
+        
+        return strlen($bankId) > 0 ? $fld : null;
+    }
+    
+    public function nextStepButton_click($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $allData = $this->getStepData();
+        $data = $this->getData();
+        $subscriptionId = MIOLO::_REQUEST('subscriptionId');
+        
+        try
+        {   
+            if ( !isset ($data->zipCode) )
+            {
+                throw new Exception(_M('O campo CEP é de preenchimento obrigatório.', $module));
+            }
+            
+            $busDocument = new BusinessBasicBusDocument();
+            $search = $busDocument->searchDocument( (object)array( 'documentTypeId' => SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF'), 'content' => $data->cpf ), true );
+
+            if ( ( count($search) > 0 ) && ( strlen($subscriptionId) <= 0 ) )
+            {
+                $allData->personIdSelected = SAGU::NVL($allData->personIdSelected, $this->GetFormValue('personIdSelected'));
+                
+                if ( ($search[0]->personId != $allData->personIdSelected) )
+                {
+                    if( !SAGU::userIsFromServices() )
+                    {
+                        throw new Exception( _M('O CPF digitado já está cadastrado na base de dados. Caso a pessoa ja estiver cadastrada no sistema selecione-a no Passo 1.', $module) );
+                    }
+                    else
+                    {
+                        throw new Exception( _M('O CPF digitado já está cadastrado na base de dados.', $module) );
+                    }
+                }
+            }
+                        
+            // Verifica se existe o e-mail informado
+            $verificaEmail = BasPessoa::verificaEmail($data->email, $data->personId);
+                        
+            if ( $verificaEmail == DB_TRUE )
+            {
+                if( !SAGU::userIsFromServices() )
+                {
+                    throw new Exception( _M("O e-mail {$data->email} já está sendo utilizado por outra pessoa. Favor informe um outro endereço de e-mail.") );
+                }
+                else
+                {
+                    throw new Exception( _M("O e-mail {$data->email} já está sendo utilizado por outra pessoa. Favor informe um outro endereço de e-mail ou entre em contato conosco.") );
+                }
+            }
+            
+            // Retira possível(is) traço(s).
+            $data->zipCode = str_replace('-', '', $data->zipCode);
+            
+            if ( strlen($data->cityId) == 0 )
+            {
+                throw new Exception(_M('O campo Cidade de residência é de preenchimento obrigatório.', $module));
+            }
+        }
+        catch (Exception $e)
+        {
+            $this->AddError($e->getMessage());
+            return;
+        }
+        
+        //$this->saveCustomFields( $subscriptionId, null, 'FrmPersonalInformation' );
+        $_SESSION['campos_customizados'] = $this->getCustomFieldValues();
+        $_SESSION['agencia'] = MIOLO::_REQUEST('agencia');
+        $_SESSION['digitoAgencia'] = MIOLO::_REQUEST('digitoAgencia');
+        $_SESSION['conta'] = MIOLO::_REQUEST('conta');
+        $_SESSION['digitoConta'] = MIOLO::_REQUEST('digitoConta');
+        $_SESSION['observacao'] = MIOLO::_REQUEST('observacao');
+        
+        //verifica se eh necessario fazer validação no campo data inicial
+        //somente se os campos de VINCULO EMPREGATICIO estiverem ativados
+        $sprSP = new SprSelectiveProcess($allData->selectiveProcessId);
+        if( !(strlen($this->GetFormValue('workStartDate')) > 0) && $sprSP->exigirVinculoEmpregaticio == DB_TRUE )
+        {
+            $this->AddError(_M('A data de início deve ser informada!'));
+            $this->SetFormValue('workStartDate', null);
+            
+        }
+        else    
+        {
+            parent::nextStepButton_click($args);
+        }
+    }
+
+    public function cancelButton()
+    {
+        return SAGU::getCancelButtonSubscription();
+    }
+    
+    public function getPkeyValue()
+    {
+        $allData = $this->getStepData();
+        
+        $sprSubscription = new SprSubscription( $allData->subscriptionId );
+        $stepData = $sprSubscription->physicalPerson;
+        
+        return $stepData->personId;
+    }
+}
+?>

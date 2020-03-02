@@ -1,0 +1,422 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ *
+ * @since
+ * Class created on 14/06/2011
+ */
+class FrmRealizedActivity extends SManagementForm
+{
+    const MODE_NORMAL = 1; // Modo normal, edicao/insercao de atividade realizada
+    const MODE_REALIZED = 2; // Modo "FOI REALIZADA", de acordo com ticket #9038
+    const MODE_CANCELLATION = 3; // Modo "CANCELAMENTO" (ou "NÃO foi realizada", de acordo com ticket #9038)
+
+    private $fileIdField;
+
+    /**
+     * Modo de logica do form, de acordo com constantes MODE_*
+     */
+    private $mode = self::MODE_NORMAL;
+
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->uses('/ui/controls/msubdetail.class');
+        $module = SAGU::getFileModule(__FILE__);
+
+        if ( strlen(MIOLO::_REQUEST('scheduledActivityId')) > 0 ) // Confirmando atividade programada
+        {
+            $title = _M('Confirmar a realização da atividade');
+        }
+        else // Cadastrando atividade realizada
+        {
+            $title = _M('Inserir Atividade Realizada');
+        }
+
+        parent::__construct(new HurRealizedActivity(), array('realizedActivityId'), null, $title);
+    }
+
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+
+        $busPerson = new BusinessBasicBusPhysicalPerson();
+
+        // Define e obtém variáveis passadas
+        // Código da atividade realizada (edição)
+        $realizedActivityId = $this->getRequestValue('realizedActivityId');
+        $fields[] = new SHiddenField('realizedActivityId', $realizedActivityId);
+        if ( strlen($realizedActivityId) > 0 )
+        {
+            $data = new HurRealizedActivity($realizedActivityId);
+        }
+
+        // Parâmetro que informa se a operação é cancelamento ou realização da atividade (inserção)
+        $realized = $this->getRequestValue('realized');
+        $fields[] = new SHiddenField('realized', $realized);
+
+        // Código da atividade programada (inserção)
+        $scheduledActivityId = $this->getRequestValue('scheduledActivityId', $data->scheduledActivityId);
+        $fields[] = new SHiddenField('scheduledActivityId', $scheduledActivityId);
+
+        // Se tem uma atividade programada
+        if ( strlen($scheduledActivityId) > 0 )
+        {
+            // Instancia a atividade programada
+            $scheduledActivity = new HurScheduledActivity($scheduledActivityId);
+            // Caso seja a realização de uma atividade programada ou cancelamento, pega os dados da programada
+            if ( is_null($data) )
+            {
+                $data = $scheduledActivity;
+            }
+
+            // Se tem atividade realizada e não cancelada
+            $hasRealized = ($scheduledActivity->hasRealized == DB_TRUE) && (is_null($data->cancelDate));
+
+            // Se a atividade tiver sido cancelada, bloqueia edição
+            $realized = ((is_null($realized) && $hasRealized) || (!is_null($realized) && ($realized == DB_TRUE)));
+            $this->mode = $realized ? self::MODE_REALIZED : self::MODE_CANCELLATION;
+            if ( $this->mode == self::MODE_CANCELLATION )
+            {
+                $this->AddAlert(_M('Esta atividade foi cancelada.', $module));
+            }
+
+            $options = array(
+                'columns' => 1,
+                'title' => ($this->mode == self::MODE_REALIZED) ? _M('Informações da atividade programada', $module) : _M('Dados do cancelamento', $module),
+                'value' => array(
+                    _M('Data de início', $module) => $scheduledActivity->startDate,
+                    _M('Data de fim', $module) => $scheduledActivity->endDate,
+                    _M('Tipo de atividade', $module) => $scheduledActivity->activityType->description,
+                    _M('Descrição', $module) => $scheduledActivity->description
+                ),
+            );
+            $fields[] = new SInformationField($options);
+            $fields[] = new MSeparator();
+
+            // Limpa subdetail
+            if( MIOLO::_REQUEST('event') != 'tbBtnSave:click' )
+            {
+                MSubdetail::clearData('participants');
+            }
+
+            // Prepara dados para popular a subdetail
+            $arrayParticipants = array( );
+            for ( $i = 0; $i < count($data->participants); $i++ )
+            {
+                $dataParticipants = $data->participants[$i];
+                $scheduleActivityParticipant = new stdClass();
+                $scheduleActivityParticipant->personId = $dataParticipants->personId;
+                $subPersonData = $busPerson->getPhysicalPerson($dataParticipants->personId);
+                $scheduleActivityParticipant->personName = $subPersonData->name;
+                $arrayParticipants[] = $scheduleActivityParticipant;
+            }
+            $subData = $arrayParticipants;
+        }
+
+        // Permite apenas ao usuário logado alterar dados da atividade
+        $personData = $busPerson->getPersonByMioloUserName(trim($MIOLO->getLogin()->id));
+        if ( isset($personData) )
+        {
+            $fields[] = new MTextLabel('user', $personData->personId . ' - ' . $personData->name, _M('Usuário', $module));
+        }
+
+        if ( ($this->mode == self::MODE_NORMAL) && (in_array($function, array( SForm::FUNCTION_UPDATE, SForm::FUNCTION_DELETE ))) )
+        {
+            $realizedActivityId = $this->getRequestValue('realizedActivityId');
+            $fields[] = new MTextLabel('realizedActivityId', $realizedActivityId, _M('Código', $module));
+        }
+
+        // Adiciona hidden com data de cancelamento (NOW()) para salvar na base
+        if ( $this->mode == self::MODE_CANCELLATION )
+        {
+            $fields[] = new SHiddenField('cancelDate', SAGU::getDateNow( SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP') ));
+        }
+
+        if ( $this->mode != self::MODE_NORMAL )
+        {
+            // Atividade programada
+            $fields[] = new SLookupContainer('scheduledActivityId', $data->scheduledActivityId, array(
+                        'module' => $module,
+                        'item' => 'ScheduledActivity',
+                        'label' => _M('Atividade programada', $module),
+                        'hint' => _M('Informe a atividade programada', $module),
+                        'required' => true,
+                        'readOnly' => true,
+                    ));
+            $validators[] = new MIntegerValidator('scheduledActivityId', _M('Atividade programada', $module), 'required');
+        }
+
+        // Data inicial/final
+        if ( $this->mode != self::MODE_CANCELLATION )
+        {
+            $dataPeriod = new stdClass();
+            list($dataPeriod->startDate, $dataPeriod->startTime) = explode(' ', $data->startDate);
+            list($dataPeriod->endDate, $dataPeriod->endTime) = explode(' ', $data->endDate);
+            $opts = array(
+                'data' => $dataPeriod,
+                'baseGroup' => false,
+                'type' => 'timestamp',
+                'required' => true,
+                'begin' => array(
+                    'dateId' => 'startDate',
+                    'timeId' => 'startTime',
+                    'label' => _M('Data de início', $module)
+                 ),
+                'end' => array(
+                    'dateId' => 'endDate',
+                    'timeId' => 'endTime',
+                    'label' => _M('Data de fim', $module)
+                ),
+            );
+            $fields[] = new SBeginEndPeriod($opts);
+            $validators[] = new MDateDMYValidator('startDate', _M('Data de início', $module));
+            $validators[] = new MRequiredValidator('startDate', _M('Data de início', $module));
+            $validators[] = new MDateDMYValidator('endDate', _M('Data de fim', $module));
+            $validators[] = new MRequiredValidator('endDate', _M('Data de fim', $module));
+            $validators[] = new MTIMEValidator('startTime', _M('Hora de início', $module), 'required');
+            $validators[] = new MTIMEValidator('endTime', _M('Hora de fim', $module), 'required');
+        }
+
+        // Tipo de atividade
+        $fields[] = $activityTypeId = new MSelection('activityTypeId', $data->activityTypeId, _M('Tipo de atividade', $module), HurActivityType::listRecords());
+        if ( $this->mode == self::MODE_CANCELLATION )
+        {
+            $activityTypeId->addBoxStyle('display', 'none');
+        }
+        $validators[] = new MIntegerValidator('activityTypeId', _M('Tipo de atividade', $module), 'required');
+
+        // Descricao
+        $descriptionLabel = ($this->mode == self::MODE_CANCELLATION) ? _M('Motivo de cancelamento', $module) : _M('Informe o Curso e/ou Colegiado e/ou Título da Atividade e Pauta', $module);
+        $fields[] = new MMultiLineField('description', $this->GetFormValue('description', $data->description), $descriptionLabel, null, SAGU::getParameter('BASIC', 'FIELD_MULTILINE_NUM_ROWS'), SAGU::getParameter('BASIC', 'FIELD_MULTILINE_NUM_COLS'));
+        $validators[] = new MRequiredValidator('description', $descriptionLabel, 'required');
+
+        if ( $this->mode != self::MODE_CANCELLATION )
+        {
+            // Campo disponível
+            $isInternalLabel = new MText('isInternalLabel', _M('Ocorre', $module) . ':');
+            $isInternalLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $isInternalLabel->setClass('m-caption m-caption-required');
+            $isInternalOptions = array( array( _M('Na instituição', $module), DB_TRUE ), array( _M('Fora da instituição', $module), DB_FALSE ) );
+            $isInternal = new MRadioButtonGroup('isInternal', $data->isInternal, $isInternalOptions, DB_TRUE, null, 'vertical');
+            $hctIsInternal = new MHContainer('hctIsInternalS', array( $isInternalLabel, $isInternal ));
+            $hctIsInternal->setShowLabel(false);
+            $fields[] = $hctIsInternal;
+
+            // Campo local
+            $fields[] = $location = new MMultiLineField('location', $data->location, _M('Local', $module), null, SAGU::getParameter('BASIC', 'FIELD_MULTILINE_NUM_ROWS'), SAGU::getParameter('BASIC', 'FIELD_MULTILINE_NUM_COLS'));
+            $location->setReadOnly($readOnly);
+            $validators[] = new MRequiredValidator('location', _M('Local', $module));
+
+            // Arquivo
+            $fields[] = $this->fileIdField = new SFileField('fileId', $this, array(
+                'fieldLabel' => _M('Ata', $module),
+                'fileId' => $data->fileId,
+            ));
+
+            $fields[] = new MSeparator();
+
+            /*
+             * Subdetail
+             */
+            // Texto informativo
+            $subFields[] = new MLabel(_M('Acrescente participantes presentes não programados e exclua os ausentes.', $module));
+
+            // Subdetail fields
+            $options = array(
+            'label' => _M('Pessoa', $module),
+            'module' => 'basic',
+            'item' => 'Persons',
+            'related' => 'personIdDescription',
+            'hint' => _M('Informe o código da pessoa', $module),
+            'descriptionHint' => _M('Nome da pessoa', $module),
+            'required' => true,
+            );
+            $subFields[] = new SLookupContainer('personId', NULL, $options);
+            $subValidators[] = new MIntegerValidator('personId', _M('Pessoa', $module));
+            $subValidators[] = new MSubDetailUniqueValidator('personId', _M('Pessoa', $module), 'required');
+
+            // Subdetail Columns
+            $subColumns[] = new sSubDetailColumn('personId', array( 'label' => _M('Código', $module) ));
+            $subColumns[] = new sSubDetailColumn('personName', array( 'label' => _M('Nome', $module) ));
+
+            $fields[] = $sub = new MSubdetail('subPersons', _M('Definir participantes convidados'), $subColumns, $subFields);
+            $sub->setValidators($subValidators);
+
+            // Quando for inserção, deve carregar dados na subdetail de acordo com ticket #9038
+            // Adiciona o usuário logado na subdetail juntamente com seus subordinados caso existam
+            if ( in_array($function, array( SForm::FUNCTION_INSERT )) && MIOLO::_REQUEST('event') != 'tbBtnSave:click' )
+            {
+                // Limpa subdetail
+                MSubdetail::clearData('participants');
+                if ( isset($personData) )
+                {
+                    $subData = array();
+                    if ( $scheduledActivity instanceof HurScheduledActivity )
+                    {
+                        $subData = SAGU::convertSTypeToSubDetail($subColumns, $scheduledActivity->participants);
+                    }
+                    
+                    $sub->setData( $subData );
+                }
+            }
+        }
+
+        parent::defineFields($fields, $validators, $data);
+    }
+
+    public function getTypesData()
+    {
+        $data = parent::getTypesData();
+        if ( strlen($data->startDate) > 0 )
+        {
+            $data->startDate = trim($data->startDate . ' ' . $this->getRequestValue('startTime'));
+        }
+        if ( strlen($data->endDate) > 0 )
+        {
+            $data->endDate = trim($data->endDate . ' ' . $this->getRequestValue('endTime'));
+        }
+
+        // FileId
+        $data->fileId = $this->getRequestValue('fileIdOld');
+        if ( ( strlen($data->fileId) <= 0 ) && ($this->fileIdField) )
+        {
+            $data->fileId = $this->fileIdField->saveUploadedFile();
+        }
+
+        // Participantes
+        $subData = MSubDetail::getData('subPersons');
+        if ( count($subData) > 0 )
+        {
+            $realizedActivityId = $this->getRequestValue('realizedActivityId');
+            if ( strlen($realizedActivityId) > 0 )
+            {
+                $filters = new stdClass();
+                $filters->realizedActivityId = $realizedActivityId;
+                $rows = HurRealizedActivityParticipant::search($filters);
+                foreach ( $rows as $row )
+                {
+                    $row->delete();
+                }
+            }
+            $participants = array();
+            foreach ( (array) $subData as $row )
+            {
+                if ( !$row->removeData )
+                {
+                    $participants[] = $part = new HurRealizedActivityParticipant();
+                    foreach ( $row as $key => $val )
+                    {
+                        $part->$key = $val;
+                    }
+                }
+            }
+
+            $data->realizedActivityParticipant = $participants;
+        }
+
+        return $data;
+    }
+
+    /**
+     * Event triggered when user chooses Save from the toolbar
+     **/
+    public function tbBtnSave_click($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $function = MIOLO::_REQUEST('function');
+
+        $data = $this->getTypesData();
+        $ok = false;
+
+        try
+        {
+            $hurRealizedActivity = new HurRealizedActivity();
+            $hurRealizedActivity->realizedActivityId = $data->realizedActivityId;
+            $hurRealizedActivity->scheduledActivityId = $data->scheduledActivityId;
+            $hurRealizedActivity->startDate = $data->startDate;
+            $hurRealizedActivity->endDate = $data->endDate;
+            $hurRealizedActivity->activityTypeId = $data->activityTypeId;
+            $hurRealizedActivity->description = $data->description;
+            $hurRealizedActivity->isInternal = $data->isInternal;
+            $hurRealizedActivity->fileId = $data->fileId;
+            $hurRealizedActivity->cancelDate = $data->cancelDate;
+
+            // Mantém o local se for uma programada
+            if ( $data->scheduledActivityId )
+            {
+                $hurScheduledActivity = new HurScheduledActivity($data->scheduledActivityId);
+                $hurRealizedActivity->location = $hurScheduledActivity->location;
+            }
+            else
+            {
+                $hurRealizedActivity->location = $data->location;
+            }
+
+            // Caso não tenha nenhum participante, adiciona a pessoa logada
+            if ( count($data->realizedActivityParticipant) == 0 )
+            {
+                // Obtém a pessoa logada
+                $busPerson = new BusinessBasicBusPhysicalPerson();
+                $mioloUserName = trim($MIOLO->getLogin()->id);
+                $personData = $busPerson->getPersonByMioloUserName($mioloUserName);
+                // Caso não seja uma pessoa física... erro!
+                if ( is_null($personData) )
+                {
+                    throw new Exception(_M('O usuário logado(@1) não está relacionado a uma pessoa física. Você não pode fazer esta operação.', $module, $mioloUserName));
+                }
+                // Se tiver uma pessoa física associada, coloca-a como participante
+                $participant = new HurRealizedActivityParticipant();
+                $participant->realizedActivityId = $data->realizedActivityId;
+                $participant->personId = $personData->personId;
+                $data->realizedActivityParticipant = array($participant);
+            }
+            $hurRealizedActivity->realizedActivityParticipant = $data->realizedActivityParticipant;
+
+            SDatabase::beginTransaction();
+            $ok = $hurRealizedActivity->save();
+            SDatabase::commit();
+
+            // Mensagem de inserido/atualizado com sucesso
+            parent::confirmInsertUpdate($ok);
+        }
+        catch ( Exception $e )
+        {
+            SDatabase::rollback();
+            $msg = _M('Ocorreu um erro ao inserir o registro.', $module) . '<BR />';
+            $msg .= $e->getMessage();
+            $this->AddError($msg);
+        }
+    }
+}
+?>

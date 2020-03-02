@@ -1,0 +1,196 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Conferir dependencias
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 08/12/2011
+ *
+ **/
+class FrmDependencyCheck extends SForm
+{
+    /**
+     *
+     * @var SDependencyCheck
+     */
+    private $dependency;
+    
+    public function __construct()
+    {
+        $module = MIOLO::getCurrentModule();
+        $this->dependency = new SDependencyCheck();
+        
+        parent::__construct(_M('Verificar dependências', $module), null, null);
+        
+        $this->disableToolbar();
+    }
+
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+
+        $list = $this->dependency->listDependency();
+
+        $fields[] = new MLabel(_M('Verifica algumas dependências deste aplicativo', $module). ' :');
+        $fields[] = new MSelection('methodName', null, _M('Dependência', $module ), $list);
+        $fields[] = new MButton('btnCheckAll', _M('Conferir', $module));
+
+        $this->setFields($fields);
+        
+        parent::defineFields($fields, $validators, $data);
+    }
+
+    
+    /**
+     * Executa todos ou apenas a verificacao de dependencia selecionada
+     *
+     * @param stdClass $args 
+     */
+    public function btnCheckAll_click($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $dList = $this->dependency->listDependency();
+        $methodName = MIOLO::_REQUEST('methodName');
+
+        if ( $methodName )
+        {
+            unset($dList);
+            $dList[] = array($methodName, $this->dependency->getDependencyLabel($methodName));
+        }
+
+        $js = array();
+        $tableData = array();
+        
+        if ( is_array( $dList))
+        {
+            foreach($dList as $line => $info )
+            {
+                list($dependencyName, $dependencyDescription) = $info;
+                
+                $divStatus = 'divStatus_'.$dependencyName;
+                $divMsg = 'divMsg_'.$dependencyName;
+                
+                $tableData[] = array(
+                    $dependencyDescription,
+                    new MDiv($divStatus , _M('-', $module) ),
+                    new MDiv($divMsg , _M('Por favor aguarde...', $module))
+                );
+                
+                $js[] = SForm::getAjaxAction('doCheck', $divStatus, false, array('dependency' => $dependencyName), true, false );
+            }
+        }
+                
+        $this->page->onload(implode("\n", $js));
+
+        // Tabela
+        $columns = array(
+            _M('Dependência', $module),
+            _M('Resultado', $module),
+            _M('Mensagem', $module));
+        $fields[] = $table = new MTableRaw(_M('Lista de dependências', $module), $tableData, $columns, $name);
+        $table->addAttribute('width','100%');
+        $table->setAlternate(true);
+        
+        // Centraliza coluna
+        for ( $i = 0; $i < count($tableData); $i++ )
+        {
+            $table->setCellAttribute($i, 1, 'align', 'center');
+        }
+
+        $this->AddFields($fields);
+    }
+
+    /**
+     * Executa um teste unico
+     *
+     * @param stdClass $args
+     * @return string 
+     */
+    public function doCheck($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $methodName = $args->dependency;
+        
+        if ( method_exists( $this->dependency, $methodName ) )
+        {
+            $result = $this->dependency->$methodName();
+        }
+                
+        // Exibe mensagem na coluna Mensagem
+        $msg = $this->dependency->getMessage();
+        $msg = strlen($msg) > 0 ? $msg : '-';
+        
+        $validacao = DB_FALSE;
+        
+        //Verifica se a memoria setada para o sistema e maior que 512M
+        if ( $methodName == 'memoryLimitPhp' )
+        {
+            $memory = ini_get('memory_limit');
+            $numero = filter_var($memory, FILTER_SANITIZE_NUMBER_INT);
+            
+            $msg = _M("Memória configurada para o sistema é de {$memory}.");
+            
+            if ( $numero > '512' || $memory == '-1' )
+            {
+                $validacao = DB_TRUE;
+                $msg = _M('Memória configurada para o sistema é maior que 512M.'); 
+            }
+        }
+        
+        //Verifica se o autovacuum esta habilitado
+        if ( $methodName == 'autovacuum' )
+        {
+           $autoVacuum = SDependencyCheck::verificaAutovacuum();
+           
+           $autoVacuum == 'on' ? $validacao = DB_TRUE && $msg = _M('Autovacuum está habilitado') : $validacao = DB_FALSE && $msg = _M('Autovacuum está desabilitado');
+        }
+        
+        // Exibe mensagem na coluna Mensagem
+        $this->page->addAJAXJsCode(" xGetElementById('divMsg_{$methodName}').innerHTML = '{$msg}' ");
+        
+        // Exibe imagem na coluna Resultado
+        $imgCheck = new MImage('imgCheck', null, $MIOLO->getUI()->getImage('basic', 'accept.png'));
+        $imgError = new MImage('imgError', null, $MIOLO->getUI()->getImage('basic', 'delete-16x16.png'));
+        $imgAlert = new MImage('imgAlert', null, $MIOLO->getUI()->getImage('basic', 'warning.png'));
+        
+        $image = $result ? $imgCheck : $imgError;
+        
+        if ( $methodName == 'memoryLimitPhp' || $methodName == 'autovacuum' )
+        {
+            $image = $validacao == DB_TRUE ? $imgAlert : $imgCheck ;
+        }
+        
+        return $image;
+    }
+}
+?>

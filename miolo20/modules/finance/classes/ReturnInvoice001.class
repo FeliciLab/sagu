@@ -1,0 +1,147 @@
+<?php
+ /**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Processa arquivo de retorno Banco do Brasil
+ *
+ * @author Equipe SAGU [sagu@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Equipe SAGU [sagu@solis.coop.br]
+ *
+ * @since
+ * Class created on 05/03/2012
+ *
+ **/
+class ReturnInvoice001 extends RetornoCNAB400Base
+{
+    const DETALHE_7_POSICOES = 7;
+    const DETALHE_6_POSICOES = 1;
+    
+    private $objPosicoes7;
+    private $objPosicoes6;
+    private $objCNAB240;
+    
+    private $objRetorno;
+    
+    public function __construct()
+    {
+        $this->objPosicoes6 = new RetornoCNAB400Conv6();
+        $this->objPosicoes7 = new RetornoCNAB400Conv7();
+        $this->objCNAB240 = new RetornoCNAB240();
+        
+        parent::__construct();
+    }
+    
+
+    public function processarLinha($numLn, $linha)
+    {
+        // Caso ainda nao tenha objRetorno, tenta identificar padrao do arquivo de retorno
+        //  se é do tipo com 6 posicoes ou 7 (por metodo de tentativa e erro).
+        if ( !$this->objRetorno )
+        {
+            if ( strlen(trim($linha)) > 15 && ( strlen($linha) < 245 ) ) // Casos onde padrao e CNAB240
+            {
+                $this->objRetorno = $this->objCNAB240;
+            }
+            else if ( substr($linha, 0, 1) == self::DETALHE_6_POSICOES )
+            {
+                $this->objRetorno = $this->objPosicoes6;
+            }
+            else if ( substr($linha, 0, 1) == self::DETALHE_7_POSICOES ) // Se retornou vazio, tenta o outro padrao
+            {
+                $this->objRetorno = $this->objPosicoes7;
+            }
+        }
+
+        if ( $numLn === 0 && !$this->objRetorno )
+        {
+            $vlinha = parent::processarLinha($numLn, $linha);
+            $this->setCurrentLineType(FinReturnInvoice::TYPE_HEADER);
+        }
+        else if ( $this->objRetorno )
+        {
+            $vlinha = $this->objRetorno->processarLinha($numLn, $linha);
+        }
+        
+        // Simula para chamar metodos necessarios
+        parent::processarLinha($numLn, $linha);
+        if ( in_array($vlinha['id_registro'], array(self::DETALHE_6_POSICOES, self::DETALHE_7_POSICOES)) )
+        {
+            $vlinha = $this->processarDetalhe($linha);
+        }
+        
+        if ( isset($vlinha['nosso_numero']) )
+        {
+            $vlinha['nosso_numero'] = trim($vlinha['nosso_numero']);
+            $hasOurNumber = BusinessFinanceBusBankInvoiceInfo::hasOurNumber($vlinha['nosso_numero'], SAGU::getParameter('BASIC', 'DEFAULT_BANK_ACCOUNT_ID'));
+
+            if ( !$hasOurNumber )
+            {
+                if ( $this->objRetorno instanceof RetornoCNAB240 )
+                {                
+                    $vlinha['nosso_numero'] = substr($linha, 43, 5);
+                }
+                else if ( $this->objRetorno instanceof RetornoCNAB400Conv7 )
+                {
+                    $vlinha['nosso_numero'] = substr($linha, 70, 10);
+                }
+            }
+        }
+        
+        if ( $this->objRetorno )
+        {
+            $currentLineType = $this->objRetorno->getCurrentLineType();
+            $this->setCurrentLineType($currentLineType);
+        }
+
+        return $vlinha;
+    }
+    
+    public function processarDetalhe($linha)
+    {
+        parent::processarDetalhe($linha);
+        
+        $vlinha = $this->objRetorno->processarDetalhe($linha);
+        
+        // Se for 6 posicoes trata ourNumber especial
+        if ( $this->objRetorno instanceof RetornoCNAB400Conv6 )
+        {
+            $specialOurNumber = substr($linha, 45, 17);
+            $specialOurNumber = trim($specialOurNumber);
+            if ( is_numeric($specialOurNumber) )
+            {
+                $vlinha['nosso_numero'] = $specialOurNumber;
+            }
+        }
+        
+        $vlinha["codigo_ocorrencia"] = substr($linha, 108, 2);
+        
+        return $vlinha;
+    }
+
+    protected function validateFileName()
+    {
+        return preg_match("/CBR(.*).RET/i", $this->getFileName()) > 0;
+    }
+}
+?>

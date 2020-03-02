@@ -1,0 +1,510 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This class Business Admin Transaction
+ *
+ * @author Leovan Tavares da Silva [leovan] [leovan@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Leovan Tavares da Silva [leovan@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ * 
+ * @since
+ * Class created on 14/06/2006
+ *
+ **/
+ 
+class BusinessAdminTransaction extends sBusiness implements ITransaction
+{
+    var $idTransaction;
+    var $transaction;
+    var $access; // an array of Access objects indexed by idTransaction
+    
+    public $cacheChildren;
+    public $cacheIsChildren;
+    public $cacheTransactionLevel;
+    public $list;
+
+    public function __construct($data = NULL)
+    {
+       parent::__construct('admin',$data);
+    }
+
+    public function setData($data)
+    {
+        $this->idTransaction = $data->idTransaction;
+        $this->transaction = strtoupper($data->transaction);
+        // $data->access: an array of array(idTransaction, rights)
+        $this->setAccess($data->access);
+    }
+
+    public function getById($id)
+    {
+        $this->idTransaction = $id; 
+        $this->retrieve();
+        return $this;
+    }
+
+    public function getByName($transaction)
+    {
+        $criteria =  $this->getCriteria();
+        $criteria->addCriteria('transaction','=', "'$transaction'");
+        return $this->retrieveFromCriteria($criteria);
+    }
+
+    public function listByGroup($group)
+    {
+        $criteria =  $this->getCriteria();
+        $criteria->addCriteria('access.group.group','=', "'$group'");
+        return $this->retrieveAsQuery($criteria);
+    }
+    
+    public function listByParams($params)
+    {
+        $criteria =  $this->getCriteria();
+        
+        $criteria->AddColumnAttribute('idTransaction');
+        $criteria->AddColumnAttribute('transaction');
+        //$criteria->AddColumnAttribute('access.idGroup');
+                
+        if( strlen($params->idTransaction) > 0 )
+        {
+            $criteria->addCriteria('idTransaction','=', "'$params->idTransaction'");
+        }
+        
+        if( strlen($params->transaction) > 0 )
+        {
+            $criteria->addCriteria('transaction','ILIKE', "'%$params->transaction%'");
+        }        
+        
+        /*if( strlen($params->idGroup) > 0 )
+        {
+            $criteria->addCriteria('idGroup','=', "'$params->idGroup'");
+        }*/
+        
+        return $criteria->retrieveAsQuery();    
+    }
+
+    public function save()
+    {
+        parent::save();
+    }
+    
+    public function delete()
+    {
+        parent::delete();
+    }
+
+    public function listRange($range = NULL)
+    {
+        $criteria =  $this->getCriteria();
+        $criteria->setRange($range);
+        return $criteria->retrieveAsQuery();
+    }
+
+    public function listAll()
+    {
+        $criteria =  $this->getCriteria();
+        return $criteria->retrieveAsQuery();
+    }
+
+    public function listByTransaction($transaction = '')
+    {
+        $criteria =  $this->getCriteria();
+        $criteria->addCriteria('transaction','LIKE', "'$transaction%'");
+        return $criteria->retrieveAsQuery();
+    }
+
+    public function getTransactionChildren($fatherId = 0)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        if (!(count($this->cacheChildren) > 0))
+        {
+            $db = $this->getDatabase();
+            
+            //Omitir permissoes do gnuteca - #33270
+            $sql= 'SELECT A.idtransaction,
+                          A.nametransaction,
+                         (SELECT MT.idtransaction FROM miolo_transaction MT WHERE MT.m_transaction = A.parentm_transaction and MT.idmodule = A.idmodule),
+                          A.m_transaction AS transactionName,
+                          
+                          ( CASE WHEN true THEN
+                               (SELECT COUNT(*)
+                                  FROM miolo_transaction x
+                                 WHERE x.parentm_transaction = A.m_transaction
+                                   AND x.idmodule = A.idmodule)
+                           ELSE 0 END ) AS countChildren
+
+                     FROM miolo_transaction A
+                    WHERE A.idModule <> \'gnuteca3\'
+                 ORDER BY A.nameTransaction';
+
+            $result = $db->query($sql);
+            if (count($result) > 0)
+            {
+                foreach ($result as $r)
+                {
+                    list($idtransaction, $nameTransaction, $parentTransaction, $mTransaction) = $r;
+                    if ( strlen($parentTransaction) <= 0 )
+                    {
+                        $parentTransaction = 0;
+                    }
+
+                    $this->cacheChildren[ $parentTransaction ][] = $r;
+                }
+            }
+        }
+
+        return $this->cacheChildren[$fatherId];
+    }
+
+
+    /**
+     * Obtem o resultado identico da funcao getTransactionChildren() , porem com atributos nomeados no array
+     *
+     * @param int $fatherId
+     * @return array
+     */
+    public function getTransactionChildrenNamed($fatherId = 0)
+    {
+        $cols = array(
+            'transactionId',
+            'description',
+            'transactionFatherId',
+            'transactionName',
+            'countChildren',
+        );
+        
+        return SAGU::resultToObject( $this->getTransactionChildren($fatherId), $cols);
+    }
+
+    
+    public function getTransactionChildrenWhoAreFather($idgroup, $nameTransaction)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $db = $this->getDatabase();
+        
+        $sql= 'SELECT A.idtransaction
+                 FROM miolo_transaction A
+           INNEr JOIN miolo_access B
+                   ON (A.idtransaction = B.idtransaction)
+                WHERE A.nameTransaction = ?
+                  AND B.idgroup = ?';
+        
+        $args = array($nameTransaction,
+                      $idgroup);
+
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+    
+    public function getTransactionChildrenWhoAreFathers($nameTransaction)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $db = $this->getDatabase();
+        
+        $sql= 'SELECT idtransaction
+                 FROM miolo_transaction
+                WHERE parentm_transaction = ?';
+        
+        $args = array($nameTransaction);
+
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+    
+    public function thereIsChildren($fatherId)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        if (!(count($this->cacheIsChildren) > 0))
+        {
+            $db = $this->getDatabase();
+            $sql= 'SELECT (SELECT idtransaction
+                             FROM miolo_transaction MT
+                            WHERE MT.m_transaction = A.parentm_transaction
+                              AND MT.idmodule = A.idmodule),
+                           A.idtransaction
+                     FROM miolo_transaction A';
+            $result = $db->query($sql);
+            if (count($result) > 0)
+            {
+                foreach ($result as $r)
+                {
+                    $this->cacheIsChildren[ $r[0] ] = $r[1];
+                }
+            }
+        }
+        
+        return $this->cacheIsChildren[$fatherId];
+    }
+    
+    public function getTransactionFather($nameTransaction = 0)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $db = $this->getDatabase();
+
+        $nameTransaction = ($nameTransaction === 0) ? 'IS NULL' : "= '{$nameTransaction}'";
+        $sql= "SELECT idtransaction,
+                      nameTransaction,
+                      parentm_transaction
+                 FROM miolo_transaction
+                WHERE parentm_transaction {$nameTransaction}
+             ORDER BY nameTransaction";
+
+        $result = $db->query($sql);
+
+        return $result;
+    }
+    
+    public function getTransaction()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $db = $this->getDatabase();
+        
+        $sql= 'SELECT idtransaction
+                 FROM miolo_transaction';
+
+        $result = $db->query($sql);
+
+        return $result;
+    }
+    public function getTransactionLevel($children)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        if (!(count($this->cacheTransactionLevel) > 0))
+        {
+            $db = $this->getDatabase();
+            $sql= 'SELECT A.idtransaction,
+                          (SELECT MT.idtransaction
+                             FROM miolo_transaction MT
+                            WHERE MT.m_transaction = A.parentm_transaction
+                              AND A.idmodule = MT.idmodule)
+                     FROM miolo_transaction A';
+            
+            $result = $db->query($sql);
+            if (count($result) > 0)
+            {
+                foreach ($result as $r)
+                {
+                    $this->cacheTransactionLevel[ $r[0] ] = $r[1];
+                }
+            }
+        }
+        
+        return $this->cacheTransactionLevel[$children];
+    }
+    
+    public function getArrayGroups()
+    {
+        $aGroups = array();
+        if ($this->access != NULL)
+        {
+            if (!is_array($this->access))
+            {
+                $this->access = array($this->access);  
+            }
+            foreach($this->access as $a)
+            {
+                $aGroups[] = array($a->idGroup,$a->rights);
+            }
+        } 
+        return $aGroups;
+    }
+
+    public function listAccess()
+    {
+        $criteria =  $this->getCriteria();
+        $criteria->AddColumnAttribute('access.idGroup');
+        $criteria->AddColumnAttribute('access.group.group');
+        $criteria->AddColumnAttribute('access.rights');
+        $criteria->addCriteria('idTransaction','=', "'{$this->idTransaction}'");
+        $criteria->addOrderAttribute('access.idGroup');
+        return $criteria->retrieveAsQuery();
+    }
+
+    public function listAccessByIdTransaction($idTransaction)
+    {
+        $criteria =  $this->getCriteria();
+        $criteria->AddColumnAttribute('access.idGroup');
+        $criteria->AddColumnAttribute('access.group.group');
+        $criteria->AddColumnAttribute('access.rights');
+        $criteria->addCriteria('idTransaction','=', "'{$idTransaction}'");
+        $criteria->addOrderAttribute('access.idGroup');
+        return $criteria->retrieveAsQuery();
+    }
+
+    private function setAccess($access)
+    {
+        $this->access = NULL;
+        if (count($access))
+        {
+            foreach($access as $a)
+            {
+                $this->access[] = $obj = new BusinessAdminAccess();
+                $obj->idGroup = $this->idGroup;
+                $obj->idTransaction = $a[0];
+                $obj->rights = $a[1];
+            }
+        }
+    }
+
+    public function GetUsersAllowed($action = A_ACCESS)
+    {
+    }
+
+    public function GetGroupsAllowed($action = A_ACCESS)
+    {
+    }
+
+
+    /**
+     * Obtem array de stdClass com informacoes dos menus, atravez da miolo_transaction.
+     * Retorna apenas menus que ja contem permissao de acesso e cujo modulo está instalado (parametro da basConfig)
+     * Como algumas particularidades no SAGU estao diferentes da base, isto tambem é tratado nesta funcao.
+     *
+     * @param (int) $transactionId
+     * @return array
+     */
+    public function getMenuInfo($transactionId = 0)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $result = array();
+        foreach ( (array) $this->getTransactionChildrenNamed($transactionId) as $row )
+        {
+            if ( $transactionId == 0 ) //Quando e modulo principal
+            {
+                $row->transactionName = strtr(strtolower($row->transactionName), array(
+                    'controlcopies'=> 'controlCopies',
+                    'humanresources' => 'humanResources',
+                    'selectiveprocess' => 'selectiveProcess',
+                ));
+
+                //Modulos a ignorar
+                if ( in_array(strtoupper($row->transactionName), array('ADMIN')) )
+                {
+                    continue;
+                }
+
+                $installedParameter = strtr(strtoupper($row->transactionName), array(
+                    'ACADEMIC' => 'MODULE_ACADEMIC_INSTALLED',
+                    'ACCOUNTANCY' => 'MODULE_ACCOUNTANCY_INSTALLED',
+                    'CONTROLCOPIES' => 'MODULE_CONTROLCOPIES_INSTALLED',
+                    'TRAINING' => 'MODULE_TRAINING_INSTALLED',
+                    'FINANCE' => 'MODULE_FINANCE_INSTALLED',
+                    'INSTITUTIONAL' => 'MODULE_INSTITUTIONAL_INSTALLED',
+                    'SELECTIVEPROCESS' => 'MODULE_SELECTIVEPROCESS_INSTALLED',
+                    'PROTOCOL'=>'MODULE_PROTOCOL_INSTALLED',
+                    'RESEARCH' => 'MODULE_RESEARCH_INSTALLED',
+                    'RESIDENCY' => 'MODULE_RESIDENCY_INSTALLED',
+                    'HUMANRESOURCES' => 'MODULE_HUMANRESOURCES_INSTALLED',
+                    'SERVICES' => 'MODULE_SERVICES_INSTALLED',
+                ));
+
+                $isBasicModule = strtoupper($row->transactionName) == 'BASIC';
+
+                //Se nao consta na lista do array acima, ignorar modulo
+                if ( !$isBasicModule && ($installedParameter == strtoupper($row->transactionName)) )
+                {
+                    continue;
+                }
+
+                if ( ($isBasicModule) || ( ($row->countChildren > 0) && SAGU::getParameter('BASIC', strtoupper($installedParameter)) == 'YES' ) )
+                {
+                    $result[] = $row;
+                }
+            }
+            else
+            {
+                $result[] = $row;
+            }
+        }
+
+        return $result;
+    }
+
+
+    public function search($filters = array())
+    {
+        $sql = "SELECT A.idTransaction AS transactionId,
+                       A.m_transaction AS transaction,
+                       A.nameTransaction AS description
+                  FROM miolo_transaction A
+                 WHERE 1=1";
+
+        if ( strlen($filters->transaction) > 0 )
+        {
+            $sql .=  " AND A.m_transaction = '{$filters->transaction}'";
+        }
+        
+        $rows = (array) SAGU::resultToObject(SDatabase::query($sql), array(
+            'transactionId',
+            'transaction',
+            'description',
+        ));
+        
+        return $rows;
+    }
+    
+    public function getListTransactions($idFather=0)
+    {
+        $res = $this->getTransactionFather($idFather);
+        if($res[0][0])
+        {
+            foreach ($res as $r)
+            {
+                $this->list[$r[0]] = $r[1];
+                $this->getListTransactions($r[0]);
+            }
+        }
+        
+        return $this->list;
+    }
+    
+    public function getTransactionName($transaction)
+    {
+        $db = $this->getDatabase();
+        $sql = " SELECT nametransaction FROM miolo_transaction WHERE m_transaction = '$transaction' ";
+        $result = $db->query($sql);
+        
+        return $result[0][0];
+    }
+    
+}
+?>

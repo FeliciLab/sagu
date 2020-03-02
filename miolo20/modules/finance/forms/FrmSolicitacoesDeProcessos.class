@@ -1,0 +1,131 @@
+<?php
+
+/*
+ * To change this template, choose Tools | Templates
+ * and open the template in the editor.
+ */
+
+/**
+ * Description of FrmConsultaSolicitacoesDeProcessos
+ *
+ * @author augusto
+ */
+class FrmSolicitacoesDeProcessos extends SManagementForm
+{
+    public function __construct() 
+    {
+        parent::__construct(new FinFluxoSolicitacao(), array('fluxosolicitacaoid, iduser'), null, _M('Solicitar aprovações do processo'));
+    }
+    
+    public function defineFields() 
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        // Importante para funcionar as lookups carregadas por ajax!!!
+        $this->page->addScript('m_lookup_ajax.js');
+        
+        $dadosDoRegistro = $MIOLO->session->getValue('dadosDoRegistroEfetuado');
+        $registroDados   = json_decode($dadosDoRegistro);
+        
+        $fluxoAprovacaoProcesso = new FinFluxoAprovacaoProcesso();
+        $processos = $fluxoAprovacaoProcesso->listarProcessos(false, true);        
+        $processoLabel = new MText('processoLabel', _M('Selecione o processo') . ':');
+        $processoLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $processoLabel->setClass('m-caption m-caption-required');
+        $processo = new MSelection('processoId', $registroDados->fluxoAprovacaoProcessoId, null, $processos);
+        $processo->addAttribute('onChange', $this->getAjaxAction('obterFiltrosDoProcesso', 'filtrosDoProcesso'), false);
+        
+        if ( strlen($dadosDoRegistro) > 0 )
+        {
+            $processo->setReadOnly(true);
+        }
+        
+        $fields[] = new MHContainer('processoHC', array($processoLabel, $processo));
+        $validators[] = new MRequiredValidator('processoId', _M('Seleção de processo'));
+        
+        $args = new stdClass();
+        $args->processoId = $registroDados->fluxoAprovacaoProcessoId;
+        $args->codigoDoRegistro = $registroDados->codigoDoRegistro;
+        $fields[] = new MDiv('filtrosDoProcesso', $this->obterFiltrosDoProcesso($args));
+        
+        $obsLabel = new MText('obsLabel', _M('Descreva sua solicitação') . ':');
+        $obsLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $obsLabel->setClass('m-caption');
+        $obs = new MMultiLineField('obs', null, null, 20, 10, 60);
+        $fields[] = new MHContainer('obsHC', array($obsLabel, $obs));
+        
+        parent::defineFields($fields, $validators);
+    }
+    
+    /**
+     * Retorna os filtros necessários para o processo selecionado.
+     * 
+     * @param stdClass $args
+     * @return String html
+     */
+    public function obterFiltrosDoProcesso($args = null)
+    {        
+        $filtros = " ";
+        
+        if ( strlen($args->processoId) > 0 )
+        {
+            $filtros = FinFluxoAprovacaoProcesso::obterFiltrosOuDiffDoProcesso($args->processoId, $args->codigoDoRegistro);
+        }
+        
+        return $filtros;
+    }
+    
+    /**
+     * Método que registra a solicitação.
+     * 
+     * @param stdClass $sender
+     */
+    public function tbBtnSave_click($sender = NULL) 
+    {
+        $MIOLO     = MIOLO::getInstance();
+        $loginUser = $MIOLO->getLogin();
+        
+        try
+        {
+            SDatabase::beginTransaction();
+            
+            $codigoDoRegistro = $this->getFormValue('codigoDoRegistro');
+            $processoId       = $this->getFormValue('processoId');                   
+
+            // Se já foi feita uma solicitação para o registro no processo.
+            if ( FinFluxoSolicitacao::verificaSeExisteSolicitacaoParaORegistroNoProcesso($codigoDoRegistro, $processoId) )
+            {
+                throw new Exception(_M("Desculpe, já existe uma solicitação para este registro neste processo, feita por você ou outro usuário. Não é permitido duas solicitações abertas para o mesmo registro no mesmo processo. Aguarde avaliação."));
+            }
+            
+            $finFluxoSolicitacao = new FinFluxoSolicitacao();
+            $finFluxoSolicitacao->fluxoAprovacaoProcessoId = $processoId;
+            $finFluxoSolicitacao->codigodoregistro = $codigoDoRegistro;
+            $finFluxoSolicitacao->idUser = $loginUser->idkey;
+            $finFluxoSolicitacao->fluxoAprovacaoStatusId = FinFluxoAprovacaoStatus::AGUARDANDO_AVALIACAO;
+            $finFluxoSolicitacao->observacao = $this->getFormValue('obs');
+            
+            if ( $finFluxoSolicitacao->save() )
+            {
+                $finFluxoSolicitacao->salvaOsDadosDoRegistroEfetuado();
+                $finFluxoSolicitacao->aprovaNivelDoSolicitanteCasoSejaAvaliador();
+                $finFluxoSolicitacao->criarLembretesParaOsAvaliadores();
+            }
+            
+            SDatabase::commit();
+            
+            $goto = $MIOLO->getActionURL('finance', 'main:process:solicitacoesDeProcessos');
+            $MIOLO->information("Sua solicitação foi efetuada com sucesso. Os avaliadores decidirão se você poderá ter permição para executar o processo para o registro solicitado. Aguarde pelas avaliações.", $goto);
+        }
+        catch ( Exception $err )
+        {
+            SDatabase::rollback();
+            
+            $goto = $MIOLO->getActionURL('finance', 'main:process:solicitacoesDeProcessos');
+            $MIOLO->error($err->getMessage(), $goto);
+        }
+    }
+}
+
+?>

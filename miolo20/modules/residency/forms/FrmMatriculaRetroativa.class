@@ -1,0 +1,473 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Gera matrículas em lote
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 09/09/2013
+ *
+ **/
+set_time_limit(0);
+
+class FrmMatriculaRetroativa extends SForm
+{
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->uses('/ui/controls/msubdetail.class');
+        
+        parent::__construct(_M('Matrícula retroativa'));
+
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+    }
+
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+
+        $data = (object) $_REQUEST;
+        
+        // lookup residente
+        $options = array(
+            'label' => _M('Residente', $module),
+            'item' => 'Residente',
+            'required' => true,
+            'related' => 'residenteIdDescription',
+            'hint' => _M('Informe o código do residente', $module),
+            'descriptionHint' => _M('Nome do residente', $module)
+        );
+        $residenteId = $fields[] = new SLookupContainer('residenteId', $this->getFormValue('residenteId'), $options);
+        $residenteId->addAttribute('onblur', SForm::getAjaxAction('alteraResidente', 'divResidente', false));
+        
+        $fields[] = new MDiv('divResidente', null);
+        
+        if ( $MIOLO->page->isPostBack() )
+        {
+            $residenteId->setReadOnly(true);
+        }
+        
+        // lookup de turma
+        $opts = array(
+            'label' => _M('Turma', $module),
+            'item' => 'Turma',
+            'module' => 'residency',
+            'required' => true,
+        );
+        $fields[] = $turmaId = new SLookupContainer('codigoTurma', $this->getRequestValue('codigoTurma', $codigoTurma->codigoTurma), $opts);
+        $turmaId->addAttribute('onblur', SForm::getAjaxAction('obtemInformacaoTurma', 'divTurma', false));
+        $validators[] = new MRequiredValidator('codigoTurma', _M('Turma'));
+
+        if ( $MIOLO->page->isPostBack() )
+        {
+            $turmaId->setReadOnly(true);
+        }
+        
+        //Nucleo profissional
+        $fields[] = $nucleoProfissional = new MSelection('nucleoProfissionalId', $this->getRequestValue('nucleoProfissionalId', $data->nucleoProfissionalId), _M('Núcleo profissional'), ResNucleoProfissional::listRecords());
+        $nucleoProfissional->setJsHint(_M('Informe o núcleo profissional'));
+        $validators[] = new MRequiredValidator('nucleoProfissionalId', _M('Núcleo profissional'));
+
+        //Enfase
+        $fields[] = $enfase = new MSelection('enfaseId', $this->getRequestValue('enfaseId', $data->enfaseId), _M('Ênfase'), ResEnfase::listRecords());
+        $enfase->setJsHint(_M('Informe a ênfase'));
+        $enfase->addAttribute('onChange', SForm::getAjaxAction('obtemInformacaoTurma', 'divTurma', false));
+        $validators[] = new MRequiredValidator('enfaseId', _M('Ênfase'));
+
+        $fields[] = new MSpacer();
+        $fields[] = new MDiv('divTurma', $this->obtemInformacaoTurma($data));
+        
+        // preceptor responsavel
+        $fields[] = new SHiddenField('filterOnlyPreceptor', DB_TRUE);
+        $fields[] = new SHiddenField('disableInsertNew', DB_TRUE);
+        $opts = array(
+            'label' => _M('Preceptor responsável', $module),
+            'item' => 'PhysicalPerson',
+            'module' => 'basic',
+            'required' => true,
+            'filter' => array('filterOnlyPreceptor' => 'filterOnlyPreceptor', 'disableInsertNew' => 'disableInsertNew'),
+        );
+        
+        $personId = $fields[] = new SLookupContainer('personId', $this->getRequestValue('personId', $data->personId), $opts);
+        $personId->getDescriptionField()->hint = _M('Utilizado para novas ofertas de unidades temáticas a serem geradas');
+        
+        $validators[] = new MIntegerValidator('personId', _M('Preceptor responsável', $module), 'required');
+        
+        // buscar
+        $fields[] = new MButton('btnBuscar', _M('Buscar'));
+        $fields[] = new MSeparator();
+
+        $this->setFields($fields);
+        $this->setValidators($validators);
+        
+        parent::defineFields(array('fields' => $fields, 'validators' => $validators));
+        
+        // forca exibicao da grid
+        if ( SAGU::getEventName() == 'btnSalvar:click' )
+        {
+            $this->btnBuscar_click();
+        }
+    }
+    
+    public function btnBuscar_click($sender=null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $filters = new stdClass();
+        $filters->enfases = array( MIOLO::_REQUEST('enfaseId') );
+        $filters->nucleosProfissionais = array( MIOLO::_REQUEST('nucleoProfissionalId') );
+        $filters->filtrarResidenteNaoInscrito = MIOLO::_REQUEST('residenteId');
+        
+        $dados = ResUnidadeTematica::searchGrid($filters);
+        
+        if ( count($dados) > 0 )
+        {        
+            $ch = new MTextField('cargaHoraria', '%4%', null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), 'h');
+            $tipoCH = new MSelection('tipoCH', null, null, ResTipoDeCargaHorariaComplementar::listRecords());
+
+            //
+            // grid ofertas
+            //
+            $columns = array();
+            $columns[] = new MGridColumn(_M('Código'), 'right', true, NULL, true, NULL, true);
+            $columns[] = new MGridColumn(_M('Unidade temática'), 'left', true, NULL, true, NULL, true);
+            $columns[] = new MGridColumn(_M('Período'), 'left', true, NULL, true, ResUnidadeTematica::listPeriodos(), true);
+            $columns[] = new MGridColumn(_M('Tipo'), 'left', true, NULL, true, ResUnidadeTematica::listTipos(), true);
+            $columns[] = new MGridColumn(_M('Carga horária'), 'right', true, NULL, true, NULL, true);
+            $columns[] = new MGridColumn(_M('Frequência mínima'), 'right', true, NULL, false, NULL, true);
+            $columns[] = new MGridColumn(_M('Núcleos profissionais'), 'left', true, NULL, false, NULL, true);
+            $columns[] = new MGridColumn(_M('Ênfases'), 'left', true, NULL, false, NULL, true);
+            $columns[] = new MGridColumn(_M('Início'), 'center', true, NULL, false, NULL, true);
+            $columns[] = new MGridColumn(_M('Fim'), 'center', true, NULL, false, NULL, true);
+            $columns['ch'] = new MGridControl($ch, _M('Carga horária complementar'), 'center', true);
+            $columns['tipoch'] = new MGridControl($tipoCH, _M('Tipo carga horária complementar'), 'center', true);
+
+            $grid = new SGrid($filters, $columns, 'GrdOfertas');
+            $grid->addActionSelect();
+            $grid->disablePagination();
+            $grid->disableColumnSorting();
+            $grid->setData($dados);
+
+            $this->AddField(new MSeparator());
+            $this->AddField(new MSeparator());
+            $this->AddField(new MLabel('<b>' . _M('Selecione as unidades temáticas a matricular:') . '</b>'));
+            $this->AddField($grid);
+
+            // end
+            $this->AddField(new MSeparator());
+            $this->AddField(new MButton('btnSalvar', _M('Salvar matrícula')));
+        }
+        else
+        {
+            $msg = _M('Nenhuma unidade temática encontrada para ser matriculada. Isto pode ocorrer pelos seguintes motivos:');
+            $msg .= '<ol>';
+            $msg .= '<li>' . _M('Não foi encontrado unidades temáticas para os dados selecionados') . '</li>';
+            $msg .= '<li>' . _M('A pessoa já está matriculada nas unidades temáticas que estariam disponíveis') . '</li>';
+            $msg .= '</ol>';
+            
+            $this->AddAlert($msg);
+        }
+    }
+    
+    public function btnSalvar_click($sender=null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        SDatabase::beginTransaction();
+        
+        $residenteId = MIOLO::_REQUEST('residenteId');
+        $ofertas = MIOLO::_REQUEST('selectGrdOfertas');
+        $cargaHoraria = MIOLO::_REQUEST('cargaHoraria');
+        $tipoCH = MIOLO::_REQUEST('tipoCH');
+        
+        try
+        {
+            if ( count($ofertas) == 0 )
+            {
+                throw new Exception(_M('Nenhuma oferta foi selecionada'));
+            }
+            
+            // valida campos
+            foreach ( (array) $ofertas as $chave => $unidadeTematicaId )
+            {
+                if ( ( strlen($cargaHoraria[$chave]) == 0 ) && ( strlen($tipoCH[$chave]) > 0 ) )
+                {
+                    throw new Exception(_M('Preencha todos os campos "Carga horária complementar"'));
+                }
+                
+                if ( ( strlen($tipoCH[$chave]) == 0 ) && ( strlen($cargaHoraria[$chave]) > 0 ) )
+                {
+                    throw new Exception(_M('Preencha todos os campos "Tipo carga horária complementar"'));
+                }
+            }
+            
+            $total = 0;
+            
+            // insere matriculas
+            foreach ( (array) $ofertas as $unidadeTematicaId )
+            {
+                $filters = new stdClass();
+                $filters->encerradas = DB_TRUE;
+                $filters->unidadeTematicaId = $unidadeTematicaId;
+                $filters->betweenInicio = MIOLO::_REQUEST('inicio');
+                $filters->betweenFim = MIOLO::_REQUEST('fimPrevisto');
+                
+                $buscaOferta = ResOfertaDeUnidadeTematica::searchGrid($filters);
+
+                if ( count($buscaOferta) > 0 )
+                {
+                    // utiliza oferta atual
+                    $ofertaDeUnidadeTematicaId = $buscaOferta[0][0];
+                }
+                else
+                {
+                    // insere nova oferta
+                    $novaOferta = new ResOfertaDeUnidadeTematica();
+                    $novaOferta->unidadeTematicaId = $unidadeTematicaId;
+                    $novaOferta->personId = MIOLO::_REQUEST('personId'); // preceptor
+                    $novaOferta->inicio = MIOLO::_REQUEST('inicio');
+                    $novaOferta->fim = MIOLO::_REQUEST('fimPrevisto');
+                    $novaOferta->encerramento = SAGU::getDateNow(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP'));
+                    $novaOferta->encerradoPor = $MIOLO->getLogin()->idkey;
+                    $novaOferta->save();
+                    
+                    $ofertaDeUnidadeTematicaId = $novaOferta->ofertaDeUnidadeTematicaId;
+                }
+                
+                // verifica se residente ja esta matriculado
+                $filters = new stdClass();
+                $filters->residenteId = $residenteId;
+                $filters->ofertaDeUnidadeTematicaId = $ofertaDeUnidadeTematicaId;
+
+                $ocorrencias = ResOcorrenciaDeOferta::searchGrid($filters);
+
+                if ( count($ocorrencias) == 0 )
+                {
+                    $filters = new stdClass();
+                    $filters->residenteId = $residenteId;
+                    $filters->ofertaDeUnidadeTematicaId = $ofertaDeUnidadeTematicaId;
+                    $buscaOfertaResidente = ResOfertaDoResidente::search($filters);
+
+                    // oferta
+                    $oferta = new ResOfertaDoResidente();
+                    $oferta->ofertaDoResidenteId = $buscaOfertaResidente[0]->ofertaDoResidenteId;
+                    $oferta->residenteId = $residenteId;
+                    $oferta->ofertaDeUnidadeTematicaId = $ofertaDeUnidadeTematicaId;
+
+                    // ocorrencia
+                    $ocorrencia = new ResOcorrenciaDeOferta();
+                    $ocorrencia->dataHora = SAGU::getDateNow(SAGU::getParameter('BASIC', 'MASK_DATE_PHP') . ' ' . SAGU::getParameter('BASIC', 'MASK_TIME_PHP'));
+                    $ocorrencia->status = ResStatusDaOcorrenciaDeContrato::STATUS_ATIVO;
+                    $ocorrencia->observacoes = _M('Inserido pela matrícula retroativa');
+
+                    $oferta->ocorrenciasDeOferta = array($ocorrencia);
+                    $oferta->save();
+
+                    // insere a CH complementar
+                    if ( SAGU::allIsFilled($cargaHoraria[$chave], $tipoCH[$chave]) )
+                    {
+                        $chComplementar = new ResCargaHorariaComplementar();
+                        $chComplementar->tipoDeCargaHorariaComplementarId = $tipoCH[$chave];
+                        $chComplementar->cargaHoraria = $cargaHoraria[$chave];
+                        $chComplementar->unidadeTematicaId = $unidadeTematicaId;
+                        $chComplementar->residenteId = $residenteId;
+                        $chComplementar->justificativa = _M('Inserido automaticamente pela matrícula retroativa');
+                        $chComplementar->save();
+                    }
+                    
+                    $total ++;
+                }
+            }
+            
+            SDatabase::commit();
+
+            // mensagem sucesso
+            if ( $total > 0 )
+            {
+                $msg = _M('Matrículas realizadas com sucesso. Ao total foram relizadas @1 novas matrículas.', null, $total);
+            }
+            else
+            {
+                $msg = _M('Processo executado com sucesso, porém, nenhuma matrícula nova foi efetuada.');
+            }
+
+            $this->ClearFields();
+            $this->AddInfo($msg);
+            
+            $btnBack = new MButton('btnBack', _M('Voltar'), $MIOLO->GetActionURL($module, $action));
+            $div = new MDiv('divBack', array($btnBack));
+            $div->addBoxStyle('text-align', 'center');
+            $this->AddField($div);
+        }
+        catch (Exception $e)
+        {
+            SDatabase::rollback();
+
+            $this->AddError($e->getMessage());
+        }
+    }
+    
+    public function alteraResidente($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        if ( strlen($args->residenteId) > 0 )
+        {
+            try
+            {
+                $residente = new ResResidente($args->residenteId);
+            }
+            catch (Exception $e)
+            {
+            }
+
+            if ( strlen($residente->turmaId) > 0 )
+            {
+                $turma = new ResTurma($residente->turmaId);
+                $args->codigoTurma = $turma->codigoTurma;
+
+                // isto faz chamar o metodo obtemInformacaoTurma() , pois chama o autocomplete lookup
+                $MIOLO->page->AddAJAXJsCode(" document.getElementById('codigoTurma').value = '{$turma->codigoTurma}'; ");
+                $MIOLO->page->AddAJAXJsCode(" document.getElementById('codigoTurma').onchange(); ");
+                $MIOLO->page->addAJAXJsCode(" document.getElementById('codigoTurma').onblur(); ");
+
+                // para por aqui
+                return '';
+            }
+        }
+
+        // limpa valores
+        $MIOLO->page->addAJAXJsCode(" document.getElementById('codigoTurma').value = ''; ");
+        $MIOLO->page->addAJAXJsCode(" document.getElementById('codigoTurma').onchange(); ");
+        $MIOLO->page->addAJAXJsCode(" document.getElementById('codigoTurma').onblur(); ");
+        
+        return '';
+    }
+    
+    public function obtemInformacaoTurma($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        if ( strlen($args->codigoTurma) > 0 )
+        {
+            $infoTurma = ResTurma::obtemTurma($args->codigoTurma);
+
+            $jsCode = " document.getElementById('inicio').value = '{$infoTurma->dataInicio}'; 
+                        document.getElementById('fimPrevisto').value = '{$infoTurma->dataFim}'; ";
+                        
+
+            if ( strlen($infoTurma->dataInicio) > 0 && strlen($infoTurma->fimPrevisto) > 0 )
+            {
+                $jsCode .= " document.getElementById('inicio').readOnly = true;
+                             document.getElementById('fimPrevisto').readOnly = true;
+                           ";
+            }
+
+            $enfase = !$args->phpFunction ? $args->enfaseId : '';
+
+            if ( strlen($infoTurma->enfaseId) > 0 )
+            {
+                $jsCode .= " document.getElementById('enfaseId').value = '{$infoTurma->enfaseId}'; 
+                             document.getElementById('enfaseId').onmousedown = function(){alert('O valor deste campo não pode ser alterado'); return false};
+                           ";
+            }
+            else
+            {
+                $jsCode .= " document.getElementById('enfaseId').value = '{$args->enfaseId}'; 
+                             document.getElementById('enfaseId').onmousedown = '';
+                           ";
+            }
+            
+            if ( strlen($infoTurma->nucleoProfissionalId) > 0 )
+            {
+                $jsCode .= " document.getElementById('nucleoProfissionalId').value = '{$infoTurma->nucleoProfissionalId}';
+                             document.getElementById('nucleoProfissionalId').onmousedown = function(){alert('O valor deste campo não pode ser alterado'); return false};
+                           ";
+            }
+            else
+            {
+                $jsCode .= " document.getElementById('nucleoProfissionalId').value = '{$args->nucleoProfissionalId}';
+                             document.getElementById('nucleoProfissionalId').onmousedown = '';
+                           ";
+            }
+        }
+        else
+        {
+            $jsCode = " document.getElementById('inicio').value = '';
+                        document.getElementById('fimPrevisto').value = ''; 
+                        document.getElementById('nucleoProfissionalId').value = ''; 
+                        document.getElementById('enfaseId').value = '';
+
+                        document.getElementById('inicio').setAttribute('readonly', false);
+                        document.getElementById('fimPrevisto').setAttribute('readonly', false);
+
+                        document.getElementById('nucleoProfissionalId').setAttribute('readonly', false);
+                        document.getElementById('enfaseId').setAttribute('readonly', false);
+
+                        document.getElementById('nucleoProfissionalId').onmousedown = '';
+                        document.getElementById('enfaseId').onmousedown = '';
+                        ";
+        }
+        
+        if ( $args->phpFunction )
+        {
+            $MIOLO->page->addAJAXJsCode($jsCode);
+        }
+        else
+        {
+            $MIOLO->page->addJsCode($jsCode);
+        }
+        
+        $inicio = $fields[] = new MCalendarField('inicio', $infoTurma->dataInicio, _M('Início'), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+        
+        if ( $MIOLO->page->isPostBack() )
+        {
+            $inicio->setReadOnly(true);
+        }
+        
+        $fim = $fields[] = new MCalendarField('fimPrevisto', $infoTurma->dataFim, _M('Fim'), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+
+        if ( $MIOLO->page->isPostBack() )
+        {
+            $fim->setReadOnly(true);
+        }
+        
+        $this->AddValidator(new MRequiredValidator('inicio', _M('Início')));
+        $this->AddValidator(new MRequiredValidator('fimPrevisto', _M('Fim')));
+        
+        return SAGU::alignFields($fields);
+    }
+}

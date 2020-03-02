@@ -1,0 +1,322 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Testa importacao CSV
+ *
+ * @author Equipe SAGU [sagu@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Equipe SAGU [sagu@solis.coop.br]
+ *
+ * @since
+ * Class created on 26/06/2012
+ *
+ **/
+ini_set('memory_limit','-1');
+ini_set('upload_max_filesize','20M');
+class FrmImportacaoCSV extends SManagementForm
+{
+    const OPT_IMPORT = 1;
+    const OPT_VALIDATE = 2;
+    
+    private $divGrid;
+    private $fileIdHidden;
+    
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        parent::__construct(_M('Importação de planilhas CSV', $module), null, null);
+    }
+
+
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+
+        // Mensagem info
+        $tamUploadMax = (ini_get('upload_max_filesize') > ini_get('post_max_size')) ? ini_get('post_max_size') : ini_get('upload_max_filesize');
+        $fields[] = MMessage::getStaticMessage('message', "Lembre-se: O tamanho máximo para upload, configurado no servidor é de " . $tamUploadMax, MMessage::TYPE_INFORMATION);
+        
+        // Bloqueia caso haja outra importacao
+        $csv = new sCSVFileImporter();
+        
+        if ( $csv->statusFileExists() )
+        {
+            $fileName = $csv->getStatusFileName();
+            $status = $csv->readStatusFile();                
+
+            $msg = _M('Já existe uma outra importação em progresso, ou que foi interrompida. Caso queira ignorá-la, apague o arquivo <b>@1</b> no sistema.<br><br>Status: @2', $module, $fileName, $status);
+            
+            $MIOLO->error($msg);
+        }
+        
+        $fields[] = $delimitador = new MTextField('delimitador', SAGU::NVL($this->getRequestValue('delimitador'), ','), _M('Delimitador', $module));
+        $delimitador->setJsHint( _M('Digite o delimitador do CSV', $module) );
+        $validators[] = new MRequiredValidator('delimitador');
+        
+        $fields[] = $planilha = new MSelection('planilha', $this->getRequestValue('planilha'), _M('Layout', $module), sCSVFileImporter::listarPlanilhas());
+        $planilha->setJsHint( _M('Escolha a planilha que deseja testar', $module) );
+        $validators[] = new MRequiredValidator('planilha');
+
+        $url = $MIOLO->GetActionURL(MIOLO::getCurrentModule(), MIOLO::getCurrentAction(), null, array('function' => 'insert', 'event' => 'btnDownload_click'));
+        $link = new MLink('downloadLink', _M('Baixar layout de importação', $module), $url);
+        $fields[] = new MTextLabel('dllink', $link->generate(), _M('Download', $module));
+
+        // Modo
+        $opts = array(
+            self::OPT_IMPORT => _M('Importar (dados serão gravados na base de dados)', $module),
+            self::OPT_VALIDATE => _M('Somente validar (não grava dados na base de dados, somente valida o formato do arquivo)', $module),
+        );
+        $value = SAGU::NVL( $this->getRequestValue('modo'), self::OPT_VALIDATE );
+        $fields[] = $modo = new MRadioButtonGroupFixed('modo', $value, _M('Opção', $module), $opts);
+        $modo->setIsRequired(true);
+        
+        // Desconsiderar primeira linha
+        $checked = MIOLO::_REQUEST('ignoreFirstLine') == DB_TRUE;
+        $fields[] = new MCheckBox('ignoreFirstLine', DB_TRUE, _M('Desconsiderar primeira linha (cabeçalho)'), $checked, NULL, _M("ATENÇÃO: Marcar esta opção caso o CSV possua cabeçalho.", $module));
+        
+        // Obs
+        $fields[] = $obs = new sMultiLineField('observation', array(
+            'label' => _M('Observações', $module),
+        ));
+        
+        // Unidade
+        if ( sMultiUnidade::estaHabilitada() )
+        {
+            $fields[] = new SHiddenField('unitId', sMultiUnidade::obterUnidadeLogada());
+        }
+        else
+        {
+            $fields[] = sMultiUnidade::obterCombo();
+        }
+        
+        $file = new MFileField('uploadFile', null, _M('Arquivo', $module));
+        $file->addAllowedExtension(MFileField::EXT_TAR_GZ);
+        $file->addAllowedExtension(MFileField::EXT_CSV);
+        $fields[] = $file;
+        
+        $fields[] = $this->fileIdHidden = new SHiddenField('fileId', $this->getRequestValue('fileId'));
+
+        $fields[] = new MSeparator();
+        $fields[] = new MSeparator();
+        $fields[] = new MTextLabel('lbl1', _M('O arquivo enviado deve ser, preferencialmente, compactado com a extensão .tar.gz', $module), _M('Obs 1', $module));
+        $fields[] = new MTextLabel('lbl2', _M('O nome do arquivo CSV deve ser o mesmo do arquivo compactado (Ex.: teste.tar.gz contém teste.csv)', $module), _M('Obs 2'));
+        
+        // Exibe tamanho
+        $fields[] = new MSeparator();
+        $fields[] = new MSeparator();
+        $uploadPath = $this->getUploadPath();
+        $uploadPathSize = BusinessBasicBusFile::CalcDirectorySize($uploadPath);
+        $uploadPathSize = $uploadPathSize == -1 ? '(vazio)' : BusinessBasicBusFile::bytesToSize($uploadPathSize, 1);
+        $fields[] = new MTextLabel('lblSize', $uploadPathSize, _M('Tamanho do diretório de upload', $module));
+        
+        $fields[] = new MSeparator();
+        $fields[] = new MSeparator();
+        
+        $fields[] = $this->divGrid = new MDiv('divGrid');
+        
+        parent::defineFields($fields, $validators);
+    }
+    
+    public function btnDownload_click($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        try
+        {
+            $filename = $MIOLO->GetModulePath('basic', 'docs/layout.ods');
+            $buffer = file_get_contents($filename);
+            
+            SAGU::returnAsFile(basename($filename), $buffer, 'application/vnd.oasis.opendocument.spreadsheet');
+        }
+        catch (Exception $e)
+        {
+            $this->AddError( $e->getMessage() );
+        }
+    }
+    
+    public function getUploadPath()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        return $MIOLO->GetModulePath('basic', SAGU::getParameter('BASIC', 'UPLOAD_PATH')) . '/migracao/';
+    }
+    
+    /**
+     * Executa o processo de importacao
+     *
+     * @param stdClass $args 
+     */
+    public function tbBtnSave_click($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $data = $this->getTypesData();
+        
+        $busFile = new BusinessBasicBusFile();
+        $import = null;
+
+        try
+        {
+            $fileData = new stdClass();
+            $fileData->localPath = $_FILES['uploadFile']['tmp_name'];
+            $fileData->fileName = $_FILES['uploadFile']['name'];
+            $fileData->fileType = $_FILES['uploadFile']['type'];
+            $fileData->size = $_FILES['uploadFile']['size'];
+            $fileData->uploadFileName = $fileData->fileName;
+            $fileData->contentType = $fileData->fileType;
+
+            $uploadPath = $this->getUploadPath();
+
+            if ( !is_dir($uploadPath) )
+            {
+                mkdir($uploadPath);
+            }
+            
+            $busFile->setUploadPath( $uploadPath );
+            $busFile->setSplitDirByDate(false);
+
+            $fileId = $busFile->insertFile($fileData, $fileData->localPath);
+            $this->fileIdHidden->setValue($fileId);
+            $fileObj = $busFile->getFile( $fileId );
+
+            $isTGZ = $busFile->isTarGzFile($fileId);
+            $csvFile = '';
+
+            if ( $isTGZ )
+            {
+                try
+                {
+                    $csvFile = $busFile->untarGzFile($fileId, '.csv');
+                }
+                catch (Exception $e)
+                {
+                    throw new Exception(_M('Erro ao descompactar: <br>', $module) . $e->getMessage());
+                }
+            }
+            else
+            {
+                $csvFile = $fileObj->absolutePath;
+            }
+
+            // Objeto importacao CSV
+            $csvClassName = $data->planilha;
+            
+            $import = new $csvClassName();
+            $import instanceof sCSVFileImporter;
+            $import->loadFile($csvFile, $data->delimitador);
+            $import->setUnitId($data->unitId);
+            $import->setObservation($data->observation);
+            $import->setImportationType(BasCSVImportation::TYPE_WEB);
+            $import->setFileId($fileId);
+            $import->setIgnoreFirstLine( MIOLO::_REQUEST('ignoreFirstLine') == DB_TRUE );
+
+            if ( $data->modo == self::OPT_IMPORT )
+            {
+                if ( $import->import() )
+                {
+                    if ( $import->getHasErrors() )
+                    {
+                        $href = $MIOLO->GetActionURL('basic', 'main:config:csvlog', null, array('csvimportationid' => $import->getCsvImportationId()));
+                        $link = new MLink('lnkLogs', _M('Clique aqui', $module), $href);
+                        $link->setTarget('_blank');
+
+                        $this->AddError( _M('Falha ao importar o arquivo CSV. @1 para visualizar os logs.', $module, $link->generate()) );
+                    }
+                    else
+                    {
+                        $this->AddInfo( _M('O arquivo CSV foi importado com sucesso.', $module) );
+                    }
+                }
+                else
+                {
+                    $this->showGridValidationErrors($import);
+                }
+            }
+            else if ( ( $data->modo == self::OPT_VALIDATE ) && $import->check() )
+            {
+                $this->AddInfo( _M('O arquivo CSV foi validado com sucesso.', $module) );
+            }
+            else
+            {
+                $this->showGridValidationErrors($import);
+            }
+        }
+        catch (Exception $e)
+        {
+            $this->AddError( $e->getMessage() );
+        }
+        
+        // remove arquivo de status
+        if ( $import instanceof sCSVFileImporter )
+        {
+            $import->deleteStatusFile();
+        }
+    }
+    
+    public function showGridValidationErrors(sCSVFileImporter $import)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $this->AddAlert( _M('O arquivo CSV não foi validado com sucesso. Veja abaixo a lista de erros.', $module) );
+
+        $errLog = array();
+
+        foreach ( $import->getErrorLog() as $linha => $err )
+        {
+            $err = str_replace("\n", '<br>', $err);
+            $errLog[] = array($linha, $err);
+        }
+
+        $field = $MIOLO->getUI()->getGrid($module, 'GrdImportacaoCSV');
+        $field->setData( $errLog );
+
+        $this->divGrid->setInner( $field );
+    }
+
+    /**
+     * Get the data from form and returns as a object
+     */
+    public function getTypesData()
+    {
+        $data->planilha = $this->getRequestValue('planilha');
+        $data->delimitador = $this->getRequestValue('delimitador');
+        $data->fileId = $this->getRequestValue('fileId');
+        $data->unitId = $this->getRequestValue('unitId');
+        $data->modo = $this->getRequestValue('modo');
+        $data->observation = $this->getRequestValue('observation');
+
+        return $data;
+    }
+}
+?>

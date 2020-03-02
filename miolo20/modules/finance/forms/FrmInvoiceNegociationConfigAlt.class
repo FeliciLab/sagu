@@ -1,0 +1,351 @@
+<?php
+
+class FrmInvoiceNegociationConfigAlt extends SManagementForm
+{
+
+    /**
+     * Class constructor
+     **/
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);        
+        
+        // MSubDetail
+        $MIOLO->uses('/ui/controls/msubdetail.class');
+        
+        parent::__construct(new FinInvoiceNegociationConfigAlt(), array('perfilnegociacaoid'), null, _M('Perfil de negociação de dívidas / antecipação de pagamentos', $module));
+        
+        //Desabilita as ações da toolbar
+        $this->toolbar->disableButton(MToolbar::BUTTON_NEW);
+        $this->toolbar->disableButton(MToolbar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolbar::BUTTON_PRINT);     
+    }
+
+    /**
+     * Default method to define fields
+     **/
+    public function defineFields()
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+        
+        // Limpa a MSubDetail, desde que não foi clicado no botão salvar
+        if ( MIOLO::_REQUEST('event') != 'tbBtnSave:click' )
+        {
+            MSubDetail::clearData('sdCondicoes');
+        }
+
+        $permiteNegociacao = FALSE;
+        if ( $function == SForm::FUNCTION_UPDATE )
+        {
+            $fields[] = new MHiddenField('perfilnegociacaoid', MIOLO::_REQUEST('perfilnegociacaoid'));
+            
+            $finPerfilNegociacao = new FinInvoiceNegociationConfigAlt(MIOLO::_REQUEST('perfilnegociacaoid'));
+            
+            $permiteNegociacao = MUtil::getBooleanValue($finPerfilNegociacao->permiterenegociacao);
+            $grupos = $finPerfilNegociacao->obterGrupos();
+            $condicoes = $finPerfilNegociacao->obterCondicoes();
+        }
+        
+        $fields[] = new MTextField('descricao', '', _M('Descrição'), 60);
+        $validators[] = new MRequiredValidator('descricao');
+        
+        $fields[] = new MCheckBox('permiterenegociacao', DB_TRUE, _M('Permite renegociação'), $permiteNegociacao, NULL, _M('Caso marcado permite que o valor possa ser renegociado em um processo futuro'));
+        
+        $busGroups = new BusinessAdminGroup();
+        $groups = $busGroups->listGroups();        
+        $fields[] = new MMultiSelection('groups', $grupos, _M('Grupos de usuários que poderão utilizar este perfil'), $groups, false, null, 10);
+        
+        // Campos das condições de pagamento
+        
+        // Descrição
+        $description = new STextFieldAligned('descricaoCondicao', "Descrição:", $this->getFormValue('descricaoCondicao'), false, null, null, null, "Se você quiser, pode adicionar uma descrição para a condição.");
+        $sdFields[] = $description;
+        
+        // Operação
+        $operationLabel = new MText('operationLabel', _M('Operação', $module).':');
+        $operationLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $operationLabel->setClass('m-caption m-caption-required');
+        $value = SAGU::NVL($data->operationId, $this->getFormValue('operationId'));
+        $operationId = new MLookupTextField('operationId', $value, '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), null, null, 'operationDescription', $module, 'Operation', null, null, true);
+        $operationId->setJsHint(_M('Informe a operação que será utilizada nos lançamentos dos títulos originados a partir da negociação.',$module));
+        $sdValidators[] = new MIntegerValidator('operationId', _M('Operação', $module), 'required');
+        $operationDescription = new MTextField('operationDescription', $this->getFormValue('operationDescription',$data->operationDescription), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $operationDescription->setReadOnly(true);
+        $operationDescription->setJsHint(_M('Descrição da operação', $module));
+        $sdFields[] = new MHContainer('hctOperation', array($operationLabel, $operationId, $operationDescription));
+        
+        // Conta bancária
+        $busBankAccount = new BusinessFinanceBusBankAccount();
+        $bankAccountLabel = new MText('bankAccountLabel', _M('Conta bancária', $module).':');
+        $bankAccountLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $bankAccountLabel->setClass('m-caption m-caption-required');
+        $bankAccount = new MSelection('bankaccountid', $this->getFormValue('bankAccountId', $data->bankAccountId), NULL, $busBankAccount->listBankAccount($data));
+        $sdFields[] = new MHContainer('hctBankAccount', array($bankAccountLabel, $bankAccount));
+        $sdValidators[] = new MRequiredValidator('bankaccountid', _M('Conta bancária'));
+        
+        // Centro de custo
+        $costCenterLabel = new MText('costCenterLabel', _M('Centro de custo',$module).':');
+        $costCenterLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $costCenterLabel->setClass('m-caption m-caption-required');
+        $value = SAGU::NVL( $data->costCenterId, $this->getFormValue('costCenterId') );
+        $costCenterId = new MLookupTextField('costCenterId', $value, null,SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), null, null, 'costCenterDescription', 'accountancy', 'CostCenter', null, null, true);
+        $costCenterId->setJsHint(_M('Informe o centro de custo para o qual serão gerados os títulos originados a partir da negociação.', $module));
+        $sdValidators[] = new MRegexpValidator('costCenterId',_M('Centro de custo',$module), '^[0-9]+(\.[0-9]+)*$', 'required');                
+        $costCenterDescription = new MTextField('costCenterDescription',$this->getFormValue('costCenterDescription',$data->costCenterDescription), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $costCenterDescription->setReadOnly(true);
+        $costCenterDescription->setJsHint(_M('Descrição do centro de custo', $module));
+        $hctCostCenter = new MHContainer('hctCostCenter', array($costCenterLabel, $costCenterId, $costCenterDescription));
+        $hctCostCenter->setShowLabel(true);
+        $sdFields[] = $hctCostCenter;
+        
+        //Política
+        $policyLabel = new MText('policyLabel', _M('Política', $module). ':');
+        $policyLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $policyLabel->setClass('m-caption m-caption-required');
+        $value = SAGU::NVL( $data->policyId, $this->getFormValue('policyId') );
+        $policyId    = new MLookupTextField('policyId', $value, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), null, null, 'policyDescription', 'finance', 'Policy', null, null, true);                                         
+        $policyId->setJsHint(_M('Informe a política para o qual serão gerados os títulos originados a partir da negociação.', $module));
+        $sdValidators[] = new MIntegerValidator('policyId',_M('Política', $module), 'required');
+        $policyDescription = new MTextField('policyDescription', $this->getFormValue('policyDescription',$data->policyDescription), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $policyDescription->setReadOnly(true);
+        $policyDescription->setJsHint(_M('Descrição da política', $module));
+        $hctPolicy = new MHContainer('hctPolicy', array($policyLabel, $policyId, $policyDescription));
+        $hctPolicy->setShowLabel(true);
+        $sdFields[]   = $hctPolicy;
+        
+        // Tipo
+        $operationLabels = new MText('tipoLabel', _M('Tipo', $module).':');
+        $operationLabels->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $operationLabels->setClass('m-caption');
+        $operation = new MSelection('tipo', 'N', NULL, FinNegotiation::listRecordType());
+        $operation->setAllowNullValue(FALSE);
+        $sdFields[] = new MHContainer('hctTipo', array($operationLabels, $operation));
+        
+        //Taxa de negociacao
+        $taxaNegociacaoLabel = new MText('taxaNegociacaoLabel', _M('Taxa de negociação ', $module).':');
+        $taxaNegociacaoLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $taxaNegociacaoLabel->setClass('m-caption');
+        $taxaNegociacao = new MTextField('taxanegociacao', '', NULL, 10, _M('Valor que será cobrado pelo processo de negociação'));
+        $sdFields[] = new MHContainer('hctTaxaNegociacao', array($taxaNegociacaoLabel, $taxaNegociacao));
+        $sdValidators[] = new MFloatValidator('taxanegociacao', _M('Taxa de negociação'));
+        
+        //Percentual de entrada
+        $percentualEntradaLabel = new MText('percentualEntradaLabel', _M('Percentual de entrada ', $module).':');
+        $percentualEntradaLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $percentualEntradaLabel->setClass('m-caption m-caption-required');
+        $percentualEntrada = new MTextField('percentualentrada', '', NULL, 10, _M('Percentual do valor devido que deve ser pago como entrada'));
+        $sdFields[] = new MHContainer('hctPercentualEntrada', array($percentualEntradaLabel, $percentualEntrada));
+        $sdValidators[] = new MRequiredValidator('percentualentrada', _M('Percentual de entrada'));
+        $sdValidators[] = new MFloatValidator('percentualentrada', _M('Percentual de entrada'));
+        
+        //Número de parcelas
+        $numeroParcelasLabel = new MText('numeroParcelasLabel', _M('Quantidade de parcelas', $module).':');
+        $numeroParcelasLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $numeroParcelasLabel->setClass('m-caption m-caption-required');
+        $numeroParcelas = new MTextField('numeroparcelas', '', _M('Quantidade de parcelas'), 10, _M('Quantidade de parcelas desconsiderando a parcela de entrada'));
+        $sdFields[] = new MHContainer('hctNumeroParcelas', array($numeroParcelasLabel, $numeroParcelas));
+        $sdValidators[] = new MRequiredValidator('numeroparcelas', _M('Quantidade de parcelas'));
+        $sdValidators[] = new MIntegerValidator('numeroparcelas', _M('Quantidade de parcelas'));
+        
+        //Juros
+        $jurosLabel = new MText('jurosLabel', _M('Cobrar juros de', $module).':');
+        $jurosLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $jurosLabel->setClass('m-caption');
+        $juros = new MTextField('juros', '', NULL, 10, _M('Percentual de juro que será cobrado em cada parcela'));
+        $sdFields[] = new MHContainer('hctJuros', array($jurosLabel, $juros));
+        
+        //Desconto
+        $descontoLabel = new MText('descontoLabel', _M('Descontar porcentagem de ', $module) . ':');
+        $descontoLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $descontoLabel->setClass('m-caption');
+        $desconto = new MTextField('percentualdedesconto', '', NULL, 10, _M('Percentual de desconto que será aplicado antes do cálculo de valores'));
+        $sdFields[] = new MHContainer('hctDesconto', array($descontoLabel, $desconto));
+        
+        //Ordem da condicao
+        $ordemLabel = new MText('ordemLabel', _M('Ordem de exibição do tipo de negociação', $module).':');
+        $ordemLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $ordemLabel->setClass('m-caption m-caption-required');
+        $ordem = new MTextField('ordemcondicao', '', NULL, 10, _M('Ordem que as opções de negociação irão ser exibidas para os usuários do perfil'));
+        $sdFields[] = new MHContainer('hctOrdem', array($ordemLabel, $ordem));
+        $sdValidators[] = new MRequiredValidator('ordemcondicao', _M('Ordem de exibição do tipo de negociação'));
+        $sdValidators[] = new MIntegerValidator('ordemcondicao', _M('Ordem de exibição do tipo de negociação'));
+        
+        //Dia do vencimento
+        $diaVencimentoLabel = new MText('diaVencimentoLabel', _M('Dia do vencimento', $module).':');
+        $diaVencimentoLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $diaVencimentoLabel->setClass('m-caption m-caption-required');
+        $diaVencimento = new MTextField('diavencimento', '', NULL, 10, _M('Dia do vencimento dos títulos que serão gerados'));
+        $sdFields[] = new MHContainer('hctDiaVencimento', array($diaVencimentoLabel, $diaVencimento));
+        $sdValidators[] = new MRequiredValidator('diavencimento', _M('Dia do vencimento'));
+        $sdValidators[] = new MIntegerValidator('diavencimento', _M('Dia do vencimento'));
+        
+        //Liberar juros
+        $liberarJurosLabel = new MText('liberarJurosLabel', _M('Liberar juros', $module).':');
+        $liberarJurosLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $liberarJurosLabel->setClass('m-caption');
+        $liberarJuros = new MCheckBox('liberarjuros', DB_TRUE, NULL, FALSE, NULL, _M('Não cobra juros acumulados nas dívidas'));
+        $sdFields[] = new MHContainer('hctLiberarJuros', array($liberarJurosLabel, $liberarJuros));
+        
+        //Liberar multas
+        $liberarMultasLabel = new MText('liberarJurosLabel', _M('Liberar multas', $module).':');
+        $liberarMultasLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $liberarMultasLabel->setClass('m-caption');
+        $liberarMulta = new MCheckBox('liberarmulta', DB_TRUE, _M('Liberar multas'), FALSE, NULL, _M('Não cobra multas acumuladas nas dívidas'));
+        $sdFields[] = new MHContainer('hctLiberarMulta', array($liberarMultasLabel, $liberarMulta));
+        
+        // Colunas das condições de pagamento
+        $columns[] = new MGridColumn(_M('Ordem', $module), 'right', true, '5%', true, 'ordemcondicao');
+        $columns[] = new MGridColumn(_M('Descrição', $module), 'left', true, '20%', true, 'descricaoCondicao');
+        $columns[] = new MGridColumn(_M('Código da Operação', $module), 'left', true, '1%', false, 'operationId');
+        $columns[] = new MGridColumn(_M('Operação', $module), 'left', true, '20%', true, 'operationDescription');
+        
+        $busBankAccount = new BusinessFinanceBusBankAccount();
+        $bankAccounts = $busBankAccount->listBankAccount();
+        $bankAccountsOptions = array();
+        foreach ( $bankAccounts as $bankAccount )
+        {
+            $bankAccountsOptions[$bankAccount[0]] = $bankAccount[1];
+        }        
+        
+        $columns[] = new MGridColumn(_M('Código da conta Bancária', $module), 'left', true, '1%', false, 'bankaccountid');
+        $columns[] = new MGridColumn(_M('Conta bancária', $module), 'left', true, '20%', true, 'bankAccountDescription');
+        $columns[] = new MGridColumn(_M('Código do Centro de Custo', $module), 'left', true, '1%', false, 'costCenterId');
+        $columns[] = new MGridColumn(_M('Centro de Custo', $module), 'left', true, '20%', true, 'costCenterDescription');
+        $columns[] = new MGridColumn(_M('Código da política', $module), 'right', true, '1%', false, 'policyId');
+        $columns[] = new MGridColumn(_M('Política', $module), 'left', true, '20%', true, 'policyDescription');
+        $columns[] = new MGridColumn(_M('Taxa neg.', $module), 'right', true, '5%', true, 'taxanegociacao');
+        $columns[] = new MGridColumn(_M('% entrada', $module), 'right', true, '5%', true, 'percentualentrada');
+        $columns[] = new MGridColumn(_M('Quant. parc.', $module), 'right', true, '5%', true, 'numeroparcelas');
+        $columns[] = new MGridColumn(_M('% juros', $module), 'right', true, '5%', true, 'juros');
+        $columns[] = new MGridColumn(_M('% desconto', $module), 'right', true, '5%', true, 'percentualdedesconto');
+        
+        $sd = new MSubDetail('sdCondicoes', _M('Condições de pagamento'), $columns, $sdFields);
+        $sd->setValidators($sdValidators);
+        if ( $function == SForm::FUNCTION_UPDATE && MIOLO::_REQUEST('event') != 'tbBtnSave:click' )
+        {
+            MSubDetail::setData($condicoes, 'sdCondicoes');
+        }
+        
+        //Para setar a descricao da conta bancaria
+        $sd->addActionEvent(MSubDetail::EVENT_ADD, 'subDetailEventAdd', __CLASS__);
+        
+        $fields[] = $sd;
+
+        parent::defineFields($fields, $validators, $data);
+    }
+    
+    public function subDetailEventAdd($args = null)
+    {
+        $finBankAccount = new FinBankAccount($args->bankaccountid);
+
+        $args->bankAccountDescription = $finBankAccount->description;
+        
+        return $args;
+    }
+    
+    public function tbBtnSave_click($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $invoiceNegociationConfig = new FinInvoiceNegociationConfigAlt();
+        
+        $data = $this->getData();        
+        
+        if ( MIOLO::_REQUEST('function') == SForm::FUNCTION_UPDATE )
+        {
+            $invoiceNegociationConfig->perfilnegociacaoid = $data->perfilnegociacaoid;
+        }        
+        $invoiceNegociationConfig->descricao = $data->descricao;
+        $invoiceNegociationConfig->permiterenegociacao = $data->permiterenegociacao == DB_TRUE ? DB_TRUE : DB_FALSE;
+        
+        try
+        {
+            SDatabase::beginTransaction();
+            
+            if ( $invoiceNegociationConfig->save() )
+            {
+                if ( MIOLO::_REQUEST('function') == SForm::FUNCTION_UPDATE )
+                {
+                    $perfilNegociacaoId = $invoiceNegociationConfig->perfilnegociacaoid;
+                }
+                else
+                {
+                    $perfilNegociacaoId = $invoiceNegociationConfig->getLastInsertId();
+                }
+                
+                // Salvar condições de pagamento
+                $condicoesDePagamentoPerfil = new FinCondicoesDePagamentoPerfil();
+                $condicoesDePagamentoPerfil->removerCondicoesDoPerfil($perfilNegociacaoId);
+                
+                $condicoesDePagamento = MSubDetail::getData('sdCondicoes');
+                foreach ( $condicoesDePagamento as $condicaoDePagamento )
+                {
+                    if ( !$condicaoDePagamento->removeData )
+                    {
+                        $condicoesDePagamentoPerfil = new FinCondicoesDePagamentoPerfil();
+                        $condicoesDePagamentoPerfil->descricao = $condicaoDePagamento->descricaoCondicao;
+                        $condicoesDePagamentoPerfil->perfilnegociacaoid = $perfilNegociacaoId;
+                        $condicoesDePagamentoPerfil->operationid = $condicaoDePagamento->operationId;
+                        $condicoesDePagamentoPerfil->bankaccountid = $condicaoDePagamento->bankaccountid;
+                        $condicoesDePagamentoPerfil->costcenterid = $condicaoDePagamento->costCenterId;
+                        $condicoesDePagamentoPerfil->policyid = $condicaoDePagamento->policyId;
+                        $condicoesDePagamentoPerfil->tipo = $condicaoDePagamento->tipo;
+                        $condicoesDePagamentoPerfil->taxanegociacao = $condicaoDePagamento->taxanegociacao;
+                        $condicoesDePagamentoPerfil->percentualentrada = $condicaoDePagamento->percentualentrada;
+                        $condicoesDePagamentoPerfil->numeroparcelas = $condicaoDePagamento->numeroparcelas;
+                        $condicoesDePagamentoPerfil->juros = $condicaoDePagamento->juros;
+                        $condicoesDePagamentoPerfil->percentualdedesconto = $condicaoDePagamento->percentualdedesconto; 
+                        $condicoesDePagamentoPerfil->ordemcondicao = $condicaoDePagamento->ordemcondicao;
+                        $condicoesDePagamentoPerfil->diavencimento = $condicaoDePagamento->diavencimento;
+                        $condicoesDePagamentoPerfil->liberarjuros = $condicaoDePagamento->liberarjuros == DB_TRUE ? DB_TRUE : DB_FALSE;
+                        $condicoesDePagamentoPerfil->liberarmulta = $condicaoDePagamento->liberarmulta == DB_TRUE ? DB_TRUE : DB_FALSE;
+                        
+                        $condicoesDePagamentoPerfil->save();
+                    }
+                }
+                
+                // Salvar grupos
+                $perfilNegociacaoGrupo = new FinPerfilNegociacaoGrupo();
+                $perfilNegociacaoGrupo->removerGruposDoPerfil($perfilNegociacaoId);
+                
+                foreach ( $data->groups as $group )
+                {
+                    $perfilNegociacaoGrupo = new FinPerfilNegociacaoGrupo();
+                    $perfilNegociacaoGrupo->perfilnegociacaoid = $perfilNegociacaoId;
+                    $perfilNegociacaoGrupo->idgroup = $group;
+                    
+                    $perfilNegociacaoGrupo->save();
+                }
+
+                SDatabase::commit();
+                
+                $action = MIOLO::getCurrentAction();
+                $opts = array('function' => SForm::FUNCTION_SEARCH);
+                if ( MIOLO::_REQUEST('function') == SForm::FUNCTION_UPDATE )
+                {
+                    SAGU::information(SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED'), $MIOLO->getActionURL($module, $action, null, $opts));
+                }
+                else
+                {
+                    SAGU::information(SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED_INFO'), $MIOLO->getActionURL($module, $action, null, $opts));
+                }
+            }
+            else
+            {
+                SAGU::error(_M('Erro ao salvar perfil de negociação'), $MIOLO->getActionURL($module, $action, null, $opts));
+            }
+        }
+        catch ( Exception $e )
+        {
+            SDatabase::rollback();
+            
+            SAGU::error($e->getMessage());
+        }
+    }
+}
+?>

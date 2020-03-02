@@ -1,0 +1,1153 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Curriculum form
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ *
+ * @since
+ * Class created on 19/09/2005
+ */
+MIOLO::Import('extensions::cpaint.inc.php','cpaint');
+
+$MIOLO = MIOLO::getInstance();
+$MIOLO->page->addScript('cpaint/cpaint.inc.js');
+$MIOLO->page->addScript('m_popup.js');
+$MIOLO->page->addScript('m_popup_control.js');
+$MIOLO->page->addScript('visualizacaoMatriz.js', 'basic');
+$MIOLO->page->addStyle('visualizacaoMatriz.css');
+
+/**
+ * Form to manipulate a curriculum
+ */
+class FrmCurriculum extends MForm
+{
+    public $action, $tables, $divCounter;
+
+    /**
+     * Class constructor
+     */
+    public function __construct()
+    {
+        $module = MIOLO::getCurrentModule();
+
+        parent::__construct(_M('Definição de matriz curricular', $module));
+
+        if ( ($f = $this->page->request('cpaint_function')) != '' )
+        {
+            $this->manager->getTheme()->clearContent();
+            $this->$f($this->page->request('cpaint_argument'));
+            $this->page->generateMethod = 'generateAjax';
+        }
+        else
+        {
+            $this->defineFields();
+            $this->eventHandler();
+        }
+	
+        // Ajax calls
+        $this->page->addScript('x/x_core.js', 'basic');
+        $this->page->addScript('cpaint/cpaint.inc.js', 'basic');
+        $this->page->addScript('m_lookup_ajax.js', 'basic');
+        $this->page->addScript(SAGU::ABSOLUTE_URL_JS_FILES . 'sagu.js');
+        $this->page->onLoad('document.' . $this->name . '.courseId.focus();');
+        $this->setHelp(get_class($this), MIOLO::getCurrentModule(), MIOLO::getCurrentAction());
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        
+        //Business
+        $businessCourseVersion = new BusinessAcademicBusCourseVersion();
+
+        $toolBar = new MToolBar('toolBar',$MIOLO->getActionURL($module,$action));
+        $toolBar->disableButton('tbBtnDelete');
+        $toolBar->disableButton('tbBtnPrint');
+        $toolBar->disableButton('tbBtnSave');
+        $toolBar->disableButton('tbBtnNew');
+        $toolBar->disableButton('tbBtnSearch');
+        $toolBar->hideButton('tbBtnBack');
+        $toolBar->hideButton('tbBtnReset');
+        $fields[] = $toolBar;
+
+        /*
+         * Course occurrence lookup
+         */
+        $lkpValue = array(
+            $this->GetFormValue('courseId', $data->courseId),
+            $this->GetFormValue('courseVersion', $data->courseVersion),
+            $this->GetFormValue('turnId', $data->turnId),
+            $this->GetFormValue('unitId', $data->unitId)
+        );
+        $courseOccurrenceLookup = new SCourseOccurrenceLookup($lkpValue);
+        $courseOccurrenceLookup->showRequiredLabel();
+        $validators[] = new MRequiredValidator('courseId', _M('Curso', $module));
+        $validators[] = new MIntegerValidator('courseVersion', _M('Versão do curso', $module));
+        $validators[] = new MIntegerValidator('turnId', _M('Turno', $module));
+        $validators[] = new MIntegerValidator('unitId', _M('Unidade', $module));
+        $fields[] = $courseOccurrenceLookup;
+
+        $fields[] = new Separator();
+
+        //Botão adicionar disciplina que chama uma função ajax com os semestres do curso
+        $fields[] = new MButton('btnAddCurricularComponent', _M('Visualizar matriz curricular',$module) );
+        
+        $fields[] = new MDiv('divReturnVisualizacaoMatriz', '');
+        
+        $data = $this->getTypesData();
+                
+        $url = str_replace('&amp;', '&', $this->manager->getCurrentURL());
+        
+        $fields[] = $btnVisualizaDiagrama = new MButton('btnVisualizaDiagrama', _M('Visualizar diagrama da matriz curricular', $module));
+        
+        if ( (strlen($data->courseId) > 0) && (strlen($data->courseVersion) > 0) )
+        {
+            if(MIOLO::_REQUEST('__EVENTTARGETVALUE') === 'btnVisualizaDiagrama:click')
+            {
+                $businessCourseVersion = new BusinessAcademicBusCourseVersion();
+                $semester = $businessCourseVersion->getCourseVersionTotalSemester($data->courseId, $data->courseVersion);
+                
+                $js = "
+                    function callbackShowVisualizacao(resp)
+                    {
+                        var responses = resp.split('AJAXARGS:');
+                        
+                        document.getElementById('divReturnVisualizacaoMatriz').innerHTML = responses[0];
+                        
+                        var interval = setInterval(function()
+                        {
+                            if(document.getElementById('divVisualizaMatrizParent') !== null)
+                            {
+                                clearInterval(interval);
+
+                                VisualizacaoMatriz.montaEstrutura(eval(responses[1]), document.getElementById('divVisualizaMatrizParent'), document.getElementById('tableMatrizCurricular'), document.getElementById('relationCanvas'), false);
+                            }
+
+                        }, 10);
+
+                        stopShowLoading();
+                        
+                    };
+
+                    showLoading();
+
+                    var args = ['{$data->courseId}', {$data->courseVersion}, {$data->turnId}, {$data->unitId}, {$semester}, '{$data->courseName}', {$data->curriculumId}];
+
+                    cpaint_call('{$url}', 'POST', 'showVisualizacao', args, callbackShowVisualizacao, 'TEXT');
+
+                ";
+
+                $this->page->addJsCode($js);
+                
+            }
+            else if(MIOLO::_REQUEST('__EVENTTARGETVALUE') === 'btnAddCurricularComponent:click')
+            {
+                $businessCourseVersion = new BusinessAcademicBusCourseVersion();
+                $semester = $businessCourseVersion->getCourseVersionTotalSemester($data->courseId, $data->courseVersion);
+                $url = str_replace('&amp;', '&',$this->manager->getCurrentURL());
+                $MIOLO->getRequiredJS4Ajax();
+
+                // Load a temporary vector with all semesters
+                // and put semester 0 at the end in order to show it
+                // after all other semesters.
+                for ( $i=1; $i<=$semester; $i++ )
+                {
+                    $j[] = $i;
+                }
+                $j[] = 0;
+
+                foreach ( $j as $counter )
+                {
+                    $fields[] = new MDiv('currriculum'.$counter, null);
+
+                    $code = '
+                        
+                    function exibeGrupoDaEletiva' . $counter . '()
+                    {
+                        if ( document.getElementById("curricularComponentTypeId'. $counter . '_sel").value != "'. SAGU::getParameter('ACADEMIC', 'CURRICULAR_COMPONENT_TYPE_ELECTIVE') . '")
+                        {
+                            document.getElementById("bsgElectiveGroup2'. $counter . '").style.display = \'none\';
+                        }
+                        else
+                        {
+                            document.getElementById("bsgElectiveGroup2'. $counter . '").style.display = \'block\';
+                        }
+                    }
+                    
+                    function repetitiveTable' . $counter . '(courseId, courseVersion, semester, curriculum, action)
+                    {
+                        args = new Array();
+                        args[0] = courseId;
+                        args[1] = courseVersion;
+                        args[2] = semester;
+                        args[3] = curriculum;
+                        args[4] = action;
+                        args[5] = document.getElementById(\'turnId\').value;
+                        args[6] = document.getElementById(\'unitId\').value;
+                        
+                        if ( action == "INSERT" )
+                        {
+                            args[7] = document.getElementById("curricularComponentId'. $counter . '").value;
+                            args[8] = document.getElementById("curricularComponentVersion'. $counter . '").value;
+                            args[9] = document.getElementById("curricularComponentTypeId'. $counter . '").value;
+                            args[10] = document.getElementById("curriculumTypeId'. $counter . '").value;
+                            args[11] = document.getElementById("curricularComponentGroupDocumentEndCourseId'. $counter . '").value;
+                            args[12] = document.getElementById("curricularComponentGroupElectiveId'. $counter . '").value;                        
+                            args[14] = document.getElementById("showInBulletin'. $counter . '_0").checked ? document.getElementById("showInBulletin'. $counter . '_0").value : document.getElementById("showInBulletin'. $counter . '_1").value ;
+                            args[15] = document.getElementById("showInScholarshipDescription'. $counter . '_0").checked ? document.getElementById("showInScholarshipDescription'. $counter . '_0").value : document.getElementById("showInScholarshipDescription'. $counter . '_1").value ;
+                            args[16] = document.getElementById("semester'. $counter . '").value;
+                                
+                            if ( args[11] == args[12] )
+                            {
+                                alert("' .  _M('Os campos \'Grupo da disciplina\' e \'Grupo da Eletiva\' não podem ser os mesmos', $module) . '");
+                                args[4] = "ERROVAL"
+                            }
+                            
+                            if ( (args[0] == "") || (args[1] == "") || (args[5] == "") || (args[6] == "") || (args[7] == "") || (args[8] == "") || (args[11] == "") )
+                            {
+                                alert("' . _M('Os campos contendo * são de preenchimento obrigatório', $module) . ' !' . '")
+                                args[4] = "ERROVAL"
+                            }
+                            else
+                            {
+                                if ( args[4] != "ERROVAL" )
+                                {
+                                    //Chama o validaDisciplina, passando os valores dos campos
+                                    cpaint_call("' . $url . '", "POST", "validaDisciplina", args, validaDisciplinaResult' . $counter . ', "TEXT");
+                                    //Para não seguir adiante:
+
+                                    stopShowLoading();
+                                    //window.location.href = \'' . $url . '\&courseId=' . $data->courseId . '&courseVersion=' . $data->courseVersion . '&turnId=' . $data->turnId . '&unitId='. $data->unitId .'\';
+                                    args[4] = "ERROVAL"
+                                }
+                            }
+                        }
+
+                        if ( action == "DROP" )
+                        {
+                            var name=confirm("' . SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE') . '")
+                            if ( name == true )
+                            {
+                                args[4] = "DROP"
+                            }
+                            else
+                            {
+                                args[4] = "NULL"
+                            }
+                        }
+
+                        if ( args[4] != "ERROVAL" )
+                        {
+                            xGetElementById("'.'currriculum' . $counter . '").innerHTML = \'Loading...<img src="/images/loading.gif"/>\';
+                            cpaint_call("' . $url . '", "POST", "repetitiveTable", args, tableResult' . $counter . ', "TEXT");
+                            }
+                    }
+
+                    function newCurriculumComponent' . $counter . '(courseId, courseVersion, semester, curriculum, action)
+                    {
+                        showLoading();
+
+                        args = new Array();
+                        args[0] = courseId;
+                        args[1] = courseVersion;
+                        args[2] = semester;
+                        args[3] = curriculum;
+                        args[4] = action;
+                        
+
+                        if ( action == "EDIT" )
+                        {
+                            document.getElementById("divNewCurricularComponent' . $counter . '").style.display = \'block\';
+                        }
+                        if ( action == "NULL" )
+                        {
+                            if ( document.getElementById("divNewCurricularComponent' . $counter . '").style.display == "" )
+                            {
+                                document.getElementById("divNewCurricularComponent' . $counter . '").style.display = \'none\'
+                            }
+
+                            expandRetractContainer("divNewCurricularComponent' . $counter . '");
+                        }
+                        xGetElementById("divNewCurricularComponent' . $counter . '").innerHTML = \'Loading...<img src = "/images/loading.gif"/>\';
+                        cpaint_call("' . $url . '", "POST", "newCurriculumComponent", args, newCurriculumComponentResult' . $counter . ', "TEXT");
+                    }
+
+                    // the return of ajax
+                    function tableResult' . $counter . '(result)
+                    {
+                        xGetElementById("currriculum' . $counter . '").innerHTML = result;
+                        MIOLO_parseAjaxJavascript(result);
+                    }
+
+                    // Após a verificação (de disciplina já cadastrada)
+                    function validaDisciplinaResult' . $counter . '(result)
+                    {
+                        //Pega do parâmetro result os primeiros 6 caracteres e verifica se é "ERROVAL"
+                        var res = result.substr(0,7);
+                        if ( res == "ERROVAL")
+                        {
+                            //Se for, exibe um alert com a mensagem de erro
+                            var res = result.substr(7);
+                            alert(res);
+                        }
+                        else
+                        {
+                            //Se não for segue adiante
+                            xGetElementById("currriculum' . $counter . '").innerHTML = result;
+                        }
+                    }
+
+                    function newCurriculumComponentResult' . $counter . '(result)
+                    {
+                        xGetElementById("divNewCurricularComponent' . $counter . '").innerHTML = result;
+                        MIOLO_parseAjaxJavascript(result);
+
+                        stopShowLoading();
+                        
+                        exibeGrupoDaEletiva' . $counter . '();
+                    }
+                    repetitiveTable' . $counter . '(\'' . $data->courseId . '\',' . $data->courseVersion . ',' . $counter . ',' . "'NULL'" . ',' . "'NULL'" . ');
+                    ';
+
+                    $this->page->addJsCode($code);
+
+                }
+                
+            }
+                            
+        }
+        
+        //Div onde aparecerá os erros:
+        $fields[] = new MDiv('error');
+        $fields[] = new Separator();
+        $fields[] = new Separator();
+        
+        $this->setFields($fields);
+
+        if ( in_array($function,array('update','delete')) )
+        {
+            $endDate = new MCalendarField('endDate', $this->getFormValue('endDate', $data->endDate), _M('Data final',$module), SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+            $endDate->setJsHint(_M('Informe a data final',$module));
+            $validators[] = new MDATEDMYValidator('endDate', '', 'optional');
+            $fields[] = $endDate;
+        }
+
+        if ( $function == 'update' )
+        {
+            $fields[] = new MTextLabel('lastModification', '[' . $data->userName . ' - ' . $data->dateTime . ']', _M('Última modificação',$module));
+        }
+
+        if ( isset($validators) )
+        {
+            $this->setValidators($validators);
+        }
+        
+        $this->setLabelWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $this->setShowPostButton(false);
+        $this->setClose($MIOLO->getActionURL($module,substr($action,0,strrpos($action,':'))));
+    }
+
+    /**
+     * Função responsável por verificar se a disciplina a ser cadastrada já existe no currículo
+     * @param $args - Valor dos campos
+     * */
+    public function validaDisciplina($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $businessCurriculum = new BusinessAcademicBusCurriculum();
+        $currentData = explode(',', $args[0]);
+        
+        $std = new stdClass();
+        $std->courseId = $currentData[0];
+        $std->courseVersion = $currentData[1];
+        $std->turnId = $currentData[5];
+        $std->unitId = $currentData[6];
+        $std->curricularComponentId = $currentData[7];
+        $std->curricularComponentVersion = $currentData[8];
+
+        //Verifica se já existe a disciplina
+        $dataCurriculum = $businessCurriculum->searchCurriculum($std);
+
+        if ( is_array($dataCurriculum) && $currentData[3] != $dataCurriculum[0][0] )
+        {
+            //Já existe a disciplina no curriculo, então exibe alerta de erro:
+            echo 'ERROVAL'._M('Esta disciplina já está cadastrada neste currículo.', $module);
+        }
+        else
+        {
+            //Ainda não existe a disciplina no curriculo, então segue e grava na base:
+            $args[4] = "INSERT";
+            $this->repetitiveTable($args);
+        }
+    }
+
+    public function repetitiveTable($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $businessCurriculum = new BusinessAcademicBusCurriculum();
+                
+        unset($curriculum);
+        
+        $currentData = explode(',', $args[0]);
+
+        $filter->courseId = $currentData[0];
+        $filter->courseVersion = $currentData[1];
+        $filter->courseTurnId = $currentData[5];
+        $filter->courseUnitId = $currentData[6];
+        $filter->semester = $currentData[2];
+        $filter->curriculumId = $currentData[3];
+        $filter->action = $currentData[4];
+        $counter = $currentData[2];
+        
+        if ( $filter->action == 'INSERT' || $filter->action == 'ERROVAL' )
+        {
+            $data->courseId = $currentData[0];
+            $data->courseVersion = $currentData[1];
+            $data->semester = strlen($currentData[16]) > 0 ? $currentData[16] : $currentData[2];
+            $data->curriculumId = $currentData[3];
+            $data->turnId = $currentData[5];
+            $data->unitId = $currentData[6];
+            $data->curricularComponentId = $currentData[7];
+            $data->curricularComponentVersion = $currentData[8];
+            $data->curricularComponentTypeId = $currentData[9];
+            $data->curriculumTypeId = $currentData[10];
+            $data->curricularComponentGroupDocumentEndCourseId = $currentData[11];
+            $data->curricularComponentGroupElectiveId = $currentData[12];
+            $data->useClassPeriod = $currentData[13];
+            $data->showInBulletin = $currentData[14];
+            $data->showInScholarshipDescription = $currentData[15];
+
+            if ( $filter->action != 'ERROVAL')
+            {
+                if ( $filter->curriculumId == 'NULL' )
+                {
+                    $businessCurriculum->insertCurriculum($data);
+                }
+                else
+                {
+                    $businessCurriculum->updateCurriculum($data);
+                }
+                unset($data);
+            }
+        }
+        
+        if ( $filter->action == 'DROP' )
+        {
+            // Verifica se existe pre requisitos para o curriculum e avisa o usuário
+            $busCodition = new BusinessAcademicBusCondition();
+            
+            $filtersCondition = new stdClass();
+            $filtersCondition->curriculumId = $filter->curriculumId;
+            $conditions = $busCodition->searchCondition($filtersCondition);
+            
+            //Verifica se existe vínculo de currículo para o curriculum e avisa o usuário
+            $busCurriculumLink = new BusinessAcademicBusCurriculumLink();
+
+            //Busca como curriculum original 
+            $filtersLink = new stdClass();
+            $filtersLink->curriculumId = $filter->curriculumId;
+            
+            $links = $busCurriculumLink->searchCurriculumLink($filtersLink);
+            
+            //Busca como curriculum de vínculo
+            $filtersLinkV = new stdClass();
+            $filtersLinkV->curriculumLinkId = $filter->curriculumId;
+            
+            $linksV = $busCurriculumLink->searchCurriculumLink($filtersLinkV);
+            
+            //Monta mensagem
+            $msgVinculos = _M("", $module);
+            if ( strlen($links[0][0]) > 0 )
+            {
+                $msgVinculos = _M("A disciplina não pode ser excluída pois possui os seguintes vínculos: </br>", $module);
+                foreach ($links as $vinculo)
+                {
+                    $msgVinculos .= _M("Disciplina {$vinculo[9]} ({$vinculo[8]}), curso {$vinculo[7]} ({$vinculo[6]}).</br>", $module);
+                }
+            }
+            
+            if ( strlen($linksV[0][0]) > 0 )
+            {
+                $msgVinculos = _M("A disciplina não pode ser excluída pois é vinculada: </br>", $module);
+                foreach ($linksV as $vinculo)
+                {
+                    $msgVinculos .= _M("Disciplina {$vinculo[4]} ({$vinculo[3]}), curso {$vinculo[2]} ({$vinculo[1]}).</br>", $module);
+                }
+            }
+            
+            if ( strlen($msgVinculos) > 0 )
+            {
+                $MIOLO->error(_M($msgVinculos , $module));
+            }
+            
+            //Verifica se alunos já foram matriculados neste currículo
+            $busEnroll = new BusinessAcademicBusEnroll();
+            $busContract = new BusinessAcademicBusContract();
+            
+            $filtersEnroll = new stdClass();
+            $filtersEnroll->curriculumId = $filter->curriculumId;
+            
+            $matriculas = $busEnroll->searchEnroll($filtersEnroll);
+            
+            if ( count($matriculas) > 0 )
+            {
+                $msgMatriculas = _M("A disciplina não pode ser excluída, pois está vinculada aos registros de matrículas dos seguintes alunos:</br> ", $module);
+                foreach ( $matriculas as $enroll )
+                {   
+                    $contrato = $busContract->getContract($enroll[1]);
+                    
+                    $msgMatriculas .= _M("</br>{$contrato->personName} - {$contrato->personId}" , $module);
+                }
+                
+                $MIOLO->error($msgMatriculas);
+            }
+            
+            if ( count($conditions) > 0 )
+            {
+                $url = $MIOLO->getActionURL('academic', 'main:register:curriculum:condition', null, array('curriculumCourseIdS' => $currentData[0], 'curriculumCourseVersionS' => $currentData[1], 'curriculumCourseTurnIdS' => $currentData[5], 'curriculumCourseUnitIdS' => $currentData[6], 'curriculumCurricularComponentIdS' => $conditions[0][5], 'curriculumCurricularComponentVersionS' => $conditions[0][6], 'event'=>'btnSearch:click'));
+                $lnkAcademicDiverseConsultation = new MLink('lnk'.rand(), _M('Clique aqui', $module), $url, null, 'new');
+                
+                $MIOLO->error(_M('A disciplina não pode ser excluída, pois existem requisitos cadastrados. ', $module) . $lnkAcademicDiverseConsultation->generate() . _M(' para consultar os requisitos.', $module));
+            }
+            else
+            {
+                $businessCurriculum->deleteCurriculum($filter->curriculumId);
+            }
+        }
+        
+        // FIXME Substituir por funcoes plpgsql: obterCreditosDisciplinaTitulos() e obterCreditosDisciplinaValores(int)
+        
+        $curricularComponentCategory = AcdCurricularComponentCategory::search();
+        
+        if( isset($curricularComponentCategory) )
+        {
+            $first      = true;
+            $credits    = '';
+            $idCredits  = array();
+            $numCredits = array();
+            
+            foreach ( $curricularComponentCategory as $row )
+            {                
+                if( $first )
+                {
+                    $credits = $row->curricularComponentCategoryId;                    
+                    $first   = false;                  
+                }
+                else
+                {
+                    $credits .= '.' . $row->curricularComponentCategoryId;                    
+                }
+                
+                $idCredits[]  = $row->curricularComponentCategoryId;
+                $numCredits[] = '0';                          
+            }
+        }
+        
+        $arrayData = $businessCurriculum->searchCurriculumComponent($filter);
+        $showCollumnCredits = true;
+        $searchCredits = AcdCurricularComponentCategoryCredit::searchCredits();
+                        
+        if( ! isset($searchCredits) )
+        {
+            $showCollumnCredits = false;
+        }
+        
+        if ( count($arrayData) > 0 )
+        {
+            $rows = 0;
+            foreach ( $arrayData as $v )
+            {   
+                $clearNumCredits = array();
+                
+                foreach ($numCredits as $value) 
+                {
+                    $clearNumCredits[] = '0';
+                }
+                
+                $numCredits = $clearNumCredits;
+                $curricularComponentId = explode(' / ', $v[1]);
+                
+                $filters = array( 
+                    'curricularComponentId' => $curricularComponentId[0],
+                    'curricularComponentVersion' => $curricularComponentId[1]
+                );
+                
+                $creditsCourse = AcdCurricularComponentCategoryCredit::search($filters);
+                $courseCredits = '';
+                
+                if ( sizeof($creditsCourse) > 0 )
+                {   
+                    $first = true;
+                    
+                    foreach ( $creditsCourse as $components => $credit )
+                    {
+                        if ( in_array($credit->curricularComponentCategoryId, $idCredits) )
+                        {
+                            $position = array_search($credit->curricularComponentCategoryId, $idCredits);
+                            $numCredits[$position] = $credit->credits;
+                        }
+                    }
+                }
+                
+                $courseCredits = $this->makeResult($numCredits);
+                                
+                $actions = array();
+                
+                // acao editar
+                if ( $MIOLO->checkAccess('FrmCurriculum', A_UPDATE, false, true) )
+                {
+                    $linkEdit    = ('javascript:newCurriculumComponent' . $counter . '(\'' . $filter->courseId . '\',' . $filter->courseVersion . ',' . $filter->semester . ',' . $v[0] . ',' . "'EDIT'" . ');');
+                    $linkImgEdit = new MImageLink("linkEdit$counter", _M('Atualizar', $module), $linkEdit, $MIOLO->getUI()->getImageTheme($MIOLO->getConf("theme.main"), 'button_edit.png') );
+                    
+                    $actions[] = $linkImgEdit->generate();
+                }
+                
+                // excluir
+                if ( $MIOLO->checkAccess('FrmCurriculum', A_DELETE, false, true) )
+                {
+                    $linkDrop    = 'javascript:repetitiveTable' . $counter . '(\'' . $filter->courseId . '\',' . $filter->courseVersion . ',' . $filter->semester . ',' . $v[0] . ',' . "'DROP'" . ');';
+                    $linkImgDrop = new MImageLink("linkDrop$counter", _M('Excluir', $module), $linkDrop, $MIOLO->getUI()->getImageTheme($MIOLO->getConf("theme.main"), 'button_drop.png') );
+                    
+                    $actions[] = $linkImgDrop->generate();
+                }
+                
+                if ( count($actions) == 0 )
+                {
+                    $actions = '-';
+                }
+                
+                $dataTable[] = array ( $actions,
+                                       $v[1],
+                                       $v[2],
+                                       $v[3],
+                                       $courseCredits,
+                                       $v[4],
+                                       $v[5]
+                );
+                
+                $rows ++;
+            }
+        }
+        
+        $columns = array ( _M('Ações',$module),
+                           _M('Código da disciplina', $module) . '/' . _M('versão', $module),
+                           _M('Nome da disciplina', $module),
+                           _M('Créditos acadêmicos', $module),
+                           _M('Créditos: <br>' . $credits, $module),
+                           _M('Horas acadêmicas', $module),
+                           _M('Tipo de disciplina', $module)
+        );
+        
+        if ( ! $showCollumnCredits )
+        {
+            for( $c = 4; $c < 6; $c ++ )
+            {
+                $columns[$c] = $columns[$c+1];
+            }
+            
+            unset( $columns[6] );            
+        }
+
+        $businessCourseVersion = new BusinessAcademicBusCourseVersion();
+        $semester = $businessCourseVersion->getCourseVersion($filter->courseId, $filter->courseVersion);
+
+        $table = new MTableRaw(null, $dataTable, $columns);        
+        
+        for( $x = 0; $x <= $rows; $x ++ )
+        {
+            if( ! $showCollumnCredits )
+            {
+                $table->setCellAttribute($x, 4, 'style', 'display: none !important;');
+            }
+            $table->setCellAttribute($x, 3, 'style', 'text-align: right !important;');
+            $table->setCellAttribute($x, 4, 'style', 'text-align: center !important;');            
+            $table->setCellAttribute($x, 5, 'style', 'text-align: right !important;');
+            $table->setCellAttribute($x, 6, 'style', 'min-width: 325px;');
+        }
+        
+        $table->SetAlternate(true);
+
+        $curriculum = strlen($curriculum) > 0 ? $curriculum : "'NULL'";
+        
+        //nova disciplina
+        if ( $MIOLO->checkAccess('FrmCurriculum', A_INSERT, false, true) )
+        {
+            $btnNewCurricularComponent = new MButton('btnNewCurricularComponent'.$counter, _M('Nova disciplina', $module), 'javascript:newCurriculumComponent' . $counter . '(\'' . $filter->courseId . '\',' . $filter->courseVersion . ',' . $filter->semester . ',' . $curriculum . ',' . "'NULL'" . ');');
+        }
+        
+        $fields[] = new MSeparator();
+        $divNewCurricularComponent = new MDiv('divNewCurricularComponent'.$counter, null);
+
+        if ( $counter == '0' )
+        {
+            $groupName = _M('Outras disciplinas', $module);
+        }
+        else
+        {
+            $groupName = str_replace('%n', $counter, $semester->periodDescription);
+        }
+
+        $bsgCurriculumComponent = new BaseGroup('bsgCurriculumComponent'.$counter, $groupName, array($table, $btnNewCurricularComponent, $divNewCurricularComponent), 'vertical');
+        $bsgCurriculumComponent->showLabel = true;
+        $bsgCurriculumComponent->width = '100%';
+        $bsgCurriculumComponent->setClass('inlineTable');
+
+        $fields[] = $bsgCurriculumComponent;
+
+        $this->setValidators($validators);
+
+        $this->manager->getTheme()->setContent($fields);
+    }
+    
+    /**
+     * Cria uma string que será exibida na grid com 
+     * todos as categorias de créditos.
+     * 
+     * @param  type array
+     * @return type string 
+     */
+    public function makeResult( $credits = array() )
+    {
+        $courseCredits = '';
+        $first         = true;
+        $cont          = 0;
+
+        foreach ( $credits as $value )
+        {
+            if( $first )
+            {
+                $courseCredits = $credits[$cont];                        
+                $first = false;
+            }
+            else
+            {
+                $courseCredits .= '.' . $credits[$cont];                        
+            }
+
+            $cont ++;
+        }
+        
+        return $courseCredits;
+    }
+
+    /**
+     * New curriculum component
+     * @param type $args
+     */
+    public function newCurriculumComponent($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $businessCurriculum = new BusinessAcademicBusCurriculum();
+        
+        unset($currentData);
+        unset($curriculum);
+        $currentData = explode(',', $args[0]);
+        
+        $filter->courseId = $currentData[0];
+        $filter->courseVersion = $currentData[1];
+        $filter->semester = $currentData[2];
+        $filter->curriculumId = $currentData[3];
+        $filter->action = $currentData[4];
+        $counter = $currentData[2];
+        
+        $autoComplete = ($filter->action == 'EDIT') ? false : true;
+        
+        if ( $filter->action == 'EDIT' )
+        {
+            $data = $businessCurriculum->getCurriculum($filter->curriculumId);
+            $curriculum = $data->curriculumId;
+                        
+        }
+        if ( $filter->action == 'CLEAR')
+        {
+            unset($data);
+        }
+        
+        if($currentData[4] == 'EDIT')
+        {
+            $businessCourseVersion = new BusinessAcademicBusCourseVersion();
+            $semesters = $businessCourseVersion->getCourseVersionTotalSemester($currentData[0], $currentData[1]);
+            
+            for($i = 0; $i <= $semesters; $i++)
+            {
+                $semestres[] = $i;
+            }
+
+            //Field curricular component
+            $semesterLabel = new MText('semesterLabel'.$counter, _M('Semestre', $module).':');
+            $semesterLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $semesterLabel->setClass('m-caption m-caption-required');
+            $semester = new MSelection('semester'.$counter, $this->GetFormValue('semester'.$counter, $data->semester), _M('Semestre da disciplina',$module), $semestres);
+            $semester->setJsHint(_M('Selecione o semestre da disciplina', $module));
+            $hctSemester = new MHContainer('hctSemester', array($semesterLabel, $semester));
+            $hctSemester->setShowLabel(false);
+            $validators[] = new MRequiredValidator('semester'.$counter, _M('Semestre',$module), 'required');
+        }
+        else
+        {
+            $fields[] = new MHiddenField('semester'.$counter, $this->getFormValue('semester'.$counter, $data->semester));
+        }
+                
+        //Field curricular component
+        $curricularComponentLabel = new MText('curricularComponentLabel'.$counter, _M('Disciplina', $module) . ':');
+        $curricularComponentLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $curricularComponentLabel->setClass('m-caption m-caption-required');
+        $curricularComponentId = new MLookupTextField('curricularComponentId'.$counter, $this->getFormValue('curricularComponentId'.$counter, $data->curricularComponentId), _M('Código',$module), SAGU::getParameter('BASIC', 'FIELD_LOOKUPFIELD_SIZE'), null, null, 'curricularComponentVersion' . $counter . ',curricularComponentName' . $counter . '', $module, 'CurricularComponent', null, null, $autoComplete);
+        $curricularComponentId->setJsHint(_M('Informe o código da disciplina', $module));
+        $validators[] = new MRequiredValidator('curricularComponentId'.$counter, _M('Disciplina', $module));
+        $curricularComponentVersion = new MTextField('curricularComponentVersion'.$counter, $this->getFormValue('curricularComponentVersion'.$counter, $data->curricularComponentVersion), _M('Versão',$module), SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $curricularComponentVersion->setJsHint(_M('Informe a versão da disciplina', $module));
+        $curricularComponentName = new MTextField('curricularComponentName'.$counter, $this->getFormValue('curricularComponentName', $data->curricularComponentName), _M('Nome',$module), SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $curricularComponentName->setJsHint(_M('Nome da disciplina', $module));
+        $curricularComponentName->setReadOnly(true);
+        $hctCurricularComponent = new MHContainer('hctCurricularComponent'.$counter, array($curricularComponentLabel, $curricularComponentId , $curricularComponentVersion, $curricularComponentName));
+        $hctCurricularComponent->setShowLabel(false);
+        
+        //Business
+        $businessCurricularComponentType = new BusinessAcademicBusCurricularComponentType();
+        $businessCurriculumTypeId = new BusinessAcademicBusCurriculumType();
+
+        //Field curricular component
+        $curricularComponentTypeLabel = new MText('curricularComponentLabel'.$counter, _M('Tipo de disciplina', $module).':');
+        $curricularComponentTypeLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $curricularComponentTypeLabel->setClass('m-caption m-caption-required');
+        $curricularComponentType = new MComboBox('curricularComponentTypeId'.$counter, $this->GetFormValue('curricularComponentTypeId'.$counter, $data->curricularComponentTypeId), _M('Tipo de disciplina',$module), $businessCurricularComponentType->listCurricularComponentType());
+        $curricularComponentType->setJsHint(_M('Selecione o tipo de disciplina', $module));
+        $curricularComponentType->addAttribute('onchange', 'exibeGrupoDaEletiva'.$counter . '()');
+        $hctCurricularComponentType = new MHContainer('hctUnit', array($curricularComponentTypeLabel, $curricularComponentType));
+        $hctCurricularComponentType->setShowLabel(false);
+        $validators[] = new MRequiredValidator('hctCurricularComponentType'.$counter, _M('Tipo de disciplina',$module), 'required');
+
+        //Field category
+        $curriculumTypeIdLabel = new MText('curriculumTypeIdLabel'.$counter, _M('Categoria do currículo', $module).':');
+        $curriculumTypeIdLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $curriculumTypeIdLabel->setClass('m-caption m-caption-required');
+        $curriculumTypeId = new MComboBox('curriculumTypeId'.$counter, $this->getFormValue('curriculumTypeId'.$counter, $data->curriculumTypeId), _M('Categoria do currículo',$module), $businessCurriculumTypeId->listCurriculumType());
+        $curriculumTypeId->setJsHint(_M('Selecione a categoria do currículo', $module));
+        $hctCurriculumTypeId = new MHContainer('curriculumTypeId'.$counter, array($curriculumTypeIdLabel, $curriculumTypeId));
+        $hctCurriculumTypeId->setShowLabel(false);
+        $validators[] = new MRequiredValidator('curriculumTypeId'.$counter, _M('Categoria do currículo',$module), 'required');
+
+        /**
+        //Field use class period label
+        $useClassPeriodLabel = new MText('useClassPeriodLabel', _M('Usar período da turma', $module) . '?');
+        $useClassPeriodLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $useClassPeriod_ = $this->GetFormValue('useClassPeriod'.$counter,$data->useClassPeriod) ? $this->GetFormValue('useClassPeriod'.$counter,$data->useClassPeriod) : DB_FALSE;
+        $useClassPeriod = new MRadioButtonGroup('useClassPeriod'.$counter, '', SAGU::listYesNo('1') , $useClassPeriod_, null, 'horizontal');
+        $useClassPeriod->SetShowLabel(false);
+        $hctUseClassPeriod = new MHContainer('hctUseClassPeriod'.$counter, array($useClassPeriodLabel, $useClassPeriod));
+        $hctUseClassPeriod->setShowLabel(false);
+         * 
+         */
+
+        //Field show in bulletin
+        $showInBulletinLabel = new MText('showInBulletinLabel', _M('Exibir no boletim', $module) . ':');
+        $showInBulletinLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $showInBulletin_ = $this->GetFormValue('showInBulletin'.$counter, $data->showInBulletin) ? $this->getFormValue('showInBulletin'.$counter, $data->showInBulletin) : DB_TRUE;
+        $showInBulletin = new MRadioButtonGroup('showInBulletin'.$counter, '', SAGU::listYesNo('1') , $showInBulletin_, null, 'horizontal');
+        $showInBulletin->SetShowLabel(false);
+        $hctShowInBulletin = new MHContainer('hctShowInBulletin'.$counter, array($showInBulletinLabel, $showInBulletin));
+        $hctShowInBulletin->setShowLabel(false);
+
+        //Field show in bulletin description
+        $showInScholarshipDescriptionLabel = new MText('showInScholarshipDescriptionLabel', _M('Exibir no histórico escolar', $module) . ':');
+        $showInScholarshipDescriptionLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $showInScholarshipDescription_ = $this->getFormValue('showInScholarshipDescription'.$counter, $data->showInScholarshipDescription) ? $this->getFormValue('showInScholarshipDescription'.$counter, $data->showInScholarshipDescription) : DB_TRUE;
+        $showInScholarshipDescription = new MRadioButtonGroup('showInScholarshipDescription'.$counter, '', SAGU::listYesNo('1') , $showInScholarshipDescription_, null, 'horizontal');
+        $showInScholarshipDescription->SetShowLabel(false);
+        $hctShowInScholarshipDescription = new MHContainer('hctShowInScholarshipDescription'.$counter, array($showInScholarshipDescriptionLabel, $showInScholarshipDescription));
+        $hctShowInScholarshipDescription->setShowLabel(false);
+
+        //definicao da disciplina no grupo das eletivas
+        $curricularComponentGroupDocumentEndCourseHint = new MText('curricularComponentGroupDocumentEndCourseHint'.$counter, _M('Se estiver cadastrando uma disciplina que será uma das opções de uma disciplina eletiva, informe o grupo ao qual esta disciplina pertence. Se não pertencer a nenhum grupo, deixe este campo em branco.',$module));
+        $curricularComponentGroupDocumentEndCourseLabel = new MText('curricularComponentGroupDocumentEndCourseLabel'.$counter, _M('Grupo da disciplina',$module) . ':');
+        $curricularComponentGroupDocumentEndCourseLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $curricularComponentGroupDocumentEndCourseLabel->setClass('m-caption m-caption-required');
+        $curricularComponentGroupDocumentEndCourseId = new MLookupTextField('curricularComponentGroupDocumentEndCourseId'.$counter, $this->getFormValue('curricularComponentGroupDocumentEndCourseId'.$counter, $data->curricularComponentGroupDocumentEndCourseId), '', SAGU::getParameter('BASIC', 'FIELD_LOOKUPFIELD_SIZE'), null, null, 'groupDescription' . $counter . '', $module, 'CurricularComponentGroup', null, null, true);
+        $curricularComponentGroupDocumentEndCourseId->setJsHint(_M('Informe o código do grupo da eletiva.',$module));
+        $validators[] = new MIntegerValidator('curricularComponentGroupDocumentEndCourseId'.$counter, _M('Código do grupo',$module), 'optional');
+        $groupDescription = new MTextField('groupDescription'.$counter, $this->getFormValue('groupDescription'.$counter, $data->curricularComponentGroupDocumentEndCourseName), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $groupDescription->setJsHint(_M('Descrição do grupo da eletiva',$module));
+        $groupDescription->setReadOnly(true);
+        $hctGroupComponentGroupEndCourse = new MHContainer('hctGroupComponentGroupEndCourse'.$counter, array(/*$curricularComponentGroupDocumentEndCourseHint,  */$curricularComponentGroupDocumentEndCourseLabel, $curricularComponentGroupDocumentEndCourseId, $groupDescription));
+        $hctGroupComponentGroupEndCourse->setShowLabel(true);
+
+        $bsgElectiveGroup1 = new BaseGroup('bsgElectiveGroup1'.$counter, _M('Grupo da eletiva',$module), array($hctGroupComponentGroupEndCourse), 'vertical');
+        $bsgElectiveGroup1->showLabel = true;
+        $bsgElectiveGroup1->width = '100%';
+
+        //atribuicao de um grupo de eletivas para uma disciplina eletiva
+        $curricularComponentGroupElectiveHint = new MText('curricularComponentGroupDocumentEndCourseHint'.$counter, _M('Se estiver cadastrando uma disciplina eletiva, informe o código do grupo de disciplinas que serão exibidas como opções desta eletiva. Se as opções para esta eletiva forem qualquer disciplina, informe o valor 0 (zero).',$module));
+        $separator = new MSeparator();
+        $curricularComponentGroupElectiveLabel = new MText('curricularComponentGroupElectiveLabel'.$counter, _M('Código do grupo',$module) . ':');
+        $curricularComponentGroupElectiveLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $curricularComponentGroupElectiveId = new MLookupTextField('curricularComponentGroupElectiveId'.$counter, $this->getFormValue('curricularComponentGroupElectiveId'.$counter, $data->curricularComponentGroupElectiveId), '', SAGU::getParameter('BASIC', 'FIELD_LOOKUPFIELD_SIZE'), null, null, 'groupElectiveDescription'. $counter . '', $module, 'CurricularComponentGroup', null, null, true);
+        $curricularComponentGroupElectiveId->setJsHint(_M('Informe o código do grupo das disciplinas que pertencem à esta eletiva.',$module));
+        $validators[] = new MIntegerValidator('curricularComponentGroupElectiveId'.$counter, _M('Código do grupo',$module), 'optional');
+        $groupElectiveDescription = new MTextField('groupElectiveDescription'.$counter, $this->getFormValue('groupElectiveDescription'.$counter, $data->curricularComponentGroupElectiveName), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $groupElectiveDescription->setJsHint(_M('Descrição do grupo da eletiva',$module));
+        $groupElectiveDescription->setReadOnly(true);
+        $hctCurricularComponentGroupElective = new MHContainer('hctGroupComponentGroupEndCourse'.$counter, array($curricularComponentGroupElectiveHint, $separator, $curricularComponentGroupElectiveLabel, $curricularComponentGroupElectiveId, $groupElectiveDescription));
+        $hctCurricularComponentGroupElective->setShowLabel(true);
+
+        $bsgElectiveGroup2 = new BaseGroup('bsgElectiveGroup2'.$counter, _M('Grupo da eletiva (somente para disciplinas eletivas)',$module), array($hctCurricularComponentGroupElective), 'vertical');
+        $bsgElectiveGroup2->showLabel = true;
+        $bsgElectiveGroup2->width = '100%';
+
+        $bsgNewCurricularComponent = new BaseGroup('bsgNewCurricularComponent'.$counter, _M('Nova disciplina',$module), array($hctSemester, $hctCurricularComponent, $hctCurricularComponentType, $hctCurriculumTypeId, /**$hctUseClassPeriod,*/ $hctShowInBulletin, $hctShowInScholarshipDescription, $hctGroupComponentGroupEndCourse, new MSeparator(), $bsgElectiveGroup2), 'vertical');
+        $bsgNewCurricularComponent->showLabel = true;
+        $bsgNewCurricularComponent->width = '100%';
+        
+        $gfields = new sGenericFields();
+        
+        $curriculum = strlen($curriculum) > 0 ? $curriculum : "'NULL'";
+        $buttonsAdd = new MButton('saveData'.'curriculum'.$counter, _M('Salvar', $module), 'repetitiveTable'. $counter . '(\'' . $filter->courseId . '\',' . $filter->courseVersion . ',' . $filter->semester . ',' . $curriculum . ',' . "'INSERT'" . ');') ;
+        $buttonsClear = new MButton('clearData'.'curriculum'.$counter, _M('Limpar', $module), 'newCurriculumComponent'. $counter . '(\'' . $filter->courseId . '\',' . $filter->courseVersion . ',' . $filter->semester . ',' . "'NULL'" . ',' . "'CLEAR'" . ');') ;
+        $hint = $gfields->labelDica( _M('Para visualizar a alteração de semestre, após salvar, clique em "Visualizar matriz curricular"', $module));
+        $hctHint = new MContainer('hctHint', array($hint));
+        $divButtons = new MDiv('divButtons', array($hctHint, $buttonsAdd, $buttonsClear));
+        
+        $vctNewCurricularComponent = new MVContainer('vctCurricularComponent'.$counter, array ($bsgNewCurricularComponent, $divButtons));
+        $fields[] = new MDiv('divNewCurricularComponent'.$counter, $vctNewCurricularComponent, null, 'align=left');
+        
+        $this->manager->getTheme()->setContent($fields);
+    }
+    
+    /**
+     * Event triggered when user chooses New from the toolbar
+     */
+    public function tbBtnNew_click($sender=NULL)
+    {
+    }
+
+    /**
+     * Event triggered when user chooses Delete from the toolbar
+     */
+    public function tbBtnDelete_click($sender=NULL)
+    {
+    }
+
+    /**
+     * Event triggered when user chooses Yes from the Delete prompt dialog
+     */
+    public function tbBtnDelete_confirm($sender=NULL)
+    {
+    }
+
+    /**
+     * Event triggered when user chooses Save from the toolbar
+     */
+    public function tbBtnSave_click($sender=NULL)
+    {
+    }
+
+    /**
+     * Method to gather all information from the form fields
+     * and put them on a database compatible object
+     */
+    public function getTypesData()
+    {
+        $data = new AcdCurriculum();
+        $vars = get_object_vars($data);
+        foreach ( $vars as $var => $value )
+        {
+            $data->$var = $this->getFormValue($var);
+        }
+        
+        return $data;
+    }
+    
+    /**
+     * Método responsável por gerar a visualização da grade curricular e os dados para a mesma.
+     * A visualização em si só é criada no callback do ajax.
+     * 
+     * @param String $args Argumentos enviados via requisição ajax
+     */
+    public function showVisualizacao($args)
+    {
+        $module = MIOLO::getCurrentModule();
+        
+        // Cria um array com as informações recebidas em forma de string via ajax.
+        $currentData = explode(',', $args[0]);
+        
+        // Criação dos elementos que serão postos dentro do
+        /*$divCanvas = '<canvas id="relationCanvas"></canvas>';
+        $divMatriz = '<table id="tableMatrizCurricular"></table>';
+        
+        $divParent = new MDiv('divVisualizaMatrizParent', array($divCanvas, $divMatriz));
+        
+        //$div = new MDiv('matrizSize', $divParent);
+        
+        // Cria o popup.
+        MPopup::show('popupVizualizacaoMatriz', array($divParent), _M('Vizualização das disciplinas do curso: ', $module) . utf8_decode($currentData[5]));
+        */
+        // Pesquisa e estruturação dos dados para enviar ao script.
+        $businessCurriculum = new BusinessAcademicBusCurriculum();
+        
+        $totSemesterNumber = $currentData[4];
+        
+        $filter = new stdClass();
+        
+        $filter->courseId = $currentData[0];
+        $filter->courseVersion = $currentData[1];
+        $filter->courseTurnId = $currentData[2];
+        $filter->courseUnitId = $currentData[3];
+        $filter->curriculumId = $currentData[6];
+        
+        for ( $i=1; $i <= $totSemesterNumber; $i++ )
+        {
+            $numSemestres[] = $i;
+            
+        }
+        
+        $numSemestres[] = 0;
+
+        $semestres = array();
+        $disciplinas = array();
+        
+        foreach ( $numSemestres as $semestre )
+        {
+            $filter->semester = $semestre;
+            
+            $arrayData = $businessCurriculum->searchCurriculumComponent($filter);
+            
+            foreach ($arrayData as $disciplina)
+            {
+                $info = $businessCurriculum->getCurriculum($disciplina[0]);
+                
+                $type = explode(" ", $disciplina[5]);
+                $desc = $type[2];
+                $type = $type[0]; // Tipo da disciplina.
+                                
+                $id = str_replace("/", "_", str_replace(" ", "", $disciplina[1])); // Tira os espaços e substitui a \ por _
+                
+                $dependenciesFilter = new stdClass();
+                $dependenciesFilter->curriculumCourseId = $filter->courseId;
+                $dependenciesFilter->curriculumCourseVersion = $filter->courseVersion;
+                
+                $cod = explode('_', $id);
+                $dependenciesFilter->curriculumCurricularComponentId = $cod[0];
+                
+                $deps = $this->searchDependencies($dependenciesFilter);
+                
+                $dependencias = array();
+                
+                foreach($deps as $dep)
+                {
+                    // Tratando o caso em que às vezes a dependência era a próxima disciplina.
+                    if(!is_null($dep[5]))
+                    {
+                        $dependencias[] = str_replace("/", "_", $dep[5]);
+                    
+                    }
+                    
+                }
+                
+                $disciplinas[] = array( 'nome' => utf8_encode($disciplina[2]),
+                                        'id' => $id,
+                                        'tempo' => $disciplina[4],
+                                        'grupo' => array(
+                                            'id' => $info->curricularComponentGroupDocumentEndCourseId,
+                                            'nome' => utf8_encode($info->curricularComponentGroupDocumentEndCourseName)
+                                        ),
+                                        'tipo' => array(
+                                            'id' => $type,
+                                            'desc' => utf8_encode($desc)
+                                        ),
+                                        'deps' => $dependencias,
+                                        'info' => null, // array(array('label' => 'label', 'desc' => 'desc'), array('label' => 'label', 'desc' => 'desc'))
+                                    );
+                
+                unset($dependencias);
+                
+            }
+            
+            
+            if($semestre !== 0)
+            {
+                $descSemestre = "{$semestre}º Semestre";
+                
+            }
+            else
+            {
+                $descSemestre = "Optativas/Eletivas";
+                
+            }
+            
+            $semestres[] = array('desc' => utf8_encode($descSemestre), 'disciplinas' => $disciplinas);
+            
+            $disciplinas = array();
+            
+        }
+                
+        SVisualCurriculum::show('popupvisualizacao', $currentData[5], $semestres);
+        
+        // Transforma o array associativo do php em um JSON.
+        $args = json_encode($semestres);
+        
+        // Echo nos argumentos, para ir junto com a resposta do ajax.
+        echo 'AJAXARGS:' . $args;
+        
+        /* Essa resposta do ajax é tratada no método callbackShowVisualizacao */
+        
+    }
+    
+    /**
+     * Procura as disciplinas interdependentes.
+     * 
+     * @param StdClass objeto com as propriedades que se queria levar em conta na procura.
+     * @return Array com as informações das dependências.
+     */
+    public function searchDependencies($filters)
+    {
+        $businessCondition = new BusinessAcademicBusCondition();
+        
+        $data = $businessCondition->searchShortCondition($filters);
+
+        return $data;
+        
+    }
+    
+}
+?>

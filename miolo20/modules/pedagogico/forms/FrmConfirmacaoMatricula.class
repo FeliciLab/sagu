@@ -1,0 +1,285 @@
+<?php
+/**
+ * <--- Copyright 2005-2013 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Confirmação de matricula
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ * Moises Heberle [moises@solis.com.br]
+ *
+ * @since
+ * Class created on 29/08/2013
+ */
+class FrmConfirmacaoMatricula extends SForm
+{
+    /**
+     * Class constructor
+     */
+    public function __construct($data)
+    {
+        parent::__construct(_M('Confirmar matrícula'), new AcpMatricula(), array('matriculaid'));
+        
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+        
+        SMainMenu::setOverrideMenuNav('main:process:matricula');
+    }
+
+    /**
+     *  Default method to define fields
+     */
+    public function defineFields()
+    {
+        $campocondicoes = $this->obterCampoCondicaoDeMatricula();
+        if( count($campocondicoes) > 0 )
+        {
+            $fields[] = $campocondicoes;
+            $fields[] = new MHContainer('ctnConfirmar', array(new MButton('btnConfirm', _M('Confirmar matrícula'), '')));   
+            $this->setFields($fields);
+        }
+        
+        parent::defineFields();
+    }
+    
+    /**
+     * Obtém os campos de condições de pagamento para matricula
+     */
+    public function obterCampoCondicaoDeMatricula()
+    {
+        $function = MIOLO::_REQUEST('function');
+        if( $function == SForm::FUNCTION_UPDATE )
+        {
+            $inscricaoid = MIOLO::_REQUEST('inscricaoid');
+        }
+        
+        //Obtém as condições de pagamento
+        $condicoes = $this->obterCondicoesDePagamento($inscricaoid);
+        
+        //Percorre cada condição de pagamento
+        if( count($condicoes) > 0 )
+        {
+            
+            foreach( $condicoes as $cod=>$condicao)
+            {
+                $precocondicao = new PrcPrecoCondicao($condicao['precocondicaomatriculaid']);
+                $checked = ( $condicao['condicaodepagamentoid'] == $precocondicao->condicaodepagamentoid ? true : false );
+                $opt[$condicao['condicaodepagamentoid']] = new MRadioButton('condicaodepagamentoid', $condicao['condicaodepagamentoid'], $checked, true);
+                $data[] = array($opt[$condicao['condicaodepagamentoid']], $condicao['descricao'], $condicao['valorparcela'], $condicao['valortotal']);
+            }
+
+            $columns = array( '', _M('Condição'), _M('Valor da parcela'), _M('Valor total'));
+            $table = new MTableRaw(null, $data, $columns);
+            $table->SetAlternate(true);
+            $flds[] = new MSpacer();
+            $flds[] = $table;
+            $field = new MBaseGroup('bsgMatricula', _M('Selecione uma condição de pagamento das MENSALIDADES:'), $flds, 'vertical');
+        }
+        
+        return $field;
+    }
+    
+    public function btnConfirm_click($args)
+    {
+        $this->confirmaMatricula();
+    }
+
+    public function confirmaMatricula()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $inscricaoid = MIOLO::_REQUEST('inscricaoid');
+        
+        try
+        {
+            SDatabase::beginTransaction();
+        
+            $inscricaoturmagruposearch = AcpInscricaoTurmaGrupo::obterInscricaoTurmaGrupo($inscricaoid);
+            foreach ( $inscricaoturmagruposearch as $cod => $inscricaoturmagrupo )
+            {
+                $inscricaoturmagrupo instanceof AcpInscricaoTurmaGrupo;
+               
+                //Verifica cada Matricula, caso todos status estejam como inscrito, caso contrário aborta a confirmação
+                $matriculas = AcpMatricula::obterMatriculaDaInscricaoTurmaGrupo($inscricaoturmagrupo->inscricaoturmagrupoid);
+                foreach ($matriculas as $cod => $matricula)
+                {
+                    $matricula instanceof AcpMatricula;
+
+                    if ( $matricula->situacao != AcpMatricula::SITUACAO_INSCRICAO )
+                    {
+                        throw new Exception(_M('A matrícula @1 cuja inscrição de código @2 está com a situação diferente de Inscrito.', null, $matricula->matriculaid, $inscricaoid));
+                    }
+                    $matricula->confirmarMatricula();
+                }
+            
+                // Salva o precocondicaomatriculaid
+                $matrizcurriculargrupoid = $inscricaoturmagrupo->matrizcurriculargrupoid;
+                $ofertaturmaid = $inscricaoturmagrupo->ofertaturmaid;
+                $condicaodepagamentoid = MIOLO::_REQUEST('condicaodepagamentoid');
+                
+                $precocurso = PrcPrecoCurso::obterPrecoDaOfertaDaTurma($ofertaturmaid, PrcPrecoCurso::TIPO_MATRICULA);
+                $precocondicao = PrcPrecoCondicao::obterValoresDaCondicao($precocurso->precocursoid, $condicaodepagamentoid, $matrizcurriculargrupoid);
+                $precocondicaoid = $precocondicao[0]->precocondicaoid;
+                
+                if ( strlen($precocondicaoid) > 0 )
+                {
+                    $inscricaoturmagrupo->precocondicaomatriculaid = $precocondicaoid;
+                    $inscricaoturmagrupo->save();
+                }
+            }
+            
+            //Gera os titulos da matricula
+            $matricula->gerarTitulosMatricula();
+            
+            SDatabase::commit();
+            
+            $this->ClearFields();
+            $this->AddInfo(_M('Matrícula confirmada com sucesso.'));
+            
+            $resumo = new AcpResumoDeInscricao($inscricaoid);
+            $resumo->tipoFonte = AcpResumoDeInscricao::TIPO_CONFIRMACAO_MATRICULA;
+            $this->AddField($resumo->renderizar());
+        }
+        catch (Exception $e)
+        {
+            $this->AddError($e->getMessage());
+        }
+    }
+
+    /**
+     * Obtém as condições de pagamento para inscrições em diferentes turmas/grupos
+     * para inscrição em turma/grupo
+     */
+    public function obterCondicoesDePagamento($inscricaoid)
+    {
+        $inscricao = new AcpInscricao($inscricaoid);
+        $ofertacurso = new AcpOfertaCurso($inscricao->ofertacursoid);
+        $ofertaturmaid = MIOLO::_REQUEST('ofertaturmaid');
+        
+        $count = 0;
+
+        $condicoesdepagamento = array();
+        if( $ofertacurso->ocorrenciacurso->curso->perfilcurso->permiteinscricaoporgrupo == DB_TRUE ) 
+        {
+            $count = 0;
+            
+            $inscricaoturmagruposearch = AcpInscricaoTurmaGrupo::obterInscricaoTurmaGrupo($inscricaoid);
+            foreach ( $inscricaoturmagruposearch as $cod => $inscricaoturmagrupo )
+            {
+                $ofertaturmaid = $inscricaoturmagrupo->ofertaturmaid;
+
+                //Obtém o preço do curso
+                $precocurso = PrcPrecoCurso::obterPrecoDaOfertaDaTurma($ofertaturmaid, PrcPrecoCurso::TIPO_MATRICULA);
+
+                //Percorre cada condição de pagamento para o grupo selecionado
+                $condicoesdepagamento[] = PrcPrecoCondicao::listarCondicoesDePagamentoDoPreco($precocurso->precocursoid);
+                    
+                //Seleciona apenas as condições de pagamento em comum
+                $condicaopagamento = array();
+                foreach( $condicoesdepagamento as $cod=>$condicao )
+                {
+                    if( count($condicaopagamento) == 0 )
+                    {
+                        $condicaopagamento = $condicao;
+                    }
+                    $condicaopagamento = array_intersect_key($condicaopagamento, $condicoesdepagamento[$cod]);
+                }
+
+                //Verifica se existem condições de pagamento em comum para todos os preços das turmas selecionadas
+                if( count($condicaopagamento) == 0 && $ofertacurso->ocorrenciacurso->curso->gratuito != DB_TRUE )
+                {
+                    $this->addError(_M('Não foram encontradas condições de pagamento comuns em todos os preços. Verifique o cadastro do preço de curso e cadastre condições iguais para todas as ocorrências.'));
+                }
+
+                $valorparcela = '0';
+                $valortotal = '0';
+            }
+            
+            //Soma as condições de pagamento
+            
+            foreach ( $inscricaoturmagruposearch as $cod => $inscricaoturmagrupo )
+            {
+                $ofertaturmaid = $inscricaoturmagrupo->ofertaturmaid;
+                //Obtém o preço do curso
+                $precocurso = PrcPrecoCurso::obterPrecoDaOfertaDaTurma($ofertaturmaid, PrcPrecoCurso::TIPO_MATRICULA);
+                foreach( $condicaopagamento as $condicaodepagamentoid=>$descricao )
+                {
+                    $precocursogrupo = PrcPrecoCursoGrupo::obterPrecoCursoGrupo($precocurso->precocursoid, $matrizcurriculargrupoid);
+                    $precocondicao = PrcPrecoCondicao::obterValoresDaCondicao($precocurso->precocursoid, $condicaodepagamentoid, $matrizcurriculargrupoid, $precocursogrupo->precocursogrupoid);
+                    
+                    $condicoes[$condicaodepagamentoid]['condicaodepagamentoid'] = $condicaodepagamentoid;
+                    $condicoes[$condicaodepagamentoid]['descricao'] = $descricao;
+                    $condicoes[$condicaodepagamentoid]['valorparcela'] = SAGU::calcNumber(SAGU::NVL($condicoes[$condicaodepagamentoid]['valorparcela'], '0.00').'+'.SAGU::NVL($precocondicao[0]->valorparcela, '0.00'));
+                    $condicoes[$condicaodepagamentoid]['valortotal'] = SAGU::calcNumber(SAGU::NVL($condicoes[$condicaodepagamentoid]['valortotal'], '0.00').'+'.SAGU::NVL($precocondicao[0]->valortotal, '0.00'));
+                }
+            }
+        }
+        else
+        {
+            $inscricaoturmagruposearch = AcpInscricaoTurmaGrupo::obterInscricaoTurmaGrupo($inscricaoid);
+            foreach ( $inscricaoturmagruposearch as $cod => $inscricaoturmagrupo )
+            {
+                $ofertaturmaid = $inscricaoturmagrupo->ofertaturmaid;
+
+                //Condições de pagamento da matrícula
+                $precocurso = PrcPrecoCurso::obterPrecoDaOfertaDaTurma($ofertaturmaid, PrcPrecoCurso::TIPO_MATRICULA);
+
+                //Obtém as condições para este preço
+                $condicoesdepagamento =  PrcPrecoCondicao::listarCondicoesDePagamentoDoPreco($precocurso->precocursoid);
+
+                //Verifica se existem condições de pagamento em comum para todos os preços das turmas selecionadas
+                if( count($condicoesdepagamento) == 0 && $ofertacurso->ocorrenciacurso->curso->gratuito != DB_TRUE )
+                {
+                    $this->addError(_M('Não foram encontradas condições de pagamento comuns em todos os preços. Verifique o cadastro do preço de curso e cadastre condições iguais para todas as ocorrências.'));
+                    return null;
+                }
+
+                foreach( $condicoesdepagamento as $condicaodepagamentoid=>$descricao )
+                {
+                    $valorparcela = '0';
+                    $valortotal = '0';
+
+                    $precocondicao = PrcPrecoCondicao::obterValoresDaCondicao($precocurso->precocursoid, $condicaodepagamentoid);
+                    //Soma as o valor das condições de cada grupo selecionado
+                    foreach($precocondicao as $c => $precocondicao)
+                    {
+                        $valorparcela = SAGU::calcNumber(SAGU::NVL($valorparcela, '0').'+'.SAGU::NVL($precocondicao->valorparcela, '0'));
+                        $valortotal = SAGU::calcNumber(SAGU::NVL($valortotal, '0').'+'.SAGU::NVL($precocondicao->valortotal, '0'));
+                    }
+
+                    $condicoes[$count]['condicaodepagamentoid'] = $condicaodepagamentoid;
+                    $condicoes[$count]['descricao'] = $descricao;
+                    $condicoes[$count]['valorparcela'] = $valorparcela;
+                    $condicoes[$count]['valortotal'] = $valortotal;
+                    $count ++;
+                }
+            }
+        }
+        
+        return $condicoes;
+    }
+    
+}    
+?>

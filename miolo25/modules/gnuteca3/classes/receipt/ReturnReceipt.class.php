@@ -1,0 +1,93 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda. e
+ * Univates - Centro Universitário.
+ * 
+ * Este arquivo é parte do programa Gnuteca.
+ * 
+ * O Gnuteca é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Class Gnuteca Return Receipt work;
+ *
+ * @author Eduardo Bonfandini [eduardo@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Eduardo Bonfandini [eduardo@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 28/06/2010
+ *
+ **/
+
+$MIOLO = MIOLO::getInstance();
+$MIOLO->uses('/classes/receipt/ReturnReceiptWork.class.php', 'gnuteca3');
+
+class ReturnReceipt extends Receipt
+{
+    public function __construct($data, $isPostable = false, $isPrintable = false)
+    {
+        parent::__construct($data, $isPostable, $isPrintable);
+        $this->personName  = $this->loan->personName;
+        $this->email       = $this->loan->email;
+        $this->libraryName = $this->loan->libraryName;
+        $this->operation   = _M('Devolução', MIOLO::getCurrentModule() );
+    }
+
+    public function setData($data)
+    {
+        parent::setData( $data );
+        //add to Item list
+        $this->addItem( $data );
+    }
+
+    public function addItem($data)
+    {
+        if ( $data instanceof Receipt )
+        {
+            $data = $data->getData();
+        }
+
+        parent::addItem( new ReturnReceiptWork( $data ) );
+
+    }
+
+    public function parseData()
+    {
+        parent::parseData();
+
+        //registra valor da multa no objeto do recibo
+
+        $itens  = $this->getItens();
+
+        $totalFine = 0;
+
+        if ( is_array( $itens ) )
+        {
+            foreach ($itens as $line => $item )
+            {
+                $totalFine += $item->fine->value;
+            }
+        }
+        
+        $this->setVariable('$TOTAL_FINE_VALUE', GUtil::moneyFormat( $totalFine ) );
+    }
+}
+?>

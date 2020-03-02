@@ -1,0 +1,295 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Enroll contract form
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Equipe Solis [sagu2@solis.coop.br]
+ *
+ * @since
+ * Class created on 29/09/2005
+ */
+/**
+ * Form to manipulate an enroll
+ */
+class FrmEnrollContract extends SForm
+{
+    var $enrollData;
+
+    /**
+     * Class constructor
+     */
+    public function __construct()
+    {
+        $action = MIOLO::getCurrentAction();
+        $module = MIOLO::getCurrentModule();
+        $MIOLO = MIOLO::getInstance();
+
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        parent::__construct( _M('Contratos do aluno', $module), null, null );
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $busPerson = new BusinessBasicBusPerson();
+        $personData = $busPerson->getPersonByMioloUserName(trim($MIOLO->getLogin()->id));
+
+        $contractPersonId = new MTextField('contractPersonId', $personData->personId, _M('Código', $module), SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $contractPersonId->setReadOnly(true);
+        $fields[] = $contractPersonId;
+
+        $personName = new MTextField('personName', $personData->name, _M('Nome', $module), SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $personName->setReadOnly(true);
+        $fields[] = $personName;
+        
+        parent::defineFields( array( 'fields' => $fields, 'validators' => $validators ) );
+    }
+
+    /**
+     * Event triggered when user click previous
+     */
+    public function btnPrev_click($sender = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        if ( $MIOLO->checkAccess($module, ACD_ENROLL, false, true) )
+        {
+            // formulario de destino para funcionarios
+            $postAction = substr($action, 0, strrpos($action, ':')) . ':enroll';
+        }
+        else
+        {
+            $data = $this->getData();
+
+            foreach ( $data as $k => $v )
+            {
+                $this->enrollData->$k = $v;
+            }
+
+            $session = $MIOLO->session;
+
+            $session->setValue('enrollData', $this->enrollData);
+
+            // $vars = array ( 'enrollData' => urlencode(serialize($this->enrollData)) );
+            // formulario de destino para alunos
+            $postAction = substr($action, 0, strrpos($action, ':')) . ':enrollPersonData';
+        }
+        $this->page->redirect($MIOLO->getActionURL($module, $postAction, null, $vars));
+    }
+
+    /**
+     * Event triggered when user click next
+     */
+    public function btnNext_click($sender = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $data = $this->getData();
+
+        foreach ( $data as $k => $v )
+        {
+            $this->enrollData->$k = $v;
+        }
+
+        $this->enrollData->className = $data->className_;
+
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $busClass = new BusinessAcademicBusClass();
+
+        $filters->periodId = $data->periodId;
+        $filters->learningPeriodId = $data->learningPeriodId;
+
+        $hasErrors = false;
+
+        $busContract = new BusinessAcademicBusContract();
+        $contract = $busContract->getContract($data->contractId);
+
+        $data->contractCourseId = $contract->courseId;
+        $data->contractCourseVersion = $contract->courseVersion;
+        $data->contractUnitId = $contract->unitId;
+        $data->contractTurnId = $contract->turnId;
+
+        $vars = array('enrollData' => urlencode(serialize($this->enrollData)));
+        // Testa se é uma matrícula efetuada pelo aluno (internet) ou por um funcionário
+        // Se é feita pelo aluno, a checagem de documentos deve ocorrer neste momento
+        if ( !($MIOLO->checkAccess($module, ACD_ENROLL, false, true)) )
+        {
+            $busDocument = new BusinessBasicBusDocument();
+            $missingDocs = $busDocument->checkMissingDocuments($data->contractPersonId, $data->contractId);
+
+            if ( count($missingDocs) > 0 )
+            {
+                $msg = _M('Os documentos abaixo DEVEM ser entregues para continuar o processo de matrícula', $module) . ':<br><br><ul>';
+                $hasBlockEnrollDocuments = false;
+                foreach ( $missingDocs as $documentTypeId => $missingDoc )
+                {
+                    if ( $missingDoc->isBlockEnroll )
+                    {
+                        $hasBlockEnrollDocuments = true;
+                        $msg .= '<li>' . $missingDoc->documentName . '</li>';
+                    }
+                }
+                $msg .= '</ul>';
+
+                if ( $hasBlockEnrollDocuments )
+                {
+                    $MIOLO->error($msg, $MIOLO->getActionURL($module, $action, null, $vars), _M('Erro', $module));
+                }
+            }
+
+            $documentsObs = $busDocument->checkDocumentsObs($data->contractPersonId);
+
+            if ( count($documentsObs) > 0 )
+            {
+                $msg = _M('Você possui as seguintes observações registradas', $module) . ':<br><br>';
+
+                $msg .= '<table>';
+
+                foreach ( $documentsObs as $obs )
+                {
+                    $msg .= '<tr><td>' . $obs[1] . ':</td><td>' . $obs[2] . '</td></tr>';
+                }
+
+                $msg .= '</table><br>';
+
+                $MIOLO->error($msg, $MIOLO->getActionURL($module, $action, null, $vars), _M('Erro', $module));
+            }
+        }
+
+        $contractLastStatus = $busContract->getContractLastMovementStatus($data->contractId);
+
+        // Verifica se o contrato está trancado
+        if ( ( ($contractLastStatus->stateContract == SAGU::getParameter('ACADEMIC', 'STATE_CONTRACT_ID_LOCKED')) ||
+                ($contractLastStatus->inOutTransition == 'O') ) && (!$hasErrors) )
+        {
+            $this->addError(_M('O contrato selecionato não está disponível para matrícula', $module));
+            $hasErrors = true;
+        }
+
+        if ( SAGU::getParameter('BASIC', 'MODULE_FINANCE_INSTALLED') == 'YES' )
+        {
+            $business = new BusinessFinanceBusGeneralQueries();
+            $debt = $business->getDefaulterDebt($data->contractId, false);
+        }
+        else
+        {
+            $debt = 0;
+        }
+        // Verifica se o aluno possui débitos financeiros
+        if ( ($debt > 0) && (!$hasErrors) )
+        {
+            $url = $MIOLO->getActionURL('finance', 'main', null, array('personId' => $data->contractPersonId, 'event' => 'btnSearch:click'));
+            $financialSituation = new MLink('fin', _M('Clique aqui para visualizar este débito.', $module), $url, null, 'new');
+            $this->addError(_M('O sistema detectou um débito com a instituição.', $module) . $financialSituation->generate());
+
+            $hasErrors = true;
+        }
+
+        $filters->courseId = $data->contractCourseId;
+        $filters->courseVersion = $data->contractCourseVersion;
+        $filters->unitId = $data->contractUnitId;
+        $filters->turnId = $data->contractTurnId;
+
+        $learningData = $busLearningPeriod->searchLearningPeriod($filters);
+
+        if ( count($learningData) == 1 )
+        {
+            $data->learningPeriodId = $learningData[0][0];
+        }
+        elseif ( count($learningData) >= 2 )
+        {
+            $msg = count($learningData) . ' ' . _M('períodos letivos registrados. Por favor, selecione um para continuar.', $module);
+            $lblMsg = new MText('lblMsg', $msg);
+            $lblMsg->color = 'red';
+
+            foreach ( $learningData as $learningPeriodData )
+            {
+                $selArray[] = array($learningPeriodData[0], $learningPeriodData[1]);
+            }
+
+            $selLearningPeriod = new MComboBox('learningPeriodId', $this->getFormValue('learningPeriodId', $data->learningPeriodId), _M('Período letivo', $module), $selArray);
+
+            // $cntLearningData = new MVContainer('cntLearningData', array($lblMsg, $selLearningPeriod));
+
+            $this->addError($msg);
+            $this->divError->addControl(/* $cntLearningData */$selLearningPeriod);
+
+            if ( strlen($this->getFormValue('learningPeriodId', $data->learningPeriodId)) > 0 )
+            {
+                $data->learningPeriodId = $this->getFormValue('learningPeriodId', $data->learningPeriodId);
+            }
+            else
+            {
+                $hasErrors = true;
+            }
+        }
+
+        if ( (strlen($data->learningPeriodId) == 0) && (!$hasErrors) )
+        {
+            $this->addError(_M('Impossível obter um período letivo. Verifique se ele está corretamente registrado para este curso e período.', $module));
+            $hasErrors = true;
+        }
+
+        if ( strlen($this->enrollData->learningPeriodId) == 0 )
+        {
+            $this->enrollData->learningPeriodId = $data->learningPeriodId;
+        }
+
+        if ( !$hasErrors )
+        {
+            // $vars = array ( 'returnTo' => $action,
+            //              'enrollData' => urlencode(serialize($this->enrollData)) );
+            $session = $MIOLO->session;
+
+            $session->setValue('enrollData', $this->enrollData);
+            $session->setValue('returnTo', $action);
+
+            if ( !($MIOLO->checkAccess($module, ACD_ENROLL, false, true)) )
+            {
+                $postAction = substr($action, 0, strrpos($action, ':')) . ':enrollContractMessages';
+            }
+            else
+            {
+                $postAction = substr($action, 0, strrpos($action, ':')) . ':enrollCurricularComponents';
+            }
+            $this->page->redirect($MIOLO->getActionURL($module, $postAction, null, $vars));
+        }
+    }
+}
+?>

@@ -1,0 +1,1172 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Entry form
+ *
+ * @author Armando Taffarel Neto [taffarel@solis.coop.br]
+ *         William Prigol Lopes [william@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ * Luís Felipe Wermann [luis_felipe@solis.com.br]
+ *
+ * @since
+ * Class created on 05/01/2006
+ *
+ **/
+
+/**
+ * Form to manipulate a voucher messages
+ **/
+class FrmEntry extends SManagementForm
+{
+    //Constantes do tipo de movimentação
+    const MOV_BANCARIA = 'bank';
+    const MOV_DE_CAIXA = 'counter';
+    const MOV_NENHUMA  = 'none';
+    
+    /**
+     * Class constructor
+     **/
+    public function __construct()
+    {
+        parent::__construct(new FinEntry(), array('entryId'), 'BusEntry');
+    }
+
+    /**
+     * Default method to define fields
+     **/
+    public function defineFields()
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        $event    = MIOLO::_request('event');
+        
+        $desabilitaEdicao = false;
+        
+        // Para o fluxo de aprovações
+        if ( !strlen($MIOLO->_REQUEST('fluxosolicitacaoid')) > 0 )
+        {
+            $fields[] = FinFluxoAprovacaoConfiguracao::obterAvisoDeQueOProcessoPossuiConfiguracao(FinFluxoAprovacaoProcesso::LANCAMENTOS_DE_TITULOS);
+            
+            if ( $function == SForm::FUNCTION_INSERT )
+            {
+                $data->invoiceId = MIOLO::_REQUEST('invoiceId');
+                if (strlen($data->invoiceId)>0)
+                {
+                    $businessReceivableInvoice = new BusinessFinanceBusReceivableInvoice();
+                    $data->costCenterId        = $businessReceivableInvoice->getReceivableInvoiceCostCenter($data->invoiceId);
+                }
+            }
+
+            if ( in_array($function, array(SForm::FUNCTION_UPDATE, SForm::FUNCTION_DELETE)) )
+            {
+                $pk = $this->getObjectPk();
+                $data = $this->busObject->getEntry($pk->entryId);
+                $fields[] = new MHiddenField('entryId', $this->getFormValue('entryId', $data->bankId));
+
+                $fields[] = new MHiddenField('invoiceId', $this->getFormValue('invoiceId', $data->invoiceId));
+                $fields[] = new MHiddenField('isAccounted', $this->getFormValue('isAccounted', $data->isAccounted));
+                $fields[] = new MHiddenField('contractId', $this->getFormValue('contractId', $data->contractId));
+                $fields[] = new MHiddenField('learningPeriodId', $this->getFormValue('learningPeriodId', $data->learningPeriodId));
+
+                //Obtem movimentação atrelado ao título
+                $busEntry = new BusinessFinanceBusEntry();
+                $bank = $busEntry->obterMovimentacaoDeBanco($pk->entryId);
+                $counter = $busEntry->obterMovimentacaoDeCaixa($pk->entryId);
+                
+                $BusDefaultOperations = new BusinessFinanceBusDefaultOperations();
+                $operations = $BusDefaultOperations->getDefaultOperations();
+                
+                if ( strlen($counter->counterMovementId) > 0 )
+                {
+                    $data->movement          = self::MOV_DE_CAIXA;
+                    $data->counterMovementId = $counter->counterMovementId;
+                    $data->operationType     = $counter->operation;
+                    $data->openCounterId     = $counter->openCounterId;
+                    $data->speciesId         = $counter->speciesId;
+                }
+                else if ( (strlen($data->bankMovementId) > 0) || (strlen($bank->bankMovementId) > 0) )
+                {   
+                    if ( !(strlen($bank->bankMovementId) > 0) )
+                    {
+                        $bank = new FinBankMovement($data->bankMovementId);
+                    }
+                    
+                    $data->movement       = self::MOV_BANCARIA;
+                    $data->bankId         = $bank->bankId;
+                    $data->bankMovementId = $bank->bankMovementId;
+                    $data->branchNumber   = $bank->branchNumber;
+                    $data->discount       = $bank->fileDiscount;
+                    $data->juros          = $bank->fileInterestFine;
+                    $data->tax            = $bank->expenditure;
+                    $data->bankAccountId  = $bank->bankAccountId;
+
+                    //Garante que virá a conta bancária
+                    if ( !(strlen($data->bankAccountId) > 0) )
+                    {
+                        $busReceivableInvoice = new BusinessFinanceBusReceivableInvoice();
+                        $titulo = $busReceivableInvoice->getInvoice($bank->invoiceId);
+                        $data->bankAccountId = $titulo->bankAccountId;
+                    }
+                }
+                else
+                {
+                    $data->movement = self::MOV_NENHUMA;
+                }
+                
+                // Verifica se é uma movimentação de caixa, e bloqueia caso o caixa esteja fechado
+                if ( strlen($data->counterMovementId) > 0 )
+                {
+                    $businessOpenCounter = new BusinessFinanceBusOpenCounter();
+                    
+                    //Filter counter
+                    $filter = new stdClass();
+                    $filter->openCounterId = $data->openCounterId;
+                    $filter->open = DB_TRUE;
+                    
+                    //Get data counter
+                    $openCounter = $businessOpenCounter->searchOpenCounter($filter);
+                    
+                    if ( !is_array($openCounter) )
+                    {
+                        $desabilitaEdicao = true;
+                        
+                        $fields[] = MMessage::getStaticMessage('_aviso', _M('O caixa que originou este lançamento já foi fechado e por isso este lançamento não pode ser alterado. ', $module), MMessage::TYPE_WARNING);
+                        
+                        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+                        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+                    }
+                }
+                
+            }
+            
+            if ($function == SForm::FUNCTION_UPDATE)
+            {
+                if ($data->isAccounted == DB_TRUE)
+                {
+                    $info     = new MText('warningText', _M('Este lançamento foi contabilizado. Os dados estão bloqueados para edição', $module), 'red');
+                    $infoDiv  = new MDiv('warningDiv', $info, null, 'align="center"');
+                    $fields[] = $infoDiv;
+                }    
+
+                // Entry id
+                $fields[]  = new MTextLabel('entryId', $pk->entryId, _M('Lançamento', $module));
+
+                // Get invoice information
+                $businessInvoice         = new BusinessFinanceBusReceivableInvoice();
+                $dataInvoice             = $businessInvoice->getInvoice($data->invoiceId);
+                $businessPerson          = new BusinessBasicBusPerson();
+                $dataInvoice->personName = $businessPerson->getPersonName($dataInvoice->personId);
+
+                // Spacing
+                $spacing     = new MText('spacing', ' - ');   
+
+                // Invoice
+                $invoiceIdLabel = new MText('invoiceIdLabel', _M('Título', $module).':');
+                $invoiceIdLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                $invoiceId      = new MTextLabel('invoiceId', $data->invoiceId);
+                $hctInvoice     = new MHContainer('hctInvoice', array($invoiceIdLabel, $invoiceId ));
+                $hctInvoice->setShowLabel(false);
+                $fields[] = $hctInvoice;
+
+                // Person 
+                $personLabel = new MText('personIdLabel', _M('Pessoa', $module).':');
+                $personLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                $personId    = new MTextLabel('personId', $dataInvoice->personId);
+                $personName  = new MTextLabel('personName', $dataInvoice->personName);
+                $hctPerson   = new MHContainer('hctPerson', array($personLabel, $personId, $spacing, $personName));
+                $hctPerson->setShowLabel(true);
+                $fields[]    = $hctPerson;
+
+                // Operation
+                if ($data->isAccounted == DB_TRUE)
+                {
+                    $businessOperation    = new BusinessFinanceBusOperation();
+                    $dataOperation        = $businessOperation->getOperation($data->operationId);
+                    $operationLabel       = new MText('operationLabel', _M('Operação', $module).':');
+                    $operationLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                    $operationLabel->setClass('m-caption m-caption-required');
+                    $operationId          = new MText('operationId', $data->operationId);
+                    $operationDescription = new MText('operationDescription', $dataOperation->description);
+                    $fields[]             = new MHContainer('hctOperation', array($operationLabel, $operationId, $spacing, $operationDescription));
+                }
+                else
+                {
+                    $operationLabel       = new MText('operationLabel', _M('Operação', $module).':');
+                    $operationLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                    $operationLabel->setClass('m-caption m-caption-required');
+                    $operationId          = new MLookupTextField('operationId', $this->getFormValue('operationId',$data->operationId), '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), null, null, 'operationDescription', $module, 'Operation', null, null, true);
+                    $operationId->setJsHint(_M('Informe o código da operação',$module));
+                    $validators[]         = new MIntegerValidator('operationId', _M('Operação', $module), 'required');
+                    $operationDescription = new MTextField('operationDescription', $this->getFormValue('operationDescription',$data->operationDescription), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+                    $operationDescription->setReadOnly(true);
+                    $fields[]             = new MHContainer('hctOperation', array($operationLabel, $operationId, $operationDescription));
+                }
+                
+                // Movimentações
+                $movementLabel = new MText('isShowDocumentEndCourseLabel', _M('Origem do lançamento:', $module));
+                $movementLabel->setClass('m-caption');
+                $movementLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                $radioNone = new MRadioButton('movement', self::MOV_NENHUMA, '', ( $data->movement == self::MOV_NENHUMA ) ? true : false, "Nenhuma");            
+                $radioNone->addAttribute('onChange', $this->getAjaxAction('verifyMovementInfo', 'movementInfo', false, array('movement' => self::MOV_NENHUMA, 'movementType' => self::MOV_NENHUMA)));
+                $radioCounter = new MRadioButton('movement', self::MOV_DE_CAIXA, '', ( $data->movement == self::MOV_DE_CAIXA ) ? true : false, "De caixa");
+                $radioCounter->addAttribute('onChange', $this->getAjaxAction('verifyMovementInfo', 'movementInfo', false, array('movement' => self::MOV_DE_CAIXA, 'movementType' => self::MOV_DE_CAIXA, 'speciesId' => $data->speciesId, 'openCounterId' => $data->openCounterId)));
+                $radioBank = new MRadioButton('movement', self::MOV_BANCARIA, '', ( $data->movement == self::MOV_BANCARIA ) ? true : false, "Bancária");
+                $radioBank->addAttribute('onChange', $this->getAjaxAction('verifyMovementInfo', 'movementInfo', false, array('movement' => self::MOV_BANCARIA, 'movementType' => self::MOV_BANCARIA, 'bankAccountId' => $data->bankAccountId, 'discount' => $data->discount, 'tax' => $data->tax, 'juros' => $data->juros, 'bankMovementId' => $data->bankMovementId)));
+                $movementContainer = new MHContainer('movementContainer', array($movementLabel, $radioNone, $radioCounter, $radioBank));
+                $fields[] = $movementContainer;
+
+                // Campos ocultos para update.
+                $fields[] = new SHiddenField('counterMovementId', $data->counterMovementId);
+                $fields[] = new SHiddenField('operationType', $data->operationType);
+                $fields[] = new SHiddenField('branchNumber', $data->branchNumber);
+                $fields[] = new SHiddenField('bankMovementId', $data->bankMovementId);  
+                $data->movementType = $data->movement;
+                $data->desabilitaEdicao = $desabilitaEdicao;
+
+                // Div informações da movimentação.
+                $fields[] = new MDiv('movementInfo', $this->verifyMovementInfo($data));
+
+                // Entry date
+                if ($data->isAccounted == DB_TRUE)
+                {
+                    $entryDateLabel = new MText('entryDateLabel', _M('Data de lançamento', $module).':');
+                    $entryDateLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                    $entryDateLabel->setClass('m-caption m-caption-required');
+                    $entryDate      = new MText('entryDate', $data->entryDate);
+                    $fields[] = new MHContainer('hctEntryDate', array($entryDateLabel, $entryDate));
+                }
+                else
+                {
+                    $entryDateLabel = new MText('entryDateLabel', _M('Data de lançamento', $module).':');
+                    $entryDateLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                    $entryDateLabel->setClass('m-caption m-caption-required');
+                    $entryDate      = new MCalendarField('entryDate', $this->getFormValue('entryDate',$data->entryDate), '', SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+                    $entryDate->setJsHint(_M('Informe a data do lançamento',$module));
+                    $validators[] = new MDATEDMYValidator('entryDate', _M('Data de lançamento', $module), 'optional');
+                    $fields[] = new MHContainer('hctEntryDate', array($entryDateLabel, $entryDate));
+                }
+
+                // Value
+                if ($data->isAccounted == DB_TRUE)
+                {
+                    $value = new MTextField('value', SAGU::formatNumber($this->getFormValue('value', $data->value)), _M('Valor', $module), null, _M('Ex.: 1.00', $module));
+                    $value->setJsHint(_M('Informe o valor', $module));
+                    $validators[] = new MFloatValidator('value', _M('Valor', $module), SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'), 'required');
+                    $fields[] = $value;
+                }
+                else
+                {
+                    $value = new MTextField('value', SAGU::formatNumber($this->getFormValue('value', $data->value)), _M('Valor', $module), SAGU::getParameter('BASIC', 'FIELD_MONETARY_SIZE'), _M('Ex.: 1.00', $module));
+                    $value->setJsHint(_M('Informe o valor', $module));
+                    $validators[] = new MFloatValidator('value', _M('Valor', $module), SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'), 'required');
+                    $fields[] = $value;
+                }
+
+                // Cost center
+                if ($data->isAccounted == DB_TRUE)
+                {
+                    // Account Scheme
+                    $accountSchemeLabel       = new MText('accountSchemeLabel', _M('Plano de contas',$module).':');
+                    $accountSchemeLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                    $accountSchemeLabel->setClass('m-caption m-caption-required');
+                    $accountSchemeId          = new MText('accountSchemeId', $this->getFormValue('accountSchemeId',$data->accountSchemeId));
+                    $businessAccountScheme    = new BusinessAccountancyBusAccountScheme();
+                    $dataAccountScheme        = $businessAccountScheme->getAccountScheme($data->accountSchemeId);
+                    $accountSchemeDescription = new MText('accountSchemeName', $dataAccountScheme->description);
+                    $hctAccountScheme         = new MHContainer('hctAccountScheme', array($accountSchemeLabel, $accountSchemeId, $spacing, $accountSchemeDescription));
+                    $fields[]                 = $hctAccountScheme;
+                    
+                    $businessCostCenter = new BusinessAccountancyBusCostCenter();
+                    $dataCostCenter     = $businessCostCenter->getCostCenter($data->costCenterId);
+                    $costCenterIdLabel = new MText('costCenterIdLabel', _M('Centro de custo', $module).':');
+                    $costCenterIdLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                    $costCenterIdLabel->setClass('m-caption m-caption-required');
+                    $costCenterId = new MText('costCenterId', $data->costCenterId);
+                    $costCenterDescription = new MText('costCenterDescription', $this->getFormValue('costCenterDescription',$dataCostCenter->description));
+                    $fields[] = new MHContainer('hctCostCenter', array($costCenterIdLabel, $costCenterId, $spacing, $costCenterDescription));
+                }
+                else
+                {
+                    //Field account scheme
+                    $accountSchemeLabel = new MText('accountSchemeLabel', _M('Plano de contas',$module).':');
+                    $accountSchemeLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                    $accountSchemeId    = new MLookupTextField('accountSchemeId', $this->getFormValue('accountSchemeId',$data->accountSchemeId), null,SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), null, null, 'accountSchemeDescription', 'accountancy', 'AccountScheme', null, null, true);
+                    $accountSchemeId->setJsHint(_M('Informe o código do plano de contas', $module));
+                    $accountSchemeDescription = new MTextField('accountSchemeDescription', $this->getFormValue('accountSchemeDescription',$data->accountSchemeDescription), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+                    $accountSchemeDescription->setReadOnly(true);
+                    $accountSchemeDescription->setJsHint(_M('Descrição do plano de contas', $module));
+                    $hctAccountScheme   = new MHContainer('hctAccountScheme', array($accountSchemeLabel, $accountSchemeId, $accountSchemeDescription));
+                    $hctAccountScheme->setShowLabel(true);
+                    $fields[]   = $hctAccountScheme;
+                    
+                    $costCenterIdLabel = new MText('costCenterIdLabel', _M('Centro de custo', $module).':');
+                    $costCenterIdLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                    $costCenterIdLabel->setClass('m-caption m-caption-required');
+                    $costCenterId = new MLookupTextField('costCenterId', $this->getFormValue('costCenterId',$data->costCenterId), '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), null, null, 'costCenterDescription', 'accountancy', 'CostCenter', null, null, true);
+                    $costCenterId->setJsHint(_M('Informe o código do centro de custos', $module));
+                    $validators[] = new MRegExpValidator('costCenterId', _M('Código do centro de custo', $module), '^[0-9]+(\.[0-9]+)*$', 'required');
+                    $costCenterDescription = new MTextField('costCenterDescription', $this->getFormValue('costCenterDescription',$data->costCenterDescription), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+                    $costCenterDescription->setReadOnly(true);
+                    $fields[] = new MHContainer('hctCostCenter', array($costCenterIdLabel, $costCenterId, $costCenterDescription));
+                }
+
+
+                // Comments
+                $commentsLabel = new MText('commentsLabel', _M('Comentários', $module).':');
+                $commentsLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                $comments = new MMultiLineField('comments', $this->getFormValue('comments',$data->comments), '', 40, 4, 80);
+                $comments->setJsHint(_M('Informe os comentários', $module));
+                $fields[] = new MHContainer('hctMessage', array($commentsLabel, $comments));
+
+                // Bank return code
+                $bankReturnCodeLabel = new MText('bankReturnCodeLabel', _M('Retorno do banco', $module).':');
+                $bankReturnCodeLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                $bankReturnCode = new MTextLabel('bankReturnCode', $data->bankReturnCode);
+                $hctBankReturn = new MHContainer('hctBankReturnCode', array($bankReturnCodeLabel, $bankReturnCode));
+                $hctBankReturn->setShowLabel(false);
+                $fields[] = $hctBankReturn;
+            }
+            else
+            {
+                // Invoice
+                $invoiceIdLabel = new MText('invoiceIdLabel', _M('Título', $module).':');
+                $invoiceIdLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                $invoiceIdLabel->setClass('m-caption m-caption-required');
+                $invoiceId      = new MLookupTextField('invoiceId', $this->getFormValue('invoiceId', $data->invoiceId), '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), null, null, 'personId, personName, limbo, limbo, limbo, limbo, limbo, limbo, limbo, limbo, limbo', $module, 'Invoice', null, array('personId' => 'personId'), true);                   
+                $invoiceId->setJsHint(_M('Informe o código do título', $module));
+                $validators[]   = new MIntegerValidator('invoiceId', _M('Título', $module), 'required');
+                $fields[]       = new MHContainer('hctInvoice', array($invoiceIdLabel, $invoiceId ));
+
+                $fields[]       = new MHiddenField('limbo', $this->getFormValue('limbo', $data->limbo));
+
+                // person 
+                $personLabel = new MText('personIdLabel', _M('Pessoa', $module).':');
+                $personLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                $personLabel->setClass('m-caption m-caption-required');
+                $personId = new MLookupTextField('personId', $this->getFormValue('personId', $data->personId), null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), null, null, 'personName', 'basic', 'Person', null, null, true);
+                $personId->setJsHint(_M('Informe o código da pessoa', $module));
+                $personId->setShowButton(false);
+                $personId->setReadOnly(true);
+                $validators[] = new MIntegerValidator('personId',_M('Pessoa', $module), 'required');
+                $personName = new MTextField('personName', $this->getFormValue('personName',$data->personName), null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+                $personName->setReadOnly(true);
+                $personName->setJsHint(_M('Nome da pessoa', $module));
+                $hctPerson = new MHContainer('hctPerson', array($personLabel, $personId, $personName));
+                $hctPerson->setShowLabel(true);
+                $fields[]   = $hctPerson;
+
+                // Operation
+                $operationLabel = new MText('operationLabel', _M('Operação', $module).':');
+                $operationLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                $operationLabel->setClass('m-caption m-caption-required');
+                $operationId    = new MLookupTextField('operationId', $this->getFormValue('operationId',$data->operationId), '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), null, null, array('operationDescription', 'operationType'), $module, 'Operation', null, null, true);
+                $operationId->setJsHint(_M('Informe o código da operação',$module));
+                $validators[] = new MIntegerValidator('operationId', _M('Operação', $module), 'required');
+                $operationDescription = new MTextField('operationDescription', $this->getFormValue('operationDescription',$data->operationDescription), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+                $operationDescription->setReadOnly(true);
+                $operationDescription->setJsHint(_M('Descrição da operação',$module));
+                $fields[] = new MHContainer('hctOperation', array($operationLabel, $operationId, $operationDescription));
+
+                // Tipo da operação
+                $fields[] = new SHiddenField('operationType');
+
+                // Movimentações
+                $movementLabel = new MText('isShowDocumentEndCourseLabel', _M('Origem do lançamento:', $module));
+                $movementLabel->setClass('m-caption');
+                $movementLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                $radioNone = new MRadioButton('movement', self::MOV_NENHUMA, '', true, "Nenhuma");            
+                $radioNone->addAttribute('onChange', $this->getAjaxAction('verifyMovementInfo', 'movementInfo', false, array('movementType' => self::MOV_NENHUMA)));// trocar movement
+                $radioCounter = new MRadioButton('movement', self::MOV_DE_CAIXA, '', false, "De caixa");
+                $radioCounter->addAttribute('onChange', $this->getAjaxAction('verifyMovementInfo', 'movementInfo', false, array('movementType' => self::MOV_DE_CAIXA)));
+                $radioBank = new MRadioButton('movement', self::MOV_BANCARIA, '', false, "Bancária");
+                $radioBank->addAttribute('onChange', $this->getAjaxAction('verifyMovementInfo', 'movementInfo', false, array('movementType' => self::MOV_BANCARIA)));
+                $movementContainer = new MHContainer('movementContainer', array($movementLabel, $radioNone, $radioCounter, $radioBank));
+                $fields[] = $movementContainer;
+
+                $fields[] = new SHiddenField('optionMovement', $data->movement);
+
+                // Div informações da movimentação.
+                $fields[] = new MDiv('movementInfo', $this->verifyMovementInfo());
+
+                // Entry date
+                $entryDateLabel = new MText('entryDateLabel', _M('Data de lançamento', $module).':');
+                $entryDateLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                $entryDateLabel->setClass('m-caption m-caption-required');
+                $entryDate      = new MCalendarField('entryDate', $this->getFormValue('entryDate',$data->entryDate) ? $this->getFormValue('entryDate', $data->entryDate) : date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')), '', SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+                $entryDate->setJsHint(_M('Informe a data do lançamento',$module));
+                $validators[] = new MDATEDMYValidator('entryDate', _M('Data de lançamento', $module), 'optional');
+                $fields[] = new MHContainer('hctEntryDate', array($entryDateLabel, $entryDate));
+
+                // Value
+                $value = new MTextField('value', SAGU::formatNumber($this->getFormValue('value', $data->value)), _M('Valor', $module), SAGU::getParameter('BASIC', 'FIELD_MONETARY_SIZE'), _M('Ex.: 1.00', $module));
+                $value->setJsHint(_M('Informe o valor', $module));
+                $validators[] = new MFloatValidator('value', _M('Valor', $module), SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'), 'required');
+                $fields[] = $value;
+
+                // Cost center
+                $costCenterIdLabel = new MText('costCenterIdLabel', _M('Centro de custo', $module).':');
+                $costCenterIdLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                $costCenterIdLabel->setClass('m-caption m-caption-required');
+                $costCenterId = new MLookupTextField('costCenterId', $data->costCenterId ? $data->costCenterId : $this->getFormValue('costCenterId',$data->costCenterId), '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), null, null, 'costCenterDescription', 'accountancy', 'CostCenter', null, null, true);
+                $costCenterId->setJsHint(_M('Informe o código do centro de custos', $module));
+                $validators[] = new MRegExpValidator('costCenterId',  _M('Centro de custo', $module), '^[0-9]+(\.[0-9]+)*$', 'required');
+                $costCenterDescription = new MTextField('costCenterDescription', $this->getFormValue('costCenterDescription',$data->costCenterDescription), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+                $costCenterDescription->setReadOnly(true);
+                $costCenterDescription->setJsHint(_M('Descrição do centro de custo', $module));
+                $fields[] = new MHContainer('hctCostCenter', array($costCenterIdLabel, $costCenterId, $costCenterDescription));
+
+                // Comments
+                $commentsLabel = new MText('commentsLabel', _M('Comentários', $module).':');
+                $commentsLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+                $comments = new MMultiLineField('comments', $this->getFormValue('comments',$data->comments), '', 40, 2, 40);
+                $comments->setJsHint(_M('Informe os comentários',$module));
+                $fields[] = new MHContainer('hctMessage', array($commentsLabel, $comments));
+
+                $this->page->onLoad('document.' . $this->name . '.invoiceId.focus();');
+            }
+
+            $goto = MIOLO::_request('goto') ? MIOLO::_request('goto') : MIOLO::_request('goto', 'GET');
+            if (strlen($goto)>0)
+            {
+                $fields[] = new MHiddenField('goto', $goto);
+            }
+
+            parent::defineFields($fields, $validators, $data);
+            
+            if ( $desabilitaEdicao )
+            {
+                $jscode = " var checkBoxs = document.getElementsByName('movement');
+                            for ( var i =0; i < checkBoxs.length; i++  )
+                            {
+                                checkBoxs[i].disabled = true;
+                            } ";
+                
+                $MIOLO->page->OnLoad($jscode);
+            }
+        }
+    }
+    
+    /**
+     * Verifica qual tipo de movimentação foi solicitada.
+     * 
+     * @param stdClass $args
+     * @return string
+     */
+    public function verifyMovementInfo($args=null)
+    {
+        switch ( $args->movementType )
+        {
+            case self::MOV_DE_CAIXA:
+                $fieldsMovement = $this->generateCounterField($args);
+                break;
+            
+            case self::MOV_BANCARIA:
+                $fieldsMovement = $this->generateBankAccountField($args);
+                break;
+            
+            default:
+                $fieldsMovement = " ";
+                break;
+        }
+        
+        return $fieldsMovement;
+    }
+    
+    /**
+     * Gera o campo de seleção de caixas.
+     * 
+     * @return \MHContainer
+     */
+    public function generateCounterField($args=null)
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $function = MIOLO::_REQUEST("function");
+        
+        if ( $function == 'update' )
+        {
+            $BusOpenCounter = new BusinessFinanceBusOpenCounter();
+            $openCounter    = $BusOpenCounter->getOpenCounter($args->openCounterId);
+            
+            $counterId_openCounterId = "{$openCounter->counterId}_{$openCounter->openCounterId}";
+        }
+        
+        $BusCounter = new BusinessFinanceBusCounter();
+        $counters   = $BusCounter->listCountersInOperation();
+        
+        $BusSpecies = new BusinessFinanceBusSpecies();
+        $species = $BusSpecies->listSpecies();
+        
+        foreach ( $counters as $counter )
+        {
+            if ( !is_null($counter[2]) )
+            {
+                $options["{$counter[0]}_{$counter[2]}"] = $counter[1];
+            }
+        }
+        
+        $flds[] = new MSeparator();
+        
+        if ( $args->desabilitaEdicao )
+        {
+            $counterLabel = new MText('counterLabel', _M('Caixa:', $module));
+            $counterLabel->setClass('m-caption m-caption');
+            $counterLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $counterLabel->addAttribute('style', 'float:right');
+            $counterField = new MText('counter', "{$openCounter->counterDescription}");
+            $counterContainer = new MHContainer('counterContainer', array($counterLabel, $counterField));
+            $counterContainer->addAttribute("style", "margin-top:5px;");
+            $flds[] = $counterContainer;
+        }
+        else
+        {
+            $counterLabel = new MText('counterLabel', _M('Escolha o caixa:', $module));
+            $counterLabel->setClass('m-caption m-caption-required');
+            $counterLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $counterLabel->addAttribute('style', 'float:right');
+            $counterField = new MSelection('counterId_openCounterId', ($counterId_openCounterId) ? $counterId_openCounterId : null, null, $options);
+            $counterContainer = new MHContainer('counterContainer', array($counterLabel, $counterField));
+            $counterContainer->addAttribute("style", "margin-top:5px;");
+            $flds[] = $counterContainer;
+
+            $flds[] = new MSeparator();
+            $speciesLabel = new MText('speciesLabel', _M('Tipo de pagamento',$module).':');
+            $speciesLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $speciesLabel->setClass('m-caption m-caption-required');
+            $speciesLabel->addAttribute('style', 'float:right');
+            $speciesId = new MComboBox('speciesId', ($args->speciesId) ? $args->speciesId : null, '', $species);
+            $hctSpecies = new MHContainer('hctSpecies', array($speciesLabel, $speciesId));
+            $hctSpecies->addAttribute("style", "margin-top:5px;");
+            $flds[]   = $hctSpecies;
+        }
+        
+        return $flds;
+    }
+    
+    /**
+     * Gera o campo de seleção de contas bancárias.
+     * 
+     * @return \MHContainer
+     */
+    public static function generateBankAccountField($args=null)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+        $busOperation         = new BusinessFinanceBusOperation();
+        $operations           = $busDefaultOperations->getDefaultOperations();
+        
+        $business = new BusinessFinanceBusBankAccount();
+        $flds[] = new MSeparator();
+
+        $bankAccountLabel = new MText('bankAccountLabel', _M('Conta bancária',$module).':');
+        $bankAccountLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $bankAccountLabel->setClass('m-caption m-caption-required');
+        $bankAccountLabel->addAttribute('style', 'float:right');
+        $bankAccountId = new MComboBox('bankAccountId', ($args->bankAccountId) ? $args->bankAccountId : null, '', $business->listBankAccount());
+        $bankAccountId->setJsHint(_M('Código da conta bancária', $module).':');
+        $hctBankAccount = new MHContainer('hctBankAccount', array($bankAccountLabel, $bankAccountId));
+        $hctBankAccount->addAttribute("style", "margin-top:5px;");
+        $flds[]   = $hctBankAccount;
+        $flds[] = new MSeparator();
+        
+        $discountLabel = new MText('discountLabel', _M('Desconto',$module).':');
+        $discountLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $discountLabel->setClass('m-caption');
+        $discountLabel->addAttribute('style', 'float:right');
+        $discount = new MTextField('discount', $args->discount, null, 10, '0.00');
+        $operationDiscount = $busOperation->getOperation($operations->discountOperation);        
+        $doLabelValue = ($operationDiscount->operationTypeId == 'D') ? "<font color='red'>{$operationDiscount->operationTypeId}</font>" : "<font color='blue'>{$operationDiscount->operationTypeId}</font>";
+        $doLabel = new MText('doLabel', $doLabelValue);
+        $discountAccount = new MHContainer('hctDiscount', array($discountLabel, $discount, $doLabel));
+        $discountAccount->addAttribute("style", "margin-top:5px;");
+        $flds[]   = $discountAccount;
+        $flds[] = new MSeparator();
+        
+        $jurosLabel = new MText('jurosLabel', _M('Juros/Multa',$module).':');
+        $jurosLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $jurosLabel->setClass('m-caption');
+        $jurosLabel->addAttribute('style', 'float:right');
+        $juros = new MTextField('juros', $args->juros, null, 10, '0.00');
+        $operationInterest = $busOperation->getOperation($operations->interestOperation);        
+        $joLabelValue = ($operationInterest->operationTypeId == 'D') ? "<font color='red'>{$operationInterest->operationTypeId}</font>" : "<font color='blue'>{$operationInterest->operationTypeId}</font>";
+        $joLabel = new MText('joLabel', $joLabelValue);
+        $jurosAccount = new MHContainer('hctDiscount', array($jurosLabel, $juros, $joLabel));
+        $jurosAccount->addAttribute("style", "margin-top:5px;");
+        $flds[]   = $jurosAccount;
+        $flds[] = new MSeparator();
+        
+        $taxLabel = new MText('taxLabel', _M('Taxa',$module).':');
+        $taxLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $taxLabel->setClass('m-caption');
+        $taxLabel->addAttribute('style', 'float:right');
+        $tax = new MTextField('tax', $args->tax, null, 10, '0.00');
+        $operationTax = $busOperation->getOperation($operations->bankTaxOperation);
+        $toLabelValue = ($operationTax->operationTypeId == 'D') ? "<font color='red'>{$operationTax->operationTypeId}</font>" : "<font color='blue'>{$operationTax->operationTypeId}</font>";
+        $toLabel = new MText('toLabel', $toLabelValue);
+        $taxAccount = new MHContainer('hctDiscount', array($taxLabel, $tax, $toLabel));
+        $taxAccount->addAttribute("style", "margin-top:5px;");
+        $flds[]   = $taxAccount;
+        
+        return $flds;
+    }
+
+    /**
+     * Event triggered when user chooses Delete from the toolbar
+     **/
+    public function tbBtnDelete_click($sender=NULL)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $MIOLO->getClass('accountancy', 'accountancy');
+        $data   = $this->getTypesData();
+        
+        try
+        {
+            $data = $this->busObject->getEntry($data->entryId);
+
+            if ( ACCOUNTANCY::dateAlreadyAccounted($data->entryDate) )
+            {
+                $msg  = _M('Operação não permitida. Limite de data excedido para essa operação',$module);
+
+                throw new Exception($msg);
+            }
+            
+            parent::tbBtnDelete_click($sender);
+        } 
+        catch (Exception $ex) 
+        {
+            $this->addError($ex->getMessage());
+        }
+        
+    }
+    
+    /**
+     * Deleta as movimentações de caixa do lançamento.
+     * 
+     * @param type $data
+     */    
+    public function deleteCounterMovement($data)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        try
+        {
+            $BusCounterMovement = new BusinessFinanceBusCounterMovement();
+            
+            foreach ( $data as $counter )
+            {
+                if ( strlen($counter[7]) > 0 )
+                {
+                    $BusCounterMovement->deleteCounterMovement($counter[0]);
+                }
+            }
+        }
+        catch ( Exception $e )
+        {
+            $this->addError($e->getMessage());
+        }
+    }
+    
+    /**
+     * Deleta as movimentações bancárias do lançamento.
+     * 
+     * @param type $data
+     */    
+    public function deleteBankAccountMovement($data)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        try
+        {
+            $BusBankMovement = new FinBankMovement();
+            
+            foreach ( $data as $bank )
+            {
+                if ( strlen($bank[1]) > 0 )
+                {
+                    $BusBankMovement->bankMovementId = $bank[1];
+                    $BusBankMovement->delete();
+                }
+            }
+        }
+        catch ( Exception $e )
+        {
+            $this->addError($e->getMessage());
+        }
+    }
+
+    /**
+     * Event triggered when user chooses Save from the toolbar
+     **/
+    public function tbBtnSave_click($sender=NULL)
+    {
+        $MIOLO     = MIOLO::getInstance();
+        $module    = MIOLO::getCurrentModule();
+        $action    = MIOLO::getCurrentAction();
+        $function  = MIOLO::_request('function');
+        
+        $MIOLO->getClass('accountancy', 'accountancy');
+        $goto = MIOLO::_request('goto') ? MIOLO::_request('goto') : MIOLO::_request('goto', 'GET');
+        
+        $data     = $this->getTypesData();
+        
+        // Verifica se o processo possui fluxo de aprovações.
+        FinFluxoAprovacaoConfiguracao::checarAcessoDoUsuarioAoProcesso(FinFluxoAprovacaoProcesso::LANCAMENTOS_DE_TITULOS, $data->invoiceId, $data);
+        
+        SDatabase::beginTransaction();
+        try
+        {
+            //Limite de data da operação
+            if ( ACCOUNTANCY::dateAlreadyAccounted($data->entryDate) && ($function != SForm::FUNCTION_UPDATE) )
+            {
+                $msg  = _M('Operação não permitida. Limite de data excedido para essa operação',$module);
+                throw new Exception($msg);
+            }
+            else
+            {
+                $ok = true;
+                
+                //MOVIMENTAÇÃO BANCÁRIA
+                if ( $data->movement == self::MOV_BANCARIA )
+                {
+                    if ( strlen($data->bankMovementId) > 0 ) //já existe, atuliza
+                    {
+                        $ok = $this->saveBankAccountMovement($data);
+                    }
+                    else
+                    {
+                        $ok = $this->saveBankAccountMovement($data, true);
+                    }
+                    
+                    if ( is_numeric($ok) )
+                    {
+                        // atribui id no $_REQUEST para ser pego no getTypesData() e salvar corretamente na tabela FinEntry
+                        $_REQUEST['bankMovementId'] = $ok;
+                    }
+                }//MOVIMENTAÇÃO DE CAIXA
+                elseif ( $data->movement == self::MOV_DE_CAIXA )
+                {
+                    if ( strlen($data->counterMovementId) > 0 ) //já existe, atuliza
+                    {
+                        $ok = $this->saveCounterMovement($data);
+                    }
+                    else
+                    {
+                        $ok = $this->saveCounterMovement($data, true);
+                    }
+                    
+                    if ( is_numeric($ok) )
+                    {
+                        // atribui id no $_REQUEST para ser pego no getTypesData() e salvar corretamente na tabela FinEntry
+                        $_REQUEST['counterMovementId'] = $ok;
+                    }
+                }
+                elseif ( $data->movement == self::MOV_NENHUMA )
+                {
+                    //Garante que as duas movimentações vão ficar vazias no request
+                    $_REQUEST['counterMovementId'] = null;
+                    $_REQUEST['bankMovementId'] = null;
+                }
+
+                //Se estiver tudo correto, salva o lançamento
+                if ( $ok )
+                {
+                    parent::tbBtnSave_click($sender);
+                    SDatabase::commit();
+                    
+                    //Volta para as consultas diversas
+                    if ( strstr(MIOLO::_REQUEST('goto'), 'diverseConsultation') )
+                    {
+                        $MIOLO->page->Redirect($this->getPreviousURL());
+                    }
+                }
+            }
+        }
+        catch (Exception $ex) 
+        {
+            SDatabase::rollback();
+            $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);            
+            $MIOLO->error($ex->getMessage(), $goto);
+        }
+    }
+    
+    public function getInsertGotoNo()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        return $MIOLO->getActionURL($module, $action, null, array('entryIdS' => $this->busObject->getLastInsertId()));
+    }
+    
+    /**
+     * Edita movimentação bancária caso o lançamento pertença a uma.
+     * 
+     * @param type $data
+     */
+    public function updateBankAccountMovement($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $BusDefaultOperations = new BusinessFinanceBusDefaultOperations();
+        $operations = $BusDefaultOperations->getDefaultOperations();
+        
+        $finBankMovement = new FinBankMovement($data->bankMovementId);
+        
+        if ( $data->operationId == $operations->discountOperation )
+        {
+            $finBankMovement->fileDiscount = $data->value;
+        }
+        else if ( $data->operationId == $operations->interestOperation )
+        {
+            $finBankMovement->fileInterestFine = $data->value;
+        }
+        else if ( $data->operationId == $operations->bankTaxOperation )
+        {
+            $finBankMovement->expenditure = $data->value;
+        }
+        
+        $finBankMovement->update();
+    }
+    
+    /**
+     * Registra movimentação de caixa.
+     * 
+     * @param type $data
+     * @return type
+     */
+    public function saveCounterMovement($data, $forceInsert = false)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $function = MIOLO::_REQUEST("function");
+        
+        try
+        {
+            if ( strlen($data->openCounterId) > 0 )
+            {
+                $BusCounterMovement = new BusinessFinanceBusCounterMovement();
+
+                $args = new stdClass();
+                $args->value         = $data->value;
+                $args->movementDate  = $data->entryDate;
+                $args->operation     = $data->operationType;
+                $args->speciesId     = $data->speciesId;
+                $args->observation   = $data->comments;
+                $args->openCounterId = $data->openCounterId;
+                $args->invoiceId     = $data->invoiceId;
+                $args->operationId   = $data->operationId;
+                $args->costCenterId  = $data->costCenterId;
+                
+                if ( $function == 'insert' || $forceInsert )
+                {
+                    if ( $BusCounterMovement->insertCounterMovement($args) )
+                    {
+                        return $BusCounterMovement->getLastInsertId();
+                    }
+                }
+                else if ( $function == 'update' )
+                {
+                    $args->counterMovementId = $data->counterMovementId;
+                    
+                    if ( $BusCounterMovement->updateCounterMovement($args) )
+                    {
+                        return $data->counterMovementId;
+                    }
+                }
+            }
+            else
+            {
+                throw new Exception(_M("Precisa selecinar um caixa!", $module));
+            }
+        }
+        catch ( Exception $e )
+        {
+            throw new Exception($e->getMessage());
+        }
+    }
+    
+    /**
+     * Registra movimentação bancária.
+     * 
+     * @param type $data
+     * @return type
+     */
+    public static function saveBankAccountMovement($data, $forceInsert = false)
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $function = MIOLO::_REQUEST('function');
+        $action = $MIOLO->getCurrentAction();
+        
+        try
+        {
+            if ( strlen($data->bankAccountId) > 0 )
+            {
+                $finBankMovement      = new FinBankMovement;
+                $BusBankAccount       = new BusinessFinanceBusBankAccount();
+                $BusInvoice           = new BusinessFinanceBusInvoice();
+                $BusDefaultOperations = new BusinessFinanceBusDefaultOperations();
+                
+                $bankAccount = $BusBankAccount->getBankAccount($data->bankAccountId);
+                $invoice     = $BusInvoice->getInvoice($data->invoiceId);
+                
+                $interestValue = SAGU::NVL($MIOLO->_REQUEST('juros'), $data->juros);
+                $discountValue = SAGU::NVL($MIOLO->_REQUEST('discount'), $data->discount);
+                $expenditValue = SAGU::NVL($MIOLO->_REQUEST('tax'), $data->tax);
+                
+                if ( strlen($bankAccount->branchNumber) == 0 )
+                {
+                    $url = $MIOLO->GetActionURL('finance', 'main:register:bankAccount', null, array('function' => 'update', 'bankAccountId' => $data->bankAccountId));
+                    $link = new MLink('lnkCE', _M('clique aqui'), $url, null, '_new');
+                    throw new Exception(_M('Ops! O Dígito verificador da Conta bancária não está cadastrado. Para editar, @1', null, $link->generate()));
+                }
+                
+                if ( strlen($bankAccount->branchNumberDigit) == 0 )
+                {
+                    $url = $MIOLO->GetActionURL('finance', 'main:register:bankAccount', null, array('function' => 'update', 'bankAccountId' => $data->bankAccountId));
+                    $link = new MLink('lnkCE', _M('clique aqui'), $url, null, '_new');
+                    throw new Exception(_M('Ops! O dígito da Agência da Conta bancária não está cadastrado. Para editar, @1', null, $link->generate()));
+                }
+                
+                $finBankMovement->bankId               = $bankAccount->bankId;
+                $finBankMovement->invoiceId            = $invoice->invoiceId;
+                $finBankMovement->ourNumber            = $bankAccount->ourNumber;
+                $finBankMovement->value                = $invoice->value;
+                $finBankMovement->valuePaid            = $data->value;
+                $finBankMovement->branch               = $bankAccount->branchNumberDigit;
+                $finBankMovement->branchNumber         = $bankAccount->branchNumber;
+                $finBankMovement->wallet               = SAGU::NVL($bankAccount->wallet, '0');
+                $finBankMovement->occurrenceDate       = $data->entryDate;
+                $finBankMovement->fileId               = null;
+                $finBankMovement->fileDiscount         = ( $discountValue ) ? $discountValue : 0;
+                $finBankMovement->saguDiscount         = 0;
+                $finBankMovement->fileInterestFine     = ( $interestValue ) ? $interestValue : 0;
+                $finBankMovement->saguInterestFine     = 0;
+                $finBankMovement->balance              = null;
+                $finBankMovement->balanceWithPolicies  = null;
+                $finBankMovement->creditDate           = null;
+                $finBankMovement->fileMaturityDate     = null;
+                $finBankMovement->saguMaturityDate     = null;
+                $finBankMovement->fileLine             = null;
+                $finBankMovement->otherDiscounts       = 0;
+                $finBankMovement->otherAdditions       = 0;
+                $finBankMovement->expenditure          = ( $expenditValue ) ? $expenditValue : 0;
+                $finBankMovement->bankMovementStatusId = 4;
+                $finBankMovement->bankAccountId        = $data->bankAccountId;
+                
+                $operations = $BusDefaultOperations->getDefaultOperations();
+                
+                $filterDiscount = new FinEntry();
+                $filterDiscount->invoiceId    = $finBankMovement->invoiceId;
+                $filterDiscount->isAccounted  = DB_FALSE;
+                $filterDiscount->creationType = 'A'; // gerado automaticamente pelo sistema
+                $filterDiscount->costCenterId = SAGU::NVL($data->costCenterId, $invoice->costCenterId);
+                $filterDiscount->entryDate    = $data->entryDate;
+                
+                $entryIds = array();
+                
+                // Desconto
+                if ( strlen($discountValue) > 0 && $discountValue > 0 )
+                {
+                    $entryIds[] = self::insertEntryOperation($filterDiscount, $operations->discountOperation, $discountValue, $data->comments, $forceInsert);
+                }
+                
+                // Juros/Multa
+                if ( strlen($interestValue) > 0 && $interestValue > 0)
+                {
+                    $entryIds[] = self::insertEntryOperation($filterDiscount, $operations->interestOperation, $interestValue, $data->comments, $forceInsert);
+                }
+                
+                // Taxa.
+                if ( strlen($expenditValue) > 0 && $expenditValue > 0 )
+                {
+                    $entryIds[] = self::insertEntryOperation($filterDiscount, $operations->bankTaxOperation, $expenditValue, $data->comments, $forceInsert);
+                }
+                
+                // Valor pago.
+                if ( (strlen($data->value) > 0) && ($action != 'main:register:entry') )
+                {
+                    $entryIds[] = self::insertEntryOperation($filterDiscount, $operations->paymentOperation, $data->value, $data->comments, $forceInsert);
+                }
+                
+                // define temporariamente para utilizar na BusReceivableInvoice
+                $MIOLO->setConf('temp.entryids', $entryIds);
+                
+                if ( $function == 'insert' || $forceInsert )
+                {
+                    if ( $finBankMovement->insert() )
+                    {
+                        return $finBankMovement->getLastInsertId();
+                    }
+                }
+                else
+                {
+                    $finBankMovement->bankMovementId = $data->bankMovementId;
+                    
+                    if ( $finBankMovement->update() )
+                    {
+                        return $data->bankMovementId;
+                    }
+                }
+            }
+            else
+            {
+                throw new Exception(_M("Precisa selecionar um banco e uma conta bancária!", $module));
+            }
+        }
+        catch ( Exception $e )
+        {
+            throw new Exception($e->getMessage());
+        }
+    }
+    
+    /**
+     * Insere os demais lançamentos das operações 
+     * da movimentação bancária.
+     * 
+     * @param type $filters
+     * @param type $operationId
+     * @param type $value
+     * @param type $comments
+     */
+    public static function insertEntryOperation($filters, $operationId, $value, $comments=null, $forceInsert = false)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $function = MIOLO::_REQUEST("function");
+        
+        $BusEntry = new BusinessFinanceBusEntry();
+        $filters->operationId = $operationId;
+                    
+        if ( $function == 'insert' || $forceInsert )
+        { 
+            $filters->value    = $value;
+            $filters->comments = $comments;
+            
+            return $BusEntry->insertEntry($filters);
+        }
+        else
+        {
+            unset($filters->value);
+            unset($filters->comments);
+            unset($filters->entryId);
+        
+            $entry = $BusEntry->searchEntry($filters);
+
+            $filters->value    = $value;
+            $filters->entryId  = $entry[0][0];
+            $filters->comments = $comments;
+
+            $BusEntry->updateEntry($filters);
+            
+            return $filters->entryId;
+        }
+    }
+
+    /**
+     * Method to gather all information from the form fields
+     * and put them on a database compatible object
+     **/
+    public function getTypesData()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $data = parent::getTypesData();
+
+        //Garante o tipo de criação
+        if ( strlen($data->entryId) > 0 )
+        {
+            $lancamento = $this->busObject->getEntry($data->entryId);
+        }
+        $data->creationType = SAGU::NVL($lancamento->creationType, 'M');
+
+        $counterId_openCounterId = explode("_", $this->getFormValue('counterId_openCounterId'));
+        
+        //Senão achar a operação anterior, busca o padrão da operação
+        $data->operationType = $this->getFormValue('operationType');
+        
+        if ( !(strlen($data->operationType) > 0) && strlen($this->getFormValue('operationId')) > 0 )
+        {
+            $busOperation = new BusinessFinanceBusOperation();
+            $operation = $busOperation->getOperation($this->getFormValue('operationId'));
+            $data->operationType = $operation->operationTypeId;
+        }
+        
+        $data->speciesId         = $this->getFormValue('speciesId');
+        $data->movement          = $this->getFormValue('movement');
+        $data->counterId         = $counterId_openCounterId[0];
+        $data->openCounterId     = $counterId_openCounterId[1];
+        $data->bankId            = $this->getFormValue('bankId');
+        $data->bankAccountId     = $this->getFormValue('bankAccountId');
+        $data->counterMovementId = $this->getFormValue('counterMovementId');
+        $data->bankMovementId    = $this->getFormValue('bankMovementId');
+        $data->accountSchemeId   = $this->getFormValue('accountSchemeId');
+        
+        // Para o fluxo de aprovações
+        $data = FinFluxoSolicitacaoRegistro::obterDadosDoRegistro($data); 
+        
+        return $data;
+    }
+    
+    /*
+     * Herda passagem do botão de excluir da toolbar, para verificações.
+     */
+    public function tbBtnDelete_confirm($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $action = $MIOLO->getCurrentAction();
+        $module = $MIOLO->getCurrentModule();
+        
+        SDatabase::beginTransaction();
+        try
+        {
+            parent::tbBtnDelete_confirm($sender);  
+            SDatabase::commit();
+        } 
+        catch (Exception $ex) 
+        {
+            SDatabase::rollback();
+            $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);            
+            $MIOLO->error($ex->getMessage(), $goto);
+        }
+    }
+}
+?>

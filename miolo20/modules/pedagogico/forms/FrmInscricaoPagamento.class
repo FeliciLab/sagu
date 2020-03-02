@@ -1,0 +1,550 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Curso
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class Created on 13/11/2013
+ *
+ **/
+class FrmInscricaoPagamento extends FrmInscricaoPai
+{
+    public function __construct()
+    {
+        $this->setBloquearNavegacao(true);
+        
+        parent::__construct(new AcpInscricao(), array('inscricaoid'), null, _M('Condições de pagamento'));
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+    }
+    
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $funcion = MIOLO::_REQUEST('function');
+        if( $funcion == SForm::FUNCTION_UPDATE )
+        {
+            $inscricaoid = MIOLO::_REQUEST('inscricaoid');
+            $inscricao = new AcpInscricao($inscricaoid);
+        }
+        
+        // Se estiver apenas mostrando o resumo, não busca mais nenhum campo
+        if ( MIOLO::_REQUEST('event') != 'resumoInscricao' )
+        {
+            //obtém campo com condiçoes de inscrição
+            $campoinscricao = $this->obterCampoCondicaoDeInscricao();
+            if( $campoinscricao )
+            {
+                $fields[] = $campoinscricao;
+            }
+
+            // Obtém campos de condição de matrícula
+            $campomatricula = $this->obterCampoCondicaoDeMatricula();
+            if( $campomatricula )
+            {
+                $fields[] = $campomatricula;
+            }
+
+            $ofertaCurso = new AcpOfertaCurso(MIOLO::_REQUEST('ofertacursoid'));
+
+            // Se o curso não for gratuito, monta as condições de pagamento
+            if ( $ofertaCurso->ocorrenciacurso->curso->gratuito != DB_TRUE )
+            {
+                $condicao = current($this->obterCondicoesDePagamento());
+                $busConvenant = $MIOLO->GetBusiness('finance', 'BusConvenant');
+                $convenio = $busConvenant->listConvenants();
+                if ( count($convenio) > 0 && $condicao['habilitaconvenio'] == DB_TRUE )
+                {                
+                    $fldConvenio = new MSelection('convenantid', null, _M('Convênio'), $convenio);
+                    $fldConvenio->addAttribute('onChange', SForm::getAjaxAction('selecionaConvenio', 'divMensagemDesconto', false));
+                    $fields[] = new MBaseGroup('bsgConvenios', _M('Caso possua algum CONVÊNIO, selecione abaixo:'), array($fldConvenio), 'vertical');
+                }
+
+                //Obtém o preço do curso
+                $precocurso = PrcPrecoCurso::obterPrecoDaOfertaDoCurso($ofertaCurso->ofertacursoid, PrcPrecoCurso::TIPO_MATRICULA);
+
+                $href = $MIOLO->GetActionURL($module, 'main:precific:register:precodocurso', null, array('buscaS' =>  $ofertaCurso->ocorrenciacurso->curso->nome));
+                $link = new MLink('', '', $href, 'aqui', '_new');
+
+                // Verifica se existe dia de vencimento cadastrado
+                if( count(PrcDiaDeVencimento::listarDiasDeVencimento($precocurso->precocursoid)) == 0 )
+                {
+                    $MIOLO->error(_M('Nenhum dia de vencimento cadastrado ou nenhuma configuração de precificação vigente. Verifique as configurações de precificação clicando ' . $link->generate() . '.'));
+                }
+
+                // Verifica se possui um centro de custo cadastrado
+                $costcenterid = PrcCentroCustoOcorrenciaCurso::obterCentroDeCustoDaOcorrenciaDeCurso($ofertaCurso->ocorrenciacursoid);
+                if( !strlen($costcenterid) > 0 )
+                {
+                    $MIOLO->error(_M('Nenhum centro de custo encontrado para o curso @1. Acesse "Pedagógico > Precificação > Contábil > Centro de custo da ocorrência de curso" e defina um centro de custo', $module, $ofertacurso->descricao));
+                }
+
+                // Adiciona o campo da data de vencimento
+                $diasDeVencimento = PrcDiaDeVencimento::listarDiasDeVencimento($precocurso->precocursoid);
+
+                foreach( $diasDeVencimento as $cod => $dia )
+                {
+                    $dias[] = new MRadioButton('dia_'.$cod, $cod, $dia, true, $dia);
+                }
+                $fldDia = new MRadioButtonGroup('diadevencimentoid', _M('Dia de vencimento'), $dias, $inscricao->diadevencimentoid, '', 'horizontal');
+                $fields[] = $bg = new MBaseGroup('bsgVencimento', _M('Selecione um DIA DE VENCIMENTO:'), array($fldDia));
+                if ( count($diasDeVencimento) == 1 )
+                {
+                    $bg->addAttribute('style="display: none;"');
+                }
+
+                $validators[] = new MRequiredValidator('precocondicaoinscricaoid', _M('Condição de pagamento da inscrição', $module));
+                $validators[] = new MRequiredValidator('condicaodepagamentoid', _M('Condição de pagamento das mensalidades', $module));
+            }
+        }
+        
+        parent::defineFields($fields, $validators);
+    }
+    
+    
+    public function btnSaveAndFinish_click($sender = null)
+    {
+        //Salva somente se nenhum erro foi informado na tela
+        if( count($this->errors) == 0 )
+        {
+            parent::btnSaveAndFinish_click();
+        }
+    }
+    
+    /**
+     * obtém o convenio selecionado e cria mensagem de desconto
+     * @param type $args
+     */
+    public function selecionaConvenio($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $convenantid = $args->convenantid;
+        $busConvenant = $MIOLO->GetBusiness('finance', 'BusConvenant');
+        if( strlen($convenantid) > 0 )
+        {
+            $convenant = $busConvenant->getConvenant($convenantid);
+            $msg = '*Recebe ';
+            if( $convenant->isPercent == DB_TRUE )
+            {
+                $msg .= $convenant->value.'%';
+            }
+            else
+            {
+                $msg .= 'R$ '.$convenant->value;
+            }
+            $msg .= ' de desconto se pago até ';
+            if( $convenant->beforeAfter == 'B' && $convenant->daysToDiscount > 0 )
+            {
+                 $msg .= $convenant->daysToDiscount.' dias antes do vencimento';
+            }
+            else
+            {
+                if( $convenant->daysToDiscount > 0 )
+                {
+                    $msg .= $convenant->daysToDiscount.' dias após vencimento';
+                }
+                else
+                {
+                    $msg .= ' o vencimento';
+                }
+            }
+        }
+        return array("<br>", new MTextLabel('', $msg));
+    }
+    
+    /**
+     * Define origem e situação da inscrição como interface administrativa
+     * @return stdClass
+     */
+    public function beforeSave(AcpInscricao $inscricao)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $function = MIOLO::_REQUEST('function');
+        
+        $personid = MIOLO::_REQUEST('personid');
+        $ofertaturmaid = MIOLO::_REQUEST('ofertaturmaid');
+        if( $function == SForm::FUNCTION_INSERT )
+        {
+            $possuiinscricaoativa = AcpInscricao::possuiInscricaoAtiva($personid, $ofertaturmaid);
+            if( $possuiinscricaoativa )
+            {
+                $MIOLO->error(_M('Não é possível finalizar a inscrição: A pessoa já está inscrita na turma.'));
+            }
+        }
+        
+        $inscricao->inscricaoid = MIOLO::_REQUEST('inscricaoid');
+        $inscricao->personid = MIOLO::_REQUEST('personid');
+        $inscricao->ofertacursoid = MIOLO::_REQUEST('ofertacursoid');
+        $inscricao->precocondicaoinscricaoid = MIOLO::_REQUEST('precocondicaoinscricaoid');
+        
+        if( is_null($inscricao->situaca) && is_null($inscricao->situacao) && is_null($inscricao->datasituacao) )
+        {
+            if (in_array(MIOLO::_REQUEST('action'), array('main:process:inscricaoturmaexterna', 'main:process:inscricaopagamentoexterna', 'main:process:inscricaoexterna', 'main:process:termodeinscricao')))
+            {
+                $inscricao->origem = AcpInscricao::ORIGEM_SITE;
+            }
+            else
+            {
+                $inscricao->origem = AcpInscricao::ORIGEM_ADMINISTRATIVA;
+            }
+            
+            $inscricao->situacao = AcpInscricao::SITUACAO_PENDENTE;     
+            $inscricao->datasituacao = SAGU::getDateNow(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP'));
+        }
+        return $inscricao;
+    }
+    
+    public function afterSave()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $action = MIOLO::getCurrentAction();
+        $module = MIOLO::getCurrentModule();
+        $function = MIOLO::_REQUEST('function');
+    
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+
+        $inscricaoid = $this->getTypeObjectPopulated()->getPkeyValue();
+        
+        $ofertacursoid = MIOLO::_REQUEST('ofertacursoid');
+        $ofertacurso = $this->obterOferta($ofertacursoid);
+        
+        //Salva as informações da inscrição turma grupo
+        if( $ofertacurso->ocorrenciacurso->curso->perfilcurso->permiteinscricaoporgrupo == DB_TRUE ) 
+        {
+            $turmas = explode('|', MIOLO::_REQUEST('turmas'));
+            foreach($turmas as $cod=>$args)
+            {
+                $argumentos = explode('_', $args);
+
+                $matrizcurriculargrupoid = $argumentos[0];
+                $ofertaturmaid = $argumentos[1];
+
+                $inscricaoturmagruposearch = AcpInscricaoTurmaGrupo::obterInscricaoTurmaGrupo($inscricaoid, $ofertaturmaid, $matrizcurriculargrupoid);
+                $inscricaoturmagrupo = $inscricaoturmagruposearch[0];
+                if( !$inscricaoturmagrupo instanceof AcpInscricaoTurmaGrupo )
+                {
+                    $inscricaoturmagrupo = new AcpInscricaoTurmaGrupo();
+                }
+                
+                $inscricaoturmagrupo->inscricaoid = $inscricaoid;
+                $inscricaoturmagrupo->ofertaturmaid = $ofertaturmaid;
+                $inscricaoturmagrupo->precocondicaomatriculaid = $this->obterPrecoCondicaoId($ofertaturmaid, $matrizcurriculargrupoid);
+                $inscricaoturmagrupo->matrizcurriculargrupoid = $matrizcurriculargrupoid;
+                $inscricaoturmagrupo->salvarTurmaGrupo();
+            }
+        }
+        else
+        {
+            $ofertaturmaid = MIOLO::_REQUEST('ofertaturmaid');
+            
+            $inscricaoturmagruposearch = AcpInscricaoTurmaGrupo::obterInscricaoTurmaGrupo($inscricaoid, $ofertaturmaid);
+            $inscricaoturmagrupo = $inscricaoturmagruposearch[0];
+            
+            if( !$inscricaoturmagrupo instanceof AcpInscricaoTurmaGrupo )
+            {
+                $inscricaoturmagrupo = new AcpInscricaoTurmaGrupo();
+            }
+            
+            $inscricaoturmagrupo->inscricaoid = $inscricaoid;
+            $inscricaoturmagrupo->precocondicaomatriculaid = $this->obterPrecoCondicaoId($ofertaturmaid);;
+            $inscricaoturmagrupo->ofertaturmaid = $ofertaturmaid;
+            $inscricaoturmagrupo->salvarTurmaGrupo();
+        }
+        
+        // Gera taxa de inscrição.
+        if ( $ofertacurso->taxainscricao == DB_TRUE && MIOLO::_REQUEST('function') == SForm::FUNCTION_INSERT ) 
+        {
+            $tituloInscricao = new PrcTituloInscricao();
+            $geradaTaxaDeInscricao = $tituloInscricao->gerarTituloInscricao($inscricaoid);
+        }
+        
+        if ( $action != 'main:process:inscricaopagamentoexterna' )
+        {
+            // Se gerou taxa.
+            if ( $ofertacurso->taxainscricao == DB_TRUE && MIOLO::_REQUEST('function') == SForm::FUNCTION_INSERT ) 
+            {
+                $link = $this->linkImprimirBoleto($inscricaoid);
+                $msg = "<br><br>Clique <a href=$link>AQUI</a> para imprimir o boleto";
+            }
+
+            //Envia e-mail de confirmação da inscrição
+            if( $function == SForm::FUNCTION_INSERT )
+            {
+                $this->enviarEmail($inscricaoid, $ofertaturmaid);
+            }
+
+            $this->exibeTelaFinal($inscricaoid, $msg);
+        }
+    }
+   
+    /**
+     * Obtém as condições de pagamento para inscrições em diferentes turmas/grupos
+     * para inscrição em turma/grupo
+     */
+    public function obterCondicoesDePagamento()
+    {
+        $ofertacursoid = MIOLO::_REQUEST('ofertacursoid');
+        $ofertacurso = $this->obterOferta($ofertacursoid);
+        
+        $count = 0;
+        
+        $condicoesdepagamento = array();
+        if( $ofertacurso->ocorrenciacurso->curso->perfilcurso->permiteinscricaoporgrupo == DB_TRUE ) 
+        {
+            //Percorre cada grupo/turma selecionado e obtém as condições de pagamento
+            $turmas = explode('|', MIOLO::_REQUEST('turmas'));
+            foreach($turmas as $cod=>$args)
+            {
+                $argumentos = explode('_', $args);
+                $matrizcurriculargrupoid = $argumentos[0];
+                $ofertaturmaid = $argumentos[1];
+
+                //Obtém o preço do curso
+                $precocurso = PrcPrecoCurso::obterPrecoDaOfertaDaTurma($ofertaturmaid, PrcPrecoCurso::TIPO_MATRICULA);
+
+                //Percorre cada condição de pagamento para o grupo selecionado
+                $condicoesdepagamento[] = PrcPrecoCondicao::listarCondicoesDePagamentoDoPreco($precocurso->precocursoid);
+            }
+
+            //Seleciona apenas as condições de pagamento em comum
+            $condicaopagamento = array();
+            foreach( $condicoesdepagamento as $cod=>$condicao )
+            {
+                if( count($condicaopagamento) == 0 )
+                {
+                    $condicaopagamento = $condicao;
+                }
+                $condicaopagamento = array_intersect_key($condicaopagamento, $condicoesdepagamento[$cod]);
+            }
+            
+            //Verifica se existem condições de pagamento em comum para todos os preços das turmas selecionadas
+            if( count($condicaopagamento) == 0 )
+            {
+                $this->addError(_M('Não foram encontradas condições de pagamento comuns em todos os preços. Verifique o cadastro do preço de curso e cadastre condições iguais para todas as ocorrências.'));
+            }
+            
+            $valorparcela = '0';
+            $valortotal = '0';
+            
+            //Soma as condições de pagamento
+            foreach($turmas as $cod=>$args)
+            {
+                $argumentos = explode('_', $args);
+                $matrizcurriculargrupoid = $argumentos[0];
+                $ofertaturmaid = $argumentos[1];
+
+                //Obtém o preço do curso
+                $precocurso = PrcPrecoCurso::obterPrecoDaOfertaDaTurma($ofertaturmaid, PrcPrecoCurso::TIPO_MATRICULA);
+
+                foreach( $condicaopagamento as $condicaodepagamentoid=>$descricao )
+                {
+                    $precocursogrupo = PrcPrecoCursoGrupo::obterPrecoCursoGrupo($precocurso->precocursoid, $matrizcurriculargrupoid);
+                    $precocondicao = PrcPrecoCondicao::obterValoresDaCondicao($precocurso->precocursoid, $condicaodepagamentoid, $matrizcurriculargrupoid, $precocursogrupo->precocursogrupoid);
+                    
+                    $condicoes[$condicaodepagamentoid]['condicaodepagamentoid'] = $condicaodepagamentoid;
+                    $condicoes[$condicaodepagamentoid]['descricao'] = $descricao;
+                    $condicoes[$condicaodepagamentoid]['valorparcela'] = SAGU::calcNumber(SAGU::NVL($condicoes[$condicaodepagamentoid]['valorparcela'], '0.00').'+'.SAGU::NVL($precocondicao[0]->valorparcela, '0.00'));
+                    $condicoes[$condicaodepagamentoid]['valortotal'] = SAGU::calcNumber(SAGU::NVL($condicoes[$condicaodepagamentoid]['valortotal'], '0.00').'+'.SAGU::NVL($precocondicao[0]->valortotal, '0.00'));
+                    $condicoes[$condicaodepagamentoid]['habilitaconvenio'] = $precocurso->habilitaconvenio;
+                }
+            }
+        }
+        else
+        {
+            //Obtém a oferta de turma selecionada
+            $ofertaturmaid = MIOLO::_REQUEST('ofertaturmaid');
+                                
+            //Condições de pagamento da matrícula
+            $precocurso = PrcPrecoCurso::obterPrecoDaOfertaDaTurma($ofertaturmaid, PrcPrecoCurso::TIPO_MATRICULA);
+            
+            //Obtém as condições para este preço
+            $condicoesdepagamento =  PrcPrecoCondicao::listarCondicoesDePagamentoDoPreco($precocurso->precocursoid);
+            
+            
+            foreach( $condicoesdepagamento as $condicaodepagamentoid=>$descricao )
+            {
+                $valorparcela = '0';
+                $valortotal = '0';
+                    
+                $precocondicao = PrcPrecoCondicao::obterValoresDaCondicao($precocurso->precocursoid, $condicaodepagamentoid);
+                //Soma as o valor das condições de cada grupo selecionado
+                foreach($precocondicao as $c => $precocondicao)
+                {
+                    $valorparcela = SAGU::calcNumber(SAGU::NVL($valorparcela, '0').'+'.SAGU::NVL($precocondicao->valorparcela, '0'));
+                    $valortotal = SAGU::calcNumber(SAGU::NVL($valortotal, '0').'+'.SAGU::NVL($precocondicao->valortotal, '0'));
+                }
+                
+                $condicoes[$count]['condicaodepagamentoid'] = $condicaodepagamentoid;
+                $condicoes[$count]['descricao'] = $descricao;
+                $condicoes[$count]['valorparcela'] = $valorparcela;
+                $condicoes[$count]['valortotal'] = $valortotal;
+                $condicoes[$count]['habilitaconvenio'] = $precocurso->habilitaconvenio;
+                $count ++;
+            }
+            
+        }
+        
+        //Verifica se a forma de confirmação é o pagamento da primeir parcela e existe preço cadastrado
+        if( in_array($ofertacurso->ocorrenciacurso->curso->perfilcurso->regras->formadeconfirmacaomatricula, array(AcpRegrasMatriculaPerfilCurso::CONFIRMACAO_MATRICULA_PGTO_PRIMEIRA_PARCELA) ) )
+        {
+            if( !$precocurso->precocursoid )
+            {
+                $this->addError(_M('O perfil do curso define o pagamento da mensalidade como confirmação da matricula, porém nenhum preço para as mensalidades foi encontrado para o curso. Verifique o cadastro de preço do curso.'));
+            }
+        }
+        
+        if( $ofertacurso->ocorrenciacurso->curso->gratuito == DB_FALSE )
+        {
+            //Condições de pagamento das matrículas            
+            if( !$precocurso->precocursoid )
+            {
+                $this->addError(_M('O cadastro do curso define que o curso NÃO é gratuito, porém nenhum preço para as mensalidades foi encontrado para o curso. Verifique o cadastro de preço do curso.'));
+            }
+        }
+        
+        return $condicoes;
+    }
+    
+    /**
+     * @return int
+     */
+    public function obterCondicaoDePagamentoId()
+    {
+        $function = MIOLO::_REQUEST('function');
+        
+        if( $function == SForm::FUNCTION_UPDATE )
+        {
+            $inscricaoid = MIOLO::_REQUEST('inscricaoid');
+            $inscricao = new AcpInscricao($inscricaoid);
+        }
+        
+        $ofertacursoid = SAGU::NVL($inscricao->ofertacursoid, MIOLO::_REQUEST('ofertacursoid'));
+        
+        //Condições de pagamento da inscrição
+        $precoinscricao = PrcPrecoCurso::obterPrecoInscricao($ofertacursoid);
+        
+        $precocondicao = PrcPrecoCondicao::obterPrecosCondicaoDoPreco($precoinscricao->precocursoid);
+        
+        return $precocondicao[0]->condicaodepagamentoid;
+    }
+    
+    /**
+     * Obtém o campo da condição de inscrição
+     * @param type $ofertacursoid
+     * @return \MSelection
+     */
+    public function obterCampoCondicaoDeInscricao()
+    {
+        $function = MIOLO::_REQUEST('function');
+        if( $function == SForm::FUNCTION_UPDATE )
+        {
+            $inscricaoid = MIOLO::_REQUEST('inscricaoid');
+            $inscricao = new AcpInscricao($inscricaoid);
+        }
+
+        $ofertacursoid = SAGU::NVL($inscricao->ofertacursoid, MIOLO::_REQUEST('ofertacursoid'));
+        $ofertacurso = $this->obterOferta($ofertacursoid);
+
+        // Obtem os preços da inscrição
+        $precos = PrcPrecoCurso::obterPrecosInscricao($ofertacurso->ocorrenciacursoid);
+
+        //Condições de pagamento da inscrição
+        $precoinscricao = PrcPrecoCurso::obterPrecoInscricao($ofertacursoid);
+
+        //validar se o peril de curso define a forma de confirmação como pagamento da inscricao e existe de fato uma inscrição cadastrada
+        if( $ofertacurso->ocorrenciacurso->curso->perfilcurso->regras->formadeconfirmacaoinscricao == AcpRegrasMatriculaPerfilCurso::CONFIRMACAO_INSCRICAO_PGTO_TAXA )
+        {
+            if( !strlen($precoinscricao->precocursoid) > 0 )
+            {
+                $this->addError(_M('O perfil de curso define o pagamento de uma taxa de inscrição para confirmação da inscrição, porém nenhum preço de inscrição foi encontrado para o curso. Verifique o cadastro de preço do curso.'));
+            }
+        }
+        
+        //Verifica e adiciona a opção da taxa de inscrição
+        if ( $ofertacurso->taxainscricao == DB_TRUE )
+        {
+            if( strlen($precoinscricao->precocursoid) > 0 )
+            {
+                foreach ( $precos as $preco )
+                {
+                    $precocondicao = PrcPrecoCondicao::obterPrecosCondicaoDoPreco($preco->precocursoid);
+                    $condicaodepagamento = new PrcCondicaoDePagamento($precocondicao[0]->condicaodepagamentoid);
+                    $opt[$precocondicao[0]->precocondicaoid] = new MRadioButton('precocondicaoinscricaoid', $precocondicao[0]->precocondicaoid, '', true);
+                    $data[] = array($opt[$precocondicao[0]->precocondicaoid], $condicaodepagamento->descricao, $precocondicao[0]->valorparcela, $precocondicao[0]->valortotal);
+                }
+ 
+                $flds[] = new MSpacer();
+                
+                $columns = array( '', _M('Condição'), _M('Valor da parcela'), _M('Valor total'));
+                $table = new MTableRaw(null, $data, $columns);
+                $table->SetAlternate(true);
+                $flds[] = $table;
+                
+                $field = new MBaseGroup('bsgTaxaInscricao', _M('Taxa de INSCRIÇÃO:'), array($table));
+            }
+            else
+            {
+                $this->addError(_M('A oferta do curso define a utilização de uma taxa de inscrição, porém nenhum preço de inscrição foi encontrado para o curso. Verifique o cadastro de preço do curso.'));
+            }
+        }
+        return $field;
+    }
+    
+    /**
+     * Obtém os campos de condições de pagamento para matricula
+     */
+    public function obterCampoCondicaoDeMatricula()
+    {
+        //Obtém as condições de pagamento
+        $condicoes = $this->obterCondicoesDePagamento();
+        
+        //Percorre cada condição de pagamento
+        if( count($condicoes) > 0 )
+        {
+            $flds[] = new MSpacer();
+            foreach( $condicoes as $cod=>$condicao)
+            {
+                $opt[$condicao['condicaodepagamentoid']] = new MRadioButton('condicaodepagamentoid', $condicao['condicaodepagamentoid'], '', true);
+                $data[] = array($opt[$condicao['condicaodepagamentoid']], $condicao['descricao'], $condicao['valorparcela'], $condicao['valortotal']);
+            }
+
+            $columns = array( '', _M('Condição'), _M('Valor da parcela'), _M('Valor total'));
+            $table = new MTableRaw(null, $data, $columns);
+            $table->SetAlternate(true);
+            $flds[] = $table;
+            
+            $flds[] = new MDiv('divMensagemDesconto');
+            $field = new MBaseGroup('bsgMatricula', _M('Selecione uma condição de pagamento das MENSALIDADES:'), $flds, 'vertical');
+        } 
+       
+        return $field;
+    }
+}
+?>

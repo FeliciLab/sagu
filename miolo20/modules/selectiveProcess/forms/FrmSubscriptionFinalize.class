@@ -1,0 +1,702 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Ultimo passo do passo-a-passo de inscricao.
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 07/01/2011
+ */
+class FrmSubscriptionFinalize extends SStepByStepForm
+{
+    public function __construct($steps = null)
+    {
+        if ( !isset($steps->disableConstruct) )
+        {
+            parent::__construct(null, $steps, __CLASS__);
+            $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+            
+        }
+    }
+
+    public function createFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+
+        // Load data
+        $allData = $this->getStepData();
+        $stepData = $this->getStepDataByForm(__CLASS__);
+
+        try
+        {
+            $sprSP = new SprSelectiveProcess($allData->selectiveProcessId);
+
+            $mioloUserName = trim($MIOLO->getLogin()->id);
+            if( (!strlen($mioloUserName)>0) && ($sprSP->requireAuthentication == DB_TRUE) )
+            {
+                throw new Exception(_M('Usuário não logado ou sem permissão para acessar este passo.', $module));
+            }
+        }
+        catch (Exception $e)
+        {
+            $MIOLO->error($e->getMessage());
+        }
+
+        $sprSP = new SprSelectiveProcess($allData->selectiveProcessId);
+
+        $fields[] = new MLabel($sprSP->finalMessage);
+
+        $fields[] = new MSeparator();
+
+        if ( SAGU::userIsFromServices() )
+        {
+            $cbFields[] = new MCheckBox('terms', null, null, false);
+            $this->page->onload("document.getElementById('terms').checked = false");
+            $cbFields[] = new MTextLabel('termsLbl', _M('Estou ciente e concordo.', $module));
+            $hct = new MHContainer('termsCnt', $cbFields);
+            $_div = new MDiv('divTermsAlign', $hct);
+            $div = new MDiv('divTerms', $_div);
+            $fields[] = new MBaseGroup('bgrTerms', '', array($div));
+        }
+
+        $fields[] = new MSeparator();
+        $fields[] = new MDiv('divLimbo', null);
+
+        $this->setFields($fields);
+        $this->setValidators($validators);
+    }
+
+    public function finalizeButton_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $allData = $this->getStepData();
+        $personalInformation = $this->getStepDataByForm('FrmPersonalInformation');
+
+        $busFile = new BusinessBasicBusFile();
+        $busInvoice = new BusinessFinanceBusInvoice();
+        $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+        $busDadosBancariosDaPessoa = new BusinessFinanceBusDadosBancariosDaPessoa();
+        
+        try
+        {
+            SDatabase::beginTransaction();
+
+            if ( SAGU::userIsFromServices() )
+            {
+                $terms = MIOLO::_REQUEST('terms');
+                if ( !isset($terms) )
+                {
+                    throw new Exception( _M('Você precisa aceitar os termos do processo seletivo para finalizar a inscrição.', $module) );
+                }
+                
+                // Pega o objeto step atual
+                $sprStep = current(SprStep::search( (object) array('isCurrent' => DB_TRUE, 'selectiveProcessId' => $allData->selectiveProcessId) ));
+            }
+            else
+            {
+                $filters = new stdClass();
+                $filters->selectiveProcessId = $allData->selectiveProcessId;
+                if ( strlen($allData->subscriptionId) > 0 )
+                {
+                    $filters->isCurrent = DB_TRUE;
+                }
+                else
+                {
+                    $filters->stepId = $this->getRequestValue('stepId');
+                    
+                    $inscricaoId = SprSubscription::getSubscriptionId($allData->selectiveProcessId, $allData->personId);
+                }
+                $sprStep = current(SprStep::search( $filters ));
+            }
+
+            $sprSubscription = new SprSubscription( $allData->subscriptionId );
+            $sprSP = new SprSelectiveProcess( $allData->selectiveProcessId );
+            
+            if ( strlen($inscricaoId) > 0 )
+            {
+                $sprSubscription = new SprSubscription($inscricaoId);
+            }
+
+            // Save person data
+            $physicalPerson = new stdClass();
+            if( strlen($personalInformation->personId) > 0 )
+            {
+                $physicalPerson = $busPhysicalPerson->getPhysicalPerson($personalInformation->personId);
+            }
+            foreach ( (array)$personalInformation as $key => $val )
+            {
+                $physicalPerson->$key = $val;
+            }
+            $physicalPerson->name = $personalInformation->personName;
+            $physicalPerson->isAllowPersonalData = DB_TRUE;            
+                        
+            unset($_doc);
+            //RG
+            $_doc->documentTypeId = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG');
+            $_doc->organ = $personalInformation->rgOrgao;
+            $_doc->content = $personalInformation->rg;
+            $_doc->isDelivered = DB_FALSE; // FIXME
+            $documents[0] = $_doc;
+            
+            //CPF
+            $_doc1->documentTypeId = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF');
+            $_doc1->content = $personalInformation->cpf;            
+            $_doc1->isDelivered = DB_FALSE; // FIXME
+            $documents[1] = $_doc1;
+
+            $physicalPerson->documents = $documents;
+            $physicalPerson->workEmployerName = $personalInformation->workEmployerName;
+            $physicalPerson->workFunction = $personalInformation->workFunction;
+            $physicalPerson->workStartDate = $personalInformation->workStartDate;
+            $physicalPerson->workEndDate = $personalInformation->workEndDate;
+            $physicalPerson->workAtHome = DB_FALSE;
+            $sprSubscription->physicalPerson = $physicalPerson;
+
+            // Documentos
+            // Coleta os stepDocumentId ja cadastrados na tabela spr.subscriptionDocument
+            $subscriptionDocuments = array();
+            foreach ( $sprSubscription->subscriptionDocument as $doc )
+            {
+                $subscriptionDocuments[] = $doc->stepDocumentId;
+            }
+
+            // Documentos
+            $_subscriptionDocument = array();
+            foreach ( $sprStep->stepDocuments as $document )
+            {
+                if ( in_array($document->stepDocumentId, $subscriptionDocuments) )
+                {
+                    $subscriptionDocument = new SprSubscriptionDocument($allData->subscriptionId, $document->stepDocumentId);
+                }
+                else
+                {
+                    $subscriptionDocument = new SprSubscriptionDocument();
+                }
+
+                $subscriptionDocument->contents = $allData->{"contents{$document->stepDocumentId}"};
+                $subscriptionDocument->stepDocumentId = $document->stepDocumentId;
+                $subscriptionDocument->isDelivered = DB_FALSE;
+                $_file = $allData->{"fileId{$document->stepDocumentId}Info"};
+                if ( strlen($_file['tmp_name']) > 0 )
+                {
+                    $fdata = new stdClass();
+                    $fdata->uploadFileName = $_file['name'];
+                    $fdata->contentType = $_file['type'];
+                    $fdata->size = $_file['size'];
+                    $fdata->fileId = $subscriptionDocument->fileId;
+
+                    if ( strlen($fdata->fileId) > 0 )
+                    {
+                        $busFile->updateFile($fdata, $_file['tmp_name']);
+                    }
+                    else
+                    {
+                        $subscriptionDocument->fileId = $busFile->insertFile($fdata, $_file['tmp_name']);
+                    }
+                }
+
+                $_subscriptionDocument[] = $subscriptionDocument;
+            }
+
+            $sprSubscription->subscriptionDocument = $_subscriptionDocument;
+            
+            if( $sprSP->permiteDadosBancarios == DB_TRUE )
+            {   
+                $dados = $busDadosBancariosDaPessoa->getDadosBancariosDaPessoa($allData);
+                
+                $allData->agencia = MIOLO::_REQUEST('agencia');
+                $allData->digitoDaAgencia = MIOLO::_REQUEST('digitoAgencia');
+                $allData->conta = MIOLO::_REQUEST('conta');
+                $allData->digitoDaConta = MIOLO::_REQUEST('digitoConta');
+                $allData->bankId = $allData->dadosBancario;
+                //$allData->observacao = $allData->observacao;
+                
+                if( strlen($dados->personId) > 0 )
+                {
+                    $busDadosBancariosDaPessoa->updateDadosBancariosDaPessoa($allData);
+                }
+                else
+                {
+                    $busDadosBancariosDaPessoa->insertDadosBancariosDaPessoa($allData);
+                }
+                
+                $_SESSION['agencia'] = null;
+                $_SESSION['digitoAgencia'] = null;
+                $_SESSION['conta'] = null;
+                $_SESSION['digitoConta'] = null;
+                $_SESSION['dadosBancario'] = null;
+                $_SESSION['observacao'] = null;
+            }
+            
+            
+            if( $sprSP->permiteClassificarEnem == DB_TRUE )
+            {
+                $sprSubscription->anoEnem = $allData->anoEnem;
+                $sprSubscription->inscricaoEnem = $allData->inscricaoEnem;
+                $sprSubscription->senhaEnem = $allData->senhaEnem;
+            }
+            
+
+            // Arquivos, descricoes, pontuacao desejada
+            if ( strlen($allData->subscriptionId) > 0 ) // Quando for editar, apaga todos evaluationOptions
+            {
+                $rows = SprSubscriptionEvaluationOption::search( (object) array('subscriptionId' => $allData->subscriptionId) );
+                foreach ( $rows as $row )
+                {
+                    $row->delete();
+                }
+            }
+
+            $_subscriptionEvaluationOption = array();
+            foreach ( $sprStep->evaluations as $evaluation )
+            {
+                foreach ( (array) $evaluation->evaluationOptions as $evaluationOption )
+                {
+                    $evaluationId = $evaluation->evaluationId;
+                    $evaluationOptionId = $evaluationOption->evaluationOptionId;
+                    
+                    $sprSEO = new SprSubscriptionEvaluationOption();
+                    $sprSEO->evaluationOptionId = $allData->{"evaluationOptionId{$evaluationId}_{$evaluationOptionId}"};
+                    $sprSEO->description = $allData->{"description{$evaluationId}_{$evaluationOptionId}"};
+                    $sprSEO->desiredScore = $allData->{"desiredScore{$evaluationId}_{$evaluationOptionId}"};
+
+                    // Caso nao haja valor... interrompe
+                    if ( strlen($sprSEO->evaluationOptionId) <= 0 )
+                    {
+                        continue;
+                    }
+
+                    $_attachments = array();
+                    if ( $evaluation->allowAttachment > 0 )
+                    {
+                        for ( $x=0; $x < $evaluation->allowAttachment; $x++ )
+                        {
+                            $_file = $allData->{"evaluationFile{$evaluationId}_{$evaluationOptionId}_{$x}Info"};
+                            $_fileId = $allData->{"evaluationFile{$evaluationId}_{$evaluationOptionId}_{$x}Id"};
+
+                            $attachment = new SprAttachment();
+
+                            if ( strlen($_file['name']) > 0 )
+                            {
+                                $fdata = new stdClass();
+                                $fdata->uploadFileName = $_file['name'];
+                                $fdata->tempName = $_file['tmp_name'];
+                                $fdata->contentType = $_file['type'];
+                                $fdata->size = $_file['size'];
+
+                                $attachment->file = $fdata;
+                            }
+
+                            $attachment->fileId = $_fileId;
+                            $_attachments[] = $attachment;
+                        }
+                    }
+
+                    $sprSEO->attachment = $_attachments;
+
+                    if ( strlen($sprSEO->evaluationOptionId) > 0 )
+                    {
+                        $_subscriptionEvaluationOption[] = $sprSEO;
+                    }
+                }
+            }
+            $sprSubscription->subscriptionEvaluationOption = $_subscriptionEvaluationOption;
+
+            // Opções
+            $_options = array();
+            $optionNumber = 1;
+            for ( $i = 0; $i < $sprSP->numberOfOptions; $i++ )
+            {
+                $optionId = $allData->{"optionId{$i}"};
+                $optionIdOld = $allData->{"optionId{$i}_old"};
+                if ( strlen($optionId) > 0 )
+                {
+                    
+                    if($optionId!=$optionIdOld && strlen($optionIdOld)>0)
+                    {
+                        $sprSubscriptionOption = new SprSubscriptionOption($sprSubscription->subscriptionId, $optionIdOld);
+                        $sprSubscriptionOption->optionId = $optionId;
+                        if($sprSubscriptionOption->subscriptionStatusId == SAGU::getParameter('SELECTIVEPROCESS', 'SPR_NEW_SUBSCRIPTION_STATUS_ID_INITIAL') && strlen($sprSubscriptionOption->subscriptionStatusId)>0 && strlen($optionIdOld)>0)
+                        {
+                            $sprSubscriptionOption->save();
+                        }
+                        else
+                        {
+                            throw new Exception( _M('O aluno já possuí notas para este processo seletivo', $module) );
+                        }
+                            
+                    }
+                    elseif( $optionId!=$optionIdOld && !strlen($optionIdOld) > 0 && strlen($sprSubscription->subscriptionId) > 0 ) //Insere uma nova opção de curso ainda não selecionada
+                    {
+                        $sprSubscriptionOption = new SprSubscriptionOption();
+                        $sprSubscriptionOption->subscriptionId = $sprSubscription->subscriptionId;
+                        $sprSubscriptionOption->optionId = $optionId;
+                        $sprSubscriptionOption->optionNumber = $optionNumber;
+                        $sprSubscriptionOption->subscriptionOptionOrder = $i+1;
+                        $sprSubscriptionOption->subscriptionStatusId = SAGU::getParameter('SELECTIVEPROCESS', 'SPR_NEW_SUBSCRIPTION_STATUS_ID_INITIAL');
+                        $sprSubscriptionOption->save();
+                    }
+                        
+                    $sprSubscriptionOption = new SprSubscriptionOption($sprSubscription->subscriptionId, $optionId);
+                    $sprSubscriptionOption->optionId = $optionId;                    
+                    $sprSubscriptionOption->optionNumber = $optionNumber++;
+                    
+                    if($sprSubscriptionOption->subscriptionStatusId == null)
+                    {
+                        $sprSubscriptionOption->subscriptionStatusId = SAGU::getParameter('SELECTIVEPROCESS', 'SPR_NEW_SUBSCRIPTION_STATUS_ID_INITIAL');
+                    }
+                    
+                    $_options[] = $sprSubscriptionOption;
+                }
+            }
+
+            $sprSubscription->subscriptionOption = $_options;
+
+            // Respostas (rshAnswer)
+            $busAnswer = new BusinessResearchBusAnswer();
+            $busOption = new BusinessResearchBusOption();
+
+            $_answers = array();
+            foreach ( (array)$sprSP->socialEconomicForm->questions as $question )
+            {
+                $questionData = new stdClass();
+                $questionData->questionId = $question->questionId;
+                $questionData->answerTypeId = $question->answerTypeId;
+
+                $ok = $busAnswer->deleteQuestionAnswer($allData->personId, $question->questionId);
+                if ( !$ok )
+                {
+                    continue;
+                }
+
+               // If answer type is descriptive
+                if ( $question->answerTypeId == RshAnswerType::DESCRIPTIVE )
+                {
+                    // Get the answer
+                    $questionData->answer = $allData->{"questionAnswer{$question->questionId}"};
+
+                    if ( strlen($questionData->answer) > 0 )
+                    {
+                        $_answers[] = $questionData;
+                    }
+                }
+                elseif ( $question->answerTypeId == RshAnswerType::MULTIPLE )
+                {
+                    $options = $busOption->listOptionToQuestion($question->questionId);
+                    for ( $i=0; $i < count($options); $i++ )
+                    {
+                        $answer = $allData->{"questionAnswer{$question->questionId}_{$options[$i][0]}"};
+
+                        if ( strlen($answer) > 0 )
+                        {
+                            $questionData = clone($questionData);
+                            $questionData->optionId = $options[$i][0];
+                            $_answers[] = $questionData;
+                        }
+                    }
+                }
+                elseif ( $questionData->answerTypeId == RshAnswerType::ALTERNATIVE )
+                {
+                    $questionData->optionId = $allData->{"questionAnswer{$question->questionId}"};
+                    $questionData->answer = $allData->{"questionAnswerText{$question->questionId}"};
+                    $_answers[] = $questionData;
+                }
+            }
+
+            $sprSubscription->answers = $_answers;
+
+
+            // SubscriptionStepInfo
+            $ssiFound = false; // Se encontrou registro na subscriptionStepInfo
+            if ( strlen($allData->subscriptionId) > 0 )
+            {
+                $filters = new stdClass();
+                $filters->subscriptionId = $allData->subscriptionId;
+                $filters->stepId = $sprStep->stepId;
+                $ssiFound = count(SprSubscriptionStepInfo::search($filters)) > 0;
+                
+                if ( $ssiFound )
+                {
+                    if ( $sprStep->subscriberChoosesPlace == DB_TRUE )
+                    {
+                        $filters->locationId = $allData->locationStep;
+                        SprSubscriptionStepInfo::updateLocation($filters);
+                    }
+                }
+            }
+            if ( !$ssiFound )
+            {
+                $subStepInfo = new SprSubscriptionStepInfo();
+                $subStepInfo->subscriptionStatusId = SAGU::getParameter('SELECTIVEPROCESS', 'SPR_NEW_SUBSCRIPTION_STATUS_ID_INITIAL');
+                $subStepInfo->stepId = $sprStep->stepId;
+                $subStepInfo->locationId = $allData->locationStep;
+                $subStepInfo->useInternalEvaluations = DB_TRUE;
+
+                $sprSubscription->subscriptionStepInfo = array($subStepInfo);
+            }
+
+            // Define subscription data
+            $sprSubscription->selectiveProcessId = $allData->selectiveProcessId;
+            $sprSubscription->hasSubscriptionFee = DB_FALSE;
+            $sprSubscription->finishedHighSchool = DB_FALSE;
+
+            // Define dados de formacao (que estao no formulario informacoes pessoais)
+            $sprSubscription->institutionName = $personalInformation->institutionName;
+            $sprSubscription->courseName = $personalInformation->courseName;
+            $sprSubscription->conclusionYear = $personalInformation->conclusionYear;
+            $sprSubscription->degreeName = $personalInformation->degreeName;
+            $sprSubscription->formationLevelId = $personalInformation->formationLevelId;
+             
+            $sprSubscription->save();
+            
+            //Salva campos customizados            
+            $ultimaPessoaInserida = $busPhysicalPerson->getLastInsertId();
+            
+            $this->getCustomFields('FrmPersonalInformation');
+            $cData = new stdClass();
+
+            foreach ( $this->mioloCustomFields as $cf )
+            {
+                $cf instanceof MCustomField;
+
+                    $id = $cf->getInputId();
+                    $value = $_SESSION['campos_customizados'][$cf->getInputId()];
+                    $cData->$id = $value;
+            }
+                        
+            //Se for insert
+            if ( !(strlen($allData->subscriptionId) > 0) )
+            {
+                if($_SESSION['personIdSelected'])
+                {
+                    $ultimaPessoaInserida = $_SESSION['personIdSelected'];
+                }
+                                    
+                $this->saveCustomFields($ultimaPessoaInserida, $cData, 'FrmPersonalInformation');
+                
+            }else //caso seja update
+            {
+                $this->saveCustomFields($sprSubscription->physicalPerson->personId, $cData, 'FrmPersonalInformation');
+            }
+                       
+            SDatabase::commit();
+
+            // Caso esteja vindo do webservice, direciona para URL de inscrição
+            $_args  = array();
+            if ( SAGU::userIsFromServices() )
+            {
+                $_args = array('function' => 'insert');
+                $gotoOk = $MIOLO->getActionURL('services', 'main:selectiveProcessSubscription', null, $_args);
+            }
+            else
+            {
+                $gotoOk = $MIOLO->getActionURL($module, MIOLO::getCurrentAction(), null, $_args);
+            }
+
+            // insert
+            if ( !(strlen($allData->subscriptionId) > 0) )
+            {
+                $msgTitle = _M('Inscrição efetuada com sucesso.', $module);
+            }
+            // update
+            else
+            {
+                $msgTitle = _M('Inscrição atualizada com sucesso.', $module);
+            }
+
+            // link para emissão do boleto, se houver configuração para isso
+            if ( $sprSubscription->selectiveProcess->generateFinance == DB_TRUE )
+            {
+                $invoiceIds = $busInvoice->getTaxInvoiceIds($sprSubscription->invoiceId);
+                
+                foreach ( $invoiceIds as $invoiceId )
+                {
+                    $_args = array();
+                    $_args['_invoiceId'] = $invoiceId[0];
+                    $_args['event'] = 'submit_button_click';
+                    $gotoPrintInvoice[] = $MIOLO->getActionURL('finance', 'main:process:printInvoice', null, $_args);
+                }
+            }
+
+            // tentar enviar email (apenas caso nao seja funcionario)
+            if ( SAGU::userIsFromServices() )
+            {
+                if ( $sprSubscription->notifySubscriberAboutSubscription() )
+                {
+                    $emailMsg = _M('Um e-mail contendo informações de usuário e senha foi enviado para @1.', $module, $sprSubscription->physicalPerson->email);
+                }
+
+                if ( ($sprSP->showPasswordAfterSubscription == DB_TRUE) && (SAGU::userIsFromServices()) )
+                {
+                    $emailMsg .= '<BR />' .
+                        _M('Para logar no portal utilize o usuário e senha descrito abaixo:', $module) . '<BR />' .
+                        _M('Usuário: @1', $module, $sprSubscription->physicalPerson->mioloUserName) . '<BR />' .
+                        _M('Senha: @1', $module, $MIOLO->session->admPasswd) . '<BR />';
+                    
+                    unset($MIOLO->session->admPasswd);
+                }
+            }
+
+            $optionDescriptions = array();
+            foreach ( $sprSubscription->subscriptionOption as $subscriptionOption )
+            {
+                $option = new SprOption($subscriptionOption->optionId);
+                $optionDescriptions[$subscriptionOption->optionNumber] = $option->description;
+            }
+            ksort($optionDescriptions);
+
+            // Obter CPF
+            $busDocument = new BusinessBasicBusDocument();
+            $documentoCPF= $busDocument->getDocument($sprSubscription->physicalPerson->personId, SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF'));
+            
+            // obter informações de substituição
+            $tags = array(
+                '$SUBSCRIPTIONID' => $sprSubscription->subscriptionId,
+                '$PERSONID' => $sprSubscription->physicalPerson->personId,
+                '$PERSONNAME' => $sprSubscription->physicalPerson->name,
+                '$PASSWORD' => $sprSubscription->physicalPerson->mioloPassword,
+                '$SELECTIVEPROCESSID' => $sprSubscription->selectiveProcess->selectiveProcessId,
+                '$SELECTIVEPROCESSDESCRIPTION' => $sprSubscription->selectiveProcess->description,
+                '$SUBSCRIPTIONORDER' => $sprSubscription->subscriptionOrder,
+                '$OPTIONSCOURSE' => implode('<br />', $optionDescriptions),
+                '$CPF' => $documentoCPF->content,
+                '$CPFUNMASKED' => $busDocument->desmascararCPF($documentoCPF->content)
+            );
+            
+            // aplicar substituição e adicionar mensagem de email, se existir
+            $finalMessage = (strlen($sprStep->finalMessage) > 0) ? strtr(strip_tags($sprStep->finalMessage), $tags) : "";
+            $emailMsg = (strlen($finalMessage) > 0) ? "<br /><br />" . $emailMsg : $emailMsg;
+            $finalMessage .= $emailMsg;
+
+            // Caso não foi definido mensagem de sucesso na inscrição, pega a mensagem padrão do Sagu
+            if ( !strlen($finalMessage) > 0 )
+            {
+                $finalMessage = (strlen($allData->subscriptionId) > 0) ? SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED') : SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED_INFO');
+            }
+
+            $finalMessage .= '<div id=\'divLimbo\' style=\'display:none\'></div>';
+            
+            if ( count($gotoPrintInvoice) > 0 )
+            {
+                $count = count($gotoPrintInvoice);
+                foreach ( $gotoPrintInvoice as $key => $invoice )
+                {
+                    $finalMessage .= "<br><div style='width: 100%; text-align: center;'><a href='" . $gotoPrintInvoice[$key] . "'>Clique aqui para imprimir o boleto {$count} </a></div>";
+                    $count = $count - 1;
+                }   
+            }
+            
+            // Mensagem de sucesso
+            $promptMsg = new MPrompt($msgTitle, $finalMessage);
+
+            if ( ! SAGU::userIsFromServices() )
+            {
+                $promptMsg->addButton(_M('Ok', $module), $gotoOk);
+            }
+            else
+            {
+                $MIOLO->getAuth()->logout();
+            }
+
+            /*if ( count($gotoPrintInvoice) > 0 )
+            {                           
+                $action = $this->getAjaxAction('generateBillets', 'divLimbo', false, $gotoPrintInvoice);
+                $promptMsg->addButton(_M("Imprimir boleto(s)", $module), $action);
+            }*/
+            $promptMsg->setType('information');            
+
+            parent::finalizeButton_click($args);
+            
+            $this->defaultDisabledButtonsToolbar();            
+            $MIOLO->prompt($promptMsg);
+        }
+        catch ( Exception $e )
+        {
+            parent::finalizeButton_click($args);
+            
+            SDatabase::rollback();
+            
+            $msg = _M('Houve um problema com sua inscrição:', $module) . '<br /><br />' .
+                   $e->getMessage() . '<br /><br />' .
+                   _M('Caso o problema citado esteja relacionado ao cadastro de documentos, aguarde alguns minutos e verifique se recebeu o email de confirmação.', $module) . ' ' .
+                   _M('Se tiver recebido o email, sua inscrição está confirmada.', $module) . ' ' .
+                   _M('Caso não receba o email de confirmação, tente efetuar sua inscrição novamente.', $module) . ' ' .
+                   _M('Se o problema persistir, entre em contato com a instituição.', $module);
+
+            $this->addAlert($msg);
+        }
+    }
+    
+    /**
+     * Ação ajax que gera os boletos da taxa
+     * de inscrição
+     * 
+     * @param type $args
+     * @return string
+     */
+    public function generateBillets($args)
+    {
+        $this->page->addAjaxJsCode("
+            function generateBillet(link)
+            {
+                window.open(link, '_blank');
+            }
+
+//document.getElementById('divSaguMessages').style.display = 'none';
+        ");
+        
+        foreach ( $args as $link )
+        {
+            $explode = explode('http://', $link);            
+            
+            if ( count($explode) > 1 )
+            {
+                $link = str_replace('&amp;', '&', $link);
+                $this->page->addAjaxJsCode("generateBillet('{$link}');");
+            }
+            else
+            {
+                break;
+            }
+        }
+        
+        $return = "<ul><li>Boleto(s) gerado(s) com sucesso.</li></ul>";
+        
+        return $return;
+    }
+
+    public function cancelButton()
+    {
+        return SAGU::getCancelButtonSubscription();
+    }
+}
+?>

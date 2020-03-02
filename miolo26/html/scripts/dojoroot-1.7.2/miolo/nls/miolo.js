@@ -1,0 +1,20 @@
+({
+    PRINT_FILE: "Wait the report generation.\nThe result will be shown on a new window.",
+    PRINT_PDF: "Wait the pdf file generation.\nThe result will be shown on a new window.",
+    ITEM_EXISTS_ON_LIST: "Item already exists on list!",
+    ERROR_DETECTED: "The following error was detected",
+    ERRORS_DETECTED: "The following errors were detected",
+    FIELD_IS_REQUIRED: "The field \"${field}\" must be informed",
+    VALIDATE_MIN: "The field \"${field}\" must contain at least ${min} characters",
+    VALIDATE_MAX: "The field \"${field}\" must contain up to ${max} characters",
+    INVALID_CHAR: "The character \"${character}\" is invalid to the field \"${field}\"",
+    VALIDATE_LENGTH: "The field \"${field}\" must contain ${length} characters",
+    VALIDATE_NUM_POSITION: "The field \"${field}\" must contain one number at position ${index}",
+    VALIDATE_CHAR_POSITION: "The field \"${field}\" must contain the character ${character} at position ${index}",
+    INVALID_FIELD_CONTENT: "The field \"${field}\" content is invalid!",
+    DATE_FORMAT: "The date format should be: ${format}",
+    INVALID_DAY: "Please enter a valid day.",
+    INVALID_MONTH: "Please enter a valid month.",
+    INVALID_YEAR: "Please enter a valid 4 digit year between ${min} and ${max}",
+    INFORM_A_VALID_DATE: "Inform a valid date."
+})

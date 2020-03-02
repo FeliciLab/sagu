@@ -1,0 +1,1 @@
+ALTER TABLE med.faltadoresidentenaofertadeunidadetematica ADD COLUMN observacao TEXT;

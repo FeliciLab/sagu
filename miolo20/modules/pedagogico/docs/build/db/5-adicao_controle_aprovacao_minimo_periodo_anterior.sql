@@ -1,0 +1,2 @@
+ALTER TABLE acpregrasmatriculaperfilcurso ADD COLUMN minimoaprovacaoperiodoanterior int;
+ALTER TABLE acpregrasmatriculaperfilcurso ADD COLUMN unidademinimoaprovacaoperiodoanterior CHAR(1);

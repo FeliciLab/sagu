@@ -1,0 +1,1240 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Passo a passo matrícula web.
+ *
+ * @author Luís Felipe Wermann [luis_felipe@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Luís Felipe Wermann [luis_felipe@solis.com.br]
+ *
+ * @since
+ * Class created on 18/02/2015
+ */
+
+//LER AS CONSIDERAÇÕES ABAIXO ANTES DE BUSCAR QUAISQUER DADOS DO BANCO
+
+/**
+ * EXPLICAÇÕES GERAIS SOBRE O FUNCIONAMENTO DA TELA:
+ * 
+ * Todos os dados são salvos na sessão, existem no total 5 dados na sessão:
+ * 
+ * 1 'oferecidas' - As disciplinas oferecidas, são chamadas apenas uma vez
+ * no construtor da tela e podem ser obtidas através de funções da MatriculaWeb.class
+ * 
+ * 2 'finalizadas' - As disciplinas indisponíveis e/ou já cursadas, são também chamadas 
+ * uma vez apenas, no construtor e podem ser obtidas através de funções da MatriculaWeb.class.
+ * 
+ * 3 'marcadas' - As disciplinas  que estão nas constantes DISCI_MARCADA ou 
+ * DISCI_BLOQUEADA. Seus valores são setados também no construtor da tela e são atualizados conforme 
+ * cliques nos checkbox, é ela que diz qual disciplina está bloqueada/liberada/marcada, seus dados
+ * são obtidos diretamente da sessão, ou de classes na MatriculaWeb.class, precisa ser limpa ao sair
+ * do processo de matrícula.
+ * 
+ * 4 'contrato' - Chamado já em passos anteriores, ao selecionar o contrato, sempre deve-se obtê-lo
+ * pela função MatriculaWeb::obterContratoGravado(), nunca buscar por ele novamente na base, não é necessário.
+ * 
+ * 5 'grupos' - Grupos de disciplinas (somente de disciplinas comuns, as eletivas são obtidas via
+ * banco mesmo, pois é uma consulta rápida e não vale a pena adicionar mais um valor de sessão
+ * só para isso), separados pelo curriculumId. São automaticmaente setados
+ * no momento que busca-se as disciplinas oferecidas. Pode ser filtrado via funções na 
+ * MatriculaWeb.class.
+ * 
+ */
+
+class FrmEnrollWeb2 extends FrmEnrollWeb
+{
+    const DISCI_MARCADA = 'marcada';
+    const DISCI_BLOQUEADA = 'bloqueada';
+    public $disciplinasLivresCont = array();
+    
+    /**
+     * Construtor do formulário.
+     */
+    public function __construct($steps = null)
+    {
+        //Busca as disciplinas só se a página foi carregada
+        if ( $this->isFirstAccess() )
+        {
+            //Obter disciplinas oferecidas apenas no construtor
+            MatriculaWeb::obterDisciplinasOferecidas();
+        
+            //Obter disciplinas finalizadas apenas no construtor PARAMTOUCH
+            MatriculaWeb::obterDisciplinasFinalizadasOuNaoOferecidas();
+            
+            //Setar na sessão os status da disciplina e seus conflitos
+            $this->ajustarDisciplinasSelecionadas();
+        }
+        
+        //Para os popups
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->page->AddScript('m_popup_control.js'); 
+        
+        parent::__construct(__CLASS__, null, $steps );
+    }
+    
+    /**
+     * Define os campos do formulário.
+     */
+    public function createFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        
+        $busCourseVersion = new BusinessAcademicBusCourseVersion();
+        $busCourseVersionType = new BusinessAcademicBusCourseVersionType();
+        
+        //Alertar de pendências no gnuteca
+        if ( SAGU::getParameter('BASIC', 'MODULE_GNUTECA_INSTALLED') == 'YES' )
+        {
+            $alertPendenciasGnuteca = $MIOLO->session->get('alertPendenciasGnuteca');
+            if ( strlen($alertPendenciasGnuteca) > 0 )
+            {
+                $MIOLO->session->setValue('alertPendenciasGnuteca', null);
+                $this->addAlert($alertPendenciasGnuteca);
+            }
+        }
+        
+        $contrato = MatriculaWeb::obterContratoGravado();
+
+        //Verifica regime do curso
+        $courseVersion = $busCourseVersion->getCourseVersion($contrato->courseId, $contrato->courseVersion);
+        $courseVersionType = $busCourseVersionType->getCourseVersionType($courseVersion->courseVersionTypeId);
+        $regimen = $courseVersionType->regimen;
+
+        if ( !(strlen($regimen) > 0) )
+        {
+            $MIOLO->error(_M("O curso não tem um regime definido."));
+        }
+        
+        if ( !$this->isAjax() )
+        {
+            //Info aluno
+            $fields[] = $this->obterCamposInfoAluno();
+
+            //Mensagem do passo
+            $fields[] = new MDiv('divMensagem', $this->mensagemPasso());
+            
+            //Oferecidas/finalizadas
+            $fields[] = $this->gerarTabelaDeOferecidas();
+            
+            //Simular financeiro
+            if ( $contrato->periodoGeraFinanceiro )
+            {
+                $fields[] = new MButton('btnSimulate', _M('Simular financeiro', $this->module), $this->getAjaxAction('simularFinanceiro', 'divResponse'));
+            }
+
+            foreach($this->disciplinasLivresCont as $groupId => $credit)
+            {
+                $hiden = new MHiddenField('disciplinasLivres['.$groupId.']', $credit);	
+                $fields[] = $hiden;    
+            }
+            
+            //Div para exibir popup simulação financeira
+           $fields[] = $divResponse = new MDiv('divResponse');
+        }
+
+        $this->setFields($fields);
+    }
+    
+    /**
+     * Gera a tabela de disciplinas oferecidas.
+     * 
+     * @return (array) $fields - Todas as disciplinas oferecidas, já formatadas.
+     */
+    public function gerarTabelaDeOferecidas()
+    {
+        $fields[] = new MSeparator();
+        
+        $contrato = MatriculaWeb::obterContratoGravado();
+        
+        //Obtém a quantidade de semestres do curso, se for seriado rígido pega só o semestre atual
+        $busCourseVersion = new BusinessAcademicBusCourseVersion();
+        $totalSemesters = SAGU::NVL($contrato->semestreSeriadoRigido, $busCourseVersion->getCourseVersionTotalSemester($contrato->courseId, $contrato->courseVersion));
+
+        // Validações do seriado rígido
+        $seriadoRigido = MatriculaWeb::liberarSomenteDisciplinasPendentesParaSeriadoRigido();
+        if ( strlen($seriadoRigido) > 0 )
+        {
+            $this->addInfo($seriadoRigido);
+        }
+        else
+        {
+            // COMUNS
+            //Passa de semestre em semestre
+            for ( $semester = 1; $semester <= $totalSemesters; $semester++ )
+            {
+                // Se o contrato for de sesmtre rigido e não ativer acusado nenhum erro anteriormente
+                if ( strlen($contrato->semestreSeriadoRigido) > 0 )
+                {
+                    $semester = $contrato->semestreSeriadoRigido;
+                }
+
+                //Buscar somente disciplinas do semestre
+                $filters = new stdClass();
+                $filters->semester = $semester;
+
+                //PARAMTOUCH - Finalizadas
+                $finalizadas = MatriculaWeb::filtrarFinalizadas($filters);
+
+                //Grupos de oferecidas (se não existir uma matriz curricular, o total de semetres será um e todos os grupos devem ficar dentro dele)
+                $grupos = MatriculaWeb::filtrarGrupos($filters);
+                if ( $totalSemesters == 1 )
+                {
+                    $grupos = MatriculaWeb::filtrarGrupos();
+                }
+
+                //Caso existam disciplinas cria um novo título de semestre
+                if ( count($finalizadas) > 0 || count($grupos) > 0 )
+                {
+                    $fields[] = $divSemestre = new MDiv('divSemestre', _M('Disciplinas do semestre ') . SAGU::numberToRoman($semester), 'm-box-title');
+                    $fields[] = new MSeparator();
+                    $divSemestre->addStyle('width', '98%');
+                }
+
+                //Cria primeiro as disciplinas finalizadas, descarta eletivas
+                foreach ( $finalizadas as $disciplina )
+                {
+                    if ( $disciplina->curricularComponentTypeId != SAGU::getParameter('ACADEMIC', 'CURRICULAR_COMPONENT_TYPE_ELECTIVE') )
+                    {
+                        $fields[] = $this->gerarGradeDisciplinaFinalizada($disciplina);
+                        $fields[] = new MSeparator();
+                    }
+                }
+
+                //Embaixo das já finalizadas cria-se as disponíveis para matrícula
+                foreach ( $grupos as $grupo )
+                {
+                    $fields[] = $this->gerarGradeGrupoComum($grupo);
+                    $fields[] = new MSeparator();
+                }
+            }
+        }
+        
+        // PENDENTES (somente Seriado Rígido)
+        if ( strlen($contrato->semestreSeriadoRigido) > 0 )
+        {
+            $filterP = new stdClass();
+            $filterP->estaPendente = true;
+            
+            $pendentes = MatriculaWeb::filtrarOferecidas($filterP);
+            
+            if ( count($pendentes) > 0 )
+            {
+                $fields[] = $divPendentes = new MDiv('divPendentes', _M("Disciplinas pendentes"), 'm-box-title');
+                $fields[] = new MSeparator('');
+                $divPendentes->addStyle('width' , '98%');
+                
+                foreach ( $pendentes as $pendente )
+                {
+                    $filtersPendente = new stdClass();
+                    $filtersPendente->curriculumId = $pendente->curriculumId;
+                    $grupo = MatriculaWeb::filtrarGrupos($filtersPendente);
+                    
+                    if ( !array_key_exists($pendente->curriculumId, $fieldsPendentes) )
+                    {
+                        $fieldsPendentes[$pendente->curriculumId] = $this->gerarGradeGrupoComum($grupo[0]);
+                    }
+                }
+                
+                foreach ( $fieldsPendentes as $fl )
+                {
+                    $fields[] = $fl;
+                    $fields[] = new MSeparator('');
+                }
+            }
+        }
+        
+        // ELETIVAS
+        if ( MatriculaWeb::obterConfiguracaoDeMatricula('showElectivesExternal', null) )
+        {
+            //Cria disciplinas eletivas
+            $filtros = new stdClass();
+            $filtros->eletivas = true;
+            $eletivasOferecidas = MatriculaWeb::filtrarOferecidas($filtros);
+            $eletivasNaoOferecidas = MatriculaWeb::filtrarFinalizadas($filtros);
+
+            //Se encontrar disciplinas indisponíveis, na verdade elas estão disponíveis
+            //mas somente se existiram eletivas oferecidas
+            foreach ( $eletivasNaoOferecidas as $key => $eletiva )
+            {
+                if ( $eletiva->tipo == MatriculaWeb::DISCIPLINA_INDISPONIVEL )
+                {
+                    if ( count($eletivasOferecidas) > 0 )
+                    {
+                        unset($eletivasNaoOferecidas[$key]);
+                    }
+                }
+            }
+            $eletivas = array_merge($eletivasNaoOferecidas, $eletivasOferecidas);
+
+            if ( count($eletivas) > 0 )
+            {
+                $fields[] = $divEletivas = new MDiv('divEletivas', _M('Disciplinas eletivas'), 'm-box-title');
+                $divEletivas->addStyle('width', '98%');
+
+                $fieldsEletivas = $this->gerarGradeDisciplinasEletivas($eletivas);
+
+                foreach ( $fieldsEletivas as $field )
+                {
+                    $fields[] = new MSeparator();
+                    $fields[] = $field;
+                }
+                
+            }
+        }
+        
+        return $fields;
+    }
+
+    /**
+     * Gera o título do grupo, e abaixo do grupo, as oferecidas do mesmo.
+     * 
+     * @param (stdClass) $grupo - Grupo de disciplinas oferecidas.
+     * 
+     * @return (MDiv) $div - Grade do grupo.
+     */
+    public function gerarGradeGrupoComum($grupo)
+    {
+        //Pega oferecidas do curriculumId
+        $filters = new stdClass();
+        $filters->curriculumId = $grupo->curriculumId;
+        $oferecidas = MatriculaWeb::filtrarOferecidas($filters);
+        
+        $fields[] = $this->gerarTituloGrupoDeOferecidas($grupo);
+        
+        foreach  ( $oferecidas as $disciplina )
+        {
+            $fields[] = $this->gerarGradeDisciplinaComum($disciplina);
+        }
+               
+        $fieldGrupo = new MDiv('divGrupo' . $grupo->curriculumId, $fields);
+        
+        return $fieldGrupo;
+    }
+    
+    /**
+     * Gera grade geral de uma disciplina oferecida, tanto eletiva quanto comum.
+     * 
+     * @param (stdClass) $disciplina - Disciplina oferecida.
+     * @return (MDiv) $fieldDisciplina - Grade da disciplina.
+     */
+    public function gerarGradeDisciplinaComum($disciplina)
+    {
+        //Criar o título da oferecida
+        $fieldsInfo = $this->gerarTituloDisciplina($disciplina);
+
+        // Caso a disciplina esteja cheia, já deixa ela inviável, a não ser que o aluno esteja matriculado
+        // ou quando tem bloqueio por pré-requisito
+        if ( (!MatriculaWeb::verificarSeExisteVagaNaOferecida($disciplina) &&
+              $this->checarSelecionada($disciplina->groupId) != self::DISCI_MARCADA) || 
+              $disciplina->bloqueada)
+        {
+            // Precisa ficar com um ID diferente das demais pra alguma outra disciplina não liberar ela depois
+            // somente as disciplinas lotadas, as demais devem ser liberadas normalmente
+            $id = ( MatriculaWeb::verificarSeExisteVagaNaOferecida($disciplina) ) ? 'div' : 'divCheia';
+            $fieldDisciplina = new MDiv($id . $disciplina->groupId, $fieldsInfo);
+
+            // Só deixa opaco quando não for semestre rígido - #39423
+            $contrato = MatriculaWeb::obterContratoGravado();
+            if ( !(strlen($contrato->semestreSeriadoRigido) > 0) )
+            {
+                $fieldDisciplina->addBoxStyle('opacity', '0.2');   
+            }
+            
+            $fieldDisciplina->addBoxStyle('padding-left', '30px');
+        }
+        else
+        {
+            $fieldDisciplina = new MDiv('div' . $disciplina->groupId, $fieldsInfo);
+            $fieldDisciplina->addBoxStyle('padding-left', '30px');
+
+            //Se a disciplina estiver bloqueada, deixa ela bloqueada
+            if ( $this->checarSelecionada($disciplina->groupId) == self::DISCI_BLOQUEADA )
+            {
+                $fieldDisciplina->addBoxStyle('opacity', '0.2');
+            }
+        }
+        
+        return $fieldDisciplina;
+    }
+    
+    /**
+     * Gera título do grupo de oferecidas.
+     * 
+     * @param (stdClass) $grupo - Grupo de disciplinas oferecidas.
+     * @return (MText) $nameTxt - Título do grupo de oferecidas.
+     */
+    public function gerarTituloGrupoDeOferecidas($grupo)
+    {
+        //Verificar se está matriculado ou pré-matriculado
+        $filters = new stdClass();
+        $filters->curriculumId = $grupo->curriculumId;
+        $disciplinas = MatriculaWeb::filtrarOferecidas($filters);
+
+        // Verifica se disciplina não está bloqueada pré-requisito
+        $contract = MatriculaWeb::obterContratoGravado();
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $preBlock = $busEnroll->isPreConditionsFree($filters, $contract->contractId, $contract->learningPeriodId, MatriculaWeb::obterConfiguracaoDeMatricula('freeInCourseConditions'));        
+        
+        $status = !$preBlock ? '<font color="red">[BLOQUEADA] </font>' : '<font color="green">[LIBERADA] </font>';
+        foreach ( $disciplinas as $of )
+        {
+            if ( $of->enrollStatusId == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_PRE_ENROLLED') )
+            {
+                $status = '<font color="purple">[PRÉ-MATRICULADA] </font>';
+            }
+            else if ( $of->enrollStatusId == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') )
+            {
+                $status = '<font color="blue">[MATRICULADA] </font>';
+            }
+            
+            $of->bloqueada = (!$preBlock) ? true : false; 
+        }
+
+        //Nome
+        $name = $status . MatriculaWeb::formatarTituloGrupo($grupo);
+        $nameTxt = new MText('txtGrupo', $name);
+        $nameTxt->addAttribute('style', 'font-weight: bold; text-align: left;');
+        
+        // Caso tenha bloqueado por pré-requisito monta uma div com o erro
+        if ( count($busEnroll->errors) > 0 )
+        {
+            // &nbsp; serve para dar um tab, ficar mais visível
+            $errosTxt = new MText('txtErrors', implode('<br>&nbsp;&nbsp;&nbsp;&nbsp;', $busEnroll->errors));
+            $errosTxt->addAttribute('style', 'font-weight: bold; text-align: left;');
+            $hvtName = new MVContainer('vctErors', array($nameTxt, $errosTxt));
+        }
+        else
+        {
+            $hvtName = $nameTxt;
+        }
+        
+        return $hvtName;
+    }
+    
+    /**
+     * Gera grade de disciplinas eletivas, todas elas.
+     * 
+     * @param (array) $eletivas - Todas as disciplinas eletivas ofertadas.
+     *
+     * @return (array) $fields - Todos os campos necessários para a grade de eletivas.
+     */
+    public function gerarGradeDisciplinasEletivas($eletivas)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $contrato = MatriculaWeb::obterContratoGravado();
+        
+        // Obtem os grupos de eletivas, elimina optativas que estiverem nas
+        // não oferecidas ou finalizadas
+        $grupos = MatriculaWeb::filtrarGrupoDeEletivas();
+        
+        //Criar campos de disciplinas já cursadas ou indisponíveis
+        foreach ( $eletivas as $key => $eletiva )
+        {
+            if ( $eletiva->tipo != MatriculaWeb::DISCIPLINA_ELETIVA )
+            {
+                $fields[] = $this->gerarGradeDisciplinaFinalizada($eletiva);
+                
+                unset($eletivas[$key]);
+                
+                foreach ( $grupos as $keyGrupo => $grupo )
+                {
+                    if ( $grupo->curriculumId == $eletiva->curriculumId )
+                    {
+                        unset($grupos[$keyGrupo]);
+                    }
+                }
+            }
+        }
+        
+        //Cria-se um título para cada grupo de eletivas
+        foreach ( $grupos as $grupo )
+        {
+            unset($fieldsEletiva);
+            
+            //Título do grupo
+            $status = '<font color="green">[LIBERADA] </font>';
+            if ( $grupo->enrollStatusId == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_PRE_ENROLLED') )
+            {
+                $status = '<font color="purple">[PRÉ-MATRICULADA] </font>';
+            }
+            else if ( $grupo->enrollStatusId == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') )
+            {
+                $status = '<font color="blue">[MATRICULADA] </font>';
+            }
+            
+            $name = $status . MatriculaWeb::formatarTituloGrupo($grupo);
+            $nameTxt = new MText('txtEletiva', _M($name));
+            $nameTxt->addAttribute('style', 'font-weight: bold; text-align: left;');
+            $fieldsEletiva[] = $nameTxt;
+
+            //Criar ofertas
+            foreach ( $eletivas as $eletiva )
+            {
+                if ( $eletiva->tipo == MatriculaWeb::DISCIPLINA_ELETIVA )
+                {
+                    //Precisa trocar o curriculum para que fique o mesmo do grupo, e o groupid também
+                    $eletiva->curriculumId = $grupo->curriculumId;
+                    $groupId = $eletiva->groupId;
+                    $eletiva->groupId .= '_' . $grupo->curriculumId;
+                    
+                    $fieldsEletiva[] = $this->gerarGradeDisciplinaComum($eletiva);
+                    
+                    //Volta para o id correto, senão o PHP vai setar errado
+                    $eletiva->groupId = $groupId;
+                }
+            }
+            
+            $fields[] = new MDiv('divEletivas' . $grupo->curriculumId, $fieldsEletiva);
+        }
+
+        return $fields;
+    }
+    
+    /**
+     * Monta a tabela da oferecida, a partir de todos os campos e informações já geradas.
+     * 
+     * @param (stdClass) $disciplina - Disciplina oferecida.
+     * @param (String) $fieldsProfessor - Nome dos professores, quebrado por linha.
+     * @param (MText) $fieldHorario - Horário de ocorrência da disciplina.
+     * @param (stdClass) $args - Argumentos do formulário, usado nos AJAX.
+     *
+     * @return (MTableRaw) $tabela - Grade da disciplina final.
+     */
+    public function ajustaDadosDisciplina($disciplina, $fieldsProfessor, $fieldHorario = NULL, $args = NULL)
+    {
+        //Obtem vagas
+        $dataTabela[0][2] = 'Vagas: ' . $disciplina->totalEnrolled . '/' .  $disciplina->vacant . " (matriculados/total de vagas)";
+        
+        //Se houver horário
+        if ( !empty($fieldHorario) )
+        {
+            $dataTabela[0][0] = $fieldHorario;
+        }
+        
+        //Se houver professores
+        if ( $fieldsProfessor == '</br>' )
+        {
+            $dataTabela[0][1] = _M("PROFESSOR NÃO DEFINIDO");
+        }
+        else
+        {
+            $dataTabela[0][1] = _M($fieldsProfessor);
+        }
+
+        //Caso seja eletiva precisa passar o curriculumd junto
+        $disciplina->tipo == MatriculaWeb::DISCIPLINA_ELETIVA ? $groupId = $disciplina->groupId . '_' . $args->curriculumId : $groupId = $disciplina->groupId;
+        
+        //Adiciona um hiddenField, para verificação se a disciplina está sendo exibida ou não
+        $dataTabela[0][3] = new SHiddenField('expandida' . $groupId, 1);
+        
+        $contrato = MatriculaWeb::obterContratoGravado();
+        $busLearning = new BusinessAcademicBusLearningPeriod(); 
+        $learningPeriod = $busLearning->getLearningPeriod($contrato->learningPeriodId);
+
+        if($learningPeriod->matriculasemminimodecreditos == DB_TRUE)
+        {
+            $creditLabel = new MText('creditLabel_' . $disciplina->groupId, _M('Créditos', $module) . ': ');
+            $credits = new MText('creditId_' . $disciplina->groupId, $disciplina->academicCredits);
+            $hctCredit = new MHContainer('hctCredit_' . $disciplina->groupId, array($creditLabel, $credits));
+        }
+                        
+        $dataTabela[0][4] = $hctCredit;
+        
+        $tabela = new MTableRaw('', $dataTabela, null);
+        
+        return $tabela;
+    }
+    
+    /**
+     * Gera o título da disciplina oferecida, já com AJAX, checkBox e imagem de +-.
+     * 
+     * @param (stdClass) $disciplina - Disciplina oferecida.
+     * @return (MVContainer) - Título da disciplina ajustado.
+     */
+    public function gerarTituloDisciplina($disciplina)
+    {
+        $contrato = MatriculaWeb::obterContratoGravado();
+        
+        //Checkbox da oferecida, leva o groupId no ID/NAME e o curriculumId no VALOR
+        $checked = $this->checarSelecionada($disciplina->groupId);
+        $status = '';
+
+        //Se a oferecida estiver cheia tem que criar o checkbox com um id diferente, porque senão alguma outra disciplina pode liberá-lo depois
+        if ( $checked != self::DISCI_MARCADA && !MatriculaWeb::verificarSeExisteVagaNaOferecida($disciplina) )
+        {
+            $check = new MCheckBox('cheia' . $disciplina->groupId, $disciplina->curriculumId);
+            $check->addAttribute('disabled', 'true');
+            $check->addAttribute('style', 'cursor: default;');
+            $status = '<font color="gray">[LOTADA] </font>';
+            $disciplina->bloqueada = true;
+        }
+        else
+        {
+            $checked == self::DISCI_MARCADA ? $value = true : $value = false;
+            $check = new MCheckBox($disciplina->groupId, $disciplina->curriculumId, NULL, $value);
+            
+            // Caso a disciplina esteja bloqueada (ou seja seriado rígido), precisamos setar disabled
+            // ou bloqueada por pré-requisito
+            if ( ($checked == self::DISCI_BLOQUEADA || $contrato->semestreSeriadoRigido || $disciplina->bloqueada ) && !$disciplina->estaPendente )
+            {
+                $check->addAttribute('disabled', 'true');
+                $check->addAttribute('style', 'cursor: default;');
+                $disciplina->bloqueada = true;
+            }
+        }
+
+        //Monta os status diferentes dependendo se é desbloqueio ou vínculo
+        $foraDoCurriculo = false;
+        
+        if ( $disciplina->desbloqueio || $disciplina->vinculo )
+        {
+            $disciplina->vinculo ? $tipo = 'VÍNCULO' : $tipo = 'DESBLOQUEIO';
+            $status = '<font color="#FF6600">[VIA ' . $tipo . '] </font>';
+            $foraDoCurriculo = true;
+        }
+        
+        //Se precisa fazer checagem de horários
+        if ( MatriculaWeb::obterConfiguracaoDeMatricula('checkScheduleShock', 'checkScheduleShockExternal') )
+        {
+            //Obtem todos os choques aqui e joga pro args, pra não precisar ficar repetindo isso sempre
+            $conflitos = MatriculaWeb::obterChoquesDeHorario($disciplina->groupId);
+        }
+
+        //Obtem todos os choques de vinculo e curriculo aqui e já joga pro args também, por vias de perfomance
+        $conflitosCurriculo = MatriculaWeb::obterChoquesDeCurriculo($disciplina);
+        
+        //Adicionar AJAXs ao checkBox
+        $javascript = $this->obterJavascriptTrocarImagem($disciplina->groupId);
+        $event = SForm::getAjaxAction('expandirEValidar', 'divExpand' . $disciplina->groupId, false, array('conflitosHorario' => $conflitos, 'conflitosCurriculo' => $conflitosCurriculo,'groupId' => $disciplina->groupId, 'curriculumId' => $disciplina->curriculumId, 'origem' => 'checkBox'));
+        $check->addAttribute('onChange', $javascript . $event);
+        
+        //Nome
+        $name = MatriculaWeb::formatarTituloOferecida($disciplina, $foraDoCurriculo);
+        $nameLink = new MLink('link' . $disciplina->groupId, $status . $name , 'javascript:void(0);');
+        $nameLink->addAttribute('style', 'text-decoration: none;');
+
+        //Adiciona AJAX ao título
+        $action = SForm::getAjaxAction('expandirOferecida', 'divExpand' . $disciplina->groupId, false, array('conflitosHorario' => $conflitos, 'conflitosCurriculo' => $conflitosCurriculo,'groupId' => $disciplina->groupId, 'curriculumId' => $disciplina->curriculumId, 'origem' => 'titulo'));
+        $nameLink->addAttribute('onClick', $javascript . $action);
+        $nameTxt = new MText('name' . $disciplina->groupId, $nameLink->generate());
+        $nameTxt->addAttribute('style', 'font-weight: bold; text-align: left;');
+        $nameTxt->setJsHint(_M("Clique para expandir as informações"));
+
+        //Se a disciplina estiver marcada, já trás ela setada
+        $MIOLO = MIOLO::getInstance();
+        $caminho = $MIOLO->getUI()->getImageTheme(SAGU::getCurrentTheme(), 'button_add.png');
+        if ( $this->checarSelecionada($disciplina->groupId) == self::DISCI_MARCADA )
+        {
+            $contentExpand = $this->expandirOferecida($disciplina); //Conteúdo expandido
+            $caminho = $MIOLO->getUI()->getImageTheme(SAGU::getCurrentTheme(), 'button_minus.png'); //Botão negativado
+        }
+        
+        if(!strpos($disciplina->groupId,'_'))
+        {
+            $this->disciplinasLivresCont[$disciplina->groupId] = $disciplina->academicCredits;
+        }
+        else
+        {
+            $groupId = explode('_', $disciplina->groupId);
+            $this->disciplinasLivresCont[$groupId[1]] = $disciplina->academicCredits;
+        }
+        
+        //Adicionar AJAX na imagem
+        $imagem = new MImage('imagem_' . $disciplina->groupId, _M("Expandir informações"), $caminho);
+        $imageAction = SForm::getAjaxAction('expandirOferecida', 'divExpand' . $disciplina->groupId, false, array('conflitosHorario' => $conflitos, 'conflitosCurriculo' => $conflitosCurriculo,'groupId' => $disciplina->groupId, 'curriculumId' => $disciplina->curriculumId, 'origem' => 'imagem'));
+        $imagem->addAttribute('onClick', $javascript . $imageAction);
+        $imagem->addAttribute('onMouseOver','document.body.style.cursor=\'pointer\'');
+        $imagem->addAttribute('onMouseOut','document.body.style.cursor=\'auto\'');
+        $imagem->addAttribute('style', 'float: right;');
+        
+        $fields[] = new MHContainer('hctGroup', array($check, $nameTxt, $imagem));
+        
+        $fields[] = new MDiv('divExpand' . $disciplina->groupId, $contentExpand);
+        
+        return new MVContainer('hvtGroup', $fields);
+    }
+    
+    /**
+     * Junção das funções expandirOferecida e validarSelecionar. Para o AJAX continuar carregando
+     * apenas uma vez.
+     * 
+     * @param (stdClass) $args - Argumentos do formulário.
+     * @return (array) $fields - Campos expandidos.
+     */
+    public function expandirEValidar($args)
+    {
+        $fields = $this->expandirOferecida($args);
+        $this->validarSelecionar($args);
+        
+        return $fields;
+    }
+    
+    /**
+     * Gera campos para expansão dos dados da oferecida.
+     * 
+     * @param (stdClass) $args - Argumentos do formulário.
+     * 
+     * @return (array) $fields - Campos gerados pela expansão, juntamente com um MSeparator.
+     */
+    public function expandirOferecida($args)
+    {
+        //Id para usar para caso de eletivas
+        $explode = explode('_', $args->groupId);
+        $expandida = 'expandida' . $args->groupId;
+        
+        //Caso ainda não esteja expandida, mostra
+        if ( $args->$expandida < 1 )
+        {
+            $filters = new stdClass();
+            $filters->groupId = $explode[0];
+            $oferecida = MatriculaWeb::filtrarOferecidas($filters);
+            $disciplina = $oferecida[0];
+
+            //Verifica se deve exibir horário da disciplina, então o busca
+            if ( MatriculaWeb::obterConfiguracaoDeMatricula('scheduleDisplayModeExternal') )
+            {
+                $fieldHorario = $this->gerarHorarioDisciplina($disciplina);
+            }
+        
+            //Busca o professor da disciplina
+            $fieldsProfessor = $this->gerarNomeProfessorDisciplina($disciplina);
+
+            //Ajusta os dados na tabela da disciplina, aqui seta o hiddenField da expandida no args
+            $tabela = $this->ajustaDadosDisciplina($disciplina, $fieldsProfessor, $fieldHorario, $args);
+        
+            $fields[] = $tabela;
+            $fields[] = new MSeparator('</br>');
+                      
+            return $fields;
+        }
+    }
+    
+    /**
+     * Cria MText com o valor do horário da disciplina e dia da semana.
+     * 
+     * @param (stdClass) $disciplina - Disciplina oferecida.
+     * 
+     * @return (MText) - $field - Campo com o horário da disciplina oferecida.
+     */
+    public function gerarHorarioDisciplina($disciplina)
+    {
+        //Garante que funcionará também para eletivas
+        $explode = explode('_', $disciplina->groupId);
+        $groupId = $explode[0];
+        
+        $busEnroll = new BusinessAcademicBusEnroll();
+        
+        //Busca horários
+        $datahora = $busEnroll->getScheduleBeginAndEndHoursByWeekDayForEnrollWeb($groupId);
+
+        foreach($datahora as $d)
+        {
+            $horarios[] = $d;
+        }
+        
+        $horarios = implode('',$horarios);
+
+        //Caso nao venham horarios, vamos dizer para o usuario isso
+        if ( is_null($horarios) )
+        {
+            $horarios = _M("Horário não definido");
+        }
+
+        $field = new MText('txtStartEndDate', $horarios);
+        $field->addAttribute('style', 'text-align: left;');
+        
+        return $field;
+    }
+    
+    /**
+     * Retorna nome dos professores da disciplina.
+     * 
+     * @param (stdClass) $disciplina - Disciplina para gera nome do professor.
+     * @return (String) $professores - Professores, quebrados por linhas.
+     */
+    public function gerarNomeProfessorDisciplina($disciplina)
+    {
+        //Garante que funcionará também para eletivas
+        $explode = explode('_', $disciplina->groupId);
+        $groupId = $explode[0];
+        
+        $busEnroll = new BusinessAcademicBusEnroll();
+        
+        $professor = $busEnroll->getGroupProfessors($groupId);
+        
+        foreach ( $professor as $p )
+        {
+            $professores = $p[0] . '</br>'; 
+        }
+        
+        return $professores;
+    }
+    
+    /**
+     * Gera grade da disciplina finalizada, já ajustada e com os dados corretos.
+     * 
+     * @param (stdClass) $disciplina - Disciplina finalizada/indisponível.
+     * 
+     * @return (MDiv) $div - Grade da disciplina já finalizada/indisponível.
+     */
+    public function gerarGradeDisciplinaFinalizada($disciplina)
+    {
+        //Se vem com o nome da disicplina cursada quer dizer que é uma que já foi cursada
+        if ( strlen($disciplina->enrollId) > 0 )
+        {
+            //Título
+            $name = '<font color="gray">[CURSADA] </font>' . $disciplina->nomeDisciplinaOriginal;
+            $nameLink = new MLink('link' . $disciplina->enrollId, $name, 'javascript:void(0);');
+            $nameLink->addAttribute('style', 'text-decoration: none;');
+        
+            //Adiciona AJAX ao título
+            $javascript = $this->obterJavascriptTrocarImagem($disciplina->enrollId);
+            $action = SForm::getAjaxAction('expandirFinalizada', 'divExpandFinalizada' . $disciplina->enrollId, false, array('enrollId' => $disciplina->enrollId, 'origem' => 'titulo'));
+            $nameLink->addAttribute('onClick', $javascript . $action); //Expandir no click
+            $nameTxt = new MText('name' . $disciplina->enrollId, $nameLink->generate());
+            $nameTxt->addAttribute('style', 'font-weight: bold; text-align: left;');
+            $nameTxt->setJsHint(_M("Clique para expandir as informações"));
+            
+            //Imagem de mais/menos
+            $MIOLO = MIOLO::getInstance();
+            $caminhoMais = $MIOLO->getUI()->getImageTheme(SAGU::getCurrentTheme(), 'button_add.png');
+            $imagem = new MImage('imagem_' . $disciplina->enrollId, _M("Expandir informações"), $caminhoMais);
+        
+            //Adicionar AJAX na imagem
+            $imageAction = SForm::getAjaxAction('expandirFinalizada', 'divExpandFinalizada' . $disciplina->enrollId, false, array('enrollId' => $disciplina->enrollId, 'origem' => 'imagem'));
+            $imagem->addAttribute('onClick', $javascript . $imageAction);
+            $imagem->addAttribute('onMouseOver','document.body.style.cursor=\'pointer\'');
+            $imagem->addAttribute('onMouseOut','document.body.style.cursor=\'auto\'');
+        }
+        else
+        {
+            $name = '<font color="red">[INDISPONÍVEL] </font>' . $disciplina->nomeDisciplinaOriginal;
+            $nameTxt = new MText('txtName', $name);
+            $nameTxt->addAttribute('style', 'font-weight: bold; text-align: left;');
+        }
+        
+        $divExpandida  = new MDiv('divExpandFinalizada' . $disciplina->enrollId, null);
+        $divExpandida->addBoxStyle('padding-left', '30px');
+        $div = new MDiv('divFinalizada' . $disciplina->enrollId, array(new MHContainer('hctFinalizada', array($nameTxt, $imagem)), $divExpandida));
+        
+        return $div;
+    }
+    
+    /**
+     * Gera os campos necessários ao expandir uma disicplina finalizada.
+     * 
+     * @param (stdClass) $args - Argumentos do formulário.
+     * 
+     * @return (MTableRaw) - Tabela já pronta e gerada de uma disciplina finalizada.
+     */
+    public function expandirFinalizada($args)
+    {
+        $expandida = 'expandida' . $args->enrollId;
+       
+        if ( $args->$expandida < 1 )
+        {
+            //Filtrar finalizada
+            $filters = new stdClass();
+            $filters->enrollId = $args->enrollId;
+
+            $disciplina = MatriculaWeb::filtrarFinalizadas($filters);
+
+            //Disciplina que realmente foi cursada
+            $nameReal = 'Cursada como: ' . SAGU::NVL($disciplina[0]->nomeDisciplinaCursada, $disciplina[0]->nomeDisciplinaOriginal) . ' (cód.  ' . SAGU::NVL($disciplina[0]->groupId, '-') . ')';
+            $dataTabela[0][0] = $nameRealTxt = new MText('txtNameReal', $nameReal);
+
+            //Período e estado
+            $info = 'Cursada em: ' . $disciplina[0]->periodId . '    /    ' . 'Estado final: ' . $disciplina[0]->enrollStatus;
+            $dataTabela[1][0] = $infoTxt = new MText('txtInfo', $info);
+            $infoTxt->addAttribute('style', 'text-align: left;');
+
+            //Hidden field para setar se está expandida ou não
+            $dataTabela[0][1] = new SHiddenField('expandida' . $disciplina[0]->enrollId, 1); 
+            
+            $tabela = new MTableRaw('', $dataTabela, null);
+            
+            return $tabela;
+        }
+    }
+    
+    /**
+     * Lógica e processos ao clicar no checkBox (verificações e bloqueios em geral)
+     * 
+     * @param (stdClass) $args - Argumentos do formulário.
+     */
+    public function validarSelecionar($args)
+    {
+        //Se está selecionando o $args->groupId será um elemento do $args
+        $groupId = $args->groupId;
+
+        //Tem que ser feito um foreach porque o stdClass tem problemas por o id do checkbox ser numérico
+        $valida = false;
+        foreach ( $args as $elemento => $conteudo )
+        {
+            if ( $elemento == $groupId )
+            {
+                $valida = true;
+                break;
+            }
+        }
+        
+        //Junta os conflitos
+        $conflitosHorario = explode(',', $args->conflitosHorario);
+        $conflitosCurriculo = explode(',', $args->conflitosCurriculo);
+        $conflitos = array_merge($conflitosCurriculo, $conflitosHorario);
+        
+        if ( $valida )
+        {
+            //Se foi selecionado, bloqueia os conflitos
+            foreach ( $conflitos as $conflito )
+            {
+                $this->bloquearDisciplina($conflito);
+            }
+            
+            //Adicionada como MARCADA
+            $this->atualizaDisciplinaNaSessao($groupId, self::DISCI_MARCADA);
+        }
+        else
+        {
+            //Se não foi selecionado, libera
+            $this->liberarDisciplinas($conflitos, $args);
+            
+            //Retira
+            $this->atualizaDisciplinaNaSessao($groupId);
+        }
+    }
+    
+    /**
+     * Javascript para bloquear disciplina no formulário.
+     * 
+     * @param (int) $disciplina - Código do oferecimento da disciplina (id do checkBox)
+     */
+    public function bloquearDisciplina($disciplina)
+    {
+        $javascript = "if(document.getElementById('div{$disciplina}'))
+                       {
+                           if(document.getElementById('{$disciplina}'))
+                           {
+                               if(!document.getElementById('{$disciplina}').checked)
+                               {
+                                   document.getElementById('div{$disciplina}').style.opacity='0.2'; 
+                                   document.getElementById('{$disciplina}').disabled=true; 
+                                   document.getElementById('{$disciplina}').style.cursor='default';
+                               }
+                           }
+                       }";
+
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->page->addAJAXJsCode($javascript);
+        
+        //Atualiza disciplina como bloqueada
+        $this->atualizaDisciplinaNaSessao($disciplina, self::DISCI_BLOQUEADA);
+    }
+    
+    /**
+     * Lógica e javascript para bloquear/liberar disciplinas.
+     * 
+     * @param (array) $conflitos - Conflitos da disciplina selecionada.
+     * @param (stdClass) $args - Argumentos do formulário.
+     */
+    public function liberarDisciplinas($conflitos, $args)
+    {
+        //Ao liberar a disciplina é necessário verificar se outras disciplinas não estão bloqueando
+        //ela também, se estiverem, ela deve permancer bloqueada
+
+        //Pegar os conflitos das disciplinas que vão ser liberadas
+        foreach ( $conflitos as $conflito )
+        {
+            if ( strlen($conflito) > 0 )
+            {
+                $ch = array();
+                if ( MatriculaWeb::obterConfiguracaoDeMatricula('checkScheduleShock', 'checkScheduleShockExternal') )
+                {
+                    $ch = explode(',', MatriculaWeb::obterChoquesDeHorario($conflito));
+                }
+
+                $filters = new stdClass();
+                $filters->groupId = $conflito;
+                $disciplina = MatriculaWeb::filtrarOferecidas($filters);
+
+                $conflitosLiberada[$conflito] = array_merge($ch, explode(',', MatriculaWeb::obterChoquesDeCurriculo($disciplina[0])));
+            }
+        }
+        
+        //Verificar se pelo menos algum confltio da liberada está selecionado, se sim, mantém-se bloqueada
+        $bloqueadas = array();
+        foreach ( $args as $argumento => $conteudo )
+        {
+            //Se for numérico quer dizer que é uma disciplina selecionada
+            if ( is_numeric($argumento) )
+            {
+                foreach ( $conflitosLiberada as $groupId => $conflitoLiberada )
+                {
+                    //Se a disciplina selecionada for um conflito da que está sendo liberada
+                    if ( array_key_exists($argumento, array_flip($conflitoLiberada)))
+                    {
+                        $bloqueadas[$groupId] = self::DISCI_BLOQUEADA;
+                    }
+                }
+            }
+        }
+
+        //Faz as checagens
+        foreach ( $conflitos as $conflito )
+        {
+            if ( !array_key_exists($conflito, $bloqueadas) )
+            {
+                $javascript = "if(document.getElementById('div{$conflito}'))
+                               {
+                                   document.getElementById('div{$conflito}').style.opacity='1';
+                                   document.getElementById('{$conflito}').style.cursor='pointer';
+                                   document.getElementById('{$conflito}').disabled=false; 
+                               } ";
+                $MIOLO = MIOLO::getInstance();
+                $MIOLO->page->addAJAXJsCode($javascript);
+                
+                //Quando libera, sai da sessao
+                $this->atualizaDisciplinaNaSessao($conflito);
+            }
+        }
+    }
+    
+    /**
+     * Quando o STATUS vier nulo quer dizer que é para tirar a disciplina do array.
+     * 
+     * @param type $groupId - Código da oferecida.
+     * @param type $status - Estado da disciplina (BLOQUEADA OU MARCADA)
+     */
+    public function atualizaDisciplinaNaSessao($groupId, $status = null)
+    {
+        //Pega o que já tinha na sessão, chaveamento de contractId
+        $MIOLO = MIOLO::getInstance();
+        $contrato = MatriculaWeb::obterContratoGravado();
+        $marcadasGeral = $MIOLO->session->getValue('marcadas');
+        $marcadas = $marcadasGeral[$contrato->contractId];
+        
+        //Quando o STATUS for nulo, é para tirar a disciplina da sessão.
+        if ( strlen($status) > 0 )
+        {
+            $marcadas[$groupId] = $status;
+        }
+        else
+        {
+            unset($marcadas[$groupId]);
+        }
+
+        
+        //Salva na sessão
+        $marcadasGeral[$contrato->contractId] = $marcadas;
+        $MIOLO->session->setValue('marcadas', $marcadasGeral);
+    }
+
+    /**
+     * Verifica qual é o status da disciplina na sessão (BLOQUEADA OU MARCADA).
+     * 
+     * @param (int) $groupId - Código de oferecimento da disicplina.
+     * 
+     * @return (String) $return - Estado da disciplina na sessão.
+     */
+    public function checarSelecionada($groupId)
+    {
+        //Pega o que já tinha na sessão, chaveamento de contractId
+        $MIOLO = MIOLO::getInstance();
+        $contrato = MatriculaWeb::obterContratoGravado();
+        $marcadasGeral = $MIOLO->session->getValue('marcadas');
+        $marcadas = $marcadasGeral[$contrato->contractId];
+            
+        //Verifica se existe
+        $return = false;
+        if ( array_key_exists($groupId, $marcadas) )
+        {
+            $return = $marcadas[$groupId];
+        }
+        
+        return $return;
+    }
+    
+    /**
+     * Retorna a simulação financeira em uma popup.
+     * 
+     * @param (stdClass) $args - Argumentos.
+     * @return (MPopup) - Popup com a simulação financeira.
+     */
+    public function simularFinanceiro($args)
+    {
+        $fields[] = parent::simularFinanceiro($args);   
+        return new MPopup('financeiro', $fields, _M('Simulação de financeiro'));
+    }
+    
+    /**
+     * Botão de próximo passo, verificações gerais relacionadas com as disciplinas selecionadas
+     * também passa por aqui primeiro.
+     * 
+     * @param (stdClass) $args - Argumentos do formulário.
+     */
+    public function nextStepButton_click($args = null)
+    {
+        //Verifica se existem erros nas disciplinas marcadas
+        $erros = MatriculaWeb::verificarErros($args);
+
+        if ( count($erros) > 0 )
+        {
+            $this->addError(implode('<br><br>', $erros));
+        }
+        else
+        {
+            parent::nextStepButton_click($args);
+        }
+    }
+    
+    /**
+     * Botão cancelar.
+     * 
+     * @param (stdClass) $args - Argumentos do formulário.
+     */
+    public function cancelButton_click($args = null)
+    {
+        //Limpar selecionadas
+        MatriculaWeb::limparSelecionadasNaSessao();
+        
+        //Retorna ao portal se veio do portal
+        if ( MIOLO::_REQUEST('returnTo') == 'PORTAL' )
+        {
+            $MIOLO = MIOLO::getInstance();
+            $portalURL = $MIOLO->getActionURL( 'portal', 'main');
+            $MIOLO->page->redirect($portalURL);
+        }
+        else //Senão volta pro serviços
+        {
+            parent::cancelButton_click($args);
+        }
+    }
+    
+    /**
+     * No primeiro contato com a tela de disciplinas essa função é utilizada para setar corretamente
+     * as disciplinas selecionadas e/ou bloqueadas.
+     */
+    public function ajustarDisciplinasSelecionadas()
+    {
+        $MIOLO = MIOLO::getInstance();
+        //Busca o contrato
+        $contrato = MatriculaWeb::obterContratoGravado();
+        
+        //Busca oferecidas
+        $oferecidas = MatriculaWeb::filtrarOferecidas();
+
+        //Busca o que já tava na sessão, sempre lembrando que existe chaveamento de contrato
+        $selecionadasGeral = $MIOLO->session->getValue('marcadas');
+        $selecionadas = $selecionadasGeral[$contrato->contractId];
+
+        //Só realiza toda essa montagem de dados caso ainda não exista nada na sessão em relação ao contrato
+        if ( count($selecionadas) < 1 )
+        {
+            //Checar quais que possuem estado de matrícula (MATRICULADO e PRÉ)
+            $sessao = array();
+            foreach ( $oferecidas as $disciplina )
+            {
+                // SERIADO RÍGIDO - todas que não pendentes ou eletivas são marcadas
+                if ( !$disciplina->estaPendente && 
+                     $disciplina->tipo != MatriculaWeb::DISCIPLINA_ELETIVA && 
+                     strlen($contrato->semestreSeriadoRigido) > 0 )
+                {
+                    $sessao[$disciplina->groupId] = self::DISCI_MARCADA;
+                }
+                
+                if ( ( $disciplina->enrollStatusId == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_PRE_ENROLLED') ||
+                       $disciplina->enrollStatusId == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') )   &&
+                       $selecionadas[$disciplina->groupId] != self::DISCI_BLOQUEADA )
+                {
+                    //Se for eletiva tem que pegar o curriculo matriculada
+                    if ( $disciplina->tipo == MatriculaWeb::DISCIPLINA_ELETIVA )
+                    {
+                        $busEnroll = new BusinessAcademicBusEnroll();
+                        $enroll = $busEnroll->getEnroll($disciplina->enrollId);
+                        $sessao[$disciplina->groupId . '_' . $enroll->curriculumId] = self::DISCI_MARCADA;
+                    }
+                    else
+                    {
+                        $sessao[$disciplina->groupId] = self::DISCI_MARCADA;    
+                    }
+                }
+            }
+
+            //Verificar os bloqueios de cada uma
+            foreach ( $sessao as $groupId => $status  )
+            {
+                //Garante o id correto
+                $explode = explode('_', $groupId);
+                $groupId = $explode[0];
+                
+                $filters = new stdClass();
+                $filters->groupId = $groupId;
+                $disciplina = MatriculaWeb::filtrarOferecidas($filters);
+
+                //Se precisa fazer choque de horário, junta tudo
+                if ( MatriculaWeb::obterConfiguracaoDeMatricula('checkScheduleShock', 'checkScheduleShockExternal') )
+                {
+                    $choquesHorario = explode(',', MatriculaWeb::obterChoquesDeHorario($groupId));
+                }
+                $choquesCurriculo = explode(',', MatriculaWeb::obterChoquesDeCurriculo($disciplina[0]));
+                $choques = array_merge($choquesCurriculo, $choquesHorario);
+                
+                foreach ( $choques as $bloqueada ) 
+                {
+                    //Esteja bloqueada e não marcada
+                    if ( strlen($bloqueada) > 0 && $sessao[$bloqueada] != self::DISCI_MARCADA )
+                    {
+                        $sessao[$bloqueada] = self::DISCI_BLOQUEADA;
+                    }
+                }
+            }
+
+            //Por último, setar as marcadas na sessão
+            $selecionadasGeral[$contrato->contractId] = $sessao;
+            $MIOLO->session->setValue('marcadas',  $selecionadasGeral);
+        }
+    }
+
+    /**
+     * Gerar javascript para o changeElement da imagem de mais/menos ao lado do título.
+     * 
+     * @param (int) $groupId - Código da oferecida.
+     * 
+     * @return (String) $javascript - Código javascript gerado para a troca de imagem.
+     */
+    public function obterJavascriptTrocarImagem($groupId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $caminhoMais = $MIOLO->getUI()->getImageTheme(SAGU::getCurrentTheme(), 'button_add.png');
+        $caminhoMenos = $MIOLO->getUI()->getImageTheme(SAGU::getCurrentTheme(), 'button_minus.png');
+        $javascript = " changeElementImage('imagem_" . $groupId . "', '" . $caminhoMenos . "', '" . $caminhoMais . "'); ";
+        
+        return $javascript;
+    }
+}
+
+?>

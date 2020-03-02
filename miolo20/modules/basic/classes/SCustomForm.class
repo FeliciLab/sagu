@@ -1,0 +1,349 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2012 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulário que gerencia o cadastro dinâmico.
+ *
+ * @author Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * \b Maintainers \n
+ * Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * @since
+ * Class created on 15/05/2012
+ *
+ */
+
+class SCustomForm extends SManagementForm
+{
+    /**
+     * @var string Módulo do formulário.
+     */
+    private $modulo;
+
+    /**
+     * @var string Identificador.
+     */
+    private $identificador;
+
+    /**
+     * @var array Vetor de objetos SInfoColuna.
+     */
+    private $colunas;
+
+    /**
+     * @var string Função.
+     */
+    private $funcao;
+
+    /**
+     * @var stdClass Dados.
+     */
+    private $dados;
+
+    /**
+     * @var array Valores das chaves primárias recebidas por GET.
+     */
+    private $valoresPK = array();
+
+    /**
+     * @var string Nome do type.
+     */
+    private $nomeDoType;
+
+    /**
+     * Construtor do formulário de cadastro dinâmico.
+     *
+     * @param string $titulo Título.
+     * @param string $identificador Identificador.
+     */
+    public function __construct($titulo, $modulo, $identificador)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $this->modulo = $modulo;
+        $this->identificador = $identificador;
+        $this->colunas = BasCadastroDinamico::buscarDadosDasColunas($modulo, $identificador);
+        $this->funcao = MIOLO::_REQUEST('function');
+
+        // Verifica se existe business
+        $bus = "Bus$identificador";
+        $arquivoBus = $MIOLO->getConf('home.modules') . "/$modulo/db/$bus.class";
+
+        if ( !file_exists($arquivoBus) )
+        {
+            $bus = NULL;
+        }
+
+        $pks = array();
+
+        $dadosDoModulo = SModules::getModule($modulo);
+        $esquemaDoModulo = $dadosDoModulo->getModulePrefix();
+        $this->nomeDoType = "$esquemaDoModulo$identificador";
+        $instanciaType = new $this->nomeDoType();
+
+        $objectVars = $instanciaType instanceof SType ? $instanciaType->getObjectVars() : get_object_vars($instanciaType);
+
+        foreach ( $this->colunas as $coluna )
+        {
+            $colunaId = str_replace('_', '', $coluna->nome);
+
+            if ( !key_exists($coluna->nome, $objectVars) )
+            {
+                foreach ( $objectVars as $var => $v )
+                {
+                    if ( strtolower($var) == $colunaId )
+                    {
+                        $coluna->atributo = $var;
+                    }
+                }
+            }
+            else
+            {
+                $coluna->atributo = $coluna->nome;
+            }
+
+            if ( $coluna->restricao == 'p' )
+            {
+                $pks[] = $coluna->atributo;
+
+                if ( !array_key_exists($coluna->atributo, $this->valoresPK) )
+                {
+                    $valor = MIOLO::_REQUEST($coluna->atributo);
+
+                    if ( strlen($valor) )
+                    {
+                        $this->valoresPK[$coluna->atributo] = is_numeric($valor) ? $valor : "'$valor'";
+                    }
+                    else
+                    {
+                        $this->valoresPK[$coluna->atributo] = 'NULL';
+                    }
+                }
+            }
+        }
+
+        parent::__construct($instanciaType, $pks, $bus, $titulo);
+    }
+
+    /**
+     * Constrói os campos do formulário. Chamado pelo construtor do form. 
+     */
+    public function defineFields()
+    {
+        if ( $this->isSubDetailEditMode() )
+        {
+            if ( in_array($this->funcao, array( SForm::FUNCTION_UPDATE, SForm::FUNCTION_DELETE )) )
+            {
+                $parametros = implode(',', $this->valoresPK);
+
+                if ( $this->object instanceof SType )
+                {
+                    eval("\$this->object = new $this->nomeDoType($parametros);");
+                    $this->dados = (object) $this->object;
+                }
+                else
+                {
+                    eval("\$this->dados = \$this->busObject->get$this->identificador($parametros);");
+                }
+            }
+        }
+
+        list($campos, $validadores) = $this->gerarCampos();
+
+        parent::defineFields($campos, $validadores);
+    }
+    
+    /**
+     * Gera os filtros e as colunas.
+     *
+     * @return array Vetor com os filtros, a coluna da grid e as chaves a serem passadas ao form de edição.
+     */
+    public function gerarCampos()
+    {
+        $campos = array();
+        $validadores = array();
+
+        foreach ( $this->colunas as $coluna )
+        {
+            list($campo, $validador) = $this->gerarCampo($coluna);
+            
+            if ( $campo )
+            {
+                $campos[] = $campo;
+
+                if ( $validador )
+                {
+                    $validadores[] = $validador;
+                }
+            }
+        }
+
+        return array( $campos, $validadores );
+    }
+
+    /**
+     * Gera objetos do campo do formulário.
+     *
+     * @param SInfoColuna $coluna Objeto com os dados da coluna.
+     * @return array Vetor com o componente do campo criado de acordo com o tipo da coluna e validador.
+     */
+    public function gerarCampo(SInfoColuna $coluna)
+    {
+        $campo = NULL;
+        
+        if ( isset($this->dados) && isset($this->dados->{$coluna->atributo}) )
+        {
+            $valor = $this->dados->{$coluna->atributo};
+        }
+        else
+        {
+            $valor = $coluna->valorPadrao;
+        }
+
+        $label = _M($coluna->titulo, MIOLO::getCurrentModule());
+
+        if ( $coluna->obrigatorio == DB_TRUE )
+        {
+            $validador = new MRequiredValidator($coluna->campo);
+        }
+
+        if ( $coluna->restricao == 'f' )
+        {
+            if ( $coluna->fkEsquema == 'public' && substr($coluna->fkTabela, 0, 5) != 'miolo' )
+            {
+                $prefixo = substr($coluna->fkTabela, 0, 3);
+            }
+            else
+            {
+                $prefixo = $coluna->fkEsquema;
+            }
+
+            $lModulo = NULL;
+
+            if ( substr($coluna->nome, -2) == 'id' )
+            {
+                // Remove o id do final da coluna
+                $item = substr($coluna->atributo, 0, -2);
+
+                $modulos = SModules::getAllModules();
+                foreach ( $modulos as $m )
+                {
+                    if ( $prefixo == $m->getModulePrefix() )
+                    {
+                        $lModulo = $m->getName();
+                        break;
+                    }
+                }
+
+                if ( strlen($lModulo) && strlen($item) )
+                {
+                    $campo = new MLookupContainer($coluna->campo, $coluna->campo.'Description', $value, $label, $coluna->campo.'Description', $lModulo, $item);
+                }
+            }
+        }
+
+        if ( !$campo )
+        {
+            switch ( $coluna->tipo )
+            {
+                case SInfoColuna::TIPO_BOOLEAN:
+                    if ( $valor === NULL )
+                    {
+                        $valor = DB_FALSE;
+                    }
+                    $campo = new MRadioButtonGroup($coluna->campo, $label, SAGU::listTrueFalse(1), $valor, NULL, 'horizontal');
+                    $validador = NULL;
+                    break;
+
+                case SInfoColuna::TIPO_DATA:
+                    $campo = new MCalendarField($coluna->campo, $valor, $label, SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+                    break;
+
+                case SInfoColuna::TIPO_DECIMAL:
+                    $campo = new MFloatField($coluna->campo, $valor, $label, SAGU::getParameter('BASIC', 'FIELD_MONETARY_SIZE'));
+                    break;
+
+                case SInfoColuna::TIPO_INTEIRO:
+                    $campo = new MTextField($coluna->campo, $valor, $label, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+                    $validador = new MIntegerValidator($coluna->campo, $label);
+
+                    if ( $coluna->obrigatorio == DB_TRUE )
+                    {
+                        $validador->type = 'required';
+                    }
+
+                    break;
+
+                case SInfoColuna::TIPO_LISTA:
+                    $possibleValues = explode("\n", trim($coluna->valoresPossiveis));
+
+                    // Usa os valores como chaves
+                    $possibleValues = array_combine($possibleValues, $possibleValues);
+
+                    $campo = new MSelection($coluna->campo, $valor, $label, $possibleValues);
+                    break;
+
+                /*case SInfoColuna::TIPO_LOOKUP:
+                    // Adicionado o stripslashes por causa do postgres 9
+                    $parametros = unserialize(stripslashes($coluna->parametros));
+
+                    // Apenas o campo de descrição é usado como related para manter a compatibilidade com lookups antigos
+                    $campo = new MLookupContainer($id, $id.'Description', $value, $label, $id.'Description', $parametros['modulo'], $parametros['item']);
+                    break;*/
+
+                case SInfoColuna::TIPO_TEXTO_LONGO:
+                case SInfoColuna::TIPO_TEXTO:
+                default:
+                    $campo = new MTextField($coluna->campo, $valor, $label, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+                    break;
+            }
+        }
+
+        if ( $this->funcao == 'insert' && $coluna->restricao == 'p' && substr($coluna->valorPadrao, 0, 7) == 'nextval' )
+        {
+            $campo = NULL;
+        }
+        elseif ( $this->funcao == 'update' && $coluna->restricao == 'p' )
+        {
+            $campo->addBoxStyle('display', 'none');
+            $validador = NULL;
+        }
+
+        return array( $campo, $validador );
+    }
+
+    /**
+     * Pega os dados do form (e da subdetail)
+     */
+    public function getTypesData()
+    {
+        $data = parent::getTypesData();
+
+        foreach ( $this->colunas as $coluna )
+        {
+            $data->{$coluna->atributo} = MIOLO::_REQUEST($coluna->campo);
+        }
+
+        return $data;
+    }
+}
+
+?>

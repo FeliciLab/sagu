@@ -1,0 +1,686 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Intermediate form that inherits SForm
+ * and implements basic insert/edit/delete functions
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 05/07/2010
+ */
+class SManagementForm extends SForm
+{
+    /**
+     *
+     * @var string
+     */
+    protected $business;
+    
+    /**
+     *
+     * @var sBusiness
+     */
+    protected $busObject;
+
+    /**
+     * Atributo com o objeto do type instanciado
+     * @var object SType
+     */
+    protected $typeObject;
+    
+    /**
+     *
+     * @var boolean
+     */
+    private $addedDefaultFields;
+    
+    /**
+     *
+     * @var boolean
+     */
+    private $campoCodigoObtido = false;
+
+    /**
+     * Constructor
+     *
+     * @param (object) $object Instance of the class this form handles.
+     * @param (array) $pkey List of the fields representing the form's primary key.
+     * @param (string) $business Class to manipulate the acdCourseVersionType table. If is NULL, first parameter ($object) is used as type for CRUD functions (insert, update, delete)
+     */
+    public function __construct($object, $pkey, $business = null, $title = null, $module = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        if( is_null($module) )
+        {
+            $module = MIOLO::getCurrentModule();
+        }
+
+        if ( !is_null($business) )
+        {
+            // Instantiate business for later use
+            $this->business = $business;
+            $this->busObject = MIOLO::getInstance()->getBusiness($module, $business);
+        }
+
+        $module = MIOLO::getCurrentModule();
+        
+        if ( strlen($title)== 0 )
+        {
+            $title = MIOLO::_request('function') == 'insert' ? _M('Inserir', $module) : _M('Atualizar', $module);
+        }
+        
+        parent::__construct($title, $object, $pkey);
+    }
+
+    /**
+     * Create basic fields for a management form.
+     *
+     * @param (array) $fields Array containing all filters which will be present in the search form.
+     * @param (array) $validators Name of the filters to be applied to the grid.
+     * @param (object) $data Form data
+     */
+    public function defineFields($fields, $validators, $data = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        $object = $this->getTypeObjectPopulated();
+
+        // Create basic fields
+        parent::defineFields();
+
+        // Disable buttons which won't be used in searches
+        $this->toolbar->disableButton('tbBtnPrint');
+
+        if ( $function == 'insert' )
+        {
+            $this->toolbar->disableButton('tbBtnDelete');
+        }
+        elseif ( $function == 'delete' )
+        {
+            $this->toolbar->disableButton('tbBtnSave');
+        }
+
+        $this->addFields($fields);
+        $this->setValidators($validators);
+        
+        // Campos customizados, carrega os campos e ja com os valores (values) definidos
+        $this->addCustomFields($this->getTransaction() , $this->getPkeyCustomizedId());
+        
+        if ( $this->isUpdateFunction() )
+        {
+            $busUser = new BusinessAdminBusUser();
+            $userData = $busUser->getUserByLogin($data->userName);
+            $fieldsExtra[] = new MTextLabel('lastModification', '[' . SAGU::NVL($userData->name, $data->userName, $object->userName) . ' - ' . SAGU::NVL($data->dateTime, $object->dateTime) . ']', _M('Última modificação', 'basic'));
+        }
+
+        $fieldsExtra[] = new Separator('');
+        
+        $this->AddFields($fieldsExtra);
+        
+        // Aplica padroes de campos
+        foreach ( $this->getFormControlFields() as $field )
+        {
+            $field instanceof MFormControl;
+            $this->setFieldDefaults($field);
+        }
+    }
+    
+    public function AddField($field)
+    {
+        $this->checkAddDefaultFields();
+        
+        if ( $field instanceof MFormControl )
+        {
+            $this->setFieldDefaults($field);
+        }
+        
+        parent::AddField($field);
+    }
+    
+    public function AddFields($fields)
+    {
+        $this->checkAddDefaultFields();
+        
+        parent::AddFields($fields);
+    }
+    
+    public function checkAddDefaultFields()
+    {
+        if ( !$this->addedDefaultFields )
+        {
+            $this->addedDefaultFields = true;
+            $novoPadrao = $this->object instanceof SType && $this->object->utilizaNovoPadrao();
+
+            // Tratamento automatico de dados
+            if ( $novoPadrao )
+            {
+                $object = $this->getTypeObjectPopulated();
+                $object instanceof SType;
+                
+                if ( $this->isUpdateOrDelete() )
+                {
+                    if ( !$this->campoCodigoObtido && ! ( $this instanceof sLinkedForm ) )
+                    {
+                        // Adiciona codigo oculto quando for edicao
+                        $codigo = $this->obterCampoCodigoLabel();
+                        parent::AddField($codigo);
+                    }
+                    
+                    $hidden = new SHiddenField($object->getPkeyWithAlias(), $object->getPkeyValue());
+                    parent::AddField($hidden);
+                }
+            }
+        }
+    }
+    
+    /**
+     *
+     * @return \MTextLabel 
+     */
+    public function obterCampoCodigoLabel()
+    {
+        $this->campoCodigoObtido = true;
+        
+        $object = $this->getTypeObjectPopulated();
+        $cod = $object->getPkeyValue();
+        
+        if ( $cod )
+        {
+            return new MTextLabel('', $cod, _M('Código',$module));
+        }
+        else
+        {
+            return new SHiddenField('coddesc');
+        }
+    }
+
+    /**
+     * Event triggered when user chooses New from the toolbar
+     */
+    public function tbBtnNew_click($sender = NULL)
+    {
+    }
+
+    /**
+     * Event triggered when user chooses Delete from the toolbar
+     */
+    public function tbBtnDelete_click($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $data = $this->getTypesData();
+        $opts = array('event' => 'tbBtnDelete_confirm', 'function' => 'delete', SForm::getReturnToKey() => SForm::getReturnToEncoded());
+
+        foreach ( $this->pkey as $field )
+        {
+            $opts[$field] = MIOLO::_request($field);
+        }
+
+        $gotoYes = $MIOLO->getActionURL($module, $action, null, $opts);
+        $goto = SAGU::getStackBackUrl();
+        $gotoNo = strlen($goto) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+        $msg = SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE');
+        $caption = _M('Questão', $module);
+        SAGU::question($msg, $gotoYes, $gotoNo);
+    }
+
+    /**
+     * Event triggered when user chooses Yes from the insert or update prompt dialog
+     */
+    public function confirmInsertUpdate($ok)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        $msg = ($function == SForm::FUNCTION_UPDATE) ? SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED') : SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED');
+
+        if ( $ok )
+        {
+            if ( $function == SForm::FUNCTION_UPDATE )
+            {
+                // Exibe a mensagem
+                $this->displayMessageUpdate();
+            }
+            else
+            {
+                // Exibe a mensagem
+                $this->displayMessageInsert();
+            }
+        }
+        else
+        {
+            $msg = _M('Erro executando a operação solicitada.', $module);
+            $errors = $this->busObject ? $this->busObject->getErrors() : array();
+
+            for ( $i=0; $i<count($errors); $i++ )
+            {
+                $msg .= '<br />' . $errors[$i];
+            }
+
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Erro', $module);
+            SAGU::error($msg, $goto, $caption);
+        }
+    }
+
+    /**
+     * Exibe a mensagem de registro inserido com sucesso
+     */
+    public function displayMessageInsert()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $action = MIOLO::getCurrentAction();
+        $module = MIOLO::getCurrentModule();
+
+        $this->messageSuccess(SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED_INFO'), $this->getInsertGotoNo());
+    }
+
+    /**
+     * Exibe a mensagem de registro atualizado com sucesso
+     */
+    public function displayMessageUpdate()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $action = MIOLO::getCurrentAction();
+        $module = MIOLO::getCurrentModule();
+
+        $this->messageSuccess(SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED'), $this->getUpdateGoTo());
+    }
+
+    /**
+     * Obtém o $opts para caso de inserção (continuar inserindo)
+     * @return type
+     */
+    public function getInsertOpts()
+    {
+        $opts = array(
+            'function' => SForm::FUNCTION_INSERT
+        );
+
+        $opts[ SForm::getReturnToKey() ] = SForm::getReturnToEncoded();
+        
+        return $opts;
+    }
+
+    /**
+     * Obtém o $opts para caso de atualização (ir para a busca)
+     * @return type
+     */
+    public function getUpdateOpts()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $opts = array();
+        
+        $buscaGenerica = ( $this instanceof SSearchForm ) && ( $this->campoBuscaGenerica == TRUE );
+        
+        if ( !$buscaGenerica )
+        {
+            foreach ( $this->pkey as $field )
+            {
+                if ( $this->object instanceof SType && $this->object->utilizaNovoPadrao() )
+                {
+                    $opts[ $this->object->getPkeyWithAlias() . 'S' ] = $this->getRequestValue( $this->object->getPkeyWithAlias() );
+                }
+                else
+                {
+                    $value = $this->$field->value;
+                    $opts[$field . 'S'] = $value;
+                }
+            }
+        }
+        
+        $this->definirFiltroTemporario();
+        
+        $opts[ SForm::getReturnToKey() ] = SForm::getReturnToEncoded();
+
+        return (array)$this->getSearchParams($opts);
+    }
+
+    /**
+     * Obtém o "ActionURL" destino para o botão "Continuar inserindo registros,
+     * quero voltar para a tela de inserção."
+     * @return type
+     */
+    public function getInsertGotoYes()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $action = MIOLO::getCurrentAction();
+        $module = MIOLO::getCurrentModule();
+
+        $gotoYes = $MIOLO->getActionURL($module, $action, null, $this->getInsertOpts());
+
+        return $gotoYes;
+    }
+
+    /**
+     * Obtém o "ActionURL" destino para o botão "Não que mais inserir, quero
+     * voltar para a tela de busca."
+     * @return type
+     */
+    public function getInsertGotoNo()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $action = MIOLO::getCurrentAction();
+        $module = MIOLO::getCurrentModule();
+
+        $gotoNo = SAGU::getStackBackUrl();
+        $gotoNo = strlen($gotoNo) > 0 ? $gotoNo : $MIOLO->getActionURL($module, $action);
+
+        return $gotoNo;
+    }
+
+    /**
+     * Obtém o "ActionURL" destino para o botão "Registro inserido com sucesso,
+     * voltar para a tela de busca."
+     * @return type
+     */
+    public function getUpdateGoto()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $action = MIOLO::getCurrentAction();
+        $module = MIOLO::getCurrentModule();
+
+        $goto = $MIOLO->getActionURL($module, $action, null, $this->getUpdateOpts());
+
+        return $goto;
+    }
+
+    /**
+     * Event triggered when user chooses Save from the toolbar
+     */
+    public function tbBtnSave_click($sender = NULL)
+    {
+        try
+        {
+            $ok = $this->saveTypeData($sender);
+
+            $this->salvaCamposCustomizaveis($ok);
+            $this->confirmInsertUpdate($ok);
+        }
+        catch( Exception $e )
+        {
+            $MIOLO = MIOLO::getInstance();
+            $module = MIOLO::getCurrentModule();
+            $cation = MIOLO::getCurrentAction();
+            
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Erro', $module);
+            $msg = $e->getMessage();
+            if ( strlen($msg) == 0 )
+            {
+                $msg = _M('Erro executando a operação solicitada.', $module);
+            }
+            
+            SAGU::error($msg, $goto, $caption);
+        }
+    }
+    
+    public function saveTypeData($sender = null)
+    {
+        $module = MIOLO::getCurrentModule();
+        $function = MIOLO::_REQUEST('function');
+        $action = MIOLO::getCurrentAction();
+
+        $data = $this->getTypesData();
+                
+        $update = str_replace('Bus', 'update', $this->business);
+        $insert = str_replace('Bus', 'insert', $this->business);
+        
+        if ( $this->object instanceof SType && $this->business != 'BusPeriod' && $this->business != 'BusBank') // Quando utiliza types
+        {
+            $this->typeObject = $typeObj = $this->getTypeObjectPopulated();
+
+            if ( $this->object->utilizaNovoPadrao() )
+            {
+                $typeObj->setValuesFromArray( $this->getRequestValues() );
+            }
+            else
+            {
+                foreach ( (array) $data->getObjectVars() as $key => $val )
+                {
+                    $typeObj instanceof SType;
+                    $typeObj->$key = $val;
+                }
+            }
+            
+            $ok = $this->beforeSave($typeObj)->save();
+
+            $this->afterSave();
+        }
+        else // Quando utiliza business
+        {
+            $ok = ($function == SForm::FUNCTION_UPDATE) ? $this->busObject->$update($data) : $this->busObject->$insert($data);
+            
+            $this->afterSave();
+        }
+
+        return $ok;
+        
+    }
+
+    /**
+     * Event triggered when user chooses Yes from the Delete prompt dialog
+     */
+    public function tbBtnDelete_confirm($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        $this->defaultDisabledButtonsToolbar();
+        try
+        {
+            SDatabase::beginTransaction();
+            
+            foreach ( $this->pkey as $key )
+            {
+                $id[] = MIOLO::_REQUEST($key);
+            }
+
+            if ($this->object instanceof SType)
+            {
+                $ok = $this->getTypeObjectPopulated()->delete();
+            }
+            else
+            {
+                $delete = str_replace('Bus', 'delete', $this->business);
+                $ok = $this->busObject->$delete($id);
+            }
+
+            //tenta deletar o conteúdo customizado
+            if ( $ok && ( count( $this->mioloCustomFields ) > 0 ) )
+            {
+                $ok = $this->deleteCustomFieldValues( $this->getPkeyCustomizedId() );
+            }
+            
+            if ( $ok )
+            {
+                SDatabase::commit();
+                
+                $msg = SAGU::getParameter('BASIC', 'MSG_RECORD_DELETED');
+                
+                if ( SForm::getReturnTo() )
+                {
+                    $goto = SForm::getReturnTo();
+                }
+                else
+                {
+                    $goto = SAGU::getStackBackUrl();
+                    $goto = strlen($goto) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+                }
+                
+               $this->messageSuccess($msg, $goto);
+            }
+            else
+            {
+                SDatabase::rollback();
+                
+                $msg = _M('Erro executando a operação solicitada.', $module);
+                
+                if ( $this->busObject instanceof MBusiness )
+                {
+                    $errors = $this->busObject->getErrors();
+                    for ( $i=0; $i<count($errors); $i++ )
+                    {
+                        $msg .= '<br />' . $errors[$i];
+                    }
+                }
+                
+                $goto = SAGU::getStackBackUrl();
+                $goto = strlen($goto) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+
+                $this->messageError($msg, $goto);
+            }
+        }
+        catch( Exception $e )
+        {
+            SDatabase::rollback();
+            
+            $goto = SForm::getReturnTo();
+            
+            if ( !$goto )
+            {
+                $goto = SAGU::getStackBackUrl();
+                $goto = strlen($goto) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+            }
+            
+            $msg = _M('Erro ao excluir.', $module) . ' <br>' . $e->getMessage();
+            
+            $this->messageError($msg, $goto);
+        }
+    }
+
+    /**
+     * Método chamado antes de executar o ->save() de um type.
+     *
+     * Util para quando se quer sobrescrever algum valor antes de salvar ou
+     * chamar alguma funcao específica.
+     *
+     * @param SType $typeObject
+     */
+    public function beforeSave($typeObject)
+    {
+        return $typeObject;
+    }
+    
+    /**
+     * Metodo chamado apos executar o ->save() de um type.
+     */
+    public function afterSave()
+    {
+    }
+
+    /**
+     * Função que possibilita sobrescrita de argumentos que irão para busca
+     *
+     * @param stdClass array
+     * @return array
+     */
+    public function getSearchParams($params)
+    {
+        return $params;
+    }
+    
+    
+    /**
+     * Caso tudo tenha ocorrido corretamente salva os campos customizaveis.
+     * So salva os campos customizaveis quando necessario.
+     */
+    protected function salvaCamposCustomizaveis($ok = null)
+    {
+        if ( $ok && count( $this->mioloCustomFields ) > 0)
+        {
+            $chave = $ok;
+            
+            //caso a chave venha como ok, tenta obter da url
+            if ( $chave === true )
+            {
+                $chave = $typeObj->{$this->pkey[0]} ? $typeObj->{$this->pkey[0]} : MIOLO::_REQUEST($this->pkey[0]);
+                
+                // Trata casos chave composta
+                if ( $this->isCompositePkey() )
+                {
+                    $chave = implode(MCustomValue::KEY_SEPARATOR, $this->getPkeyValues());
+                }
+            }
+
+            // tenta obter do ultimo id inserido
+            if ( !$chave && ( $this->_function == self::FUNCTION_INSERT ) )
+            {    
+                // obtem chave baseando-se no ultimo registro inserido
+                if ( $this->object instanceof SType )
+                {
+                    $chave = $this->object->getLastInsertId();
+                }
+                else
+                {
+                    $bus = $this->busObject;
+                    $bus instanceof sBusiness;
+                    $chave = $bus->getLastInsertId();
+                }
+            }
+            
+            if ( ! $chave )
+            {
+                $campos = array();
+
+                foreach ( $this->mioloCustomFields  as $cf )
+                {
+                    $campos[] = $cf->name;
+                }
+
+                if ( count($campos) > 1 )
+                {
+                    $mensagem = _M('Não foi possível salvar os valores dos seguintes campos: @1', $module, implode('<br/>', $campos));
+                }
+                else
+                {
+                    $mensagem = _M('Não foi possível salvar o valor do seguinte campo: @1', $module, implode('<br/>', $campos));
+                }
+
+                $mensagem .= '.<br/>' . _M('Esse cadastro não possui suporte a campos personalizados.', $module);
+
+                $this->addError($mensagem);
+                return;
+            }
+            
+            $ok = $this->saveCustomFields( $chave );
+        }
+    }
+}
+?>

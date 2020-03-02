@@ -1,0 +1,344 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file handles the connection and actions for finSpecies table
+ *
+ * @author William Prigol Lopes [william@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 20/12/2005
+ *
+ * */
+
+/**
+ * Class to manipulate the finSpecies table
+ * */
+class BusinessFinanceBusRemittanceInvoice341 extends sBusiness
+{
+    /**
+     *
+     * @author: Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+     *
+     * @param: $invoiceId (int): invoiceId data to get target for remittance.
+     *
+     * @return (object) PhysicalTarget.
+     *
+     */
+    public function getEntriesFromInvoice($invoiceId)
+    {
+
+        $sql = ' SELECT entryid, 
+                           invoiceId, 
+                           operationId,
+                           (SELECT description 
+                              FROM finOperation 
+                             WHERE finOperation.operationid = A.operationId ) AS description,
+                           ROUND(value, \'' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '\' )
+                      FROM finEntry A
+                     WHERE invoiceId = ?';
+
+        $args = array( $invoiceId );
+        $return = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        return $return;
+    }
+
+    /**
+     *
+     * @author: William Prigol Lopes [william@solis.coop.br]
+     *
+     * @param: $data (object): object containing data to begin a process for titles
+     *
+     * @return (boolean): true if succeed, otherwise false
+     *
+     */
+    public function listDetails($data)
+    {
+        $sql = '      SELECT A.invoiceId,
+                             A.personId,
+                             personType,
+                             CASE WHEN personType = \'f\' then personName
+                                  ELSE (select name from only baslegalperson where personId = A.personId)
+                                  END AS personName,
+                             A.incomeSourceId,
+                             E.accountNumber,
+                             TO_CHAR(A.referenceMaturityDate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                             ROUND(balance(A.invoiceId), \'' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '\'),
+                             B.cityId,
+                             B.square,
+                             TO_CHAR(A.emissionDate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                             A.bankInvoiceId,
+                             D.finePercent,
+                             D.daysToFine,
+                             CASE WHEN D.applyinterest 
+                                 THEN D.monthlyInterestPercent
+                                 ELSE 0
+                             END,
+                             F.wallet,
+                             E.branchNumber,
+                             G.ourNumber,
+                             balancewithpoliciesdated(A.invoiceId, NOW()::date),
+                             A.referenceMaturityDate + D.daysToFine days,
+                             D.daystoprotest,
+                             A.isCanceled,
+                             A.value
+                   FROM ONLY finReceivableInvoice A
+                  INNER JOIN (SELECT personId,
+                                     basPhysicalPerson.name as personName,
+                                     case when basPhysicalPerson.name is null then \'j\'
+                                          else \'f\'
+                                          end AS personType,
+                                     basPerson.cityId,
+                                     square,
+                                     dateDeath
+                           FROM ONLY basPerson
+                           LEFT JOIN basCitySquare
+                                  ON (basPerson.cityId = basCitySquare.cityId)
+                      LEFT JOIN ONLY basPhysicalPerson
+                               USING (personId)) AS B
+                       USING (personId)
+                  INNER JOIN finPolicy D
+                       USING (policyId)
+                  INNER JOIN finBankInvoiceInfo G
+                          ON (G.invoiceId = A.invoiceId)
+                  INNER JOIN finBankAccount E
+                          ON (A.bankAccountId = E.bankAccountId)
+                   LEFT JOIN finBankAccountInvoiceInfo F
+                          ON (E.bankAccountId = F.bankAccountId)                      
+                         WHERE automaticDebit = \'' . DB_FALSE . '\' ';
+        if ( $data->instruction == 2 )
+        {
+            $sql .= ' AND balance(A.invoiceId) > 0 ';
+        }
+        else
+        {
+            $sql .= ' AND balance(A.invoiceId) > ' . SAGU::getParameter('BASIC', 'MINIMAL_VALUE_TO_PRINT_INVOICE') . ' ';
+        }
+        $sql .= ' AND A.bankAccountId = ?
+                  AND A.bankInvoiceId IS NULL
+                  AND B.dateDeath IS NULL ';
+
+        $db = $this->getDatabase();
+
+        $args = array(
+            $data->bankAccountId
+        );
+        
+        if ( (strlen($data->beginMaturityDate) > 0) && (strlen($data->endMaturityDate) > 0) )
+        {
+            $args[] = $data->beginMaturityDate;
+            $args[] = $data->endMaturityDate;
+
+            $sql.= '     AND A.referenceMaturityDate
+                     BETWEEN TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')
+                         AND TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') ';
+        }
+
+        if ( (strlen($data->beginEmissionDate) > 0) && (strlen($data->endEmissionDate) > 0) )
+        {
+            $args[] = $data->beginEmissionDate;
+            $args[] = $data->endEmissionDate;
+
+            $sql.= '     AND A.emissionDate
+                     BETWEEN to_date(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')
+                         AND to_date(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') ';
+        }
+
+        if ( $data->resendInvoices == 0 )
+        {
+            $sql.= ' AND A.bankInvoiceId IS NULL ';
+        }
+
+        if ( is_array($data->incomeSourceId) )
+        {
+            $sql.=' AND A.incomeSourceId IN (' . implode(',', $data->incomeSourceId) . ') ';
+        }
+        if ( is_array($data->policyId) )
+        {
+            $sql.=' AND A.policyId IN (' . implode(',', $data->policyId) . ') ';
+        }
+        if( strlen($data->onlyRegistered) > 0 )
+        {
+            $sql .= ' AND D.collectiontypeid = ? ';
+            $args[] = SAGU::getParameter('FINANCE', 'COLLECTION_TYPE_REGISTERED');
+        }
+        
+        $return = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        return $return;
+    }
+
+    /**
+     *
+     * @author: Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+     *
+     * @param: $invoiceId (int): invoiceId data to get target for remittance.
+     *
+     * @return (object) PhysicalTarget.
+     *
+     */
+    public function getPhysicalTargetFromInvoice($invoiceId)
+    {
+        $sql = '     SELECT contractid,
+                            isactive,
+                            cityid,
+                            (SELECT name FROM basCity WHERE basCity.cityId = A.cityId ) AS cityName,
+                            zipcode,
+                            location,
+                            number,
+                            complement,
+                            neighborhood,
+                            name,
+                            documentnumber,
+                            (SELECT stateId FROM basCity WHERE basCity.cityId = A.cityId) AS stateId
+                       FROM finPhysicalTarget A
+                      WHERE contractId IN ( SELECT DISTINCT contractId 
+                                              FROM finEntry
+                                             WHERE invoiceId = ? )
+                        AND isActive = \'' . DB_TRUE . '\' ';
+
+        $args = array( $invoiceId );
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        if ( is_array($result) )
+        {
+            $bankTarget = new finPhysicalTarget();
+
+            list ( $bankTarget->contractId,
+                    $bankTarget->isActive,
+                    $bankTarget->cityId,
+                    $bankTarget->cityName,
+                    $bankTarget->zipCode,
+                    $bankTarget->location,
+                    $bankTarget->number,
+                    $bankTarget->complement,
+                    $bankTarget->neighborhood,
+                    $bankTarget->personName,
+                    $bankTarget->documentNumber,
+                    $bankTarget->stateId ) = $result[0];
+
+            return $bankTarget;
+        }
+        return false;
+    }
+
+    /**
+     * Get the company information needed for invoices
+     *
+     * @param: $companyId (int): Object containing the company identification
+     *
+     * @return: Return an object with information.
+     *
+     */
+    function getCompanyData($companyId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $sql = ' SELECT name
+                   FROM basCompanyConf
+                  WHERE companyId = ? ';
+
+        $args = array( $companyId );
+        $ret = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        $return->name = $ret[0][0];
+        return $return;
+    }
+
+    /**
+     * Bank account information
+     * 
+     * @param $bankAccountId (int): Primary key for bank account information
+     *
+     * @return: Return the bank account information
+     *
+     */
+    public function getBankAccountData($bankAccountId)
+    {
+        $sql = ' SELECT A.branchnumber,
+                        A.accountnumber,
+                        C.invoicespeciebankvalue,
+                        D.invoicemessagebankvalue,
+                        E.invoicemessagebankvalue
+                   FROM finbankaccount A
+              LEFT JOIN finbankaccountinvoiceinfo B
+                     ON (A.bankaccountid = B.bankaccountid)
+              LEFT JOIN fin.invoicespeciebank C
+                     ON (A.bankid=C.bankid AND C.invoicespecieid = B.invoicespecieid )
+              LEFT JOIN fininvoicemessage D
+                     ON D.invoicemessageid = A.invoiceMessage1
+              LEFT JOIN fininvoicemessage E
+                     ON E.invoicemessageid = A.invoiceMessage2
+                  WHERE A.bankaccountid = ? ';
+
+        $args = array( $bankAccountId );
+        $ret = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        list (
+            $return->branchNumber,
+            $return->accountNumber,
+            $return->invoiceKind,
+            $return->firstInstruction,
+            $return->secondInstruction,
+        ) = $ret[0];
+        return $return;
+    }
+
+     /**
+      * Obtém os descontos
+      *
+      * @returns array
+      */
+     public function listPolicyDiscount($invoiceId)
+     {
+        $sql = "SELECT CASE WHEN PD.beforeafter = 'B'
+                           THEN (I.referencematuritydate - PD.daystodiscount)
+                           ELSE (I.referencematuritydate + PD.daystodiscount)
+                       END AS discountdate,
+                       balancewithpoliciesdated(
+                           I.invoiceid, 
+                           CASE WHEN PD.beforeafter = 'B'
+                               THEN (I.referencematuritydate - PD.daystodiscount)
+                               ELSE (I.referencematuritydate + PD.daystodiscount)
+                           END
+                       ) AS discountvalue
+                  FROM finpolicydiscount PD
+            INNER JOIN finpolicy P
+                    ON P.policyid = PD.policyid
+       INNER JOIN ONLY fininvoice I
+                    ON I.policyid = P.policyid
+                 WHERE I.invoiceid = ? ";
+
+        $args = array($invoiceId);
+        return $this->getDatabase()->query(SAGU::prepare($sql, $args));
+    }
+}
+
+?>

@@ -1,0 +1,300 @@
+<?php
+
+/**
+ * Class to handle customized fields data.
+ *
+ * @author Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * \b Maintainers: \n
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * @since
+ * Creation date 2011/11/14
+ *
+ * \b Organization: \n
+ * SOLIS - Cooperativa de Soluções Livres \n
+ *
+ * \b Copyright: \n
+ * Copyright (c) 2011 SOLIS - Cooperativa de Soluções Livres \n
+ *
+ * \b License: \n
+ * Licensed under GPLv2 (for further details read the COPYING file or http://www.gnu.org/licenses/gpl.html)
+ *
+ */
+class MCustomValue
+{
+    /**
+     * Separador para chaves primarias compostas.
+     * Campo miolo_custom_value.customized_id
+     */
+    const KEY_SEPARATOR = '|';
+    
+    /**
+     * @var string Unique id.
+     */
+    public $id;
+
+    /**
+     * @var string The primary key of the related table.
+     */
+    public $customizedId;
+
+    /**
+     * @var integer Custom field id. 
+     */
+    public $customFieldId;
+
+    /**
+     * @var string User value.
+     */
+    public $value;
+
+    /**
+     * MCustomValue constructor.
+     *
+     * @param object $data A stdClass instance to populate this object.
+     */
+    public function __construct($data=NULL)
+    {
+        if ( $data )
+        {
+            $this->setData($data);
+        }
+    }
+
+    /**
+     * @return object MBusiness instance.
+     */
+    private static function getBusiness()
+    {
+        $MIOLO = MIOLO::getInstance();
+        return new MBusiness('admin');
+    }
+
+    /**
+     * Set the object attributes.
+     *
+     * @param object $data A stdClass instance.
+     */
+    public function setData($data)
+    {
+        $this->id = $data->id;
+        $this->customizedId = $data->customizedId;
+        $this->customFieldId = $data->customFieldId;
+        $this->value = $data->value;
+    }
+
+    /**
+     * Insert a custom field value.
+     *
+     * @return object Result of the insertion.
+     */
+    public function insert()
+    {
+        $this->id = $this->getBusiness()->_db->getNewId('miolo_custom_value_id_seq', 'miolo_sequence');
+
+        $sql = new MSQL(
+            'id, customized_id, custom_field_id, value',
+            'miolo_custom_value'
+        );
+
+        $args = array(
+            $this->id,
+            $this->customizedId,
+            $this->customFieldId,
+            $this->value,
+        );
+
+        return self::getBusiness()->execute($sql->insert($args));
+    }
+
+    /**
+     * Update a custom field value.
+     *
+     * @return object Result of the update.
+     */
+    public function update()
+    {
+        $sql = new MSQL(
+            'customized_id, custom_field_id, value',
+            'miolo_custom_value',
+            'id = ?'
+        );
+
+        $args = array(
+            $this->customizedId,
+            $this->customFieldId,
+            $this->value,
+            $this->id,
+        );
+
+        return self::getBusiness()->execute($sql->update($args));
+    }
+
+    /**
+     * Update a custom field value by the customized id and the custom field id.
+     *
+     * @return object Result of the update.
+     */
+    public function updateByData()
+    {
+        $sql = new MSQL(
+            'value',
+            'miolo_custom_value',
+            'customized_id = ? AND
+             custom_field_id = ?'
+        );
+
+        $get = self::getBusiness()->query($sql, array($this->customizedId, $this->customFieldId));
+
+        if ( count($get->result) == 0 )
+        {
+            $result = $this->insert();
+        }
+        else
+        {
+            $values = array('value' => $this->value);
+            $where = array('customized_id' => $this->customizedId, 'custom_field_id' => $this->customFieldId);   
+            $sql = MSQL::updateTable('miolo_custom_value', $values, $where);
+            
+            $result = self::getBusiness()->Execute($sql);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Delete a custom field value.
+     *
+     * @return object Result of the removal.
+     */
+    public function delete()
+    {
+        if ( !isset($this->id) )
+        {
+            return false;
+        }
+
+        $sql = new MSQL('', 'miolo_custom_value', 'id = ?');
+        return self::getBusiness()->execute($sql->delete($this->id));
+    }
+
+    /**
+     * Get the field values.
+     *
+     * @param string $identifier Custom fields identifier.
+     * @param mixed $customizedId The primary key of the related table.
+     * @return object A stdClass instance.
+     */
+    public static function getFieldValues($identifier, $customizedId)
+    {
+        $sql = new MSQL(
+            'miolo_custom_field.id,
+             miolo_custom_value.value',
+            '',
+            'miolo_custom_value.customized_id = ?'
+        );
+
+        $sql->setLeftJoin(
+            'miolo_custom_value',
+            'miolo_custom_field',
+            'miolo_custom_value.custom_field_id = miolo_custom_field.id AND
+             miolo_custom_field.identifier = ?'
+        );
+
+        $args = array(
+            $identifier,
+            $customizedId,
+        );
+
+        $query = self::getBusiness()->query($sql, $args);
+
+        $values = new stdClass();
+
+        if ( $query->result )
+        {
+            foreach ( $query->result as $row )
+            {
+                list($id, $value) = $row;
+                $inputId = MCustomField::generateInputId($identifier, $id);
+
+                $values->{$inputId} = $value;
+            }
+        }
+
+        return $values;
+    }
+
+    /**
+     * Search the field values through the identifier and the form data.
+     *
+     * @param string $identifier Identifier.
+     * @param array $searchData Form data.
+     * @return array Values saved at the database.
+     */
+    public static function searchFieldValues($identifier, $searchData)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $db = $MIOLO->getDatabase('admin');
+
+        $where = array();
+        $finalWhere = array('1=1');
+
+        foreach ( $searchData as $id => $value )
+        {
+            if ( $id && $value )
+            {
+                $value = addslashes($value);
+                $where[] = " ( custom_field_id = '{$id}' AND value ILIKE '{$value}%' ) ";
+            }
+        }
+
+        $countWhere = count($where);
+        
+        if ( $countWhere == 0 )
+        {
+            $strWhere2 = '';
+        }
+        else
+        {
+            $strWhere1 = ' WHERE ' . implode(' OR ', $where);
+            $finalWhere[] = " customized_id IN (SELECT customized_id
+                                                    FROM miolo_custom_value 
+                                              INNER JOIN miolo_custom_field 
+                                                      ON custom_field_id = miolo_custom_field.id 
+                                                     AND miolo_custom_field.identifier = '{$identifier}'
+                                                         {$strWhere1}
+                                                GROUP BY customized_id
+                                                  HAVING COUNT(*) = {$countWhere}) ";
+        }
+        
+        // 
+        $sqlWhere = implode(' AND ', $finalWhere);
+
+        $sql = "SELECT miolo_custom_value.id,                                                                                 
+                       customized_id,
+                       custom_field_id,
+                       value
+                  FROM miolo_custom_value 
+            INNER JOIN miolo_custom_field 
+                    ON custom_field_id = miolo_custom_field.id 
+                   AND miolo_custom_field.identifier = '{$identifier}'
+                   AND {$sqlWhere} ";
+            
+        return $db->query($sql);
+    }
+
+    /**
+     * Delete a custom field value.
+     *
+     * @return object Whether was successfully deleted.
+     */
+    public function deleteByCustomizedId()
+    {
+        $sql = new MSQL('', 'miolo_custom_value', 'customized_id = ? and custom_field_id = ?');
+        return self::getBusiness()->execute($sql->delete(array($this->customizedId, $this->customFieldId)));
+    }    
+}
+
+?>

@@ -1,0 +1,477 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Equipe SAGU [sagu@solis.coop.br]
+ *
+ * \b Maintainers \n
+ * Equipe SAGU [sagu@solis.coop.br]
+ *
+ * @since
+ * Class created on 19/07/2011
+ *
+ */
+$MIOLO->uses('/ui/controls/msubdetail.class');
+
+class FrmNotasDoResidente extends SManagementForm
+{
+    private $residente;
+    private $allowUpdate;
+    private $allowInsert;
+    private $isReadOnlyMode;
+
+    public function __construct()
+    {
+        parent::__construct(new ResResidente(), array('residenteId'));
+
+        $this->toolbar->disableButton( MToolBar::BUTTON_DELETE );
+        $this->toolbar->disableButton( MToolBar::BUTTON_NEW );
+        $this->toolbar->disableButton( MToolBar::BUTTON_SEARCH );
+        
+        
+        if ( !SAGU::userHasAccessAny('FrmNotasDoResidente', array(A_UPDATE, A_INSERT)) )
+        {
+            $this->toolbar->disableButton( MToolBar::BUTTON_SAVE );
+        }
+    }
+
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+
+        $residenteId = $this->getRequestValue('residenteId');
+
+        if ( strlen($residenteId) <= 0 )
+        {
+            $MIOLO->error( _M('Deve ser informado um residente para acessar esta interface', $module) );
+        }
+
+//        if(!$MIOLO->page->isPostBack())
+//        {
+//                    MSubDetail::clearData('detailAtiv');
+//        }
+        $this->residente = $residente = new ResResidente( $residenteId );
+        $data = $this->residente->getAtivPraticasAsObject($residenteId);
+
+        // Define tela modo somente leitura quando nao esta ativo
+        $this->isReadOnlyMode = $isReadOnlyMode = ($this->residente->isActive == DB_FALSE);
+        
+        // Desativa salvar
+        if ( $isReadOnlyMode )
+        {
+            $this->toolbar->disableButton(MToolbar::BUTTON_SAVE);
+            $msgUltEstado = _M('Este residente está com o último estado contratual como "@1", portanto, sua nota não pode ser editada.', $module, $this->residente->ultimoStatusDaOcorrenciaDeContrato->descricao);
+            $this->AddAlert( $msgUltEstado );
+        }
+        
+        $fields[] = new ResResidenteInformation(array('residente' => $this->residente));
+
+        $fields[] = new MDiv('divLimbo', null, null, array('style' => 'display: none'));
+        $fields[] = new SHiddenField('residenteId', $residenteId);
+
+        //Cria baseGroups identicos
+        //Caso o residente possua uma turma no registro, s?o apenas dois
+        //Caso contrário ele cria conforme a quantidade de periodos cadastros na turma
+        if ( strlen ($residente->turmaId) > 0 )
+        {
+            $resTurma = new ResTurma($residente->turmaId);
+            $quantPeriodos = $resTurma->quantidadePeriodo;
+        }
+        else
+        {
+            $quantPeriodos = 2;
+        }
+                
+        //Percorre periodos
+        $baseGroups = array();
+        for ($i=1; $i <= $quantPeriodos; $i++)
+        {
+            $controls = array();
+
+            //Percorre semestres
+            for ($y=1; $y <= 2; $y++)
+            {
+                //Nota
+                $id = "notaPeriodo{$i}Semestre{$y}";
+                $label = _M('Nota @1 semestre', $module, $y.'°');
+                $dbValue = $residente->$id;
+                $value = $this->getRequestValue($id, $dbValue);
+                $controls[] = $nota = new MTextField($id, $value, $label);
+                $nota->addAttribute('onchange', $this->getAjaxAction('calculaMedia', 'divLimbo', true, array('_periodo' => $i, '_semestre' => $y)));
+                $nota->setReadOnly( !$this->allowEdit($dbValue) );
+                $validators[] = new mFloatValidator($id, $label, '.');
+
+                $controls[] = new MSeparator();
+
+                //Parecer
+                $id = "parecerPeriodo{$i}Semestre{$y}";
+                $controls[] = $parecer = new MMultiLineField($id, $this->getRequestValue($id, $residente->$id), _M('Parecer', $module, $i.'°'), null, SAGU::getParameter('BASIC', 'FIELD_MULTILINE_NUM_ROWS'), SAGU::getParameter('BASIC', 'FIELD_MULTILINE_NUM_COLS'));
+                $parecer->setReadOnly( !$this->allowEdit($dbValue) );
+
+                $controls[] = new MSeparator();
+            }
+
+            //Media do semestre N
+            $id = 'mediaPeriodo' . $i;
+            $dbValue = $residente->$id;
+            $value = $this->getRequestValue($id, $dbValue);
+            $controls[] = $media = new MTextField($id, $value, _M('Média do @1º período', $module, $i));
+            $media->addAttribute('onchange', $this->getAjaxAction('calculaMediaFinal', 'divLimbo', true));
+            $media->setReadOnly( !$this->allowEdit($dbValue) );
+            $validators[] = new mFloatValidator($id, _M('Média do @1º período', $module, $i), '.');
+
+            $controls[] = new MSeparator();
+
+            $id = "parecerMediaPeriodo{$i}";
+            $controls[] = $parecerMedia = new MMultiLineField($id, $this->getRequestValue($id, $residente->$id), _M('Parecer', $module), null, SAGU::getParameter('BASIC', 'FIELD_MULTILINE_NUM_ROWS'), SAGU::getParameter('BASIC', 'FIELD_MULTILINE_NUM_COLS'));
+            $parecerMedia->setReadOnly( !$this->allowEdit($dbValue) );
+
+            $baseGroups[] = $bgr = new sBaseGroup("bgrPeriodo{$i}", _M('Período @1', $module, 'R'.$i), $controls);
+            $bgr->setWidth('48%');
+        }
+        $fields[] = $vct = new MHContainer('hctPeriodos', $baseGroups);
+        $vct->setFormMode(MControl::FORM_MODE_SHOW_SIDE);
+        
+        //
+        // Media final
+        //
+        $controls = array();
+        $dbValue = $residente->notaFinal;
+        $value = $this->getRequestValue('notaFinal', $dbValue);
+        $controls[] = $notaFinal = new MTextField('notaFinal', $value, _M('Média', $module));
+        $notaFinal->setReadOnly( !$this->allowEdit($dbValue) );
+        $validators[] = new mFloatValidator('notaFinal', _M('Média', $module), '.');
+        
+        $controls[] = new MSeparator();
+        
+        $controls[] = $parecerFinal = new MMultiLineField('parecerFinal', $this->getRequestValue('parecerFinal', $residente->parecerFinal), _M('Parecer', $module), null, SAGU::getParameter('BASIC', 'FIELD_MULTILINE_NUM_ROWS'), SAGU::getParameter('BASIC', 'FIELD_MULTILINE_NUM_COLS'));
+        $parecerFinal->setReadOnly( !$this->allowEdit($dbValue) );        
+        
+        $bgrMediaFinal = new sBaseGroup("bgrMedFinal", _M('Média final', $module), $controls);
+        $bgrMediaFinal->setWidth('48%');        
+        
+        $controls = array();
+        
+        //Verificar qual é o tipo de avaliacao, buscando da turma ou deixando conceito
+        strlen ( $residente->turmaId ) > 0 ? $tipoAv = $resTurma->tipoAvaliacaoTCR : $tipoAv = ResTurma::TCR_POR_CONCEITO;
+
+        //Se o tipo de avaliacao do TCR for por conceito cria um selection
+        if ($tipoAv == ResTurma::TCR_POR_CONCEITO)
+        {
+            $options = array(
+                DB_TRUE => _M('APTO', $module),
+                DB_FALSE => _M('INAPTO', $module),
+            );
+            $controls[] = $apto = new MSelection('apto', $this->residente->trabalhoDeConclusao->apto, _M('Status do TCR', $module), $options);
+        }
+        //Se o tipo de avaliacao do TCR for por nota cria um mtextfield
+        elseif ($tipoAv == ResTurma::TCR_POR_NOTA)
+        {
+            $apto = new MTextField('nota', $this->residente->trabalhoDeConclusao->nota, _M('Nota do TCR', $module));
+            $apto->addAttribute('onBlur', 'validaCampoDouble(\'nota\')');
+            $controls[] = $apto;
+        }
+        
+        $apto->setReadOnly( $isReadOnlyMode );    
+            $controls[] = new MSeparator();        
+
+        
+        $bgrTrabConclusao = new sBaseGroup("bgrTrabConclusao", _M('Trabalho de conclusão', $module), $controls);
+        $bgrTrabConclusao->setWidth('48%');
+        
+        // Campos da subdetail
+        
+        // Não permite alterar atividades práticas
+        if ( $isReadOnlyMode )
+        {
+            $sdtFields[] = new MSpacer('&nbsp;');
+            $sdtFields[] = MMessage::getStaticMessage('msgError', $msgUltEstado, MMessage::TYPE_WARNING);
+        }
+        
+        //codigo
+        $sdtFields[] = new SHiddenField('atividadepraticaid');
+        
+        //periodo
+        $label = new MText('courseOccurrenceLabel', _M('Periodo',$module) . ':');
+        $label->setWidth(150);
+        $periodo = new MCalendarField('inicioAtiv',null,'');
+        $subValidators[] = new MDATEDMYValidator('inicioAtiv', _M("Período inicial", $module));
+        $text = new MText('ate','até');
+        $periodoFim = new MCalendarField('fimAtiv',null,''); 
+        $sdtFields[] = new MHContainer('divPeriodo', array($label,$periodo,$text,$periodoFim));
+        $subValidators[] = new MDATEDMYValidator('fimAtiv', _M("Período final", $module));
+                
+        // Local
+        $sdtFields[] = new MTextField('local', null, _M('Local', $module), SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        
+        //nota
+        $sdtFields[] = $nota = new MTextField('notaAtiv', null, _M('Nota', $module));
+        $nota->addAttribute('onBlur', 'validaCampoDouble(\'notaAtiv\')');
+        $subValidators[] = $regExp = new MRegExpValidator('notaAtiv', 'Nota', '(^[0-9]+)');        
+
+        //carga
+        $sdtFields[] = $carga = new MTextField('cargahorariaAtiv', null, _M('Carga horária', $module));
+        $carga->addAttribute('onBlur', 'validaCampoDouble(\'cargahorariaAtiv\')');
+                        
+        // Colunas da grid da Subdetail
+        $sdtFieldsColumns[] = new MGridColumn('Código', 'left', true, 0, false, 'atividadepraticaid');        
+        $sdtFieldsColumns[] = new MGridColumn('Início', 'center', true, '20%', true, 'inicioAtiv');
+        $sdtFieldsColumns[] = new MGridColumn('Fim', 'center', true, '20%', true, 'fimAtiv');
+        $sdtFieldsColumns[] = new MGridColumn('Local', 'left', true, '50%', true, 'local');
+        $sdtFieldsColumns[] = new MGridColumn('Nota', 'right', true, '5%', true, 'notaAtiv');
+        $sdtFieldsColumns[] = new MGridColumn('Carga horária', 'right', true, '5%', true, 'cargahorariaAtiv');
+                        
+        $sdt = new MSubDetail('detailAtiv', _M('Campos de atividades práticas'), $sdtFieldsColumns, $sdtFields,true);
+        $sdt->setWidth('96%');
+        $sdt->setValidators($subValidators);
+        
+        // Caso não permita alterar as notas, tem que instanciar outra subdetail
+        // sem as ações. Porque a subdetail tem problemas de sessão nos botões
+        if ( $isReadOnlyMode )
+        {
+            unset($sdt);
+            $sdt = new MSubDetail('detailAtivAux', _M('Campo de atividades práticas'), $sdtFieldsColumns, $sdtFields, false);
+            $sdt->setShowButtons(false);
+        }
+                
+        // set data dos dados da subdetail (edição)
+        if ( $data && MIOLO::_REQUEST('__EVENTTARGETVALUE') != 'tbBtnSave:click' )
+        {
+            MSubDetail::setData($data, ($isReadOnlyMode ? 'detailAtivAux' : 'detailAtiv'));
+        }
+                
+        $controls[] = new MSpacer();        
+
+        $fields[] = $vct = new MHContainer(rand(), array($bgrTrabConclusao, $bgrMediaFinal ));
+        $fields[] = $sdt;
+        $vct->setFormMode(MControl::FORM_MODE_SHOW_SIDE);
+
+        // Botão Voltar
+        $btns[] = new MButton('btnBack', _M('<< Voltar', $module), $this->getPreviousURL());
+                
+        // Botão salvar
+        if( SAGU::userHasAccessAny('FrmNotasDoResidente', array(A_UPDATE, A_INSERT)) )
+        {
+            $btns[] = new MButton('tbBtnSave', _M('Salvar', $module));
+        }
+
+        $fields[] = new MHContainer('cntButtons', $btns);
+
+        parent::defineFields($fields, $validators, $data);
+    }
+    
+    
+    /**
+     * Verifica se tem permissao de atualizar/remover campo
+     */
+    private function allowEdit($value)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $function = MIOLO::_REQUEST('function');
+                
+        //Checagem se foi liberado digitacao de notas
+        $residenteId = $residenteId = $this->getRequestValue('residenteId');        
+        $resDesbloqueio = new ResDesbloqueioDigitacaoNotas();        
+        $checkDesbloqueio = $resDesbloqueio->checkLiberacaoEdicaoNota($residenteId);
+        
+        
+        if ( !isset($this->allowInsert) || !isset($this->allowUpdate) )
+        {
+            // Verifica se usuario logado possui acesso
+            // Se é um preceptor OU tem acesso 
+            $isPreceptor = $this->getPhysicalPersonLogged()->responsavelNucleoEnfase;
+            
+            $isAdmin = $MIOLO->checkAccess('FrmNotasDoResidente', A_ADMIN, false, true);
+            $hasPerms = array();
+            foreach ( array(A_INSERT, A_UPDATE) as $perm )
+            {
+                $hasPerms[$perm] = !$this->isReadOnlyMode && ($isPreceptor || $isAdmin || $MIOLO->checkAccess('FrmNotasDoResidente', $perm, false, true));
+            }
+
+            $this->allowInsert = $hasPerms[A_INSERT];
+            $this->allowUpdate = $hasPerms[A_UPDATE];
+        }
+
+        $allow = ( ( strlen($value) > 0 ) && $this->allowUpdate && $checkDesbloqueio ) || 
+                 ( ( strlen($value) <= 0 ) && $this->allowInsert );
+        
+        return $allow;
+    }
+
+    public function  tbBtnSave_click($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $data = $this->getData();
+        $residenteId = $this->getRequestValue('residenteId');
+                
+        SDatabase::beginTransaction();
+        try
+        {
+            //Salva dados do TCR
+            if ( strlen($data->apto) > 0 || strlen($data->nota) > 0)
+            {
+                if ( strlen($this->residente->trabalhoDeConclusao->titulo) <= 0 )
+                {
+                    throw new Exception( _M('Este residente ainda não possui trabalho de conclusão.', $module) );
+                }
+                
+                if ( count($this->residente->trabalhoDeConclusao->membroDaBanca) <= 0 )
+                {
+                    throw new Exception( _M('O trabalho de conclusão deste residente ainda não possui membro(s) na banca.', $module) );
+                }
+            }
+            if ( $this->residente->trabalhoDeConclusao )
+            {
+                $this->residente->trabalhoDeConclusao->membroDaBanca = array();
+                $this->residente->trabalhoDeConclusao->apto = $data->apto;
+                $this->residente->trabalhoDeConclusao->nota = $data->nota;
+                $this->residente->trabalhoDeConclusao->save();
+            }
+
+            foreach ( $data as $key => $val )
+            {
+                $this->residente->$key = $val;
+
+                if ( strlen($val) > 0 )
+                {
+                    // Aplica validacao de campos "Parecer"
+                    if ( preg_match("/notaPeriodo(.?)Semestre(.?)/", $key, $match) )
+                    {
+                        list($null, $periodo, $semestre) = $match;
+                        $idParecer = "parecerPeriodo{$periodo}Semestre{$semestre}";
+                        if ( strlen($data->$idParecer) <= 0 )
+                        {
+                            throw new Exception(_M('O campo Parecer (Nota @1° semestre - Período @2) deve ser informado.', $module, $semestre, $periodo) );
+                        }
+                    }
+                    if ( preg_match("/mediaPeriodo(.?)/", $key, $match) )
+                    {
+                        list($null, $periodo) = $match;
+                        $idParecer = "parecerMediaPeriodo{$periodo}";
+                        if ( strlen($data->$idParecer) <= 0 )
+                        {
+                            throw new Exception(_M('O campo Parecer (Média do semestre - Período @1) deve ser informado.', $module, $periodo) );
+                        }
+                    }
+
+                    $this->residente->$key = $val;
+                }
+            }
+
+            // Valida campo parecer de media final
+            if ( ( strlen($data->notaFinal) > 0 ) && ( strlen($data->parecerFinal) <= 0 ) )
+            {
+                throw new Exception( _M('O campo Parecer da Média final deve ser informado.', $module) );
+            }
+
+            $this->residente->save();
+            
+            // Atividades práticas
+            if ( count($data->detailAtiv) > 0 )
+            {
+                foreach ( $data->detailAtiv as $dataSub )
+                {
+                    $dataSub->residenteId = $residenteId;
+                    
+                    if ( $dataSub->removeData == true && (strlen($dataSub->atividadepraticaid) > 0) )
+                    {
+                        $this->residente->deleteAtiv($dataSub->atividadepraticaid);
+                    }
+                    elseif ( strlen($dataSub->atividadepraticaid) > 0 )
+                    {
+                        $this->residente->updateAtiv($dataSub);
+                    }
+                    else
+                    {
+                        $this->residente->insertAtiv($dataSub);
+                    }
+                }
+            }
+
+            SDatabase::commit();
+            
+            SAGU::information(_M('Dados salvos com sucesso.', $module), $this->getPreviousURL());
+        }
+        catch (Exception $e)
+        {
+            SDatabase::rollback();
+            $this->AddError($e->getMessage());
+        }
+    }
+
+    /**
+     * Calcula media dos valores inseridos e exibe na tela
+     *
+     * @param stdClass $args
+     * @return null
+     */
+    public function calculaMedia($args)
+    {
+        $nota1 = $args->{"notaPeriodo{$args->_periodo}Semestre1"};
+        $nota2 = $args->{"notaPeriodo{$args->_periodo}Semestre2"};
+        $mediaId = "mediaPeriodo{$args->_periodo}";
+
+        //So calcula medias quando possuir os 2 valores de notas
+        if ( (strlen($nota1) > 0) && (strlen($nota2) > 0) )
+        {
+            //Altera valor de campo Média do semestre
+            $media = SAGU::calcNumber("({$nota1} + {$nota2} + 0.0) / 2", true);
+            $this->page->addAJAXJsCode(" xGetElementById('{$mediaId}').value = '{$media}'");
+
+            //Altera valor de média final
+            $args->$mediaId = $media;
+            $this->calculaMediaFinal($args);
+        }
+
+        return '';
+    }
+
+    /**
+     * Calcula media final dos valores inseridos e exibe na tela
+     *
+     * @param stdClass $args
+     */
+    public function calculaMediaFinal($args)
+    {
+        if (property_exists($args, 'mediaPeriodo3'))
+        {
+            if ( ( strlen($args->mediaPeriodo1) > 0 ) && ( strlen($args->mediaPeriodo2) > 0 ) && strlen($args->mediaPeriodo3) > 0 )
+            {   
+                $mediaFinal = SAGU::calcNumber("({$args->mediaPeriodo1} + {$args->mediaPeriodo2} + {$args->mediaPeriodo3} + 0.0) / 3", true);
+                $this->page->addAJAXJsCode(" xGetElementById('notaFinal').value = '{$mediaFinal}'");
+            }
+        }
+        else
+        {
+            if ( ( strlen($args->mediaPeriodo1) > 0 ) && ( strlen($args->mediaPeriodo2) > 0 ) )
+            {   
+                $mediaFinal = SAGU::calcNumber("({$args->mediaPeriodo1} + {$args->mediaPeriodo2} + 0.0) / 2", true);
+                $this->page->addAJAXJsCode(" xGetElementById('notaFinal').value = '{$mediaFinal}'");
+            }
+        }
+    }
+}
+?>

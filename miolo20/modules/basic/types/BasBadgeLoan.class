@@ -1,0 +1,608 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class definition for database entities
+ *
+ * @author Arthur Lehdermann [arthur@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 14/03/2011
+ */
+/**
+ * Types do empréstimo de crachá
+ */
+class BasBadgeLoan extends SType
+{
+    /*
+     * Table fields
+     */
+
+    /**
+     * Código do empréstimo
+     */
+    private $loanId;
+
+    /**
+     * Código do crachá emprestado
+     */
+    private $badgeId;
+
+    /**
+     * Código da pessoa a quem foi emprestado um crachá
+     */
+    private $personId;
+
+    /**
+     * Data do empréstimo
+     */
+    private $loanDate;
+
+    /**
+     * Data esperada da devolução
+     */
+    private $expectedReturnDate;
+
+    /**
+     * Data da devolução
+     */
+
+    private $returnDate;
+
+    /**
+     * Comentários
+     */
+    private $comments;
+
+   /**
+    *
+    * @var BasBadge
+    */
+    protected $badge;
+
+    /**
+     *
+     * @var stdClass
+     */
+    protected $physicalPerson;
+
+    //Logica de verificar crachas que estao pendentes de devolucao
+    //data prevista de devolução já passou e data de devolução é nula
+    const SQL_DEVOLUTION_PENDING = '
+            CASE WHEN A.expectedReturnDate::date < NOW()::date
+                 THEN A.returnDate::date IS NULL
+                 ELSE 1=0 END';
+
+    /**
+     * Construtor da classe
+     *
+     * @param (integer) $loanId Chave primária da tabela
+     */
+    public function __construct($loanId = null)
+    {
+        if ( !is_null($loanId) )
+        {
+            $this->loanId = $loanId;
+            $this->populate();
+        }
+    }
+
+    /**
+     * Data logic
+     */
+    public function __get($name)
+    {
+        return $this->$name;
+    }
+
+    public function __set($name, $value)
+    {
+        $this->$name = $value;
+    }
+
+
+    /*
+     * Common methods
+     */
+
+    /**
+     * Detecta se o salvar deve inserir um novo (no caso de chave primária não definida)
+     * ou se deve apenas atualizar um registro já existente (no caso de chave primária já definida)
+     *
+     * @return TRUE no caso de sucesso. Caso contrário, FALSE.
+     */
+    public function save()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+
+        //Verifica se data de devolucao de cracha e maior que data atual
+        if ( strlen($this->returnDate) > 0 && (SAGU::dateDiff(SAGU::getDateNow(), $this->returnDate) < 0 ) )
+        {
+            throw new Exception( _M('A data de devolução não pode ser maior que a data de hoje (@1)', $module, SAGU::getDateNow()) );
+        }
+
+        // se chave primária não está definida, assume que deva ser feito insert
+        if ( !(strlen($this->loanId) > 0) )
+        {
+            $retVal = $this->insert();
+        }
+        // se chave primária definida, assume que deva ser feito update
+        else
+        {
+            $retVal = $this->update();
+        }
+
+        return $retVal;
+    }
+
+    /**
+     * Exclui da base de dados o objeto atual
+     *
+     * @return TRUE no caso de sucesso. Caso contrário, FALSE.
+     */
+    public function delete()
+    {
+        // Altera o estado do cracha para DISPONIVEL
+        $filters = new stdClass();
+        $filters->badgeId = $this->badgeId;
+        foreach ( (array) BasBadge::search($filters) as $row )
+        {
+            $row->badgeStatusId = SAGU::getParameter('BASIC', 'BADGE_STATUS_AVAILABLE');
+            $row->save();
+        }
+        
+        // Rotina padrao
+        $sql = 'DELETE FROM basBadgeLoan
+                      WHERE loanId = ?';
+
+        $args[] = $this->loanId;
+
+        $result = SDatabase::execute($sql, $args);
+        
+        if ( $result)
+        {
+            $this->loanId = null;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Duplica o registro atual.
+     *
+     * @return TRUE no caso de sucesso. Caso contrário, FALSE.
+     */
+    public function duplicate()
+    {
+        $badge = clone($this);
+        $badge->loanId = null;
+
+        return $badge;
+    }
+
+    /**
+     * Retorna uma lista de objetos do tipo desta classe com os resultados da busca.
+     *
+     * @param (stdClass) $filters Objeto contendo todos os campos pesquisáveis do objeto atual
+     */
+    public function search($filters)
+    {
+        $sql = 'SELECT A.loanId,
+                       A.badgeId,
+                       A.personId,
+                       A.comments,
+                       TO_CHAR(A.loanDate::date,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       TO_CHAR(A.expectedReturnDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       TO_CHAR(A.returnDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       B.description AS badgeDescription,
+                       C.name AS personName
+                  FROM basBadgeLoan A
+            INNER JOIN basBadge B
+                    ON (A.badgeId = B.badgeId)
+       INNER JOIN ONLY basPhysicalPerson C
+                    ON (A.personId = C.personId)';
+
+        $where = '';
+        if ( $filters->loanId )
+        {
+            $where .= ' AND A.loanId = ?';
+            $args[] = $filters->loanId;
+        }
+        elseif ( $filters->comments )
+        {
+            $where .= ' AND A.comments ILIKE UNACCENT(?)';
+            $args[] = $filters->comments . '%';
+        }
+
+        if ( $filters->loanDate )
+        {
+            $where .= ' AND A.loanDate = ?';
+            $args[] = $filters->loanDate;
+        }
+        
+        if ( $filters->expectedReturnDate )
+        {
+            $where .= ' AND A.expectedReturnDate = ?';
+            $args[] = $filters->expectedReturnDate;
+        }
+
+        if ( $filters->returnDate )
+        {
+            $where .= ' AND A.returnDate = ?';
+            $args[] = $filters->returnDate;
+        }
+
+        if ( $filters->loanDateInitial ) // inicial
+        {
+            $where .= ' AND A.loanDate >= TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')';
+            $args[] = $filters->loanDateInitial;
+        }
+
+        if ( $filters->loanDateFinal ) // final
+        {
+            $where .= ' AND A.loanDate <= TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')';
+            $args[] = $filters->loanDateFinal;
+        }
+
+        if ( $filters->expectedReturnDateInitial ) // inicial
+        {
+            $where .= ' AND A.expectedReturnDate >= TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')';
+            $args[] = $filters->expectedReturnDateInitial;
+        }
+
+        if ( $filters->expectedReturnDateFinal ) // final
+        {
+            $where .= ' AND A.expectedReturnDate <= TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')';
+            $args[] = $filters->expectedReturnDateFinal;
+        }
+
+        if ( $filters->returnDateInitial ) // inicial
+        {
+            $where .= ' AND A.returnDate >= TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')';
+            $args[] = $filters->returnDateInitial;
+        }
+
+        if ( $filters->returnDateFinal ) // final
+        {
+            $where .= ' AND A.returnDate <= TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')';
+            $args[] = $filters->returnDateFinal;
+        }
+
+        if ( $filters->badgeId )
+        {
+            $where .= ' AND A.badgeId = ?';
+            $args[] = $filters->badgeId;
+        }
+        elseif ( $filters->badgeDescription )
+        {
+            $where .= ' AND B.description ILIKE UNACCENT(?)';
+            $args[] = $filters->badgeDescription;
+        }
+
+        if ( $filters->personId )
+        {
+            $where .= ' AND C.personId = ?';
+            $args[] = $filters->personId;
+        }
+        elseif ( $filters->personName )
+        {
+            $where .= ' AND C.name ILIKE UNACCENT(?)';
+            $args[] = $filters->personName . '%';
+        }
+
+        if ( $filters->devolutionPending == true )
+        {
+            $where .= ' AND ' . self::SQL_DEVOLUTION_PENDING;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5);
+        }
+
+        $result = SDatabase::query($sql, $args);
+        $retVal = array();
+
+        for ( $i=0; $i<count($result); $i++ )
+        {
+            $retVal[] = new BasBadgeLoan($result[$i][0]);
+        }
+
+        return $retVal;
+    }
+
+    /**
+     * Retorna um array com os resultados da busca.
+     *
+     * @param (stdClass) $filters Objeto contendo todos os campos pesquisáveis do objeto atual
+     */
+    public function searchGrid($filters)
+    {
+        if ( !is_null($filters) )
+        {
+            $sql = 'SELECT A.loanId,
+                           A.badgeId,
+                           C.name AS personName,
+                           TO_CHAR(A.loanDate::date,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                           TO_CHAR(A.expectedReturnDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                           TO_CHAR(A.returnDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                           A.comments
+                      FROM basBadgeLoan A
+                INNER JOIN basBadge B
+                        ON (A.badgeId = B.badgeId)
+           INNER JOIN ONLY basPhysicalPerson C
+                        ON (A.personId = C.personId)';
+
+            $where = '';
+            if ( $filters->loanId )
+            {
+                $where .= ' AND A.loanId = ?';
+                $args[] = $filters->loanId;
+            }
+            elseif ( $filters->comments )
+            {
+                $where .= ' AND A.comments ILIKE UNACCENT(?)';
+                $args[] = $filters->comments . '%';
+            }
+
+            if ( $filters->loanDateInitial ) // inicial
+            {
+                $where .= ' AND A.loanDate >= TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')';
+                $args[] = $filters->loanDateInitial;
+            }
+
+            if ( $filters->loanDateFinal ) // final
+            {
+                $where .= ' AND A.loanDate <= TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')';
+                $args[] = $filters->loanDateFinal;
+            }
+
+            if ( $filters->expectedReturnDateInitial ) // inicial
+            {
+                $where .= ' AND A.expectedReturnDate >= TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')';
+                $args[] = $filters->expectedReturnDateInitial;
+            }
+
+            if ( $filters->expectedReturnDateFinal ) // final
+            {
+                $where .= ' AND A.expectedReturnDate <= TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')';
+                $args[] = $filters->expectedReturnDateFinal;
+            }
+
+            if ( $filters->returnDateInitial ) // inicial
+            {
+                $where .= ' AND A.returnDate >= TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')';
+                $args[] = $filters->returnDateInitial;
+            }
+
+            if ( $filters->returnDateFinal ) // final
+            {
+                $where .= ' AND A.returnDate <= TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')';
+                $args[] = $filters->returnDateFinal;
+            }
+
+            if ( $filters->badgeId )
+            {
+                $where .= ' AND A.badgeId = ?';
+                $args[] = $filters->badgeId;
+            }
+            elseif ( $filters->badgeDescription )
+            {
+                $where .= ' AND B.description ILIKE UNACCENT(?)';
+                $args[] = $filters->badgeDescription . '%';
+            }
+
+            if ( $filters->personId )
+            {
+                $where .= ' AND C.personId = ?';
+                $args[] = $filters->personId;
+            }
+            elseif ( $filters->personName )
+            {
+                $where .= " AND C.name ILIKE UNACCENT(?)";
+                $args[] = $filters->personName;
+            }
+
+            if ( strlen($filters->devolutionPending) > 0 )
+            {
+                $where .= ' AND ' . self::SQL_DEVOLUTION_PENDING;
+            }
+
+            if ( strlen($where) > 0 )
+            {
+                $sql .= ' WHERE ' . substr($where, 5);
+            }
+
+            $result = SDatabase::query($sql, $args);
+        }
+
+        return $result;
+    }
+    
+    /*
+     * Private methods
+     */
+
+    /**
+     * Chamado pelo construtor, quando este recebe os dados de chave primária
+     */
+    private function populate()
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $sql = 'SELECT loanId,
+                       badgeId,
+                       personId,
+                       comments,
+                       username,
+                       TO_CHAR(datetime, \'' . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . '\'),
+                       ipaddress,
+                       TO_CHAR(loanDate::date,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       TO_CHAR(expectedReturnDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       TO_CHAR(returnDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       userName,
+                       dateTime,
+                       ipAddress
+                  FROM basBadgeLoan
+                 WHERE loanId = ?';
+
+        $args[] = $this->loanId;
+
+        $result = SDatabase::query($sql, $args);
+
+        if ( strlen($result[0][0]) <= 0 )
+        {
+            $module = SAGU::getFileModule(__FILE__);
+            throw new Exception(_M('Empréstimo @1 inexistente.', $module, $this->loanId));
+        }
+
+        list ( $this->loanId,
+               $this->badgeId,
+               $this->personId,
+               $this->comments,
+               $this->userName,
+               $this->dateTime,
+               $this->ipAddress,
+               $this->loanDate,
+               $this->expectedReturnDate,
+               $this->returnDate,
+               $this->userName,
+               $this->dateTime,
+               $this->ipAddress) = $result[0];
+
+        $this->badge = new BasBadge($this->badgeId);
+
+        $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+        $this->physicalPerson = $busPhysicalPerson->getPhysicalPerson($this->personId);
+    }
+
+    /**
+     * Insere um novo registro com base nas informações da classe
+     */
+    private function insert()
+    {
+        $sql = 'SELECT nextval(\'basBadgeLoan_LoanId_seq\')';
+
+        $result = SDatabase::query($sql);
+        $newId = $result[0][0];
+
+        $sql = 'INSERT INTO basBadgeLoan
+                            ( loanId,
+                              badgeId,
+                              personId,
+                              comments,
+                              loanDate,
+                              expectedReturnDate,
+                              returnDate )
+                     VALUES ( ?,
+                              ?,
+                              ?,
+                              ?,
+                              TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\'),
+                              TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\'),
+                              TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\') )';
+
+        $args[] = $newId;
+        $args[] = $this->badgeId;
+        $args[] = $this->personId;
+        $args[] = $this->comments;
+        $args[] = $this->loanDate;
+        $args[] = $this->expectedReturnDate;
+        $args[] = $this->returnDate;
+
+        $result = SDatabase::execute($sql, $args);
+
+        if ( $result )
+        {
+            $this->loanId = $newId;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Atualiza um registro existente com base nas informações da classe
+     */
+    private function update()
+    {
+        $sql = 'UPDATE basBadgeLoan
+                   SET badgeId = ?,
+                       personId = ?,
+                       comments = ?,
+                       loanDate = TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\'),
+                       expectedReturnDate = TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\'),
+                       returnDate = TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')
+                 WHERE loanId = ?';
+
+        $args[] = $this->badgeId;
+        $args[] = $this->personId;
+        $args[] = $this->comments;
+        $args[] = $this->loanDate;
+        $args[] = $this->expectedReturnDate;
+        $args[] = $this->returnDate;
+        $args[] = $this->loanId;
+
+        return SDatabase::execute($sql, $args);
+    }
+
+
+    /**
+     * Notifica não entrega de crachá
+     * Chamado automaticamente pelo BasSystemTask
+     */
+    public static function notifyDeliveryPending(BasSystemTask $bst)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $ok = true;
+
+        $filters = new stdClass();
+        $filters->devolutionPending = true;
+        $rows = self::search($filters);
+
+        if ( count($rows) > 0 )
+        {
+            $body = "Os seguintes crachás estão pendentes de devolução:\n\n";
+            foreach ( $rows as $row )
+            {
+                $body .= sprintf("Crachá <b>%s</b> - %s (%s)\n",
+                                $row->badgeId,
+                                $row->badge->description,
+                                $row->physicalPerson->name);
+            }
+            $body .= "\nFim da lista.";
+
+            $ok = $bst->addNotification(array(
+                'title' => _M('Crachás pendentes de devolução', $module),
+                'description' => $body
+            ));
+        }
+
+        return $ok;
+    }
+}
+?>

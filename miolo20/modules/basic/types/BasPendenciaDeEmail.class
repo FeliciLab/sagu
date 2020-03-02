@@ -1,0 +1,297 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Nataniel I. da Silva [nataniel@solis.com.br]
+ *
+ * $version: $Id$
+ *
+ * @since
+ * Class created on 14/10/2008
+ */
+
+class BasPendenciaDeEmail extends SType
+{
+    public $_utilizaNovoPadrao = true;
+    
+    public $pendenciaDeEmailId;
+    
+    public $personId;
+    
+    public $contractId;
+    
+    public $emailId;
+    
+    /**
+     * Verifica se existe pendência para a pessoa, no email configurado
+     * 
+     * @param type $emailId
+     * @param type $personId
+     * @return type 
+     */
+    public static function verificaPendenciaDeEmail($emailId, $personId)
+    {
+        $basPendenciaDeEmail = new BasPendenciaDeEmail();
+        $sql = $basPendenciaDeEmail->msql();
+        $sql->addEqualCondition('emailId', $emailId); 
+        $sql->addEqualCondition('personId', $personId); 
+                 
+        return $basPendenciaDeEmail->findCount($sql);
+    }
+    
+    /**
+     * Função utilizada pela função agendada para envio de e-mail
+     * 
+     * @param type $emailId
+     * @return boolean
+     */
+    public static function enviarEmailsPendentes($emailId = null)
+    {
+        $module = MIOLO::getCurrentModule();
+        
+        $basPendenciaDeEmail = new BasPendenciaDeEmail();
+        $sql = $basPendenciaDeEmail->msql();
+        
+        if ( strlen($emailId) > 0 )
+        {
+            $sql->addEqualCondition('emailId', $emailId); 
+        }
+        
+        $emailsPendentes = $basPendenciaDeEmail->findMany($sql);
+                
+        if ( count($emailsPendentes) > 0 )
+        {           
+            $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+            $busEmail = new BusinessBasicBusEmail();
+            $busDocument = new BusinessBasicBusDocument();
+            $busClass = new BusinessAcademicBusClass();
+            $busMovementContract = new BusinessAcademicBusMovementContract();
+            $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+            $busGroup = new BusinessAcademicBusGroup();
+            $busContract = new BusinessAcademicBusContract();
+            
+            $pendentes = array_chunk($emailsPendentes, SAGU::getParameter('BASIC', 'QUANTIDADE_MAXIMA_DE_EMAILS_POR_LOTE_DE_ENVIO'));
+                        
+            foreach ( $pendentes as $pendencia )
+            {
+                foreach ( $pendencia as $email )
+                {
+                    $pessoa = new stdClass();
+                    $pessoa = $busPhysicalPerson->getPerson($email->personId);
+
+                    if ( strlen($pessoa->email) > 0 )
+                    {
+                        // Obtém informações do contrato
+                        $contrato = new AcdContract($email->contractId);
+                        
+                        $filterContract = new stdClass();
+                        $filterContract->contractId = $email->contractId;
+                        
+                        // Obtém informações do curso
+                        $infoCurso = array();
+                        $infoCurso = $busContract->searchContract($filterContract, true);
+                        $unidade = $infoCurso[0][6];
+                        $turno = $infoCurso[0][7];
+                        $curso = $infoCurso[0][4];
+                        
+                        // Obtém documentos
+                        $cpf = null;
+                        $rg = null;                        
+                        $cpf = $busDocument->getDocument($pessoa->personId, SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF'));
+                        $rg = $busDocument->getDocument($pessoa->personId, SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG'));
+                                                
+                        // Obtém semestre do aluno
+                        $semestre = null;
+                        $semestre = $busClass->getSemesterContract($email->contractId);
+                        
+                        $filters = new stdClass();
+                        $filters->contractId = $email->contractId;
+                        $filters->stateContractId = SAGU::getParameter('BASIC', 'STATE_CONTRACT_ID_ENROLLED');
+                        $infoContratual = $busMovementContract->searchMovementContract($filters);
+                        
+                        // Se a pessoa não possui movimentação de matrícula, não envia e-mail e retira ela da lista.
+                        if ( !strlen($infoContratual[0][6]) > 0 )
+                        {
+                            self::removePendenciaDeEmailDaPessoa($pessoa->personId);
+                            continue;
+                        }
+                        
+                        // Informação do período
+                        $periodo = null;
+                        $periodo = $busLearningPeriod->getLearningPeriod($infoContratual[0][6]);
+                        
+                        $columns = array();
+                        $columns[] = 'Código';
+                        $columns[] = 'Disciplina';
+                        $columns[] = 'Professor';
+                        $columns[] = 'Dia da semana/Horário';
+                        $columns[] = 'Turno';
+                        $columns[] = 'Data';
+                        
+                        $filters = new stdClass();
+                        $filters->contractId = $contrato->contractId;
+                        $filters->learningPeriodId = $periodo->learningPeriodId;
+                        $filters->statusId = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED');
+                            
+                        // Obtém disciplinas matriculadas
+                        $disciplinasMatriculadas = array();
+                        $disciplinasMatriculadas = $busGroup->obtemDisciplinasDoAluno($filters);
+                        
+                        $disciplinasMat = array();
+                        foreach ( $disciplinasMatriculadas as $disciplinas )
+                        {
+                            // Obtém o horário da oferecida
+                            $horarios = array();
+                            $horarios = $busGroup->rptHorarioDias($disciplinas[0]);
+                            
+                            $horario = array();
+                            foreach ( $horarios as $value )
+                            {
+                                $value[1] = '';
+                                $horario[] = $value;
+                            }
+                            
+                            $gridHorario = null;
+                            $gridHorario = new MTableRaw('', $horario, null);
+                                                        
+                            $disciplinas[3] = $gridHorario->Generate();
+                            $disciplinasMat[] = $disciplinas;
+                        }
+                                 
+                        $gridMatriculadas = null;
+                        $gridMatriculadas = new MTableRaw(_M('DISCIPLINAS MATRICULADAS', $module), $disciplinasMat, $columns);
+                        $gridMatriculadas->setBorder = true;
+                        
+                        $filters = new stdClass();
+                        $filters->contractId = $contrato->contractId;
+                        $filters->learningPeriodId = $periodo->learningPeriodId;
+                        $filters->statusId = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_CANCELLED');
+                                                
+                        unset($disciplinas);
+                        unset($horarios);
+                        unset($gridHorario);
+                        
+                        // Obtém disciplinas canceladas
+                        $disciplinasCanceladas = array();
+                        $disciplinasCanceladas = $busGroup->obtemDisciplinasDoAluno($filters);
+                        
+                        $disciplinasCan = array();
+                        foreach ( $disciplinasCanceladas as $disciplinas )
+                        {
+                            // Obtém o horário da oferecida
+                            $disciplinasCanceladas = array();
+                            $horarios = $busGroup->rptHorarioDias($disciplinas[0]);
+                            
+                            $horario = array();
+                            foreach ( $horarios as $value )
+                            {
+                                $value[1] = '';
+                                $horario[] = $value;
+                            }
+                            
+                            $gridHorario = new MTableRaw('', $horario, null);
+                                                        
+                            $disciplinas[3] = $gridHorario->Generate();
+                            $disciplinasCan[] = $disciplinas;
+                        }
+                        
+                        $gridCanceladas = null;
+                        $gridCanceladas = new MTableRaw(_M('DISCIPLINAS CANCELADAS', 'basic'), $disciplinasCan, $columns);
+                                                
+                        // Informações de configuração do e-mail
+                        $infoEmail = $busEmail->getEmail($email->emailId);
+                        $body = $infoEmail->body;
+                        
+                        // Informações aluno
+                        $body = str_replace('$CODIGO_DO_ALUNO', $pessoa->personId, $body);
+                        $body = str_replace('$CODIGO_DO_CONTRATO_DO_ALUNO', $contrato->contractId, $body);
+                        $body = str_replace('$NOME_DO_ALUNO', $pessoa->name, $body);
+                        $body = str_replace('$CPF_DO_ALUNO', $cpf->content, $body);
+                        $body = str_replace('$RG_DO_ALUNO', $rg->content, $body);
+                        $body = str_replace('$SEMESTRE_DO_ALUNO', $semestre, $body);
+                        $body = str_replace('$CURSO', $curso, $body);
+                        $body = str_replace('$VERSAO_DO_CURSO', $contrato->courseVersion, $body);
+                        $body = str_replace('$TURNO', $turno, $body);
+                        $body = str_replace('$UNIDADE', $unidade, $body);
+                        
+                        // Informações período
+                        $body = str_replace('$PERIODO', $periodo->periodId, $body);
+                        $body = str_replace('$DESCRICAO_DO_PERIODO_LETIVO', $periodo->description, $body);
+                        $body = str_replace('$DATA_INICIAL_DO_PERIODO_LETIVO', $periodo->beginDate, $body);
+                        $body = str_replace('$DATA_FINAL_DO_PERIODO_LETIVO', $periodo->endDate, $body);
+                        
+                        // Informação matrícula
+                        $bodyMatriculadas = null;
+                        $bodyCanceladas = null;
+                        $bodyMatriculadas = str_replace(array('"', '{', '}'), '', $gridMatriculadas->Generate());
+                        $bodyCanceladas = str_replace(array('"', '{', '}'), '', $gridCanceladas->Generate());
+                        
+                        $body = str_replace('$DATA_DA_MATRICULA', $infoContratual[0][5], $body); //movimentação de matrícula
+                        $body = str_replace('$DISCIPLINAS_MATRICULADAS', $bodyMatriculadas, $body); //tabela
+                        $body = str_replace('$DISCIPLINAS_CANCELADAS', $bodyCanceladas, $body); //tabela
+                                                
+                        $sendEmail = new sendEmail($infoEmail->from, $fromName, $pessoa->email, $infoEmail->subject, $body, $infoEmail->bcc);
+                        $return = $sendEmail->sendEmail();
+                        
+                        if ( $return == false )
+                        {
+                            $naoEnviados[] = $pessoa->personId;
+                        }
+                        else
+                        {
+                            // Remove da lista de pendencia de emails
+                            self::removePendenciaDeEmailDaPessoa($pessoa->personId);
+                        }
+                    }
+                }
+                
+                sleep(SAGU::getParameter('BASIC', 'TEMPO_DE_ESPERA_DE_ENVIO_DE_EMAILS_ENTRE_LOTES'));
+            }
+            
+            return true;
+        }
+        else
+        {
+            return false;          
+        }
+    }
+    
+    /**
+     * Remove registro de pendência de e-mail
+     * 
+     * @param type $personId
+     */
+    public static function removePendenciaDeEmailDaPessoa($personId)
+    {
+        $basPendenciaDeEmail = new BasPendenciaDeEmail();
+        $sql = $basPendenciaDeEmail->msql();
+        $sql->addEqualCondition('BasPendenciaDeEmail.personid', $personId);
+        $searchPendencia = $basPendenciaDeEmail->findMany($sql);        
+        
+        if ( count($searchPendencia) > 0 )
+        {
+            foreach ( $searchPendencia as $cod => $pendencia )
+            {
+                $pendencia->delete();
+            }
+        }
+    }
+}

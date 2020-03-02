@@ -1,0 +1,355 @@
+<?php
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class definition for database entities
+ *
+ * @author Samuel Koch [samuel@solis.coop.br]
+ *
+ * \b Maintainers: \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * Luís Felipe Wermann [luis_felipe@solis.com.br]
+ *
+ * @since
+ * Class created on 17/07/2011
+ */
+class MedRelatorios
+{
+    /**
+     * Função para o relatório de residentes, tipo "Completo"
+     *
+     * @param (stdClass) $filters Objeto contendo todos os campos pesquisáveis do objeto atual
+     */
+    public static function searchResidentesCompleto($filters)
+    {
+        // Períodos
+        $p1 = MedUnidadeTematica::PERIODO_PRIMEIRO_ANO;
+        $p2 = MedUnidadeTematica::PERIODO_SEGUNDO_ANO;
+        $p3 = MedUnidadeTematica::PERIODO_TERCEIRO_ANO;
+
+        $maskDate = SAGU::getParameter('BASIC', 'MASK_DATE');
+
+        $sql = "SELECT PP.name AS personName,
+                       COALESCE(PP.workFunction, '') AS profissao,
+                       '' AS RP,
+                       COALESCE(SO.descricao, '') AS situacao,
+                       COALESCE(BD.content, '') AS matricula,
+                       COALESCE(PP.email, PP.emailAlternative, '') AS email,
+                       COALESCE(PP.residentialPhone, PP.cellPhone, '') AS telefone,
+                       COALESCE(RG.content, '') AS rg,
+                       COALESCE(CPF.content, '') AS cpf,
+                       COALESCE(INSS.content, '') AS inss,
+                       COALESCE(NULL, '') AS ag,
+                       COALESCE(NULL, '') AS cc,
+                       NP.descricao||'/'||E.descricao AS profissaoEnfase,
+                       TO_CHAR(R.inicio, '{$maskDate}') AS dtinicio,
+                       TO_CHAR(R.fimPrevisto, '{$maskDate}') AS dttermino
+                  FROM med.residente R
+       INNER JOIN ONLY basPhysicalPerson PP
+                    ON R.personId = PP.personId
+            INNER JOIN med.enfase E
+                    ON R.enfaseId = E.enfaseId
+            INNER JOIN med.nucleoProfissional NP
+                    ON R.nucleoProfissionalId = NP.nucleoProfissionalId
+             LEFT JOIN basDocument RG
+                    ON PP.personId = RG.personId
+                   AND RG.documentTypeId = GETPARAMETER('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG')::int
+             LEFT JOIN basDocument CPF
+                    ON PP.personId = CPF.personId
+                   AND CPF.documentTypeId = GETPARAMETER('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF')::int
+             LEFT JOIN basDocument INSS
+                    ON PP.personId = INSS.personId
+                   AND INSS.documentTypeId = GETPARAMETER('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_INSS')::int
+             LEFT JOIN med.ocorrenciadecontrato CC
+                    ON (CC.ocorrenciadecontratoid = med.ultimaOcorrenciaDeContratoId(R.residenteId))
+             LEFT JOIN med.statusDaOcorrenciadecontrato SO
+                    ON (SO.statusDaOcorrenciadecontratoId = CC.statusDaOcorrenciadecontratoId)
+             LEFT JOIN basDocument BD
+                    ON PP.personId = BD.personId
+                   AND BD.documentTypeId = GETPARAMETER('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CARTAO_PONTO')::int";
+
+        $where = '';
+        $params = array();
+        if ( strlen($filters->enfaseId) > 0 )
+        {
+            $where .= " AND E.enfaseId = ?";
+            $params[] = $filters->enfaseId;
+        }
+
+        if ( strlen($filters->nucleoProfissionalId) > 0 )
+        {
+            $where .= " AND NP.nucleoProfissionalId = ?";
+            $params[] = $filters->nucleoProfissionalId;
+        }
+
+        if ( strlen($filters->beginDate) > 0 )
+        {
+            $where .= " AND R.inicio >= ?";
+            $params[] = $filters->beginDate;
+        }
+
+        if ( strlen($filters->endDate) > 0 )
+        {
+            $where .= " AND R.fimPrevisto <= ?";
+            $params[] = $filters->endDate;
+        }
+
+        // Filtra por período (P1, P2, P3)
+        if ( strlen($filters->periodo) > 0 )
+        {
+            $where .= " AND med.obterPeriodoDoResidente(R.residenteId) = ?";
+            $params[] = $filters->periodo;
+        }
+
+        // Filtra por inativos/ativos
+        if ( $filters->incluirInativos == DB_TRUE )
+        {
+            $where .= " AND (
+                NOT (NOW() BETWEEN R.inicio AND R.fimPrevisto)
+                OR SO.bloqueiaResidencia = ?
+                OR SO.concluiresidencia = ?
+            )";
+            $params[] = DB_TRUE;
+            $params[] = DB_TRUE;
+        }
+        else if ( $filters->incluirInativos == DB_FALSE )
+        {
+            $where .= " AND (
+                NOW() BETWEEN R.inicio AND R.fimPrevisto
+                AND SO.bloqueiaResidencia = ?
+                AND SO.concluiresidencia = ?
+            )";
+            $params[] = DB_FALSE;
+            $params[] = DB_FALSE;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5);
+        }
+
+        // Ordena pelo nome
+        $sql .= ' ORDER BY PP.name';
+
+        $result = SDatabase::query($sql, $params);
+
+        return $result;
+    }
+
+    /**
+     * Função para o relatório de residentes, tipo "Resumido"
+     *
+     * @param type $filters
+     * @return type
+     */
+    public static function searchResidentesResumido($filters)
+    {
+        // Períodos
+        $p1 = MedUnidadeTematica::PERIODO_PRIMEIRO_ANO;
+        $p2 = MedUnidadeTematica::PERIODO_SEGUNDO_ANO;
+        $p3 = MedUnidadeTematica::PERIODO_TERCEIRO_ANO;
+
+        $sql = "SELECT PP.name AS nomeDoResidente,
+                       NP.descricao||'/'||E.descricao AS profissaoEnfase,
+                       '' AS RP,
+                       COALESCE(SO.descricao, '') AS situacao,
+                       COALESCE(BD.content, '') AS matricula,
+                       COALESCE(PP.email, PP.emailAlternative, '') AS email
+                  FROM med.residente R
+       INNER JOIN ONLY basPhysicalPerson PP
+                    ON R.personId = PP.personId
+            INNER JOIN med.nucleoProfissional NP
+                    ON R.nucleoProfissionalId = NP.nucleoProfissionalId
+            INNER JOIN med.enfase E
+                    ON R.enfaseId = E.enfaseId
+             LEFT JOIN med.ocorrenciadecontrato CC
+                    ON (CC.ocorrenciadecontratoid = med.ultimaOcorrenciaDeContratoId(R.residenteId))
+             LEFT JOIN med.statusDaOcorrenciadecontrato SO
+                    ON (SO.statusDaOcorrenciadecontratoId = CC.statusDaOcorrenciadecontratoId)
+             LEFT JOIN basDocument BD
+                    ON PP.personId = BD.personId
+                   AND BD.documentTypeId = ?";
+
+        $where = '';
+        $params = array();
+        $params[] = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CARTAO_PONTO');
+        if ( strlen($filters->enfaseId) > 0 )
+        {
+            $where .= " AND E.enfaseId = ?";
+            $params[] = $filters->enfaseId;
+        }
+
+        if ( strlen($filters->nucleoProfissionalId) > 0 )
+        {
+            $where .= " AND NP.nucleoProfissionalId = ?";
+            $params[] = $filters->nucleoProfissionalId;
+        }
+
+        if ( strlen($filters->beginDate) > 0 )
+        {
+            $where .= " AND R.inicio >= ?";
+            $params[] = $filters->beginDate;
+        }
+
+        if ( strlen($filters->endDate) > 0 )
+        {
+            $where .= " AND R.fimPrevisto <= ?";
+            $params[] = $filters->endDate;
+        }
+
+        // Filtra por período (P1, P2, P3)
+        if ( strlen($filters->periodo) > 0 )
+        {
+            $where .= " AND med.obterPeriodoDoResidente(R.residenteId) = ?";
+            $params[] = $filters->periodo;
+        }
+
+        // Filtra por inativos/ativos
+        if ( $filters->incluirInativos == DB_TRUE )
+        {
+            $where .= " AND (
+                NOT (NOW() BETWEEN R.inicio AND R.fimPrevisto)
+                OR SO.bloqueiaResidencia = ?
+                OR SO.concluiresidencia = ?
+            )";
+            $params[] = DB_TRUE;
+            $params[] = DB_TRUE;
+        }
+        else if ( $filters->incluirInativos == DB_FALSE )
+        {
+            $where .= " AND (
+                NOW() BETWEEN R.inicio AND R.fimPrevisto
+                AND SO.bloqueiaResidencia = ?
+                AND SO.concluiresidencia = ?
+            )";
+            $params[] = DB_FALSE;
+            $params[] = DB_FALSE;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5);
+        }
+
+        // Ordena pelo nome
+        $sql .= ' ORDER BY PP.name';
+
+        $result = SDatabase::query($sql, $params);
+
+        return $result;
+    }
+
+    /**
+     * Função para o relatório de residentes, tipo "Vagas"
+     *
+     * @param type $filters
+     * @return type
+     */
+    public static function searchResidentesVagas($filters)
+    {
+        $p1 = MedUnidadeTematica::PERIODO_PRIMEIRO_ANO;
+        $p2 = MedUnidadeTematica::PERIODO_SEGUNDO_ANO;
+        $p3 = MedUnidadeTematica::PERIODO_TERCEIRO_ANO;
+        $where = '';
+        $params = array();
+        $sql = "SELECT A.descricao,
+                       COALESCE(SUM(CASE WHEN B.periodo = '{$p1}' THEN 1 ELSE 0 END), 0) AS p1,
+                       COALESCE(SUM(CASE WHEN B.periodo = '{$p2}' THEN 1 ELSE 0 END), 0) AS p2,
+                       COALESCE(SUM(CASE WHEN B.periodo = '{$p3}' THEN 1 ELSE 0 END), 0) AS p3,
+                       COALESCE(SUM(CASE WHEN B.periodo = '{$p1}' THEN 1 ELSE 0 END), 0) + COALESCE(SUM(CASE WHEN B.periodo = '{$p2}' THEN 1 ELSE 0 END), 0) 
+                     + COALESCE(SUM(CASE WHEN B.periodo = '{$p3}' THEN 1 ELSE 0 END), 0) AS total
+                  FROM med.enfase A
+             LEFT JOIN ( SELECT C.residenteId,
+                                C.enfaseId,
+                                C.inicio,
+                                C.fimPrevisto,
+                                med.obterPeriodoDoResidente(C.residenteId) AS periodo
+                           FROM med.residente C";
+
+        // Filtra por núcleo
+        if ( strlen($filters->nucleoProfissionalId) > 0 )
+        {
+            $where .= " AND C.nucleoProfissionalId = ?";
+            $params[] = $filters->nucleoProfissionalId;
+        }
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5);
+        }
+        $sql .= "      ) B
+                    ON B.enfaseId = A.enfaseId
+             LEFT JOIN med.ocorrenciadecontrato CC
+                    ON CC.ocorrenciadecontratoid = med.ultimaOcorrenciaDeContratoId(B.residenteId)
+             LEFT JOIN med.statusDaOcorrenciadecontrato SO
+                    ON SO.statusDaOcorrenciadecontratoId = CC.statusDaOcorrenciadecontratoId";
+
+        // Filtra por ênfase
+        $where = '';
+        if ( strlen($filters->enfaseId) > 0 )
+        {
+            $where .= " AND A.enfaseId = ?";
+            $params[] = $filters->enfaseId;
+        }
+
+        // Filtra por período (P1, P2, P3)
+        if ( strlen($filters->periodo) > 0 )
+        {
+            $where .= " AND B.periodo = ?";
+            $params[] = $filters->periodo;
+        }
+
+        // Filtra por inativos/ativos
+        if ( $filters->incluirInativos == DB_TRUE )
+        {
+            $where .= " AND (
+                NOT (NOW() BETWEEN B.inicio AND B.fimPrevisto)
+                OR SO.bloqueiaResidencia = ?
+                OR SO.concluiresidencia = ?
+            )";
+            $params[] = DB_TRUE;
+            $params[] = DB_TRUE;
+        }
+        else if ( $filters->incluirInativos == DB_FALSE )
+        {
+            $where .= " AND (
+                NOW() BETWEEN B.inicio AND B.fimPrevisto
+                AND SO.bloqueiaResidencia = ?
+                AND SO.concluiresidencia = ?
+            )";
+            $params[] = DB_FALSE;
+            $params[] = DB_FALSE;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 5);
+        }
+
+        // Adiciona o group by e order by
+        $sql .= " GROUP BY A.descricao
+                  ORDER BY A.descricao";
+
+        $result = SDatabase::query($sql, $params);
+
+        return $result;
+    }
+}
+?>

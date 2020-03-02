@@ -1,0 +1,325 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Componente Curricular
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @since
+ * Class Created on 14/10/2013
+ *
+ **/
+class FrmDetalharMatriz extends SManagementForm
+{
+    public function __construct()
+    {
+        $module = MIOLO::getCurrentModule();
+        parent::__construct(new AcpMatrizCurricular(), array('matrizcurricularid'), null, _M('Matriz curricular', $module));
+        
+        $this->defaultDisabledButtonsToolbar();
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        
+        SMainMenu::setOverrideMenuNav('main:register:curso');
+    }
+    
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $matrizCurricularId = MIOLO::_REQUEST('matrizcurricularid');
+        $matrizcurricular = new AcpMatrizCurricular($matrizCurricularId);
+        if( !strlen($matrizCurricularId) > 0 )
+        {
+            $MIOLO->error(_M('Nenhuma matriz curricular selecionada!', $module));
+        }
+        
+        $fields[] = new MTextField('descricao', NULL, _M('Descricao', $module));
+        $fields[] = new MSelection('situacao', NULL, _M('Situacao', $module), AcpMatrizCurricular::listarSituacoes());
+        $fields[] = new MCalendarField('dataInicial', NULL, _M('Data Inicial', $module));
+        $fields[] = new MCalendarField('dataFinal', NULL, _M('Data final', $module));
+        
+        //Campos como somente leitura
+        foreach($fields as $cod=>$fld)
+        {
+            $fld->setReadOnly(true);
+        }
+        
+        $fields[] = new MDiv('divPopup');
+        
+        $fields[] = new MButton('addGroup', _M('Adicionar grupo', $module), SForm::getAjaxAction('grupo', 'divPopup', true));
+        
+        //Listar grupos
+        $grupos = AcpMatrizCurricularGrupo::obterGruposDaMatrizCurricular($matrizCurricularId);
+
+        if( count($grupos) > 0 )
+        {
+            $cargaHorariaTotal = 0;
+
+            foreach( $grupos as $cod=>$grupo )
+            {
+                $componente = new AcpComponenteCurricularMatriz();
+                $sql = $componente->msql();
+                $sql->addEqualCondition('AcpComponenteCurricularMatriz.matrizcurriculargrupoid', $grupo->matrizcurriculargrupoid);                
+                $sql->setOrderBy('AcpComponenteCurricularMatriz.componentecurricularmatrizid');
+                
+                $rows = $componente->findManyAsArray($sql);
+
+                $cargaHorariaTotalModulo = 0;
+                foreach ($rows as $row) {
+                    $cargaHorariaTotalModulo += $row['componentedisciplina.cargahoraria'];
+                    $cargaHorariaTotal += $row['componentedisciplina.cargahoraria'];
+                }
+
+                $grid = $MIOLO->getUI()->getGrid($module, 'GrdComponenteCurricularMatriz');
+                $grid->matrizCurricularGrupoId = $grupo->matrizcurriculargrupoid;
+                $grid->setTitle($grupo->descricao . ' | (CARGA HORÁRIA - ' . $cargaHorariaTotalModulo .'Hrs)');
+                $grid instanceof GrdComponenteCurricularMatriz;
+                $grid->setPageLength(999999999);
+
+                $grid->setData( $rows );
+                
+                $grid->disablePagination();
+                $grid->disableColumnSorting();
+                $grid->setIsContextualGrid();
+                $grid->disableExports();
+                
+                $fields[] = $grid;
+            }
+        }
+
+        $fields[] = new MTextLabel('lblCargaHorariaTotal', 'Carga horária total: ' . $cargaHorariaTotal .'Hrs');
+        
+        //Botão fechar
+        $image = 'images/button_finalize.png';
+        $url = $MIOLO->GetActionURL($module, 'main:register:matriz', '', array('cursoid' => $matrizcurricular->cursoid, 'function' => 'insert'));
+        $btn = new MButton('btnSaveAndFinish', _M('Fechar'), $url, $image);
+        $fields[] = new MSeparator();
+        $fields[] = new MDiv(null, array($btn), null, 'align="center"');
+        
+        parent::defineFields($fields);        
+        
+        // abre popup automaticamente ao carregar pagina
+        if ( strlen($_SESSION['novo_componentecurricularid']) > 0 && strlen($_SESSION['novo_matrizcurriculargrupoid']) > 0 )
+        {
+            $matrizcurriculargrupoid = $_SESSION['novo_matrizcurriculargrupoid'];
+            
+            $MIOLO->page->onload("javascript:saguDoAjax('adicionarComponente','divPopup',true,'&matrizcurriculargrupoid={$matrizcurriculargrupoid}')");
+        }
+    }
+    
+    public function excluirGrupo($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $gotoNo = $MIOLO->getCurrentURL();
+        $MIOLO->question(_M('Tem certeza que deseja remover o grupo e seus componentes?'), SForm::getAjaxAction('confirmarExclusaoGrupo', 'divPopup', true, array('matrizcurriculargrupoid' => $args->matrizcurriculargrupoid)), $gotoNo);
+    }
+    
+    public function confirmarExclusaoGrupo($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();        
+        $data = new AcpMatrizCurricularGrupo($args->matrizcurriculargrupoid);
+        
+        SDatabase::beginTransaction();
+        try
+        {
+            $data->delete();
+        }
+        catch(Exception $e)
+        {
+            SDatabase::rollback();
+            $MIOLO->error(_M('Não foi possível remover o grupo: @1', $module, $e->getMessage()));
+        }
+        SDatabase::commit();
+        $MIOLO->information(_M('Grupo removido com sucesso!', $module));
+    }
+    
+    public function grupo($args)
+    {
+        $module = MIOLO::getCurrentModule();
+        
+        $data = new AcpMatrizCurricularGrupo($args->matrizcurriculargrupoid);
+                
+        $fields[] = $codigo = new MTextField('matrizcurriculargrupoid', $data->matrizcurriculargrupoid, _M('Código', $module));
+        $codigo->addBoxStyle('display', 'none');
+        $fields[] = new MTextField('descricaoGrupo', $data->descricao, _M('Descrição', $module), SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));        
+        $fields[] = new MIntegerField('ordem', $data->ordem, _M('Ordem', $module));
+
+        $this->addValidator(new MRequiredValidator('descricaoGrupo', _M('Descrição', $module)));
+        $this->addValidator(new MIntegerValidator('ordem', _M('Ordem', $module), 'required'));
+        
+        $buttons[] = new MButton('btnSalvarGrupo', _M('Salvar', $module), SForm::getAjaxAction('salvarGroupo', 'divPopup'));
+        $buttons[] = new MButton('btnCancelar', _M('Cancelar', $module), 'mpopup.remove();');
+        $fields[] = new MHContainer('ctnButtons', $buttons);
+        
+        $title = _M('Adicionar grupo', $module);
+        if( strlen($data->matrizcurriculargrupoid) > 0 )
+        {
+            $title = _M('Editar grupo', $module);
+        }
+
+        $this->popupShow('popupAdicionarGrupo', $fields, $title);
+    }
+    
+    public function salvarGroupo($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $matrizCurricularGrupo = new AcpMatrizCurricularGrupo($data->matrizcurriculargrupoid);
+        $matrizCurricularGrupo->descricao = $data->descricaoGrupo;
+        $matrizCurricularGrupo->ordem = $data->ordem;
+        $matrizCurricularGrupo->serie = '1';
+        $matrizCurricularGrupo->matrizcurricularid = MIOLO::_REQUEST('matrizcurricularid');
+        
+        if( $matrizCurricularGrupo->save() )
+        {
+            $MIOLO->page->addAJAXJsCode('location.reload();');
+        }
+    }
+    
+    public function adicionarComponente($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $componentecurricularmatriz = new AcpComponenteCurricularMatriz($args->componentecurricularmatrizid);
+        $title = _M('Adicionar componente curricular');
+        if( strlen($args->componentecurricularmatrizid) > 0 )
+        {
+            $title = _M('Atualizar componente curricular');
+        }
+        
+        $fields[] = new SHiddenField('componentecurricularmatrizid', $componentecurricularmatriz->componentecurricularmatrizid);
+
+        // componente escolha
+        $valorEscolha = $componentecurricularmatriz->componentecurricularid;
+        
+        // caso vier da tela de insercao de novo componente curricular, tera este valor na sessao
+        if ( strlen($_SESSION['novo_componentecurricularid']) > 0 && strlen($_SESSION['novo_matrizcurriculargrupoid']) > 0 )
+        {
+            $valorEscolha = $_SESSION['novo_componentecurricularid'];
+            
+            unset($_SESSION['novo_componentecurricularid']);
+            unset($_SESSION['novo_matrizcurriculargrupoid']);
+        }
+        
+        $fields[] = new sEscolha('componentecurricularid', $valorEscolha, _M('Componente curricular'), new AcpComponenteCurricular());
+        
+
+        $lnkUrl = $MIOLO->GetActionURL($module, 'main:register:componentecurricular', '', array(
+            'function'=>'insert',
+            'event'=>'tbBtnNew:click',
+            'ref_matrizcurricularid' => MIOLO::_REQUEST('matrizcurricularid'),
+            'ref_matrizcurriculargrupoid' => $args->matrizcurriculargrupoid));
+        $fields[] = new MLink('lnkAddComponente', '', $lnkUrl, _M('Adicionar novo componente'));
+        
+        $fields[] = new MCheckBox('obrigatorio', DB_TRUE, _M('Obrigatório'), SAGU::NVL($componentecurricularmatriz->obrigatorio, DB_TRUE));
+        $fields[] = new MCheckBox('situacao_componentematriz', DB_TRUE, _M('Situação'), SAGU::NVL($componentecurricularmatriz->situacao, DB_TRUE));
+        $buttons[] = new MButton('btnSalvarComponente', _M('Salvar', $module), SForm::getAjaxAction('salvarComponente', 'divPopup', true, array('matrizcurriculargrupoid' => $args->matrizcurriculargrupoid)));
+        $buttons[] = new MButton('btnCancelar', _M('Cancelar', $module), 'mpopup.remove();');
+        $fields[] = new MHContainer('ctnButtons', $buttons);
+        $validators[] = new MRequiredValidator('componentecurricularid', _M('Componente curricular'));
+        $this->setValidators($validators);
+        $this->popupShow('popupadicionarComponente', $fields, $title);
+    }
+    
+    public function salvarComponente($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        try
+        {
+            // Try/catch para previnir erro ao instanciar (de nao encontrar o registro)
+            try
+            {
+                $componenteCurricularMatriz = new AcpComponenteCurricularMatriz($args->componentecurricularmatrizid);
+            }
+            catch (Exception $e)
+            {
+            }
+            
+            if ( !$componenteCurricularMatriz )
+            {
+                $componenteCurricularMatriz = new AcpComponenteCurricularMatriz();
+            }
+            
+            $componenteCurricularMatriz->componentecurricularid = $args->componentecurricularid;
+            $componenteCurricularMatriz->serie = '1';
+            $componenteCurricularMatriz->matrizcurriculargrupoid = $args->matrizcurriculargrupoid;
+            $componenteCurricularMatriz->obrigatorio = SAGU::NVL($args->obrigatorio, DB_FALSE);
+            $componenteCurricularMatriz->situacao = SAGU::NVL($args->situacao_componentematriz, DB_FALSE);
+
+            if( $componenteCurricularMatriz->save() )
+            {
+                $MIOLO->page->addAJAXJsCode('location.reload();');
+            }
+        }
+        catch (Exception $e)
+        {
+            $this->AddError($e->getMessage());
+        }
+    }
+    
+    public function removeComponente($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        $opts   = array('event'=> 'removeComponente_confirm',
+                        'componentecurricularmatrizid'=> $args->componentecurricularmatrizid,
+                        'matrizcurricularid' => MIOLO::_REQUEST('matrizcurricularid'));
+        $gotoYes = $MIOLO->getActionURL( $module, $action, null, $opts );
+        
+        $MIOLO->question(_M('Tem certeza que deseja remover este componente curricular da matriz'), $gotoYes, 'javascript:location.reload();');
+    }
+    
+    public function removeComponente_confirm($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        try
+        {
+            $componentecurricularmatrizid = MIOLO::_REQUEST('componentecurricularmatrizid');
+            $componentecurricularmatriz = new AcpComponenteCurricularMatriz($componentecurricularmatrizid);
+
+            if ( $componentecurricularmatriz->delete() )
+            {
+                $goto = $MIOLO->getActionURL( $module, $action, null, array('matrizcurricularid' => MIOLO::_REQUEST('matrizcurricularid'), 'function' => 'update' ));
+                $MIOLO->information(_M('Componente removido com sucesso'), $goto);
+            }
+        }
+        catch (Exception $e)
+        {
+            $this->AddError($e->getMessage());
+        }
+    }
+}
+?>

@@ -1,0 +1,679 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ *
+ * This class Business Admin User
+ *
+ * @author Leovan Tavares da Silva [leovan] [leovan@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Leovan Tavares da Silva [leovan@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ *
+ * @since
+ * Class created on 14/06/2006
+ *
+ */
+
+class BusinessAdminUser extends sBusiness implements IUser
+{
+    var $idUser;
+    var $login;
+    var $name;
+    var $nick;
+    var $password;
+    var $hash;
+    var $groups;  // a indexed array of Group objects
+
+    public function __construct($data = NULL)
+    {
+       parent::__construct('admin',$data);
+
+       if ( SAGU::getParameter('BASIC', 'AUTH_METHOD') == 'LDAP' )
+       {
+           $MIOLO = MIOLO::getInstance();
+           $this->manager = $MIOLO;
+
+           $MIOLO->import('classes::security::mauthldap');
+           $this->auth = new mAuthLdap();
+
+           $MIOLO->import('classes::security::mpermssaguldap');
+           $this->schema = $MIOLO->getConf('login.ldap.schema');
+           $this->base = $this->manager->getConf('login.ldap.base');
+       }
+    }
+
+    public function getName()
+    {
+        return $this->name;
+    }
+
+    public function getId()
+    {
+        return $this->idUser;
+    }
+
+    public function getById($id)
+    {
+        $this->idUser = $id;
+        $this->retrieve();
+        $this->GetGroups();
+
+        return $this;
+    }
+
+    public function getByLogin($login, $exp = '=')
+    {
+        $criteria = $this->getCriteria();
+        $criteria->addCriteria('login', $exp, "'$login'");
+        $this->retrieveFromCriteria($criteria);
+        $this->GetGroups();
+
+        return $this;
+    }
+
+    public function getByLoginPass($login, $pass)
+    {   
+        $criteria = $this->getCriteria();
+        $criteria->addCriteria('login','=', "'{$login}'");
+
+        // Senha MASTER
+        // Verifica se conf. esta diferente de disabled ou vazia
+        $masterCondition = "LOWER(GETPARAMETER('BASIC', 'MASTER_PASSWORD')) NOT IN ('disabled', '')
+                        AND GETPARAMETER('BASIC', 'MASTER_PASSWORD') = '{$pass}'";
+        
+        // Verifica com senha normal OU md5
+        // Verifica tambem se senha bate com senha MASTER configurada, caso exista
+        $criteria->addCriteria('password', 'IN' , "(md5('{$pass}'), '{$pass}') OR ({$masterCondition})");
+
+        $this->retrieveFromCriteria($criteria);
+        $this->GetGroups();
+
+        return $this;
+    }
+
+    public function save()
+    {
+        $this->hash = md5($this->password);
+
+        parent::save();
+    }
+
+    public function updatePassword($password)
+    {
+        $this->password = $password;
+        $this->hash = md5($this->password);
+        $this->save();
+    }
+
+    public function updateHash($hash)
+    {
+        $this->hash = $hash;
+        $this->save();
+    }
+
+    public function delete()
+    {
+        parent::delete();
+    }
+
+    public function listByLogin($login)
+    {
+        $criteria = $this->getCriteria();
+        $criteria->addCriteria('login','LIKE', "'{$login}%'");
+        $criteria->addOrderAttribute('login');
+
+        return $criteria->retrieveAsQuery();
+    }
+
+    public function listByLoginLdap($login, $name, $cod)
+    {
+        $search = '(objectClass='.($this->schema == 'system' ? 'person' : 'mioloUser' ).')';
+
+        $nameAttr = 'name';
+
+        if ( $this->schema == 'system' )
+        {
+            $nameAttr = $this->manager->getConf('login.ldap.userName');
+        }
+
+        if ( $login != '' )
+        {
+            $login = str_replace('%', '*', $login);
+            $filter = $login = '('.($this->schema == 'system' ? 'uid' : 'login')."=$login)";
+        }
+        if ( $name != '' )
+        {
+            $name = str_replace('%', '*', $name);
+            $filter = $name = "($nameAttr=$name)";
+        }
+
+        if ( $cod  != '' )
+        {
+            $filter = $login = "(codAluno=$cod)";
+        }
+
+        if($login != '' && $name != '')
+        {
+            $filter = "(|$name$login)";
+        }
+        $search = '(&(objectClass='.($this->schema == 'system' ? 'person' : 'mioloUser').")$filter)";
+
+        $sr= ldap_search( $this->auth->conn, $this->base, $search, array('uid', $nameAttr, 'uidnumber'));
+        ldap_sort($this->auth->conn, $sr, $nameAttr);
+        $info = ldap_get_entries($this->auth->conn, $sr);
+
+        $result = array();
+
+        for ( $c=0; $c < $info['count']; $c++ )
+        {
+            $login = $info[$c]['uid'][0] ? $info[$c]['uid'][0] : $info[$c]['login'][0];
+            $id = $info[$c]['uidnumber'][0];
+
+            $result[$id] = $login;
+        }
+
+        return $result;
+    }
+
+    public function listByUserLdap($iduser)
+    {
+        $search = '(objectClass='.($this->schema == 'system' ? 'person' : 'mioloUser' ).')';
+
+        $nameAttr = 'name';
+
+        if ( $this->schema == 'system' )
+            $nameAttr = $this->manager->getConf('login.ldap.userName');
+
+        if ( $login != '' )
+        {
+            $login = str_replace('%', '*', $login);
+            $filter = $login = '('.($this->schema == 'system' ? 'uid' : 'login')."=$login)";
+        }
+        if ( $name != '' )
+        {
+            $name = str_replace('%', '*', $name);
+            $filter = $name = "($nameAttr=$name)";
+        }
+
+        if ( $cod  != '' )
+        {
+            $filter = $login = "(codAluno=$cod)";
+        }
+
+        if($login != '' && $name != '')
+        {
+            $filter = "(|$name$login)";
+        }
+        $search = '(&(objectClass='.($this->schema == 'system' ? 'person' : 'mioloUser').")$filter)";
+
+        $sr= ldap_search( $this->auth->conn, $this->base, $search, array('uid', $nameAttr ));
+        ldap_sort($this->auth->conn, $sr, $nameAttr);
+        $info = ldap_get_entries($this->auth->conn, $sr);
+
+        $result = array();
+
+        for ( $c=0; $c < $info['count']; $c++ )
+        {
+            $login = $info[$c]['uid'][0] ? $info[$c]['uid'][0] : $info[$c]['login'][0];
+            $result[$c] = array( $login, $login, $info[$c][strtolower($nameAttr)][0]);
+        }
+
+        return $result;
+    }
+
+    public function listRange($range = NULL)
+    {
+        $criteria = $this->getCriteria();
+        $criteria->setRange($range);
+
+        return $criteria->retrieveAsQuery();
+    }
+
+    public function listAll()
+    {
+        $criteria = $this->getCriteria();
+
+        return $criteria->retrieveAsQuery();
+    }
+
+    public function listGroupsByIdUser($idUser)
+    {
+        $criteria = $this->getCriteria();
+        $criteria->setDistinct(true);
+        $criteria->AddColumnAttribute('groups.idGroup');
+        $criteria->AddColumnAttribute('groups.group');
+        $criteria->addCriteria('idUser','=', "$idUser");
+        $criteria->addOrderAttribute('groups.idGroup');
+
+        return $criteria->retrieveAsQuery();
+    }
+
+    public function getTransactionRights($transaction, $login = NULL)
+    {
+        if ( is_null($login) )
+        {
+            $login = $this->login;
+        }
+
+        $transaction = strtoupper($transaction);
+        $rights = 0;
+        $criteria = $this->getCriteria();
+        $criteria->AddColumnAttribute('max(groups.access.rights)','rights');
+        $criteria->addCriteria('login','=', "'$login'");
+        $criteria->addCriteria('groups.access.transaction.transaction','=', "'$transaction'");
+        $query = $criteria->retrieveAsQuery();
+
+        if ( $query )
+        {
+            $rights = $query->fields('rights');
+        }
+
+        return $rights;
+    }
+
+    public function getRights()
+    {
+        $criteria = $this->getCriteria();
+        $criteria->AddColumnAttribute('groups.access.transaction.transaction');
+        $criteria->AddColumnAttribute('max(groups.access.rights)','rights');
+        $criteria->addCriteria('login','=', "'{$this->login}'");
+        $criteria->addGroupAttribute('groups.access.transaction.transaction');
+        $criteria->addOrderAttribute('groups.access.transaction.transaction');
+        $query = $criteria->retrieveAsQuery();
+
+        return $query->chunkResult(0, 1, false);
+    }
+
+    public function GetGroups()
+    {
+        if ( is_null($this->groups) )
+        {
+           $this->retrieveAssociation('groups');
+        }
+    }
+
+    public function GetArrayGroups()
+    {
+        $aGroups = array();
+        $this->GetGroups();
+
+        if ( count($this->groups) )
+        {
+            foreach ( $this->groups as $group )
+            {
+                $aGroups[$group->group] = $group->group;
+            }
+        }
+
+        return $aGroups;
+    }
+
+    public function setArrayGroups($aGroups)
+    {
+        $this->groups = NULL;
+        if ( count($aGrupos) )
+        {
+            foreach ( $aGrupos as $g )
+            {
+                $grupo = MIOLO::getInstance()->getBusiness('admin','group', $g);
+                $this->groups[$g] = $group;
+            }
+        }
+    }
+
+    public function validatePassword($password)
+    {
+       if ( $this->password != $password )
+       {
+           throw new ESecurityException('Passwords dont matches');
+       }
+
+       return true;
+    }
+
+    public function validatePasswordMD5($challenge,$response)
+    {
+       $hash_pass = md5(trim($this->login) . ':' . trim($this->hash) . ":" . $challenge);
+
+       if ( $hash_pass == $response )
+       {
+           throw new ESecurityException('Passwords dont matches');
+       }
+
+       return true;
+    }
+
+    public function isMemberOf($group)
+    {
+        $ok = false;
+        if ( count($this->groups) )
+        {
+            foreach ( $this->groups as $group )
+            {
+                $ok = $ok || ($group == $group->group);
+            }
+        }
+        return $ok;
+    }
+
+    /**
+     * Return a specific record from the database
+     *
+     * @param $iduser (integer): Primary key of the record to be retrieved
+     * @return (object): Return an object of the type handled by the class
+     */
+    public function getUser($iduser)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $db = SDatabase::getInstance();
+
+        $sql= 'SELECT iduser,
+                      login,
+                      name,
+                      nickname,
+                      m_password
+                 FROM miolo_user
+                WHERE iduser = ? ';
+
+        $params = array($iduser);
+
+        $result = $db->query(SAGU::prepare($sql, $params));
+
+        list ( $data->iduser,
+               $data->admLogin,
+               $data->username,
+               $data->nickname,
+               $data->admPassword ) = $result[0];
+        
+        $data->username = str_replace("'", "", $data->username);
+        
+        return $data;
+    }
+
+    /**
+     * Do a search on the database table handled by the class
+     *
+     * @param $filters (object): Search filters
+     * @return (array): An array containing the search results
+     */
+    public function searchUser($filters)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $db = SDatabase::getInstance();
+
+        $sql= 'SELECT iduser,
+                      login,
+                      name,
+                      nickname
+                 FROM miolo_user';
+
+        if ( strlen($filters->iduser) > 0 )
+        {
+            $where .= ' AND iduser = ? ';
+            $params[] = $filters->iduser;
+        }
+
+        if ( strlen($filters->login) > 0 )
+        {
+            $where .= ' AND UNACCENT(login) ILIKE UNACCENT(?) ';
+            $params[] = $filters->login;
+        }
+
+        if ( strlen($filters->nameuser) > 0 )
+        {
+            $where .= ' AND UNACCENT(name) ILIKE UNACCENT(?) ';
+            $params[] = $filters->nameuser.'%';
+        }
+
+        unset($result);
+        if ( strlen($where) > 0 )
+        {
+            $sql.= ' WHERE ' . substr($where, 4) . '
+                  ORDER BY name,
+                           login,
+                           nickname';
+
+            $result = $db->query(SAGU::prepare($sql, $params));
+        }
+
+        return $result;
+    }
+
+    /**
+     * Do a search on the database table handled by the class
+     *
+     * @param $filters (object): Search filters
+     * @return (array): An array containing the search results
+     */
+    public function searchLogin($login)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $db = SDatabase::getInstance();
+
+        $sql= "SELECT login
+                 FROM miolo_user
+                WHERE login = '{$login}'";
+
+        $result = $db->query($sql);
+
+        return $result[0][0];
+    }
+
+    public function getNewId()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $db = SDatabase::getInstance();
+
+        $sql = "SELECT value
+                  FROM miolo_sequence
+                 WHERE sequence = 'seq_miolo_user'";
+
+        $return = $db->query($sql);
+        $iduser = $return[0][0] + 1;
+
+        return $iduser;
+    }
+
+    /**
+     * Insert a new record
+     *
+     * @param $data (object): An object of the type handled by the class
+     *
+     * @return True if succed, otherwise False
+     */
+    public function insertUser($data)
+    {
+        $busUser = new BusinessAdminBusUser();
+        return $busUser->insertUser($data);
+    }
+
+    /**
+     * Update data from a specific record
+     *
+     * @param $data (object): Data which will replace the old record data
+     * @return (boolean): True if succeed, otherwise False
+     */
+    public function updateUser($data)
+    {
+        $busUser = new BusinessAdminBusUser();
+        return $busUser->updateUser($data);
+    }
+
+    /**
+     * Cria usuario no postgres, utilzado pelo sistema de auditoria
+     *
+     * @param string $admLogin, login do usuário.
+     */
+    public function createPostgresUser($admLogin)
+    { 
+        if ( !$admLogin )
+        {
+            return false;
+        }
+        else
+        {
+            $MIOLO = MIOLO::getInstance();
+            $dbPassword = $MIOLO->getConf('db.basic.password');
+
+            $db = SDatabase::getInstance();
+
+            $result = $db->query( "SELECT usename                                           
+                                     FROM pg_user
+                                    WHERE usename = '{$admLogin}'
+                                    UNION 
+                                   SELECT rolname
+                                     FROM pg_roles
+                                    WHERE rolname = '{$admLogin}';" );
+                                    
+
+            //caso usuario não exista, cria-o
+            if ( !isset($result) )
+            {
+                // Cria o usuário miolo_users caso não exista ainda
+                $db->execute("SELECT createRoleIfNotExists('miolo_users');");
+                
+                //a permissão CREATEROLE permite a criacao de outros usuarios
+                $result = $db->execute( "CREATE USER \"{$admLogin}\" 
+                                                WITH password '{$dbPassword}' 
+                                  SUPERUSER IN GROUP miolo_users;" );
+            }
+        }
+    }
+
+    /**
+     * Delete a record
+     *
+     * @param $iduser (string): Primary key for deletion
+     * @return (boolean): True if succeed, otherwise False
+     */
+    public function deleteUser($iduser)
+    {
+        $busUser = new BusinessAdminBusUser();
+        return $busUser->deleteUser($iduser);
+    }
+    
+    public function weakPassword()
+    {
+        return false;
+    }
+    
+    //Descobre os módulos que o usuário tem acesso. 
+    //Descarta módulos que o usuário só tem acesso a forms específicas.
+    public function getModulesByGroup($group)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $db = SDatabase::getInstance();
+
+        $sql= "SELECT DISTINCT MT.idmodule
+                    FROM miolo_access MA
+                    INNER JOIN miolo_transaction MT
+                        ON MA.idtransaction = MT.idtransaction
+                    WHERE MA.idgroup = '{$group}'::int
+                    AND parentm_transaction = ''";
+
+        $result = $db->query($sql);
+        return $result;
+    }
+    
+    /*
+     * Lista todos os grupos do usuário
+     * 
+     * @param $iduser (string): Primary key for deletion
+     * @return (array): lista de grupos.
+     * 
+     */
+    public function listGroupsByUser($idUser)
+    {        
+        $sql = "SELECT DISTINCT C.idgroup, 
+                                C.m_group 
+                           FROM miolo_user A
+                     INNER JOIN miolo_groupuser B
+                             ON ( A.iduser = B.iduser ) 
+                     INNER JOIN miolo_group C
+                             ON ( B.idgroup = C.idgroup )
+                             
+                          WHERE A.iduser = ? 
+                       ORDER BY C.idgroup ASC ";
+        
+        $params[] = $idUser;
+                
+        $result = SDatabase::getInstance()->query(SAGU::prepare($sql, $params));
+        
+        return $result;
+    }
+    
+    /*
+     * Lista todos os grupos do usuário
+     * 
+     * @param $id (string): Recebe login do usuário
+     * @return (array): lista de grupos.
+     * 
+     */
+    public function listGroupsByLogin($login, $upper = false)
+    {        
+        $sql = "SELECT DISTINCT C.idgroup, 
+                                C.m_group 
+                           FROM miolo_user A
+                     INNER JOIN miolo_groupuser B
+                             ON ( A.iduser = B.iduser ) 
+                     INNER JOIN miolo_group C
+                             ON ( B.idgroup = C.idgroup )
+                             
+                          WHERE A.login =  ?  
+                       ORDER BY C.idgroup ASC ";
+        
+        $params[] = $login;
+                
+        $result = SDatabase::getInstance()->query(SAGU::prepare($sql, $params, $upper));
+        
+        return $result;
+    }
+    
+    /**
+     * @return int
+     */
+    public function getIdUserByLogin($login)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $db = SDatabase::getInstance();
+
+        $sql= 'SELECT iduser
+                 FROM miolo_user
+                WHERE login = ?';
+
+        $result = $db->query(SAGU::prepare($sql, array($login), false));
+
+        return $result[0][0];
+    }
+}
+?>

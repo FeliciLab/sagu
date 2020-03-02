@@ -1,0 +1,1059 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulário de negociação
+ *
+ * @author Luís Felipe Wermann [luis_felipe@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Luís Felipe Wermann [luis_felipe@solis.com.br]
+ *
+ * @since
+ * Class created on 05/01/2015
+ *
+ **/
+
+/**
+ * Form to manipulate a Release
+ **/
+class FrmNegotiationAlt extends SForm
+{
+    private $condicoes;
+    private $renegociacao;
+    private $valorTotalNegociado; // Ticket #37773
+    
+    public function __construct()
+    {
+        //Carrega condições e se possui renegociação apenas uma vez
+        $condicoes =  FinCondicoesDePagamentoPerfil::obterCondicoesPerfis(FinPerfilNegociacaoGrupo::obterPerfisDoUsuario());
+        $this->renegociacao = $condicoes[0];
+        $this->condicoes  = $condicoes[1];
+        
+        parent::__construct(_M('Negociação'), null, null);
+        
+        $this->toolbar->disableButton( MToolBar::BUTTON_PRINT );
+        $this->toolbar->disableButton( MToolBar::BUTTON_DELETE );
+    }
+
+    public function defineFields()
+    {   
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        //Pessoa
+        $pessoaLabel = new MLabel(_M("Pessoa: "));
+        $pessoaLookup = new SLookupContainer('personId', $this->GetFormValue('personId'), array('module' => 'basic', 'item' => 'person'));    
+        $hctPerson = new MHContainer('hctPerson', array($pessoaLabel, $pessoaLookup));
+        $validators[] = new MIntegerValidator('personId', _M("Pessoa"));
+        
+        //Carregar titulos
+        $btnLateInvoices = new MButton('btnLateInvoices', _M("Carregar títulos em atraso"));
+        $btnNonLateInvoices = new MButton('btnNonLateInvoices', _M("Carregar títulos não atrasados"));
+        $hctButtons = new MHContainer('hctButtons', array($btnLateInvoices, $btnNonLateInvoices));
+
+        //Adicionar campos
+        $fields[] = $bsgNegociacao = new MBaseGroup('bsgNegociacao', _M("Negociação"), array($hctPerson, $hctButtons), 'vertical');   
+        
+        parent::defineFields(array('fields' => $fields, 'validators' => $validators));
+        
+        //Chama o carregamento de títulos
+        if ( MIOLO::_REQUEST('__EVENTTARGETVALUE') || MIOLO::_REQUEST('pn_page') )
+        {
+            if ( strlen(MIOLO::_REQUEST('personId') > 0) )
+            {
+                $this->generateFields(MIOLO::_REQUEST('__EVENTTARGETVALUE'));
+            }
+            else
+            {
+                $this->addError(_M("Por favor, selecione uma pessoa para poder carregar títulos."));
+            }
+        }
+        
+        $invoceIds = MIOLO::_REQUEST('invoiceIds');
+        
+        if ( strlen($invoceIds) > 0 && !MIOLO::_REQUEST('__EVENTTARGETVALUE') )
+        {
+            $MIOLO->session->set('returnToDiverseConsultation', true);
+            
+            // Verifica se todos os títulos são de negociação ou antecipação, não ambos
+            if ( !$this->verificaTitulos(explode(',', $invoceIds)) )
+            {
+                // Mensagem alertando que os títulos selecionados na tela de consulta diversas não são todos do mesmo "tipo"
+                $href = $MIOLO->GetActionURL($module, 'main:diverseConsultation', null, array('personId' => MIOLO::_REQUEST('personId')));
+                $aqui = new MLink('_aqui', '', $href, 'AQUI');
+                $message = _M('Você selecionou títulos vencidos e à vencer, o que não é permitido. Você pode carregar os títulos a partir das ações a cima ou voltar para a tela de consultas diversas clicando ' . $aqui->generate() . '.', $module);
+            
+                $this->AddField(MMessage::getStaticMessage('_message', $message, MMessage::TYPE_WARNING));
+            }
+        }
+    }
+    
+    public function verificaTitulos($titulos)
+    {
+        // Verifica se são titulos atrasados
+        $titulosAtrasados = FinNegotiationGeneratedEntries::obterTitulosParaNegociacao(MIOLO::_REQUEST('personId'), 'atrasados', $this->renegociacao); 
+        
+        $atrasado = array();
+        foreach ( $titulosAtrasados as $titulo )
+        {
+            $atrasado[] = $titulo[0];
+        }
+        
+        // Verifica se são titulos para adiantamento
+        $titulosNaoAtrasados = FinNegotiationGeneratedEntries::obterTitulosParaNegociacao(MIOLO::_REQUEST('personId'), 'não atrasados', $this->renegociacao); 
+        
+        $naoAtrasado = array();
+        unset($titulo);
+        foreach ( $titulosNaoAtrasados as $titulo )
+        {
+            $naoAtrasado[] = $titulo[0];
+        }
+        
+        $countAtrasados = $countNaoAtrasados = 0;
+        unset($titulo);
+        foreach ( $titulos as $titulo )
+        {
+            if ( in_array($titulo, $atrasado) )
+            {
+                $countAtrasados++;
+            }
+            else if ( in_array($titulo, $naoAtrasado) )
+            {
+                $countNaoAtrasados++;
+            }
+        }
+        
+        if ( count($titulos) == $countAtrasados )
+        {
+            $this->generateFields('btnLateInvoices:click');
+        }
+        else if ( count($titulos) == $countNaoAtrasados )
+        {
+            $this->generateFields('btnNonLateInvoices:click');
+        }
+        else
+        {
+            return false;
+        }
+        
+        return true;
+    }
+    
+    public function generateFields($btnClicked)
+    {
+        if ( $btnClicked == 'btnLateInvoices:click')
+        {
+            $fields[] = $this->btnLateInvoices_click();
+        }
+        elseif ( $btnClicked == 'btnNonLateInvoices:click' )
+        {
+            $fields[] = $this->btnNonLateInvoices_click();
+        }
+        
+        $fields[] = new MDiv('divCondicoes');
+        $fields[] = $this->getCustomFields($this->getTransaction(), null);
+        
+        $this->addFields($fields);
+    }
+
+    public function btnLateInvoices_click()
+    {
+        //Busca todos os titulos atrasados, levando em conta permissao para renegociacao
+        $table = $this->obterTabelaTitulos('atrasados'); 
+        
+        if ( $table->getId() != 'hctMsgTitulos' )
+        {
+            $buttonLoad = new MButton('btnCarregarCondicoesAtrasadas', _M("Carregar condições de pagamento"), SForm::getAjaxAction('btnCarregarCondicoesAtrasadas_click', 'divCondicoes'));
+        }
+        
+        $bsgLateInvoices = new MBaseGroup('bsgLateInvoices', _M('Títulos em atraso'), array($table, $buttonLoad));
+
+        return $bsgLateInvoices;
+    }
+    
+    public function btnNonLateInvoices_click()
+    {
+        //Busca os titulos nao atrasados
+        $table = $this->obterTabelaTitulos('não atrasados');
+        
+        if ( $table->getId() != 'hctMsgTitulos' )
+        {
+            $buttonLoad = new MButton('btnCarregarCondicoesNaoAtrasadas', _M("Carregar condições de pagamento"), SForm::getAjaxAction('btnCarregarCondicoesNaoAtrasadas_click', 'divCondicoes'));
+        }
+        
+        $bsgNonLateInvoices = new MBaseGroup('bsgNonLateInvoices', _M('Títulos não atrasados'), array($table, $buttonLoad));
+        
+        return $bsgNonLateInvoices;
+    }
+    
+    
+    /**
+     * Retorna tabela com os titulos atrasados, já com o valor total calculado.
+     * 
+     * @param String $tipo - Identifica se é para buscar atrasados, ou nao
+     * @return \MTableRaw
+     */
+    public function obterTabelaTitulos($tipo = 'atrasados' )
+    {
+        // InvoiceIds que foram selecionados na consulta diversas
+        $invoiceIds = MIOLO::_REQUEST('invoiceIds');
+        $invoiceIds = explode(',', $invoiceIds);
+        
+        //Busca títulos
+        $titulos = FinNegotiationGeneratedEntries::obterTitulosParaNegociacao(MIOLO::_REQUEST('personId'), $tipo, $this->renegociacao); 
+        
+        //Salva os títulos na sessão para poder montar as condiçõe posteriormente
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->session->setValue('titulosCarregados', NULL);
+        $MIOLO->session->setValue('titulosCarregados', $titulos);
+        
+        $total = 0;
+        
+        foreach ( $titulos as $n => $titulo )
+        {
+            //Criar checkBox
+            $labelCheck = new MLabel($titulo[0]);
+            $checkBox = new MCheckBox('invoice' . $titulo[0], $titulo[0], null, in_array($titulo[0], $invoiceIds));
+            
+            $data[$n][] = new MHContainer('hctInvoice' . $titulo[0], array($checkBox, $labelCheck));
+            $data[$n][] = $titulo[9]; //Vencimento
+            $data[$n][] = $titulo[29]; //Valor nominal
+            $data[$n][] = $titulo[28]; //Em aberto
+            $data[$n][] = $titulo[27]; //Atualizado
+            
+            $total = SAGU::calcNumber($total . '+' . $titulo[27]);
+        }
+        
+        //Total - FINAL DA TABELA
+        $data[] = array(
+            null,
+            null,
+            null,
+            null,
+            _M('<strong>Valor total devido: ' . $total . '</strong>')
+        );
+        
+        //Colunas
+        $columns = array(
+            _M('Título'),
+            _M('Vencimento'),
+            _M('Valor'),
+            _M('Em aberto'),
+            _M('Valor atualizado'),
+        );
+        
+        //Tabela
+        $table = new MTableRaw(_M("Títulos " . $tipo), $data, $columns);
+        
+        if ( count($titulos) > 0 )
+        {
+            $result = $table;
+        }
+        else
+        {
+            $msg = MMessage::getStaticMessage('msgTitulos', _M("Você não possui títulos em débito para poder realizar esta negociação."), MMessage::TYPE_WARNING);
+            $container = new MHContainer('hctMsgTitulos', array(new MSpacer(), $msg));
+            $result = $container;
+        }
+        
+        return $result;
+    }
+    
+    public function carregarCondicoes($btnClicked)
+    {
+        //Obter os títulos selecionados na grid de títulos
+        $titulos = $this->obterTitulosSelecionados();        
+        
+        if ( count($titulos) > 0 )
+        {
+            //Verifica o tipo da condicao (Antecipacao ou Negociacao)
+            foreach ( $this->condicoes as $n => $condicao )
+            {
+                if ( $condicao->tipo == FinCondicoesDePagamentoPerfil::TIPO_NEGOCIACAO
+                  && $btnClicked == 'btnLateInvoices:click')
+                {
+                    $condicoesVerificadas[$n] = $condicao;
+                }
+                elseif ( $condicao->tipo == FinCondicoesDePagamentoPerfil::TIPO_ANTECIPACAO 
+                      && $btnClicked == 'btnNonLateInvoices:click')
+                {
+                    $condicoesVerificadas[$n] = $condicao;
+                }
+            }
+            
+            //Calcula financiamentos
+            foreach ( $condicoesVerificadas as $n => $condicao )
+            {
+                $var = $this->calcularEntrada($condicao, $titulos);
+                $financiamento[$condicao->ordemcondicao]['entrada'] = $var['entrada'];
+                $financiamento[$condicao->ordemcondicao]['precoParcela'] = SAGU::calcNumber($this->calculaPrecoParcelas($condicao, $var['resto']), true);
+                $financiamento[$condicao->ordemcondicao]['juros'] = $condicao->juros;
+                $financiamento[$condicao->ordemcondicao]['numeroParcelas'] = $condicao->numeroparcelas;
+                $financiamento[$condicao->ordemcondicao]['diaVencimento'] = $condicao->diavencimento;
+                $financiamento[$condicao->ordemcondicao]['condicaoId'] = $condicao->condicoesdepagamentoperfilid;
+                $financiamento[$condicao->ordemcondicao]['liberarMulta'] = $condicao->liberarmulta;
+                $financiamento[$condicao->ordemcondicao]['liberarJuros'] = $condicao->liberarjuros;
+                $financiamento[$condicao->ordemcondicao]['percentualDeDesconto'] = $condicao->percentualdedesconto;
+                $financiamento[$condicao->ordemcondicao]['taxaDeNegociacao'] = $condicao->taxanegociacao;
+                $financiamento[$condicao->ordemcondicao]['descricao'] = $condicao->descricao;
+            }
+            
+            $result = $financiamento;
+            ksort($result);
+        }
+        else
+        {
+            //Nao achou títulos, nao monta as condicoes
+            $result = 'erro';
+        }
+     
+        return $result;
+    }
+    
+    public function calculaPrecoParcelas($condicao, $resto)
+    {
+        //CF = (JURO)/(1-(1/((1+JURO)^NPARCELAS))) - Coeficiente de financiamento
+        $numeroParcelas = $condicao->numeroparcelas;
+
+        if ( strlen($condicao->juros) > 0 && $condicao->juros > 0 )
+        {
+            $juro = ($condicao->juros / 100);
+            $CF = ($juro) / (1 - (1 / (pow((1 + $juro), $numeroParcelas))));
+        }
+        else
+        {
+            //Quando juros zero é 1/NPARCELAS
+            $CF = 1 / $numeroParcelas;
+        }
+        
+        //Cada parcela é resto (total-entrada) vezes o CF
+        $precoParcela = $CF  * $resto;
+        
+        return $precoParcela;
+    }
+    
+    public function calcularEntrada($condicao, $titulos)
+    {
+        $busInvoice = new BusinessFinanceBusInvoice();
+        $total = 0;
+        
+        //Atualiza total devido
+        $this->valorTotalNegociado = 0;
+        foreach ( $titulos as $titulo )
+        {
+            if ( $condicao->liberarjuros == DB_TRUE && $condicao->liberarmulta == DB_TRUE )
+            {
+                $total = SAGU::calcNumber($total . '+' . $busInvoice->getInvoiceBalance($titulo[0]));
+            }
+            elseif ( $condicao->liberarjuros == DB_TRUE )
+            {
+                $total = SAGU::calcNumber($total . '+' . $busInvoice->getInvoiceBalanceDatedWithoutInterest($titulo[0]));
+            }
+            elseif ( $condicao->liberarmulta == DB_TRUE )
+            {
+                $total =  SAGU::calcNumber($total . '+' . $busInvoice->getInvoiceBalanceDatedWithoutFine($titulo[0]));
+            }
+            else
+            {
+                $total = SAGU::calcNumber($total . '+' . $busInvoice->getInvoiceBalanceWithPolicies($titulo[0]));
+            }
+            
+            // Ticket #37773
+            $this->valorTotalNegociado = SAGU::calcNumber($this->valorTotalNegociado . ' + ' . $titulo[27]);
+        }
+        
+        //Aplica o desconto
+        if ( strlen($condicao->percentualdedesconto) > 0 && $condicao->percentualdedesconto > 0)
+        {
+            $desconto = ($condicao->percentualdedesconto / 100) * $total;
+            $total = SAGU::calcNumber($total . '-' . $desconto);
+        }        
+
+        //Soma taxa de negociacao
+        if (  strlen($condicao->taxanegociacao) > 0 && $condicao->taxanegociacao > 0 )
+        {
+            $total = SAGU::calcNumber($total . '+' . $condicao->taxanegociacao);
+        }
+
+        //Calcula entrada e retorna o que sobrou
+        $entrada = 0;
+        if ( strlen($condicao->percentualentrada) > 0 && $condicao->percentualentrada > 0 )
+        {
+            $entrada = SAGU::calcNumber(SAGU::calcNumber($total . '*' . $condicao->percentualentrada) . '/ 100', true);
+        }
+        
+        $resto = SAGU::calcNumber($total . '-' . $entrada);
+        
+        return array('entrada' => $entrada, 'resto' => $resto);
+    }
+    
+    public function carregarTabelaCondicoes($btnClicked)
+    {
+       $condicoes = $this->carregarCondicoes($btnClicked);
+       
+       if ( $condicoes != 'erro' )
+       {
+           $primeiro = (int) $condicoes[current(array_keys($condicoes))]['condicaoId'];
+       }
+       
+       //Cria um radioButton, uma div para cada condicao
+       $containers = array();
+       
+       foreach ( $condicoes as $ordem => $condicao )
+       {
+           //Juros, multas, descontos e taxa
+           strlen($condicao['juros']) > 0 ? $juro = _M('</br>- Juros adicionais de ' . $condicao['juros'] . '%') : $juro = _M('</br>- Sem juros adicionais');
+           $condicao['liberarMulta'] == DB_TRUE ? $libMulta = _M('</br>- Liberação de multas concecida') : $libMulta = _M('');
+           $condicao['liberarJuros'] == DB_TRUE ? $libJuro = _M('</br>- Liberação de juros concecida') : $libJuro = _M('');
+           strlen($condicao['percentualDeDesconto']) > 0 ? $desconto = _M('</br>- Desconto de ' . $condicao['percentualDeDesconto'] . '% sobre o valor total') : $desconto = _M('</br>- Sem descontos');
+           strlen($condicao['taxaDeNegociacao']) > 0 ? $taxa = _M('</br>- Adicionada taxa de R$ ' . $condicao['taxaDeNegociacao']) : $taxa = _M('');
+
+           // Entrada, parcelas  e descrição
+           (strlen($condicao['entrada']) > 0 && $condicao['entrada'] > 0) ? $labelEntrada = 'R$ ' . $condicao['entrada'] . ' de entrada ' : $labelEntrada = 'Sem entrada ';
+           (strlen($condicao['numeroParcelas']) > 0 && $condicao['numeroParcelas'] > 0) ? $labelParcelas = ' + ' . $condicao['numeroParcelas'] .  ' x ' . $condicao['precoParcela'] : $labelParcelas = ' e nenhuma parcela adicional ';
+           (strlen($condicao['descricao']) > 0 ) ? $descricao = $condicao['descricao'] . '<br>' : '';
+           
+           $radioLabel = new MLabel(_M('<strong>' . $descricao . $labelEntrada . $labelParcelas . $juro . $desconto . $libJuro . $libMulta . $taxa . '</strong>'));
+           $radioButton = new MRadioButton('condicao' . $condicao['condicaoId'], $condicao['condicaoId']);
+           $radioButton->addAttribute('onChange', $this->getAjaxAction('ajaxGerarTabelaCondicao', 'divCondicao' . $condicao['condicaoId'], false, $condicao));
+           $radioButton->setAttribute('class', 'radio-' . $condicao['condicaoId']);
+           
+           if ( $primeiro === $ordem )
+           {
+               $radioButton->addAttribute("checked", "true");
+               $condicao['SFormResponseDivId'] = 'divCondicao' . $condicao['condicaoId'];
+               $condicao['phpFunction'] = 'ajaxGerarTabelaCondicao';
+               $div = new MDiv('divCondicao' . $condicao['condicaoId'], $this->ajaxGerarTabelaCondicao($condicao));
+           }
+           else
+           {
+               $div = new MDiv('divCondicao' . $condicao['condicaoId'], $this->ajaxGerarTabelaCondicao());
+           }
+           
+           $hctCondicao = new MHContainer('hctCondicao' . $condicao['condicaoId'], array($radioButton, $radioLabel, new MSpacer(), $div));
+           
+           $containers[] = $hctCondicao;
+       }
+       
+       //Caso nao tenha condicoes, seta mensagem para o usuario
+       //Se condicoes vier como 'erro' quer dizer que nao achou titulos e nao vai gerar condicoes
+       if ( !(count($condicoes) > 0) || $condicoes == 'erro')
+       {
+           if ( $condicoes == 'erro' )
+           {
+               $msg = _M("Você não possui, ou não selecionou títulos, para poder realizar esta negociação.");
+           }
+           else
+           {
+               $msg = _M("Você não têm nenhuma forma de negociação deste tipo cadastrada para os seus perfis de usuário.");
+           }
+           
+           $messagem = MMessage::getStaticMessage('msgInfo', $msg, MMessage::TYPE_WARNING);
+           $containers[0] = new MSpacer();
+           $containers[1] = $messagem;
+       }
+        
+       $bsgCondicoes = new MBaseGroup('bsgCondicoes', _M("Formas de negociação"), $containers, 'vertical');
+       
+       return $bsgCondicoes;
+    }
+    
+    public function ajaxGerarTabelaCondicao($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        //Deixa as demais tabelas de condicoes invisiveis e radios desclicados
+        foreach ($this->condicoes as $condicao)
+        {
+            $MIOLO->page->addAJAXJsCode("
+                try {
+                    document.getElementById('divCondicao{$condicao->condicoesdepagamentoperfilid}').innerHTML = ' ';
+                    document.getElementById('condicao{$condicao->condicoesdepagamentoperfilid}').checked = false;
+                }
+                catch (err) {
+                }
+            ");
+        }
+        
+        if ( !empty($args) )
+        {
+            //Checa o radio da condicao clicada
+            if ( !is_array($args) )
+            {
+                $condicaoId = $args->condicaoId;
+            }
+            else
+            {
+                $condicaoId = $args['condicaoId'];
+            }
+
+            $MIOLO->page->addAJAXJsCode("try{document.getElementById('condicao{$condicaoId}').checked = true;}catch(err){}");
+            $data = $this->buscarDataParaTabelaCondicoes($args);
+            $table = new MTableRaw(_M(''), $data, array(_M('Vencimento'), _M('Valor')));
+            
+            return $table;
+        }
+    }
+    
+    public function buscarDataParaTabelaCondicoes($args)
+    {
+        $data = array();
+        //Busca os dados para gerar a tabela (dias de vencimento/preco)
+        
+        $i = 0;
+        
+        //Args pode vir como array ou objeto
+        if (is_array($args))
+        {
+            $numeroParcelas = (int) $args['numeroParcelas'];
+            $entrada = $args['entrada'];
+            $precoParcela = $args['precoParcela'];
+            $diaVencimento = $args['diaVencimento'];
+        }
+        else
+        {
+            $numeroParcelas = (int) $args->numeroParcelas;
+            $entrada = $args->entrada;
+            $precoParcela = $args->precoParcela;
+            $diaVencimento = $args->diaVencimento;
+        }
+        
+        //Dados da tabela
+        while ($i <= (int) $numeroParcelas)
+        {   
+            //Na primeira seta a entrada
+            if ($i == 0)
+            {
+                $data[$i][0] = _M(SAGU::getDateNow());
+                if ( $entrada > 0 )
+                {
+                    $data[$i][1] = _M('R$ ' . $entrada);
+                }
+                else
+                {
+                    $data[$i][1] = _M("Sem entrada");
+                }
+            }
+            else
+            {
+                $data[$i][0] = _M($this->simularVencimentoParcela($diaVencimento, $i));
+                $data[$i][1] = _M('R$ ' . $precoParcela);
+            }
+            $i++;
+        }
+        
+        //Total
+        $total = SAGU::calcNumber($entrada . '+(' . $numeroParcelas . '*' . $precoParcela .')');
+        $data[$i][0] = _M('<strong>Total</strong>');
+        $data[$i][1] = _M('<strong>R$ ' . $total . '</strong>');
+        
+        return $data;
+    }
+    
+    public function simularVencimentoParcela($maturityDays, $parcelNumber)
+    {
+        //Verificar quanto falta até o dia do vencimento
+        $dia = explode('/', SAGU::getDateNow());
+        $vencimento = ($dia[0] - $maturityDays);
+        
+        //Adiciona/subtrai a diferenca de dias. Depois adiciona meses
+        $data = SAGU::addIntervalInDate(SAGU::getDateNow(), 'd', ($vencimento * -1));
+        $data = SAGU::addIntervalInDate($data, 'm', $parcelNumber);
+        
+        //Se a data cair num sábado ou domingo pegar proximo dia útil
+        if( SAGU::getDatePart($data, 'DOW') == '0' ) //Domingo soma 1 dia
+        {
+            $data = SAGU::addIntervalInDate($data, 'd', '1');
+        }
+        elseif( SAGU::getDatePart($data, 'DOW') == '6' ) //Sabado soma 2 dias
+        {
+            $data = SAGU::addIntervalInDate($data, 'd', '2');
+        }
+        
+        return $data;
+    }
+    
+    public function tbBtnSave_click($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        SDatabase::beginTransaction();
+        try
+        {
+            $ok = true;
+            //Verifica se selecionou uma condicao
+            $keys = array_keys($_REQUEST);
+        
+            foreach ($keys as $key)
+            {
+                $explode = explode('condicao', $key);
+
+                if ( strlen($explode[1]) > 0 )
+                {
+                    $condicaoId = $_REQUEST[$key];
+                }
+            }
+            if ( !(strlen($condicaoId) > 0 ) )
+            {
+                throw new Exception(_M('Você não selecionou nenhuma forma de negociação.'));
+            }
+           
+            //Obtem informacoes
+            $condicao = $this->condicoes[$condicaoId];
+
+            if ( $condicao->tipo == FinCondicoesDePagamentoPerfil::TIPO_NEGOCIACAO )
+            {
+                $tipoNegociacao = 'atrasados';
+            }
+            elseif ( $condicao->tipo == FinCondicoesDePagamentoPerfil::TIPO_ANTECIPACAO )
+            {
+                $tipoNegociacao = 'não atrasados';
+            }
+            
+            $titulos = $MIOLO->session->getValue('titulosSelecionados');
+
+            $valores = $this->calcularEntrada($condicao, $titulos);
+            $valoresParcelas = $this->calculaPrecoParcelas($condicao, $valores['resto']);
+            
+            // Calcula valor do rateio - deve somar esse valor aos títulos
+            // O valor dos títulos gerados deve ter o mesmo valor dos títulos negociados
+            $diferencaValores = SAGU::calcNumber($this->valorTotalNegociado . ' - (' . $valores['resto'] . ' + ' . $valores['entrada'] . ')');
+            $valorRateio = SAGU::calcNumber($diferencaValores . '/' . count($titulos), true);
+
+            // Pode ficar faltando alguma quebra de valor, joga para a primeira parcela
+            $valorSobrando = SAGU::calcNumber('(' . $valorRateio . ' * ' . count($titulos) . ') - ' . $diferencaValores, true);
+            
+            // Reverte valores negativos
+            $valorRateio = ($valorRateio < 0) ? ($valorRateio * -1) : $valorRateio;
+            $valorSobrando = ($valorSobrando < 0) ? ($valorSobrando * -1) : $valorSobrando;
+                    
+            //Cria negociacao
+            $negotiationId = $this->criarNegociacao($condicao, $valores);
+            if ( !$negotiationId )
+            {
+                throw new Exception(_M("Ocorreu um erro ao salvar a negociação."));
+            }
+            
+            //Cancelar boletos
+            $entriesCancelamento = $this->cancelarBoletos($titulos);
+            
+            //Criar boletos/lancamentos das parcelas - se tiver número de parcelas
+            $entriesParcelas = array();
+            if ( strlen($condicao->numeroparcelas) > 0 && 
+                 $condicao->numeroparcelas > 0 )
+            {
+                $entriesParcelas = $this->criarBoletosDasParcelas($condicao, $valoresParcelas);
+            }
+            
+            //Criar boleto/lancamento da entrada - só cria se tiver entrada
+            $entryEntrada = false;
+            
+            if ( strlen($condicao->percentualentrada) > 0 && 
+                 $condicao->percentualentrada > 0 )
+            {
+                $entryEntrada = $this->criarBoletoEntrada($condicao, ($valores['entrada'] + $valorSobrando));
+            }
+
+            // Lança juros e descontos dos valores diferentes
+            $entriesDiferenca = $this->criarLancamentosDescontoEJuros($diferencaValores, $entriesParcelas, $entryEntrada, $condicao);
+            
+            //Registrar criacao/fechamento de lancamentos na FinNegotiationGeneratedEntries
+            $this->inserirLancamentosNaTabelaDeGeracao($entriesCancelamento, $entryEntrada, array_merge($entriesParcelas, $entriesDiferenca), $negotiationId);
+            
+            $this->saveCustomFields($negotiationId, $data, $this->getTransaction());
+            
+            //Finaliza
+            SDatabase::commit();
+            
+            $this->confirmarFim($negotiationId);
+        } 
+        catch (Exception $ex) 
+        {
+            SDatabase::rollback();
+            $this->addError($ex->getMessage());
+        }
+    }
+    
+    /**
+     * Ao lançar uma negociação e o valor final for maior do que o que os 
+     * títulos selecionados, rateia os valores nos títulos gerados 
+     * como lançamentos de juros, vice-versa lança desconto.
+     * Ticket #37773
+     * 
+     * @param double $valorDiferenca
+     * @param array $entriesParcelas
+     * @param boolean/int $entryEntrada
+     * @param stdClass $condicao
+     */
+    public function criarLancamentosDescontoEJuros($valorDiferenca, $entriesParcelas, $entryEntrada, $condicao)
+    {
+        $entriesGeradas = array();
+        // Somente se tem diferença
+        if ( $valorDiferenca > 0 || $valorDiferenca < 0 )
+        {
+            // Concatena entrada nas outras parcelas
+            (strlen($entryEntrada) > 0) ? $entriesParcelas[] = $entryEntrada : null;
+
+            // Obtem os títulos que foram criados
+            $titulos = array();
+            $busEntry = new BusinessFinanceBusEntry();
+            foreach ( $entriesParcelas as $entry )
+            {
+                $entrada = $busEntry->getEntry($entry);
+                $titulos[] = $entrada->invoiceId;
+            }
+            $titulos = array_unique($titulos);
+
+            // Calcula valor do rateio
+            $valorRateio = SAGU::calcNumber($valorDiferenca . '/' . count($titulos), true);
+
+            // Pode ficar faltando alguma quebra de valor, joga para a primeira parcela
+            $valorSobrando = SAGU::calcNumber('(' . $valorRateio . ' * ' . count($titulos) . ') - ' . $valorDiferenca, true);
+            
+            // Reverte valores negativos
+            $valorRateio = ($valorRateio < 0) ? ($valorRateio * -1) : $valorRateio;
+            $valorSobrando = ($valorSobrando < 0) ? ($valorSobrando * -1) : $valorSobrando;
+            
+            // Gera os lançamentos
+            $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+            foreach ( $titulos as $key => $invoice )
+            {
+                $data = new stdClass();
+                $data->invoiceId = $invoice;
+                $data->operationId = ($valorDiferenca > 0) ? $busDefaultOperations->getDefaultOperation('interestOperation') : $busDefaultOperations->getDefaultOperation('discountOperation'); // Inverte operação
+                $data->entryDate = SAGU::getDateNow();
+                $data->value = ($key == 0) ? ($valorRateio + $valorSobrando) : $valorRateio ; // Na primeira parcela soma o valor 
+                $data->costCenterId = $condicao->costcenterid;
+                $data->creationType = BusinessFinanceBusEntry::LANCAMENTO_MANUAL;
+               
+                $entriesGeradas[] = $busEntry->insertEntry($data);
+            }
+        }
+        
+        return $entriesGeradas;
+    }
+    
+    public function criarNegociacao($condicao)
+    {
+        $finNegotiation = new FinNegotiation();
+        
+        (strlen($condicao->taxanegociacao) > 0 && $condicao->taxanegociacao > 0) ? $feeRelease = DB_FALSE : $feeRelease = DB_TRUE;
+        
+        $finNegotiation->policyId = $condicao->policyid;
+        $finNegotiation->fineRelease = $condicao->liberarmulta;
+        $finNegotiation->interestRelease = $condicao->liberarjuros;
+        $finNegotiation->feeRelease = $feeRelease;
+        $finNegotiation->recordType = $condicao->tipo;
+        $finNegotiation->entryValue = $condicao->percentualentrada;
+        $finNegotiation->entryValueIsPercent = DB_TRUE;
+        $finNegotiation->discount = SAGU::NVL($condicao->percentualdedesconto, '0');
+        $finNegotiation->discountByValue = DB_FALSE;
+        $finNegotiation->diaVencimento = $condicao->diavencimento;
+        $finNegotiation->jurosAdicional = $condicao->juros;
+        $finNegotiation->jurosAdicionalIsPercent = DB_TRUE;
+        $finNegotiation->numeroParcelas = $condicao->numeroparcelas;
+        $finNegotiation->feeValueIsPercent = DB_FALSE;
+        $finNegotiation->feeValue = $condicao->taxanegociacao;
+        $finNegotiation->observation = $condicao->descricao;
+        $finNegotiation->operationId = $condicao->operationid;
+        $finNegotiation->bankAccountId = $condicao->bankaccountid;
+        $finNegotiation->costCenterId = $condicao->costcenterid;
+        
+        //Salva 
+        $ok = $finNegotiation->save();
+        
+        return $ok;
+    }
+    
+    public function cancelarBoletos($titulos)
+    {
+        //Salva sempre com criação manual e operação de ACORDO
+
+        $busInvoice = new BusinessFinanceBusInvoice();
+        $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+        $entriesCancelamento = array();
+        foreach($titulos as $titulo)
+        {
+                $entriesCancelamento[] = $busInvoice->closeInvoice($titulo[0], $titulo[28], SAGU::getDateNow(), BusinessFinanceBusEntry::LANCAMENTO_MANUAL, $busDefaultOperations->getDefaultOperation('agreementoperation'), true);
+        }
+        
+        return $entriesCancelamento;
+    }
+    
+    public function criarBoletosDasParcelas($condicao, $valores)
+    {
+        $ok = true;
+        $busReceivableInvoice = new BusinessFinanceBusReceivableInvoice();
+        
+        $i = 0;
+        $invoices = array();
+        //Registro titulos
+        while ( $i < $condicao->numeroparcelas )
+        {
+            if ( $ok )
+            {
+                $data = new stdClass();
+                $data->personId = MIOLO::_REQUEST('personId');
+                $data->costCenterId = $condicao->costcenterid;
+                $data->parcelNumber = SAGU::calcNumber($i . '+ 1');
+                $data->emissionDate = SAGU::getDateNow();
+                $data->maturityDate = $this->simularVencimentoParcela($condicao->diavencimento, (SAGU::calcNumber($i . ' + 1')));
+                $data->value = SAGU::calcNumber($valores, true);
+                $data->policyId = $condicao->policyid;
+                $data->bankAccountId = $condicao->bankaccountid;
+                $data->referenceMaturityDate = $data->maturityDate;
+                $data->nominalValue = SAGU::calcNumber($valores, true);
+                $data->emissionTypeId = SAGU::getParameter('BASIC', 'DEFAULT_EMISSION_TYPE_ID');
+            }
+            
+            $invoiceId = $busReceivableInvoice->insertReceivableInvoice($data);
+            $invoices[] = $invoiceId;
+            $i++;
+        }
+        
+        is_array($invoices) ? $ok = true : $ok = false;
+        
+        if ( $ok == true )
+        {
+            $ok = $this->criarLancamentosDasParcelas($invoices, $condicao, SAGU::calcNumber($valores, true));
+        }
+        
+        return $ok;
+    }
+    
+    public function criarLancamentosDasParcelas($invoices, $condicao, $value)
+    {
+        $busEntry = new BusinessFinanceBusEntry();        
+        
+        $entries = array();
+        foreach ( $invoices as $titulo )
+        {
+            $data = new stdClass();
+            $data->invoiceId = $titulo;
+            $data->operationId = $condicao->operationid;
+            $data->entryDate = SAGU::getDateNow();
+            $data->value = $value;
+            $data->costCenterId = $condicao->costcenterid;
+            $data->creationType = BusinessFinanceBusEntry::LANCAMENTO_MANUAL;
+            $entries[] = $busEntry->insertEntry($data);
+        }
+        
+        return $entries;
+    }
+    
+    public function criarBoletoEntrada($condicao, $valor)
+    {
+        $busReceivableInvoice = new BusinessFinanceBusReceivableInvoice();
+        
+        $data = new stdClass();
+        $data->personId = MIOLO::_REQUEST('personId');
+        $data->costCenterId = $condicao->costcenterid;
+        $data->parcelNumber = 0;
+        $data->emissionDate = SAGU::getDateNow();
+        $data->maturityDate = SAGU::getDateNow();
+        $data->value = $valor;
+        $data->policyId = $condicao->policyid;
+        $data->bankAccountId = $condicao->bankaccountid;
+        $data->referenceMaturityDate = $data->maturityDate;
+        $data->nominalValue = $valor;
+            
+        $invoiceId = $busReceivableInvoice->insertReceivableInvoice($data);
+        
+        strlen($invoiceId) > 0 ? $ok = true : $ok = false;
+        
+        if ( $ok )
+        {
+            $ok = $this->criarLancamentoEntrada($invoiceId, $condicao, $valor);
+        }
+        
+        return $ok;
+    }
+    
+    public function criarLancamentoEntrada($titulo, $condicao, $valor)
+    {
+        $busEntry = new BusinessFinanceBusEntry();        
+        
+        $data = new stdClass();
+        $data->invoiceId = $titulo;
+        $data->operationId = $condicao->operationid;
+        $data->entryDate = SAGU::getDateNow();
+        $data->value = $valor;
+        $data->costCenterId = $condicao->costcenterid;
+        $data->creationType = BusinessFinanceBusEntry::LANCAMENTO_MANUAL;
+        
+        $ok = $busEntry->insertEntry($data);
+        
+        return $ok;
+    }
+    
+    public function inserirLancamentosNaTabelaDeGeracao($entriesCancelamento, $entryEntrada, $entriesParcelas, $negotiationId)
+    {
+        //Primeiro salvar os títulos que foram baixados como generated 'f'
+        foreach ($entriesCancelamento as $cancelados)
+        {
+            $finGenerated = new FinNegotiationGeneratedEntries();
+            $finGenerated->setNegotiationId($negotiationId);
+            $finGenerated->setEntryId($cancelados);
+            $finGenerated->setGenerated(DB_FALSE);
+            $finGenerated->save();
+        }
+        
+        //Depois salva lancamentos de entrada e parcelas, vai 't' em generated
+        if ( count($entriesParcelas) > 0 )
+        {
+            foreach ($entriesParcelas as $parcela)
+            {
+                $finGenerated = new FinNegotiationGeneratedEntries();
+                $finGenerated->setNegotiationId($negotiationId);
+                $finGenerated->setEntryId($parcela);
+                $finGenerated->setGenerated(DB_TRUE);
+                $finGenerated->save();
+            }
+        }
+        
+        //Só insere se tivesse valor na entrada
+        if ( $entryEntrada )
+        {
+            //Entrada, generated 't'
+            $finGenerated = new FinNegotiationGeneratedEntries();
+            $finGenerated->setNegotiationId($negotiationId);
+            $finGenerated->setEntryId($entryEntrada);
+            $finGenerated->setGenerated(DB_TRUE);
+            $finGenerated->save();
+        }
+    }
+    
+    /**
+     * Desfazer negociação
+     * funcao heradada da tela FrmNegotiationOperation
+     * @param type $args 
+     */
+    public function undoNegotiation_confirm($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        
+        
+        $busEntry = new BusinessFinanceBusEntry();
+        
+        $negotiationId = MIOLO::_request('negotiationId');
+        $negotiation = new FinNegotiation($negotiationId);
+        
+        try
+        {
+            SDatabase::beginTransaction();
+            $ok = $negotiation->delete();
+            
+            if( $ok )
+            {
+                SDatabase::commit();
+                $goto = $MIOLO->getActionURL($module, $action, null, $opts);
+                $MIOLO->information(_M('Negociação desfeita com sucesso!', $module), $goto);
+            }
+        }
+        catch(Exception $e)
+        {
+            SDatabase::rollback();
+            $MIOLO->error($e->getMessage());
+        }
+    }
+    
+    public function undoNegotiation($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $negotiationId = MIOLO::_request('negotiationId');
+        
+        $msg = _M('Tem certeza que deseja desfazer a negociação', $module);
+        $goto = SAGU::getStackBackUrl();
+        $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL( $module, $action, null, $opts);
+        
+        $opts = array( 'negotiationId' => $negotiationId , 'function'=>'update', 'event'=>'undoNegotiation_confirm' );
+        $gotoYes = $MIOLO->getActionURL($module, $action, null, $opts);
+        $caption = _M('Questão',$module);
+        SAGU::question($msg, $gotoYes, $goto);
+    }
+    
+    public function confirmarFim($negotiationId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $goto = $MIOLO->getActionURL('finance', 'main:process:negotiation', null, array('negotiationIdS' => $negotiationId));
+        $mensagem = _M('Negociação criada com sucesso!', $module);
+               
+        if ( $MIOLO->session->get('returnToDiverseConsultation') )
+        {
+            $goto = $MIOLO->getActionURL('finance', 'main:diverseConsultation', null, array('personId' => MIOLO::_REQUEST('personId')));
+            $mensagem = _M('Clique em OK para ir as Consultas Diversas ver os títulos. Clique na aba "Antecipações/Negociações" para ver detalhes ou desfazer.', $module);
+        }
+        
+        $MIOLO->session->set('returnToDiverseConsultation', null);
+        
+        // Imprimir relatório
+        $optsReport = array('negotiationId' => $negotiationId, 'event' => 'gerarRelatorioDeNegociacao');
+        $goToReport = $MIOLO->getActionURL('finance', 'main:diverseConsultation', null, $optsReport);
+        $mensagem .= "<br>Clique em 'Imprimir contrato' para gerar o contrato da negociação.";
+        
+        // Criar questão para o usuário
+        $prompt = new MPrompt(_M("Questão", $module), $mensagem);
+        $prompt->SetType('question');
+        
+        $prompt->AddButton(_M("OK", $module), $goto);
+        $prompt->AddButton(_M("Imprimir contrato", $module), $goToReport);
+        $this->SetFields($prompt);
+    }
+    
+    public function btnCarregarCondicoesAtrasadas_click($args = NULL)
+    {
+        return $this->carregarTabelaCondicoes('btnLateInvoices:click');
+    }
+    
+    public function btnCarregarCondicoesNaoAtrasadas_click($args = NULL)
+    {
+        return $this->carregarTabelaCondicoes('btnNonLateInvoices:click');
+    }
+    
+    public function obterTitulosSelecionados()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $titulosCarregados = $MIOLO->session->getValue('titulosCarregados');
+
+        foreach ($titulosCarregados as $titulo)
+        {
+            if ( strpos($_REQUEST['cpaint_argument'][0], 'invoice' . $titulo[0]) )
+            {
+                $titulos[] = $titulo;
+            }
+        }
+
+        //Seta na sessao para pode buscar quando salvar
+        $MIOLO->session->setValue('titulosSelecionados', NULL);
+        $MIOLO->session->setValue('titulosSelecionados', $titulos);
+        
+        return $titulos;
+    }
+}
+?>

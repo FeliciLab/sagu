@@ -1,0 +1,345 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file handles the connection and actions for acdAcademicCalendar table
+ *
+ * @author Hélio Henrique Rodrigues Guimarães [helio@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 08/11/2006
+ *
+ **/
+
+/**
+ * Form to search the acdAcademicCalendar table
+ */
+MIOLO::Import('extensions::cpaint.inc.php','cpaint');
+
+class FrmPupilSituation extends MForm
+{
+    private $home;
+    private $module;
+
+    /**
+     * Class constructor
+     */
+    public function __construct($data)
+    {
+        $this->module = 'academic';
+        $module = $this->module;
+
+        $this->home   = $data->home;
+
+        parent::__construct(_M('Situação do aluno',$module));
+
+        $this->setShowPostButton(false);
+        $this->setHelp(get_class($this), MIOLO::getCurrentModule(), MIOLO::getCurrentAction());
+
+        if (($f = $this->page->request('cpaint_function')) != "")
+        {
+            $this->manager->getTheme()->clearContent();
+            $this->$f($this->page->request('cpaint_argument'));
+            $this->page->generateMethod = 'generateAJAX';
+        }
+        else
+        {
+            $this->defineFields();
+            $this->eventHandler();
+        }
+
+    }
+
+    /**
+     *  Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $personId = MIOLO::_request('personId');
+        
+        $businessPerson = new BusinessBasicBusPerson();
+        $personName = $businessPerson->getPersonName($personId);
+
+        $business = new BusinessAcademicBusPupilSituation();
+        
+        
+        /*****************************************/
+        /***************Pagamentos****************/
+        /*****************************************/
+        $flds[] = new MButton('btnPayments', _M('Ver pagamentos', $module), 'getPaymentsData();');
+
+        $fields[] = new MDiv('divButton', $flds, null, 'align=center');
+
+        $fields[] = new MDiv('divContent', null);
+
+        $this->setFields($fields);
+
+        $this->page->addScript('x/x_core.js');
+        $this->page->addScript('cpaint/cpaint.inc.js');
+        $url = str_replace('&amp;', '&',$this->manager->getCurrentURL());
+        
+        $code = '
+                    function getPaymentsData() 
+                    {
+                        MIOLO_ajaxCall("' . $url . '", "POST", "ajax_btnPayments", "' . $personId . '", updatePaymentsData, "TEXT");
+                    }    
+
+                    function updatePaymentsData(result) 
+                    {
+                        xGetElementById(\'divContent\').innerHTML = result;
+                    }
+                ';
+
+        $this->page->AddJsCode($code);
+
+
+        /*****************************************/
+        /************Títulos da pessoa************/
+        /*****************************************/
+        $grdResultsInvoice = $MIOLO->getUI()->getGrid($module,'GrdPupilSituationInvoice',$filters);
+        $dataInvoices      = $business->invoiceFromPerson($personId);
+
+        if ( is_array($dataInvoices) && ( count($dataInvoices) > 0 ) )
+        {
+            foreach ( $dataInvoices as $key => $dataInvoice )
+            {
+                if ( $oldPeriod != $dataInvoice[6] )
+                {
+                    if ( isset ($oldPeriod) )
+                    {
+                        $data[] = array();
+                    }
+                    $data[] = array('<b>' . $dataInvoice[6] . '</b>');
+                }
+
+                $data[]    = $dataInvoice;
+                $total[]   = $dataInvoice[5];
+                $oldPeriod = $dataInvoice[6];
+            }
+
+            $data[] = array ();
+            $data[] = array (
+                                '<b>' . _M('Total', $module) . '</b>',
+                                null,
+                                null,
+                                null,
+                                null,
+                                SAGU::calcNumber(implode(' + ', $total))
+                                );
+            unset($total);
+
+            $grdResultsInvoice->setData($data);
+            $grdResultsInvoice->setTitle(
+                                            _M('Títulos da pessoa para', $module) . ' ' .
+                                            $personId . ' - ' . $personName
+                                        );
+            $grdResultsInvoice->setClose($MIOLO->getActionURL($module,'main'));
+            $this->addField($grdResultsInvoice);
+        }
+
+        unset($data);
+        $this->addField(new MSeparator('<hr>'));
+
+        if ( SAGU::getParameter('BASIC', 'MODULE_GNUTECA_INSTALLED') == 'YES' )
+        {
+            /*****************************************/
+            /***********Multas da biblioteca**********/
+            /*****************************************/
+            $grdResultsPenalty = $MIOLO->getUI()->getGrid($module,'GrdPupilSituationPenalty');
+            $dataPenalties     = $business->penaltiesFromPerson($personId);
+    
+            if ( is_array($dataPenalties) )
+            {
+                foreach ( $dataPenalties as $dataPenalty)
+                {
+                    $total[] = $dataPenalty[4];
+                }
+    
+                $dataPenalties[] = array (
+                                            '<b>' . _M('Total', $module) . '</b>',
+                                            null,
+                                            null,
+                                            null,
+                                            SAGU::calcNumber(implode(' + ', $total))
+                                      );
+            }
+            
+            $grdResultsPenalty->setData($dataPenalties);
+            $grdResultsPenalty->setTitle(
+                                            _M('Multas da biblioteca para', $module) . ' ' .
+                                            $personId . ' - ' . $personName
+                                        );
+            $grdResultsPenalty->setClose($MIOLO->getActionURL($module,'main'));
+            $this->addField($grdResultsPenalty);
+    
+            $this->addField(new MSeparator('<hr>'));
+
+            /*****************************************/
+            /******Livros emprestados no momento******/
+            /*****************************************/
+            $grdResultsLoan = $MIOLO->getUI()->getGrid($module,'GrdPupilSituationLoan');
+            $dataLoans      = $business->loansFromPerson($personId);
+            
+            $grdResultsLoan->setData($dataLoans);
+            $grdResultsLoan->setTitle(
+                                            _M('Livros emprestados no momento para', $module) . ' ' .
+                                            $personId . ' - ' . $personName
+                                        );
+            $grdResultsLoan->setClose($MIOLO->getActionURL($module,'main'));
+            $this->addField($grdResultsLoan);
+    
+            $this->addField(new MSeparator('<hr>'));
+        }
+
+        /*****************************************/
+        /****************Incentivos***************/
+        /*****************************************/
+        $grdResultsIncentive = $MIOLO->getUI()->getGrid($module,'GrdPupilSituationIncentive');
+        $dataIncentives      = $business->incentivesFromPerson($personId);
+        
+        $grdResultsIncentive->setData($dataIncentives);
+        $grdResultsIncentive->setTitle(
+                                        _M('Incentivos para', $module) . ' ' .
+                                        $personId . ' - ' . $personName
+                                    );
+        $grdResultsIncentive->setClose($MIOLO->getActionURL($module,'main'));
+        $this->addField($grdResultsIncentive);
+
+        $this->addField(new MSeparator('<hr>'));
+        
+        
+        /*****************************************/
+        /*****************Estágios****************/
+        /*****************************************/
+        $grdResultsTraining = $MIOLO->getUI()->getGrid($module,'GrdPupilSituationTraining');
+        $dataTraining       = $business->trainingFromPerson($personId);
+        
+        $grdResultsTraining->setData($dataTraining);
+        $grdResultsTraining->setTitle(
+                                        _M('Estágios para', $module) . ' ' .
+                                        $personId . ' - ' . $personName
+                                    );
+        $grdResultsTraining->setClose($MIOLO->getActionURL($module,'main'));
+        $this->addField($grdResultsTraining);
+
+        unset($fields, $flds);
+        $flds[] = new MButton('btnClose', _M('Fechar janela', $module), 'window.close()');
+        $div = new MDiv('divClose', $flds, null, 'align=center');
+        $div->width='99%';
+        $fields[] = $div;
+        $fields[] = new MSeparator();
+        $this->addField($fields);
+
+        $this->setLabelWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+    }
+
+    public function ajax_btnPayments($personId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $personId = $personId[0];
+
+        $businessPerson = new BusinessBasicBusPerson();
+        $personName = $businessPerson->getPersonName($personId);
+
+
+        $business = new BusinessAcademicBusPupilSituation();
+        $grdResultsPayments = $MIOLO->getUI()->getGrid($module,'GrdPupilSituationPayments');
+        $dataPayments       = $business->paymentsFromPerson($personId);
+
+        if ( is_array($dataPayments) && ( count($dataPayments) > 0 ) )
+        {
+            foreach ( $dataPayments as $key => $dataPayment)
+            {
+
+                if ( $dataPayment[8] == SAGU::getParameter('BASIC', 'BANK_PAYMENT_OPERATION_ID') )
+                {
+                    $bal = SAGU::calcNumber($dataPayment[6] . ' + ' . $dataPayment[5]);
+                    $total[] = $bal;
+
+                    $dataPayments[$key][5] = '(' . $dataPayment[6] . ' + ' .
+                                             $dataPayment[5] . ') = ' .
+                                             '<font color="red">' . $bal . '</font>';
+                }
+                else
+                {
+                    $dataPayments[$key][5] = '<font color="red">' . $dataPayment[5] . '</font>';
+                    $total[] = $dataPayment[5];
+                }
+
+
+            }
+
+            $dataPayments[] = array ();
+            $dataPayments[] = array (
+                                        '<b>' . _M('Total', $module) . '</b>',
+                                        null,
+                                        null,
+                                        null,
+                                        null,
+                                        SAGU::calcNumber(implode(' + ', $total))
+                                    );
+            unset($total);
+
+            $grdResultsPayments->setData($dataPayments);
+            $grdResultsPayments->setTitle(
+                                            _M('Pagamentos para', $module) . ' ' .
+                                            $personId . ' - ' . $personName
+                                        );
+            $grdResultsPayments->setClose($MIOLO->getActionURL($module,'main'));
+
+            $separator = new MSeparator('<hr>');
+
+            $this->manager->getTheme()->setContent(array($grdResultsPayments, $separator));
+
+        }
+        else
+        {
+            $msg           = _M('Nenhum pagamento registrado para este aluno', $module);
+
+            $lblMsg        = new MText('lblMsg', $msg);
+            $lblMsg->color = 'red';
+
+            $separator = new MSeparator('');
+
+            $this->manager->getTheme()->setContent(array($separator, $lblMsg, $separator));
+        }
+
+    }
+
+}
+
+?>

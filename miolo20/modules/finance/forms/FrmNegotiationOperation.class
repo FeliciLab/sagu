@@ -1,0 +1,589 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulário de negociação
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @since
+ * Class created on 22/09/2011
+ *
+ * */
+
+/**
+ * Form to manipulate a Release
+ * */
+$MIOLO->uses('ui/controls/msubdetailvalidators.class');
+
+class FrmNegotiationOperation extends SStepByStepForm
+{
+    private $valueOperationId;
+
+    /**
+     * Contrutor
+     * */
+    public function __construct($steps = null)
+    {
+        if ( !$steps->disableConstruct )
+        {
+            parent::__construct(null, $steps, __CLASS__);
+            $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        }
+    }
+
+    /**
+     * Cria os campos do formulário para seleção da operação
+     * */
+    public function createFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        
+        $message = MMessage::getStaticMessage('warning', 'Caso negociada/antecipada a primeira parcela das mensalidades do aluno, e a configuração referente de pré-matricula estiver ativa, será efetuado o processo de transição do aluno de pré-matriculado para matriculado.', MMessage::TYPE_WARNING);
+        $fields[] = $message;
+       
+        //Caso for primeiro acesso limpa os dados da subdetail
+        $isFirstAccess = $this->isFirstAccess() && (!$MIOLO->page->isPostBack());
+        if ( $isFirstAccess )
+        {
+            $this->cleanStepData();
+        }
+        
+        //Obtém os dados do form
+        $data = $this->getTypesData();
+        $operationId = SAGU::NVL($data->operationId, FinNegotiation::ANTECIPACAO);
+        $this->valueOperationId = $operationId;
+
+        if ( (!strlen($data->personId) > 0) && (strlen($data->operationId) > 0) )
+        {
+            $this->addInfo(_M('Voce deve selecionar uma pessoa antes de selecionar a operação', $module));
+        }
+        
+        //Verifica se as configurações da negociação foram definindas
+        $this->checkNegotiationConfig();
+
+        //Lookup de pessoa
+        $optionsPerson = array(
+            'module' => 'basic',
+            'item' => 'PhysicalPerson',
+            'required' => true,
+            'label' => _M('Pessoa', $module),
+        );
+        $fields[] = new SLookupContainer('personId', $this->getRequestValue('personId', $data->personId), $optionsPerson);
+        $validators[] = new MRequiredValidator('personId', _M('Pessoa', $module));
+
+        if( strlen(MIOLO::_REQUEST('checkTitle')) > 0 )
+        {
+            $operation = new MTextLabel('lblOperation', (MIOLO::_REQUEST('operationId') == 'a' ? _M('Antecipação') : _M('Negociação')), _M('Operação', $module));
+            $fields[] = new MHiddenField('operationId', MIOLO::_REQUEST('operationId'));
+        }
+        else
+        {
+            $optionA = new MOption('optionA', 'a', _M('Antecipação'), ($operationId == 'a' ? true : false));
+            $optionN = new MOption('optionN', 'n', _M('Negociação'), ($operationId == 'n' ? true : false));
+
+            $operation = new MRadioButtonGroup('operationId', _M('Operação', $module), array( $optionA, $optionN ), $operationId, '', 'vertical', 'none', true);
+            $operation->setAutoPostBack(true);
+        }
+        $fields[] = $operation;
+        
+        $fields[] = new MHiddenField('oldOperationId', $data->operationId);
+
+        $options['item'] = 'ReceivableInvoice';
+        $options['filter'] = array( 'personName' => 'personIdDescription' );
+        $options['module'] = $module;
+        $options['label'] = _M('Título', $module);
+        $options['descriptionDisplay'] = false;
+        $options['required'] = true;
+        $options['related'] = 'invoicePersonId, invoicePersonName, limbo, limbo, limbo,limbo, maturityDate, value';
+        $flds[] = $invoice = new SLookupContainer('invoiceId', null, $options);
+        $invoice->setJsHint(_M('Informe o código do título', $module));
+
+        //Campos utilizados no lookup
+        $flds[] = $limbo = new MTextField('limbo');
+        $limbo->addBoxStyle('display', 'none');
+        $flds[] = $fldPersonId = new MTextField('invoicePersonId');
+        $fldPersonId->addBoxStyle('display', 'none');
+        $flds[] = $personName = new MTextField('invoicePersonName');
+        $personName->addBoxStyle('display', 'none');
+        $flds[] = $maturityDate = new MTextField('maturityDate');
+        $maturityDate->addBoxStyle('display', 'none');
+        $flds[] = $value = new MTextField('value');
+        $value->addBoxStyle('display', 'none');
+
+        //Columns
+        $columns[] = new MGridColumn(_M('Título', $module), 'left', true, null, true, 'invoiceId');
+        $columns[] = new MGridColumn(_M('Pessoa', $module), 'left', true, null, true, 'invoicePersonId');
+        $columns[] = new MGridColumn(_M('Nome', $module), 'left', true, null, true, 'invoicePersonName');
+        $columns[] = new MGridColumn(_M('Vencimento', $module), 'left', true, null, true, 'maturityDate');
+        $columns[] = new MGridColumn(_M('Valor', $module), 'left', true, null, true, 'value');
+
+        $valids[] = new MSubdetailUniqueValidator('invoiceId', _M('Título', $module), 'required');
+
+        $sub = new MSubdetail('subInvoices', _M('Títulos envolvidos para ', $module) . ($data->operationId == 'n' ? 'negociação' : 'antecipação'), $columns, $flds, true);
+        $sub->setValidators($valids);
+        $sub->setData($data->subInvoices);
+
+        $sub->addActionEvent(MSubDetail::EVENT_ADD, 'addInvoice', __CLASS__);
+        $sub->addActionEvent(MSubDetail::EVENT_REMOVE, 'removeInvoice', __CLASS__);
+
+        if ( strlen($data->personId) > 0 && strlen($data->operationId) > 0 )
+        {
+            $fields[] = $sub;
+        }
+
+        $fields[] = new MSpacer();
+
+        // Campo valor em negociação
+        $startNegotiationValueLabel = new MText('startNegotiationValueLabel', _M('Valor em negociação', $module));
+        $startNegotiationValueLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $startNegotiationValue = new MTextField('startNegotiationValue', $data->startNegotiationValue, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), '', '', true);
+        $startNegotiationValue->setJsHint(_M('Valor em negociação', $module));
+        $hctstartNegotiationValue = new MHContainer('hctstartNegotiationValue', array( $startNegotiationValueLabel, $startNegotiationValue ));
+        $fields[] = $hctstartNegotiationValue;
+
+        $this->setFields($fields);
+        $this->setValidators($validators);
+    }
+    
+    /**
+     * Verifica se os parâmetros da Configuração da Negociação de títulos foram configurados
+     */
+    public function checkNegotiationConfig()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        $data = $this->getTypesData();
+        $operationId = $data->operationId;
+        
+        if ( !$operationId )
+        {
+            return;
+        }
+
+        //Configurações da negociação do título
+        $negociationCongig = FinInvoiceNegociationConfig::getInstanceByOperation($operationId);
+        
+        if( !strlen($negociationCongig->bankAccountId) > 0 )
+        {
+            $msg[] = _M('Conta bancária', $module);
+        }
+        if( !strlen($negociationCongig->operationId) > 0 )
+        {
+            $msg[] = _M('Operação', $module);
+        }
+        if( !strlen($negociationCongig->costCenterId) > 0 )
+        {
+            $msg[] = _M('Centro de custo', $module);
+        }
+        if( !strlen($negociationCongig->policyId) > 0 )
+        {
+            $msg[] = _M('Política', $module);
+        }
+        if( !strlen($negociationCongig->parcelsNumber) > 0 )
+        {
+            $msg[] = _M('Número de parcelas', $module);
+        }
+        if( !strlen($negociationCongig->minValueForFinesAndInterestRelease) > 0 )
+        {
+            $msg[] = _M('Valor mínimo para permitir liberação de juros e multas', $module);
+        }
+        if( !strlen($negociationCongig->maxValueForNonAdmins) > 0 )
+        {
+            $msg[] = _M('Valor máximo negociável por usuário não administrador', $module);
+        }
+        if( !strlen($negociationCongig->negotiationFee) > 0 )
+        {
+            $msg[] = _M('Taxa de negociação', $module);
+        }
+        if( !strlen($negociationCongig->maturityDays) > 0 )
+        {
+            $msg[] = _M('Dias para vencimento', $module);
+        }
+        
+        if( count($msg) > 0 )
+        {
+            $error[] = _M('Os seguintes campos devem ser definidos na tela de Configuração de Negociação de Títulos (Financeiro > Configurações > Configuração de negociação de Títulos ):', $module);
+            $this->addError(array_merge($error, $msg));
+        }
+    }
+
+    /**
+     * Ação chamada ao selecionar uma operação de Negociação ou Antecipação
+     * A partir do código da pessoa e operação obtém os devidos títulos e popula a subdetail
+     */
+    public function getSubData($operationId, $personId, $selectedInvoices)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $busInvoice = new BusinessFinanceBusReceivableInvoice();
+
+        if ( !( strlen($operationId) > 0 ) || !( strlen($personId) > 0 ) )
+        {
+            return null;
+        }
+
+        unset($dataSub);
+        unset($total);
+        
+        if( strlen($selectedInvoices) > 0 )
+        {
+            $invoices = explode(',', $selectedInvoices);
+            foreach( $invoices as $cod => $invoiceId )
+            {
+                $dataInvoice = $busInvoice->getReceivableInvoice($invoiceId);                
+                $personData = $busInvoice->getPersonDataForInvoice($invoiceId);
+  
+                $std = new stdClass();
+                $std->invoiceId = $dataInvoice->invoiceId; //InvoiceID
+                $std->invoicePersonId = $personData->personId; //PersonId
+                $std->invoicePersonName = $personData->personName; //Nome
+                $std->maturityDate = $dataInvoice->maturityDate; //Vencimento
+                $std->value = ( $operationId == 'n' ? $busInvoice->getInvoiceBalanceWithPolicies($dataInvoice->invoiceId) : $busInvoice->getInvoiceBalance($dataInvoice->invoiceId));
+                $total = SAGU::calcNumber($total.' + '.$std->value);
+                $dataSub[] = $std;
+            }
+        }
+        else
+        {
+            $filters = new stdClass();
+            $filters->personId = $personId;
+            $filters->onlyOpen = DB_TRUE;
+            $filters->isCanceled = DB_FALSE;
+            $filters->isClosed = DB_FALSE;
+
+            //Títulos para negociação ou antecipação
+            $filters->isExpired = ( $operationId == 'n' ? DB_TRUE : DB_FALSE);
+
+            $searchInvoice = $busInvoice->searchReceivableInvoice($filters); 
+            
+            if ( count($searchInvoice) > 0 )
+            {
+                foreach ( $searchInvoice as $cod => $invoiceData )
+                {
+                    $personData = $busInvoice->getPersonDataForInvoice($invoiceData[0]);
+
+                    $std = new stdClass();
+                    $std->invoiceId = $invoiceData[0]; //InvoiceID
+                    $std->invoicePersonId = $personData->personId; //PersonId
+                    $std->invoicePersonName = $personData->personName; //Nome
+                    $std->maturityDate = $invoiceData[9]; //Vencimento
+                    $std->value = ( $operationId == 'n' ? $busInvoice->getInvoiceBalanceWithPolicies($invoiceData[0]) : $busInvoice->getInvoiceBalance($invoiceData[0]));
+                    $total = SAGU::calcNumber($total.' + '.$std->value);
+                    $dataSub[] = $std;
+                }
+            }
+        }
+        
+        $return = new stdClass();
+        $return->total = ($total > 0 ? $total : '0');
+        $return->subData = $dataSub;
+
+        return $return;
+    }
+
+    /**
+     * Evento chamado ao remover um item na subdetail totalizando os valores
+     * @param type $args
+     * @return type 
+     */
+    public function removeInvoice($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+         $valorAtual = 0;  
+         $subData = MSubdetail::getData('subInvoices');         
+         if( count($subData) > 0 )
+         {
+             
+             foreach($subData as $cod => $linha)
+             {
+                 if ( !$linha->removeData )
+                 {
+                     $valorAtual = SAGU::calcNumber($valorAtual.' + '. $linha->value);
+                 }
+             }
+         }                 
+         $total = SAGU::calcNumber($valorAtual.' - '.$args->value);
+         $MIOLO->page->addAJAXJsCode("document.getElementById('startNegotiationValue').value = {$total};");
+                
+        return $args;
+    }
+
+    /**
+     * Soma as o total da coluna valor
+     *
+     * @param type $args
+     */
+    public static function atualizaValor($args = array( ))
+    {
+        // Começa com o valor do registro inserido/atualizado
+        $count = $args->value;
+        // Então soma os registros da Grid
+        foreach ( (array) MSubDetail::getData('subInvoices') as $value )
+        {
+            // Se for um registro novo ou for um registro diferente do que está sendo editado
+            if ( (is_null($args->arrayItemTemp) || ($value->arrayItem != $args->arrayItemTemp) ) )
+            {
+                // Se não for um registro removido
+                if ( !$value->removeData )
+                {
+                    // Soma o valor
+                    $count = SAGU::calcNumber($count.'+'.$value->value);
+                }
+            }
+        }
+
+        // Retorna o total
+        return $count;
+    }
+
+    /**
+     * Evento chamado ao adicionar um item na subdetail totalizando os valores
+     * @param type $args
+     * @return type 
+     */
+    public function addInvoice($args)
+    {
+        if ( !is_numeric($args->invoiceId) )
+        {
+            $args->removeData = 't';
+        
+            return $args;
+        }
+        
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        // Faz a validação para não somar registros que não são válidos.
+        $validators = MSubDetail::getValidators('subInvoices');
+        $validator = new MSubDetailValidators();
+        $errors = $validator->validate($args, $validators);
+                
+        //Verifica se o título já está pago e não deixa adicionar na negociação/antecipação
+        if ( strlen($args->invoiceId) > 0 )
+        {
+            $busInvoice = new BusinessFinanceBusInvoice();
+            $balance = $busInvoice->getInvoiceBalance($args->invoiceId);
+            
+            $typeNegotiation =  (strlen($args->operationId) > 0) ? ( $args->operationId == 'n' ? 'negociado' : 'antecipado' ) : ($args->operationId_optionN == 'n' ? 'negociado' : 'antecipado');
+            
+            if ( $balance == 0 )
+            {
+                $resp = _M("Ops! Este título já está pago e não pode ser {$typeNegotiation}.", $module);
+                $MIOLO->page->addAJAXJsCode('alert("' . $resp . '");');
+                $errors = true;
+            }
+        }
+        
+        if ( !$errors )
+        {
+            if ( strlen($args->maturityDate) == 0 )
+            {
+                $resp = _M('Ops! Título inválido', $module);
+                $MIOLO->page->addAJAXJsCode('alert("' . $resp . '");');
+                $errors = true;
+            }
+
+            if ( $args->operationId_optionN == 'n' )
+            {
+                if ( SAGU::dateDiff(date('d/m/Y'), $args->maturityDate) < 0 )
+                {
+                    $resp = _M('O título ' . $args->invoiceId . ' ainda não venceu, neste caso deve ser uma antecipação', $module);
+                    $MIOLO->page->addAJAXJsCode('alert("' . $resp . '");');
+                    $errors = true;
+                }
+            }
+            else
+            {
+                if ( SAGU::dateDiff(date('d/m/Y'), $args->maturityDate) > 0 )
+                {
+                    $resp = _M('O título ' . $args->invoiceId . ' já venceu, neste caso deve ser feito uma negociação', $module);
+                    $MIOLO->page->addAJAXJsCode('alert("' . $resp . '");');
+                    $errors = true;
+                }
+            }
+        }
+
+        if ( !$errors )
+        {
+            // Soma o total dos titulos
+            $total = FrmNegotiationOperation::atualizaValor($args);
+
+            // Atualiza o campo total
+            $MIOLO->page->addAJAXJsCode("document.getElementById('startNegotiationValue').value = '{$total}';");            
+        }
+        else
+        {
+            //Não adiciona o item na subdetail
+            $args->removeData = 't';
+        }
+        
+        return $args;
+    }
+
+    /**
+     * Ação próxima etapa
+     * @param type $args 
+     */
+    public function nextStepButton_click($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $data = $this->getTypesData();
+        if ( strlen($data->personId) > 0 )
+        {
+            if ( strlen($data->operationId) > 0 )
+            {
+                //Calcula o numero de itens adicionados à subdetail
+                $count = 0;
+                if ( count($data->subInvoices) > 0 )
+                {
+                    foreach ( $data->subInvoices as $cod => $linha )
+                    {
+                        if ( !$linha->removeData )
+                        {
+                            $count++;
+                        }
+                    }
+                }
+
+                if ( $count > 0 )
+                {
+                    if( !$this->HasErrors() && !$this->HasInfos() )
+                    {
+                        parent::nextStepButton_click($args);
+                    }                    
+                }
+                else
+                {
+                    $msg[] = _M('Nenhum título adicionado', $module);
+                }
+            }
+            else
+            {
+                $msg[] = _M('Uma operação deve ser selecionada', $module);
+            }
+        }
+        else
+        {
+            $msg[] = _M('Nenhuma pessoa selecionada', $module);
+        }
+
+        if ( count($msg) > 0 )
+        {
+            $this->AddInfo($msg);
+        }
+    }
+
+    /**
+     * Method to gather all information from the form fields
+     * and put them on a database compatible object
+     * */
+    public function getTypesData()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $data = $this->getStepData();
+        $data->personId = SAGU::NVL($this->getFormValue('personId'), $data->personId);
+        $data->startNegotiationValue = SAGU::NVL($this->getFormValue('startNegotiationValue'), $data->startNegotiationValue);
+        $data->operationId = SAGU::NVL($this->getFormValue('operationId'), $data->operationId); 
+        $data->oldOperationId = SAGU::NVL($this->getFormValue('oldOperationId'), $data->oldOperationId);         
+        $data->subInvoices = MSubdetail::getData('subInvoices');
+        
+        $isFirstAccess = $this->isFirstAccess() && (!MIOLO::_REQUEST('__EVENTTARGETVALUE'));
+        if ( $isFirstAccess ||  ( $data->operationId != $data->oldOperationId ) )
+        {
+            MSubDetail::clearData('subInvoices');
+            
+            //Popula a subdetail
+            $subData = $this->getSubData($data->operationId, MIOLO::_REQUEST('personId'), MIOLO::_REQUEST('checkTitle'));
+            $data->startNegotiationValue = $subData->total; //Valor total da negociação
+            $data->subInvoices = $subData->subData; //Define data            
+        }
+        
+        return $data;
+    }
+    
+    /**
+     * Desfazer negociação
+     * @param type $args 
+     */
+    public function undoNegotiation_confirm($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        
+        
+        $busEntry = new BusinessFinanceBusEntry();
+        
+        $negotiationId = MIOLO::_request('negotiationId');
+        $negotiation = new FinNegotiation($negotiationId);
+        
+        try
+        {
+            SDatabase::beginTransaction();
+            $ok = $negotiation->delete();
+            
+            if( $ok )
+            {
+                SDatabase::commit();
+                $goto = $MIOLO->getActionURL($module, $action, null, $opts);
+                $MIOLO->information(_M('Negociação desfeita com sucesso!', $module), $goto);
+            }
+        }
+        catch(Exception $e)
+        {
+            SDatabase::rollback();
+            $MIOLO->error($e->getMessage());
+        }
+    }
+    
+    public function undoNegotiation($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $negotiationId = MIOLO::_request('negotiationId');
+        
+        $msg = _M('Tem certeza que deseja desfazer a negociação', $module);
+        $goto = SAGU::getStackBackUrl();
+        $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL( $module, $action, null, $opts);
+        
+        $opts = array( 'negotiationId' => $negotiationId , 'function'=>'update', 'event'=>'undoNegotiation_confirm' );
+        $gotoYes = $MIOLO->getActionURL($module, $action, null, $opts);
+        $caption = _M('Questão',$module);
+        SAGU::question($msg, $gotoYes, $goto);
+    }
+}
+
+?>

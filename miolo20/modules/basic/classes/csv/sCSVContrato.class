@@ -1,0 +1,178 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Gerencia importacao de documentos para o SAGU
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 22/06/2012
+ *
+ **/
+class sCSVContrato extends sCSVFileImporter
+{
+    public function getTitle()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        return _M('Contratos', $module);
+    }
+    
+    public function __construct()
+    {
+        $typeDefs = array('name', 'label', 'isRequired', 'type', 'replaceVars' );
+        $defs = array(
+            array( 'cpf', _M('Identificador (CPF)'), true ),
+            array( 'curso', _M('Curso'), true ),
+            array( 'versao', _M('Versao'), true ),
+            array( 'turno', _M('Turno'), true ),
+            array( 'campus', _M('Campus'), true ),
+            array( 'ouvinte', _M('E ouvinte'), false, bCSVColumn::TYPE_BOOLEAN ),
+            array( 'estadocontrato', _M('Estado entrada'), true ),
+            array( 'instituicao', _M('Instituicao'), false ),
+            array( 'cep', _M('CEP'), false ),
+            array( 'cidade', _M('Cidade'), false ),
+            array( 'uf', _M('UF'), false ),
+            array( 'pais', _M('Pais'), false ),
+            array( 'dataentrada', _M('Data entrada'), false ),
+            array( 'turma', _M('Nome da turma'), true ),
+            array( 'vagas', _M('Vagas'), false ),
+            array( 'periodoinicial', _M('Periodo inicial'), true ),
+            array( 'courseId', _M('Codigo do curso'), false ),
+            array( 'beginDate', _M('Data de inicio do semestre de entrada'), false ),
+            array( 'endDate', _M('Data de termino do semestre de entrada'), false ),
+        );
+
+        $this->setColumnsArray($typeDefs, $defs);
+        
+        parent::__construct();
+    }
+    
+    public function importLine2($data)
+    {
+        $data->endDate = $this->fixValue($data->endDate);
+        
+        $instituicao = $data->instituicao;
+        if ( SAGU::allIsFilled($instituicao) )
+        {
+            $codCidade = $this->obterCidade($data->cep, $data->cidade, $data->uf, $data->pais);
+            $data->institutionId = $this->obterInstituicao($instituicao, $codCidade);
+        }
+
+        $data->personId = $this->obterAlunoPeloIdentificador($data->cpf, true);
+
+        // Curso turno versao unidade
+        $data->courseVersion = $data->versao;
+        $data->turnId = $this->obterTurno($data->turno);
+        $data->unitId = $this->obterUnidade($data->campus, $codCidade);
+        $data->isListener = $data->ouvinte;
+
+        $this->verificarOcorrenciaDeCurso($data, $data->courseId, $data->courseVersion, $data->turnId, $data->unitId);
+
+        // Tenta encontrar contrato
+        $filters = new stdClass();
+        $filters->personId = $data->personId;
+        $filters->courseId = $data->courseId;
+        $filters->courseVersion = $data->courseVersion;
+        $filters->turnId = $data->turnId;
+        $filters->unitId = $data->unitId;
+        $rows = $this->typeContract->search($filters);
+        $contractId = $rows[0]->contractId;
+
+        // Salva dados
+        $obj = $this->typeContract;        
+        $obj->contractId = $contractId;
+        foreach ( $data as $key => $val )
+        {
+            $obj->$key = $val;
+        }
+
+        $ok = $obj->save();
+        
+        // Trata casos onde as datas nao sao informadas na planilha
+        if ( ( strlen($data->beginDate) == 0 ) && ( strlen($data->endDate) == 0 ) )
+        {
+            // Extrai datas inicio-fim onde o periodo inicial descrito indica o semestre e ano (ex.: 2012/2, 2013/1)
+            if ( preg_match('/[0-9]{4}\/(1|2)/', $data->periodoinicial, $matches) )
+            {
+                list($ano, $periodo) = $matches;
+                $ano = current(explode('/', $ano));
+
+                if ( $periodo == 1 )
+                {
+                    $data->beginDate = '01/01/' . $ano;
+                    $data->endDate = '30/06/' . $ano;
+                }
+                else
+                {
+                    $data->beginDate = '01/07/' . $ano;
+                    $data->endDate = '31/12/' . $ano;                
+                }
+            }
+            else
+            {
+                // Define data atual como inicio e fim
+                $data->beginDate = SAGU::getDateNow();
+                $data->endDate = SAGU::getDateNow();
+            }
+        }
+        
+        // Insere movimentação contratual de entrada
+        if ( strlen($data->estadocontrato) > 0 )
+        {
+            $stateContract = $this->obterEstadoContratual($data->estadocontrato);
+            $learningPeriodId = $this->obterPeriodoLetivo($data->periodoinicial, $data->courseId, $data->courseVersion, $data->turnId, $data->unitId, $data->beginDate, $data->endDate, $data->curso);
+                    
+            // Só insere se conseguiu obter o estado contratual informado
+            if ( strlen($stateContract) > 0 )
+            {
+                $dataMovementContract = new stdClass();
+                $dataMovementContract->contractId = $obj->contractId;
+                $dataMovementContract->stateContractId = $stateContract;
+                $dataMovementContract->stateTime = $data->dataentrada;
+                $dataMovementContract->learningPeriodId = $learningPeriodId; 
+                
+                $this->busMovementContract->insertOrUpdateMovementContract($dataMovementContract);
+            }
+        }
+                
+        // Adiciona turma
+        if ( $ok )
+        {
+            $initialLearningPeriodId = $this->obterPeriodoLetivo($data->periodoinicial, $data->courseId, $data->courseVersion, $data->turnId, $data->unitId, $data->beginDate, $data->endDate, $data->curso);
+            $learningPeriod = $this->busLearningPeriod->getLearningPeriod($initialLearningPeriodId, true);
+            
+            $data->contractId = $obj->contractId;
+            $data->beginDate = $learningPeriod->beginDate;
+            $data->endDate = null; // deve deixar data final em branco
+            $data->classId = $this->obterTurma($data->turma, $initialLearningPeriodId, ($data->vagas ? $data->vagas:'9999'));
+
+            $this->busClassPupil->insertOrUpdateClassPupil($data);
+        }
+        
+        return parent::importLineEnd($data);
+    }
+}
+?>

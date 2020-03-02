@@ -1,0 +1,326 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ *
+ * @author Armando Taffarel Neto [taffarel@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * 
+ * @since
+ * Class created on 06/07/2006
+ *
+ **/
+
+/**
+ **/
+class BusinessFinanceBusIncentivesSpreadSheet extends sBusiness
+{
+    /**
+     * Do a search on the database table handled by the class
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): An array containing the search results
+     **/
+    public function getIncentives($filters)
+    {
+        $sql = 'SELECT A.invoiceId,
+                       A.personId,
+                       (SELECT name FROM ONLY basPerson WHERE personId = A.personId) as personName,
+                       A.courseId,
+                       (SELECT shortname FROM acdCourse WHERE courseId = A.courseId) as courseName,
+                       round(sum(B.value),' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '),
+                       round(
+                              (SELECT SUM( CASE WHEN X.operationTypeId = \'D\' THEN ( 1  * Y.value )
+                                                WHEN X.operationTypeId = \'C\' THEN ( -1 * Y.value )
+                                           END
+                                         )
+                               FROM finOperation X,
+                                       finEntry Y
+                               WHERE X.operationId = Y.operationId AND
+                                     Y.invoiceId = A.invoiceId AND
+                                     X.operationGroupId <> \'' . SAGU::getParameter('FINANCE', 'PAYMENT_OPERATION_GROUP_ID') . '\' )
+                             , ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ')
+                FROM ONLY finInvoice A
+                     INNER JOIN (SELECT invoiceId,
+                                        operationId,
+                                        value
+                                 FROM finEntry
+                                 WHERE entryDate  >= TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') AND
+                                       entryDate  <= TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') AND
+                                       operationId = ?) as B
+                     USING(invoiceId) 
+                     WHERE A.iscanceled = FALSE
+                       AND A.invoiceIdDependence IS NULL';
+                                 
+        if ( strlen($filters->beginDate) > 0 )
+        {
+            $args[] = $filters->beginDate;
+        }
+        if ( strlen($filters->endDate) > 0 )
+        {
+            $args[] = $filters->endDate;
+        }
+        if ( strlen($filters->operationId) > 0 )
+        {
+            $args[] = $filters->operationId;
+        }
+        if ( strlen($filters->personIdForm) > 0 )
+        {
+            $sql   .= ' AND A.personId = ?';
+            $args[] = $filters->personIdForm;
+        }
+        
+        unset($result);
+        if ( strlen($sql) > 0 )
+        {
+            $sql   .= ' GROUP BY A.invoiceId, A.personId, A.courseId, B.operationId
+                        HAVING sum(B.value) <> 0 ORDER BY personName ';
+            
+            $db     = $this->getDatabase();
+            $result = $db->query(SAGU::prepare($sql, $args));
+        }
+        return $result;
+    }
+
+    /**
+     * Do a search on the database table handled by the class
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): An array containing the search results
+     **/
+    public function getOperations($incentiveTypes)
+    {
+        $sql = 'SELECT incentiveTypeId,
+                       description,
+                       operationId
+                FROM ONLY finIncentiveType'; 
+        
+        if ( is_array($incentiveTypes) )
+        {
+            $sql .= ' WHERE incentiveTypeId IN (' . implode(',', $incentiveTypes) . ')';
+        }
+        else
+        {
+            $sql .= ' WHERE incentiveTypeId IN (' . SAGU::getParameter('FINANCE', 'EMPLOYEE_FINANCIAL_AID_INCENTIVE_TYPE_ID') . ')';
+        }
+
+        unset($result);
+        if ( strlen($sql) > 0 )
+        {
+            $sql   .= ' ORDER BY incentiveTypeId';
+            $db     = $this->getDatabase();
+            $result = $db->query(SAGU::prepare($sql, null));
+        }
+        return $result;
+    }
+
+    /**
+     * Do a search on the database table handled by the class
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): An array containing the search results
+     **/
+    public function getSupporter($filters)
+    {
+        $sql = 'SELECT A.supporterId,
+                       (SELECT name FROM ONLY basPerson WHERE personId = A.supporterId) as supporterName,
+                       round(A.value, ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ')
+                FROM (SELECT X.supporterId, X.value, X.incentiveTypeId
+                      FROM finIncentive X
+                      INNER JOIN acdContract Y
+                          USING(contractId)
+                      WHERE X.startDate <= TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') AND
+                            X.endDate   >= TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') AND
+                            X.value     <>0 AND
+                            Y.personId  = ? AND
+                            Y.courseId  = ?) AS A
+                     INNER JOIN (SELECT incentiveTypeId
+                                 FROM ONLY finIncentiveType
+                                 WHERE operationId = ?) as B
+                     USING(incentiveTypeId)';
+
+        if ( strlen($filters->beginDate) > 0 )
+        {
+            $args[] = $filters->beginDate;
+        }
+        if ( strlen($filters->endDate) > 0 )
+        {
+            $args[] = $filters->endDate;
+        }
+        if ( strlen($filters->personId) > 0 )
+        {
+            $args[] = $filters->personId;
+        }
+        if ( strlen($filters->courseId) > 0 )
+        {
+            $args[] = $filters->courseId;
+        }
+        if ( strlen($filters->operationId) > 0 )
+        {
+            $args[] = $filters->operationId;
+        }
+                
+        unset($result);
+        if ( strlen($sql) > 0 )
+        {
+            $db     = $this->getDatabase();
+            $result = $db->query(SAGU::prepare($sql, $args));
+        }
+
+        return $result[0];
+    }
+
+    /**
+     * Do a search on the database table handled by the class
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): An array containing the search results
+     **/
+    public function getOtherIncentives($filters)
+    {
+        $sql = 'SELECT operationId,
+                       round(sum(value), ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ')
+                FROM finEntry
+                WHERE invoiceId = ? AND
+                      operationId <> ? AND
+                      operationId in (SELECT operationId FROM ONLY finIncentiveType)
+                GROUP BY operationId ';
+
+        if ( strlen($filters->invoiceId) > 0 )
+        {
+            $args[] = $filters->invoiceId;
+        }
+        if ( strlen($filters->operationId) > 0 )
+        {
+            $args[] = $filters->operationId;
+        }
+                
+        unset($result);
+        if ( strlen($sql) > 0 )
+        {
+            $db     = $this->getDatabase();
+            $result = $db->query(SAGU::prepare($sql, $args));
+        }
+
+        $operationId = $result[0][0];
+        $value       = $result[0][1];
+            
+        if ( strlen($operationId) > 0 )
+        {
+            $sql = 'SELECT round(A.value, ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ')
+                    FROM (SELECT X.supporterId, X.value, X.incentiveTypeId
+                          FROM finIncentive X
+                          INNER JOIN acdContract Y
+                              USING(contractId)
+                          WHERE X.startDate <= TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') AND
+                                X.endDate   >= TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') AND
+                                X.value     <> 0 AND
+                                Y.personId  = ? AND
+                                Y.courseId  = ?) AS A
+                         INNER JOIN (SELECT incentiveTypeId
+                                     FROM ONLY finIncentiveType
+                                     WHERE operationId = ?) as B
+                         USING(incentiveTypeId)';
+
+            unset($args);
+            if ( strlen($filters->beginDate) > 0 )
+            {
+                $args[] = $filters->beginDate;
+            }
+            if ( strlen($filters->endDate) > 0 )
+            {
+                $args[] = $filters->endDate;
+            }
+            if ( strlen($filters->personId) > 0 )
+            {
+                $args[] = $filters->personId;
+            }
+            if ( strlen($filters->courseId) > 0 )
+            {
+                $args[] = $filters->courseId;
+            }
+            if ( strlen($operationId) > 0 )
+            {
+                $args[] = $operationId;
+            }
+            
+            unset($result);
+            if ( strlen($sql) > 0 )
+            {
+                $db     = $this->getDatabase();
+                $result = $db->query(SAGU::prepare($sql, $args));
+            }
+            
+            $result[0][0] ? $result[0][0] : $result[0][0] = SAGU::formatNumber(0);
+            
+            return array($value, $result[0][0]);
+        }
+        else
+        {
+            return array(0, 0);
+        }
+    }
+
+    /**
+     * Do a search on the database table handled by the class
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): An array containing the search results
+     **/
+    public function getAnticipatePaymentDiscount($filters)
+    {
+        $sql = 'SELECT round(sum(value), ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ')
+                FROM finEntry
+                WHERE invoiceId = ? AND
+                      operationId = ' . SAGU::getParameter('FINANCE', 'DISCOUNT') ;
+
+        if ( strlen($filters->invoiceId) > 0 )
+        {
+            $args[] = $filters->invoiceId;
+        }
+                
+        unset($result);
+        if ( strlen($sql) > 0 )
+        {
+            $db     = $this->getDatabase();
+            $result = $db->query(SAGU::prepare($sql, $args));
+        }
+
+        return $result[0][0];
+    }
+
+
+}
+
+?>

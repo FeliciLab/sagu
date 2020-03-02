@@ -1,0 +1,619 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ *
+ * This file handles the connection and actions for basReport and basReportParameter tables
+ *
+ * @author Leovan Tavares da Silva [daniel@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Luís Felipe Wermann [luis_felipe@solis.com.br]
+ * 
+ * @since
+ * Class created on 27/06/2008
+ *
+ **/
+
+/**
+ * Class to manipulate the basReport and basReportParameter tables
+ **/
+class BusinessBasicBusGenericReports extends sBusiness
+{
+    /**
+     * Palavras que devem ser filtradas do SQL
+     */
+    const FILTER_EXP = '/(@SUM|@AVG|@MAX|@MIN|@COUNT|@DISTINCTCOUNT|@GROUP1|@GROUP2|@GROUP3|@GROUP4|@GROUP5|@GROUP6)/';
+
+    /**
+     * Retorna palavras chaves de agrupamentos
+     */
+    const FILTER_EXP_GROUP = '/(@GROUP1|@GROUP2|@GROUP3|@GROUP4|@GROUP5|@GROUP6)/';
+    
+    /**
+     * Constantes de tipo de validators.
+     */
+    const VALIDATOR_REQUIRED = 'required';
+    const VALIDATOR_INTEGER = 'integer';
+    const VALIDATOR_REQUIRED_INTEGER = 'required-integer';
+    
+    /**
+     * Methods to manipulate basReport table
+     **/
+
+    /**
+     * Gets data from a specific register from the table
+     *
+     * @param $reportId (int): Register's id to be gotten
+     * @return (object): Returns a BasReport class' object containing the register's data
+     **/
+    public function getReport($reportId)
+    {
+        $sql = 'SELECT reportId,
+                       name,
+                       description,
+                       modules,
+                       enabled,
+                       sql,
+                       fileId,
+                       hasGrouping,
+                       userName,
+                       TO_CHAR(dateTime,\'' . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . '\'),
+                       ipAddress,
+                       parameterorder
+                  FROM basReport
+                 WHERE reportId = ?';
+
+        $args = array (
+                $reportId );
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args, false));
+
+        $data = new basReport();
+
+        list ( $data->reportId,
+               $data->name,
+               $data->description,
+               $data->modules,
+               $data->enabled,
+               $data->sql,
+               $data->fileId,
+               $data->hasGrouping,
+               $data->userName,
+               $data->dateTime,
+               $data->ipAddress,
+               $data->parameterorder) = $result[0];
+
+        $data->sqlFiltered = self::filterSQL($data->sql);
+        
+        //Problemas relacionados com #32336 - quebrar sqlFiltered sempre que usar esta funcao
+        $quebraSql = explode("\n", $data->sqlFiltered);
+        $novoSql = '';
+        if (is_array($quebraSql))
+        {
+            foreach ($quebraSql as $linhaSql)
+            {
+                $novoSql .= trim(str_replace("\r", '', $linhaSql)) . ' ';
+            }
+            $data->sqlFiltered = trim($novoSql);
+        }
+        
+        return $data;
+    }
+    
+    /**
+     * Retorna o SQL filtrado
+     */
+    public static function filterSQL($sql)
+    {
+        return preg_replace(self::FILTER_EXP, '', $sql);
+    }
+    
+    /**
+     * Retorna se possui agrupamentos
+     * 
+     * @return boolean
+     */
+    public static function hasGrouping($sql)
+    {
+        return preg_match(self::FILTER_EXP_GROUP, $sql);
+    }
+
+    public function searchReportObject($filters)
+    {
+        $cols = array(
+            'reportId',
+            'name',
+            'description',
+            'modules',
+            'enabled',
+            'sql',
+            'userName',
+            'dateTime',
+            'ipAddress',
+        );
+
+        return SAGU::resultToObject( $this->searchReport($filters), $cols);
+    }
+
+    /**
+     * Searchs registers from the table
+     *
+     * @param $filters (object): Object containing the filtering values
+     * @return (array): Returns an array with the registers found
+     **/
+    public function searchReport($filters)
+    {
+        $sql = 'SELECT reportId,
+                       name,
+                       description,
+                       modules,
+                       enabled,
+                       sql,
+                       userName,
+                       TO_CHAR(dateTime,\'' . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . '\'),
+                       ipAddress
+                  FROM basReport';
+
+        unset($where);
+        unset($args);
+
+        if ( strlen($filters->reportId) > 0 )
+        {
+            $where .= ' AND reportId = ?';
+            $args[] = $filters->reportId;
+        }
+
+        if ( strlen($filters->name) > 0 )
+        {
+            $where .= ' AND UNACCENT(name) ILIKE UNACCENT(?)';
+            $args[] = $filters->name;
+        }
+
+        if ( strlen($filters->description) > 0 )
+        {
+            $where .= ' AND UNACCENT(description) ILIKE UNACCENT(?)';
+            $args[] = $filters->description;
+        }
+
+        if ( strlen($filters->module) > 0 )
+        {
+            $where .= ' AND ? = ANY(modules)';
+            $args[] = $filters->module;
+        }
+
+        if ( strlen($filters->enabled) > 0 )
+        {
+            $where .= ' AND enabled = ?';
+            $args[] = $filters->enabled;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 4) . ' ORDER BY name, reportId';
+
+            return $this->getDatabase()->query(SAGU::prepare($sql, $args, false));
+        }
+
+        return null;
+    }
+
+    /**
+     * Inserts a register in the table
+     *
+     * @param $data (object): BasReport class' object containing the data to be inserted
+     * @return (boolean): TRUE if success, otherwise FALSE
+     **/
+    public function insertReport($data)
+    {
+        $hasGrouping = self::hasGrouping($data->sql) ? DB_TRUE : DB_FALSE;
+        $fileId = strlen($data->fileId) > 0 ? $data->fileId : 'NULL';
+        
+        $sql = "INSERT INTO basReport (
+                            reportId,
+                            name,
+                            description,
+                            enabled,
+                            sql,
+                            fileId,
+                            hasgrouping,
+                            parameterorder,
+                            modules)
+                     VALUES (
+                            $$$data->reportId$$, 
+                            $$$data->name$$, 
+                            $$$data->description$$, 
+                            $$$data->enabled$$, 
+                            $$$data->sql$$, 
+                            $fileId, 
+                            $$$hasGrouping$$, 
+                            $$$data->parameterorder$$, 
+                            ARRAY[])";        
+
+        if (count($data->modules) > 0)
+        {
+            $arrayString = implode('$$,$$', $data->modules);
+            $arrayString = 'ARRAY[$$' . $arrayString . '$$]';
+        }
+
+        if ( strlen($arrayString) > 0)
+        {
+            $sql = str_replace('ARRAY[]', $arrayString, $sql);
+        }
+        else
+        {
+            $sql = str_replace('ARRAY[]', 'NULL', $sql);
+        }
+
+        return $this->getDatabase()->execute($sql);
+    }
+
+    /**
+     * Updates a register from the table
+     *
+     * @param $data (object): BasReport class' object containing the data to be updated
+     * @return (boolean): TRUE if success, otherwise FALSE
+     **/
+    public function updateReport($data)
+    {
+        $hasGrouping = self::hasGrouping($data->sql) ? DB_TRUE : DB_FALSE;
+        $fileId = strlen($data->fileId) > 0 ? $data->fileId : 'NULL';
+        
+        $sql = "UPDATE basReport
+                   SET name = $$$data->name$$,
+                       description = $$$data->description$$,
+                       enabled = $$$data->enabled$$,
+                       sql = $$$data->sql$$,
+                       fileId = $fileId,
+                       hasgrouping = $$$hasGrouping$$,
+                       parameterorder = $$$data->parameterorder$$,
+                       modules = ARRAY[]
+                 WHERE reportId = {$data->reportId}";
+
+        if (count($data->modules) > 0)
+        {
+            $arrayString = implode('$$,$$', $data->modules);
+            $arrayString = 'ARRAY[$$' . $arrayString . '$$]';
+        }
+
+        if (strlen($arrayString) > 0)
+        {
+            $sql = str_replace('ARRAY[]', $arrayString, $sql);
+        }
+        else
+        {
+            $sql = str_replace('ARRAY[]', 'NULL', $sql);
+        }
+        
+        return $this->getDatabase()->execute($sql);
+    }
+
+    /**
+     * Deletes a register from the table
+     *
+     * @param $reportId (int): Register's id to be deleted
+     * @return (boolean): TRUE if success, otherwise FALSE
+     **/
+    public function deleteReport($reportId)
+    {
+        $sql = 'DELETE FROM basReport
+                      WHERE reportId = ?';
+
+        $args = array (
+                $reportId );
+
+        return $this->getDatabase()->execute(SAGU::prepare($sql, $args, false));
+    }
+
+    /**
+     * Gets the next value of the reportId primary key's sequence
+     * @return (int): the next value of reportId
+     **/
+    public function getNextReportId()
+    {
+        $sql = 'SELECT nextval(\'seq_reportId\')';
+
+        $result = $this->getDatabase()->query($sql);
+
+        return $result[0][0];
+    }
+
+    /**
+     * Methods to manipulate basReportParameter table
+     **/
+
+    /**
+     * Gets data from a specific register from the table
+     *
+     * @param $reportParameterId (int): Register's id to be gotten
+     * @return (object): Returns a BasReportParameter class' object containing the register's data
+     **/
+    public function getReportParameter($reportParameterId)
+    {
+        $sql = 'SELECT A.reportParameterId,
+                       A.reportId,
+                       B.name,
+                       A.label,
+                       A.parameterNumber,
+                       A.fieldType,
+                       A.fixedOptions,
+                       A.options,
+                       A.defaultValue,
+                       A.size,
+                       A.fieldColumns,
+                       A.fieldRows,
+                       A.fieldValidator,
+                       A.hint,
+                       A.help,
+                       A.userName,
+                       TO_CHAR(A.dateTime,\'' . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . '\'),
+                       A.ipAddress,
+                       A.nomecampopersonalizado
+                  FROM basReportParameter A
+            INNER JOIN basReport B
+                    ON (B.reportId = A.reportId)
+                 WHERE reportParameterId = ?';
+
+        $args = array (
+                $reportParameterId );
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args, false));
+
+        $data = new basReportParameter();
+
+        list ( $data->reportParameterId,
+               $data->reportId,
+               $data->reportName,
+               $data->label,
+               $data->parameterNumber,
+               $data->fieldType,
+               $data->fixedOptions,
+               $data->options,
+               $data->defaultValue,
+               $data->size,
+               $data->fieldColumns,
+               $data->fieldRows,
+               $data->fieldValidator,
+               $data->hint,
+               $data->help,
+               $data->userName,
+               $data->dateTime,
+               $data->ipAddress,
+               $data->nomecampopersonalizado) = $result[0];
+
+        return $data;
+    }
+
+    /**
+     * Searchs registers from the table
+     *
+     * @param $filters (object): Object containing the filtering values
+     * @return (array): Returns an array with the registers found
+     **/
+    public function searchReportParameter($filters)
+    {
+        $sql = 'SELECT A.reportParameterId,
+                       A.parameterNumber,
+                       A.label,
+                       A.fieldType,
+                       A.defaultValue,
+                       A.size,
+                       A.fieldValidator,
+                       A.hint,
+                       A.fieldColumns,
+                       A.fieldRows,
+                       A.fixedOptions,
+                       A.options,
+                       A.help,
+                       A.nomecampopersonalizado
+                  FROM basReportParameter A';
+
+        unset($where);
+        unset($args);
+
+        if ( strlen($filters->reportParameterId) > 0 )
+        {
+            $where .= ' AND A.reportParameterId = ?';
+            $args[] = $filters->reportParameterId;
+        }
+
+        if ( strlen($filters->reportId) > 0 )
+        {
+            $where .= ' AND A.reportId = ?';
+            $args[] = $filters->reportId;
+        }
+
+        if ( strlen($filters->label) > 0 )
+        {
+            $where .= ' AND UNACCENT(A.label) ILIKE UNACCENT(?)';
+            $args[] = $filters->description;
+        }
+
+        if ( strlen($filters->fieldType) > 0 )
+        {
+            $where .= ' AND A.fieldType = ?';
+            $args[] = $filters->fieldType;
+        }
+
+        if ( strlen($filters->nomecampopersonalizado) > 0 )
+        {
+            $where .= ' AND A.nomecampopersonalizado = ?';
+            $args[] = $filters->nomecampopersonalizado;
+        }
+        
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 4) . ' ORDER BY reportId, parameterNumber';
+
+            return $this->getDatabase()->query(SAGU::prepare($sql, $args, false));
+        }
+
+        return null;
+    }
+
+    /**
+     * Inserts a register in the table
+     *
+     * @param $data (object): BasReportParameter class' object containing the data to be inserted
+     * @return (boolean): TRUE if success, otherwise FALSE
+     **/
+    public function insertReportParameter($data)
+    {
+        $sql = 'INSERT INTO basReportParameter (
+                            reportId,
+                            label,
+                            parameterNumber,
+                            fieldType,
+                            fixedOptions,
+                            options,
+                            defaultValue,
+                            size,
+                            fieldColumns,
+                            fieldRows,
+                            fieldValidator,
+                            hint,
+                            help,
+                            nomecampopersonalizado)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+
+        $args = array ( $data->reportId,
+                        $data->label,
+                        $data->parameterNumber,
+                        $data->fieldType,
+                        $data->fixedOptions,
+                        $data->options,
+                        $data->defaultValue,
+                        $data->size,
+                        $data->fieldColumns,
+                        $data->fieldRows,
+                        $data->fieldValidator,
+                        $data->hint,
+                        $data->help,
+                        $data->nomecampopersonalizado);
+
+        return $this->getDatabase()->execute(SAGU::prepare($sql, $args, false));
+    }
+
+    /**
+     * Updates a register from the table
+     *
+     * @param $data (object): BasReportParameter class' object containing the data to be updated
+     * @return (boolean): TRUE if success, otherwise FALSE
+     **/
+    public function updateReportParameter($data)
+    {
+        $sql = 'UPDATE basReportParameter
+                   SET reportId = ?,
+                       label = ?,
+                       parameterNumber = ?,
+                       fieldType = ?,
+                       fixedOptions = ?,
+                       options = ?,
+                       defaultValue = ?,
+                       size = ?,
+                       fieldColumns = ?,
+                       fieldRows = ?,
+                       fieldValidator = ?,
+                       hint = ?,
+                       help = ?,
+                       nomecampopersonalizado = ?
+                 WHERE reportParameterId = ?';
+
+        $args = array ( $data->reportId,
+                        $data->label,
+                        $data->paremterNumber,
+                        $data->fieldType,
+                        $data->fixedOptions,
+                        $data->options,
+                        $data->defaultValue,
+                        $data->size,
+                        $data->fieldColumns,
+                        $data->fieldRows,
+                        $data->fieldValidator,
+                        $data->hint,
+                        $data->help,
+                        $data->nomecampopersonalizado,
+                        $data->reportParameterId );
+
+        return $this->getDatabase()->execute(SAGU::prepare($sql, $args, false));
+    }
+
+    /**
+     * Deletes a register from the table
+     *
+     * @param $reportParameterId (int): Register's id to be deleted
+     * @return (boolean): TRUE if success, otherwise FALSE
+     **/
+    public function deleteReportParameter($reportParameterId)
+    {
+        $sql = 'DELETE FROM basReportParameter
+                      WHERE reportParameterId = ?';
+
+        $args = array ( $reportParameterId );
+
+        return $this->getDatabase()->execute(SAGU::prepare($sql, $args, false));
+    }
+
+    /**
+     * Deletes all the parameters of a specified report
+     *
+     * @param $reportId (int): Report's id wich parameters will be deleted
+     * @return (boolean): TRUE if success, otherwise FALSE
+     **/
+    public function deleteAllReportParameters($reportId)
+    {
+        $sql = 'DELETE FROM basReportParameter
+                      WHERE reportId = ?';
+
+        $args = array( $reportId );
+
+        return $this->getDatabase()->execute(SAGU::prepare($sql, $args, false));
+    }
+    
+    /**
+     * Lista tipo de validadores.
+     * 
+     * @param $useInteger (boolean): Diz se campo trabalha com integers.
+     * 
+     * @return array
+     */
+    public static function listarValidadores($useInteger = true)
+    {
+        $validadores = array(self::VALIDATOR_REQUIRED => 'Requerido',
+                             self::VALIDATOR_INTEGER => 'Inteiro',
+                             self::VALIDATOR_REQUIRED_INTEGER => 'Inteiro e requerido');
+        
+        if ( !$useInteger )
+        {
+            unset($validadores[self::VALIDATOR_INTEGER]);
+            unset($validadores[self::VALIDATOR_REQUIRED_INTEGER]);
+        }
+        
+        return $validadores;
+    }
+}
+?>

@@ -1,0 +1,318 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Passo a passo matrícula web.
+ *
+ * @author Luís Felipe Wermann [luis_felipe@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Luís Felipe Wermann [luis_felipe@solis.com.br]
+ *
+ * @since
+ * Class created on 18/02/2015
+ */
+class FrmEnrollWeb1 extends FrmEnrollWeb
+{
+    /**
+     * Construtor do formulário.
+     */
+    public function __construct($steps = null)
+    {
+        parent::__construct(__CLASS__, null, $steps );
+    }
+    
+    /**
+     * Cria campos do formulário.
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $busPerson = new BusinessBasicBusPerson();
+
+        // Load data
+        $allData = $this->getStepData();
+
+        //Se não foi selecionado contrato na tela 0, busca do usuário oline
+        if ( strlen($allData->contractPersonId) > 0 )
+        {
+            $personData = $busPerson->getPerson($allData->contractPersonId);            
+        }
+        else
+        {
+            $mioloUserName = trim($MIOLO->getLogin()->id);
+            $personData = $busPerson->getPersonByMioloUserName($mioloUserName);
+        }
+
+        //Listar contratos disponíveis
+        $filters = new stdClass();
+        $filters->personId = $personData->personId;
+        $module == 'academic' ? $viaSecretaria = true : $viaSecretaria = false;
+        $listaContratos = MatriculaWeb::listaContratos($filters, $viaSecretaria);
+        
+        //Caso não encontre contratos, monta mensagem
+        if ( !$listaContratos )
+        {
+            return $this->addError(AcdContract::obterRazaoDeInexistenciaDeContrato($personData->personId));
+        }
+        elseif ( count($listaContratos) == 1) //Se tem só um contrato
+        {
+            $args = new stdClass();
+            $args->contractId = $listaContratos[0][0];
+            $args->learnigPeriodId = $listaContratos[0][7];
+            $args->periodId = $listaContratos[0][8];
+            $args->learningPeriodDescription = $listaContratos[0][9];
+        }
+        elseif ( count($listaContratos) > 1 ) //Tem mais de um contrato
+        {
+            foreach ( $listaContratos as $l)
+            {
+                $lista[$l[0]] = $l[3] . ' (' . $l[0] . ')';
+                
+                if ( $l[0] == $this->getFormValue('contractId', $allData->contractId) )
+                {
+                    $args = new stdClass();
+                    $args->contractId = $l[0];
+                    $args->learningPeriodId = $l[7];
+                    $args->periodId = $l[8];
+                    $args->learningPeriodDescription = $l[9];
+                }
+            }
+
+            //Lista de contratos
+            $contratosLabel = new MLabel(_M("Curso:"));
+            $contratosLabel->setClass('m-caption');
+            $contratosLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $contratos = new MSelection('contractId', $this->getFormValue('contractId', $allData->contractId), NULL, $lista);
+            $contratos->setAllowNullValue(false);
+            $contratos->setAutoPostBack(true);
+            $hctContratos = new MHContainer('hctContratos', array($contratosLabel, $contratos));
+            
+            
+            //Monta o resto do baseGroup e da div
+            $divContratos[] = new MDiv('divContratos', $hctContratos);
+            $fields[] = new MBaseGroup('', _M('Selecione o contrato'), $divContratos);
+        }                        
+                
+        //Carregar dados a serem utilizados na matrícula
+        $this->setarDados(SAGU::NVL($args->contractId, current(array_keys($lista))));
+        
+        //Mensagem do passo a passo
+        $fields[] = new MDiv('divMensagem', $this->mensagemPasso($args));
+
+        //Dados contratuais
+        $fields[] = new MDiv('divContrato', $this->dadosContrato($args));
+
+        //Campos personalizados
+        if ( $camposConfiguraveis = AcdCamposConfiguraveisPessoa::getFields($personData->personId) )
+        {   
+            $fields[] = new MBaseGroup('', _M('Dados pessoais'), SAGU::alignFields($camposConfiguraveis));
+            $validators = AcdCamposConfiguraveisPessoa::getFieldsValidators();
+        }
+
+        //Termo de aceite (se vier da secretaria, não faz)
+        if ( !$viaSecretaria )
+        {
+            $fields[] = new MDiv('divAceite', $this->termoDeAceite($args));
+        
+            $fields[] = new SHiddenField('post_back', 'true');
+        }
+        
+        //Botão para voltar ao portal
+        if ( MIOLO::_REQUEST('returnTo') == 'PORTAL' )
+        {            
+            $fields[] = new MButton('btnBack', _M('Voltar ao portal'));
+        }
+        
+        $this->setFields($fields);
+        $this->setValidators($validators);
+    }
+    
+    /**
+     * Retorna ao portal.
+     */
+    public function btnBack_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $portalURL = $MIOLO->getActionURL( 'portal', 'main');
+        $MIOLO->page->onLoad('window.location = "' . $portalURL . '"');
+    }
+    
+    /**
+     * Cria termo de aceite no fim do formulário.
+     * 
+     * @return (MDiv) $div - Termo de aceite.
+     */
+    public function termoDeAceite()
+    {   
+        $MIOLO = MIOLO::getInstance();
+
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $contrato = $MIOLO->session->getValue('contrato');
+        
+        $termoNameLabel = new MLabel(_M('Termo de aceite') . ':');
+        $termoNameLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+
+        //Caso não existe o termo de aceite
+        $termoDeAceite = $busLearningPeriod->getLearningPeriod($contrato->learningPeriodId)->enrollAcceptedTerm;
+        
+        if( !$termoDeAceite )
+        {
+            $div = new MDiv('divTermoAceite', null);
+        }
+        else
+        {
+            $termo = '<div style="width: 97%; margin-top: 10px; background:#FFFFFF; border: 1px solid #DDDDDD; height: 300px; overflow-y: auto; padding: 10px;">' . $termoDeAceite . '</div>';
+            $termoName = new Mdiv('cont_aceite', $termo);
+
+            $fields[] = new MHContainer('termocnt', array($termoNameLabel, $termoName));
+
+            $aceiteNameLabel = new MLabel(_M('Li e concordo com os termos de aceite'));
+            $aceiteNameLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $aceiteName = new MCheckBox('aceite', DB_TRUE, '',false);
+            $fields[] = new MHContainer('aceitecnt', array($aceiteName, $aceiteNameLabel));
+            $fields[] = new SHiddenField('possuiTermoAceite', DB_TRUE);
+            
+            $div = new MDiv('divTermoAceite', $fields );
+        }
+        
+        return $div;
+    }
+
+    /**
+     * Cria os campos relacionados com os dados do contrato.
+     * 
+     * @return (MBaseGroup) - Dados do contrato.
+     */
+    public function dadosContrato()
+    {   
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $busPrice = new BusinessFinanceBusPrice();
+        $busIncentive = new BusinessFinanceBusIncentive();
+        
+        //Busca contrato
+        $contrato = MatriculaWeb::obterContratoGravado();
+
+        // Verifica se existe preço cadastrado para ocorrência de contrato do aluno
+        $verificaPreco = $busPrice->getCurrentPrice($contrato->courseId, $contrato->courseVersion, $contrato->turnId, $contrato->unitId);
+        if ( $contrato->periodoGeraFinanceiro && !(strlen($verificaPreco->value) > 0) )
+        {
+            MIOLO::_REQUEST('returnTo') == 'PORTAL' ? $goto = $MIOLO->GetActionURL('portal', 'main') : $goto = $this->getPreviousURL();
+            $MIOLO->error(_M("Não foi possível calcular o preço/mensalidade do seu curso. Favor entrar em contato com a instituição.", $module), $goto);
+        }
+        
+        //Permição para aditar incentivos
+        if ( SAGU::getParameter('FINANCE', 'PERMITIR_ADITAR_INCENTIVOS') == DB_TRUE && $contrato->periodoGeraFinanceiro )
+        {
+            $busLearningPeriod  = new BusinessAcademicBusLearningPeriod();
+            $dataLearningPeriod = $busLearningPeriod->getLearningPeriod($contrato->learningPeriodId);
+            
+            $filters = new stdClass();
+            $filters->contractId = $contrato->contractId;
+            $filters->vigenteNaData = $dataLearningPeriod->beginDate;
+            
+            $incentivos = $busIncentive->searchIncentive($filters);
+            
+            foreach ( $incentivos as $incentivo )
+            {
+                if ( $incentivo[19] == DB_TRUE )
+                {   
+                    $msg = _M('Não é possível efetuar ajuste de matrícula, pois o contrato possuí um incentivo aditado vigente. De ' . $incentivo[7] . ' até ' . $incentivo[8]. '.');
+                    $MIOLO->error($msg);
+                }
+            }
+        }
+
+        //Curso
+        $course = new STextFieldAligned('cursoId', _M("Curso:"), $contrato->courseId, null, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), null, null, true);
+        $courseName = new MTextField('curso', $contrato->courseName, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $courseName->setReadOnly(true);
+        $fields[] = new MHContainer('cursocnt', array($course, $courseName));
+        
+        $fields[] = new MSeparator();
+        
+        //Período
+        $periodo = new STextFieldAligned('periodo', _M("Período:"), $contrato->periodId, null, null, SAGU::getParameter('BASIC','FIELD_ID_SIZE'), null, null, true);
+        $periodoDescricao = new MTextField('periodoDescricao', $contrato->learningPeriodDescription, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $periodoDescricao->setReadOnly(true);
+        $fields[] = new MHContainer('periodocnt', array($periodo, $periodoDescricao));
+        
+        return new MBaseGroup('bsgDados', _M('Dados contratuais'), $fields , 'vertical');
+    }
+    
+    /**
+     * Ações tomadas antes do próximo passo.
+     */
+    public function nextStepButton_click($args = null)
+    {        
+        $module = MIOLO::getCurrentModule();
+        
+        //Limpa dados da sessão
+        MatriculaWeb::limparSelecionadasNaSessao();
+        
+        //Carregar dados
+        $data = $this->getData();
+
+        //Verifica se tem termo e se foi acetiado
+        if ( $data->possuiTermoAceite == DB_TRUE && $module != 'academic' && !$data->aceite )
+        {
+            //Cria mensagem de erro ao não aceitar o termo de aceite
+            $this->addAlert(_M('Você deve concordar com os termos de aceite para poder prosseguir.'));
+        }
+        else
+        {
+            try
+            {
+                //Faz demais verificações antes de deixar escolher as disciplinas
+                MatriculaWeb::verificarLiberacaoParaMatricula();
+                
+                parent::nextStepButton_click($args);
+            }
+            catch ( Exception $e )
+            {
+                if ( strlen($e->getMessage()) > 0 )
+                {
+                    $this->addError($e->getMessage());
+                }
+            }
+        }
+        
+    }
+    
+    /**
+     * Clicar no botão "Cancelar"
+     */
+    public function cancelButton_click($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        MIOLO::_REQUEST('returnTo') == 'PORTAL' ? $goto = $MIOLO->getActionURL( 'portal', 'main') : $goto = $MIOLO->getActionURL('academic', 'main:process:enrollContract');
+        
+        $MIOLO->page->redirect($goto);
+    }
+
+}
+?>

@@ -1,0 +1,189 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulario pai do passo a passo Convenios
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Moises Heberle [moises@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 2011/03/29
+ *
+ */
+class FrmAddendumFather extends SStepByStepForm
+{
+    public function __construct($title = null, $steps, $formName = null)
+    {
+        parent::__construct(null, $steps, $formName, new TraAddendum(), array('addendumId'));
+
+        $this->toolbar->disableButton( MToolBar::BUTTON_SAVE );
+    }
+
+
+    public function  finalizeButton_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+
+        $agreementInformation = $this->getStepDataByForm('FrmAddendumInformation');
+        $allData = (object) array_merge( (array) $this->getData(), (array) $this->getStepData() );
+        $courses = (array) MSubDetail::getData('courses');
+        
+        try
+        {
+            SDatabase::beginTransaction();
+
+            $filters = new stdClass();
+            $filters->addendumId = $allData->addendumId;
+            $rows = TraAddendum::search( $filters );
+            $addendumId = count($rows) > 0 ? $allData->addendumId : null;
+
+            $addendum = new TraAddendum( $addendumId );
+
+            // Popula dados no TraAddendum
+            $addendum->object = $agreementInformation->_object;
+            foreach ( (array) $agreementInformation as $key => $val )
+            {
+                $addendum->$key = $val;
+            }
+
+            // Courses
+            if ( strlen($addendumId) > 0 )
+            {
+                $filters = new stdClass();
+                $filters->addendumId = $addendumId;
+                $rows = (array) TraAddendumCourse::search($filters);
+                foreach ( $rows as $row )
+                {
+                    $row->delete();
+                }
+            }
+            $_rows = array();
+            foreach ( (array) $courses as $row )
+            {
+                if ( !$row->removeData )
+                {
+                    // TraAddendumCourse
+                    $_rows[] = $course = new TraAddendumCourse();
+                    $course->courseId = $row->courseId;
+
+                    //
+                    $idVPAC = "vacanciesPerAreaControl_{$row->courseId}";
+                    $idCourseArea = "addendumCourseArea_{$row->courseId}";
+                    $idVacancies = "courseVacancies_{$row->courseId}";
+
+                    $course->vacanciesPerAreaControl = $allData->$idVPAC;
+
+                    //
+                    // Condition
+                    //
+                    $totalVacancies = $allData->$idVacancies;
+                    if ( $allData->$idVPAC == DB_FALSE )
+                    {
+                        $course->vacancies = $totalVacancies;
+                    }
+                    else
+                    {
+                        $course->vacancies = null;
+
+                        //
+                        // TraAddendumCourseArea
+                        //
+                        $addendumCourseArea = array();
+                        foreach ( (array) MSubDetail::getData($idCourseArea) as $_row )
+                        {
+                            if ( !$_row->removeData )
+                            {
+                                $addendumCourseArea[] = $obj = new TraAddendumCourseArea();
+                                $obj->vacancies = $_row->{"vacancies_{$course->courseId}"};
+                                $obj->areaId = $_row->{"areaId_{$course->courseId}"};
+                            }
+                        }
+                        $course->addendumCourseArea = $addendumCourseArea;
+                    }
+
+                    //
+                    // TraAddendumCourseAdmin
+                    //
+                    $idSubAdmin = "addendumCourseAdmin_{$row->courseId}";
+                    $idPerson = "personId_{$row->courseId}";
+                    $addendumCourseAdmin = array();
+                    foreach ( (array) MSubDetail::getData($idSubAdmin) as $row )
+                    {
+                        $addendumCourseAdmin[] = $obj = new TraAddendumCourseAdmin();
+                        $obj->personId = $row->$idPerson;
+                    }
+                    $course->addendumCourseAdmin = $addendumCourseAdmin;
+                }
+            }
+            $addendum->addendumCourse = $_rows;
+
+            //
+            // TraCounterpart
+            //
+            $counterpart = array();
+            foreach ( (array) MSubDetail::getData('counterpart') as $row )
+            {
+                $counterpart[] = $obj = new TraCounterpart( $row->counterpartId );
+                foreach ( $row as $key => $val )
+                {
+                    $obj->$key = $val;
+                }
+
+                if ( strlen($obj->resourceAvailable) <= 0 )
+                {
+                    $obj->resourceAvailable = DB_TRUE; //por padrao define como TRUE
+                }
+            }
+            $addendum->counterpart = $counterpart;
+
+            
+            //Arquivos (agreementFile)
+            $addendum->addendumFile = FrmAgreement::getFilesObject($allData);
+
+            //Save
+            $addendum->save();
+
+            SDatabase::commit();
+            
+            parent::finalizeButton_click($args);
+            
+            $msg = ( $function == SForm::FUNCTION_UPDATE ) ? SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED') : SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED_INFO');
+            SAGU::information($msg, $MIOLO->getActionURL($module, 'main:register:agreement', null, array('function'=>'search', 'agreementIdS' => $allData->agreementId)));
+        }
+        catch (Exception $e)
+        {
+            parent::finalizeButton_click($args);
+            
+            SDatabase::rollback();
+            $this->AddError( $e->getMessage() );
+        }
+    }
+}
+?>

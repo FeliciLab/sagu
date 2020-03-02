@@ -1,0 +1,327 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class definition for database entities
+ *
+ * @author Nataniel Ingor da Silva [nataniel@solis.coop.br]
+ *
+ * @since
+ * Class created on 12/09/2014
+ *
+ */
+
+ini_set('max_execution_time', '120');
+
+class FrmClassificacaoDeMatricula extends SForm
+{
+    public $isNotTest;
+    
+    public function __construct($isNotTest = true)
+    {
+        $this->isNotTest = $isNotTest;
+        
+        if ( $isNotTest )
+        {
+            $module = MIOLO::getCurrentModule();
+            parent::__construct(_M('Classificação de matrícula', $module));
+
+            $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+            $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+            $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+            $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+        }
+    }
+    
+    public function defineFields($options = array())
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $message = _M('A classificação de matrícula não verifica inadimplência financeira. Caso não queira classificar alunos que não pagaram, considere executar a tarefa agendada CANCELAMENTO DE PRÉ-MATRICULA DE ALUNOS INADIMPLÊNTES.', $module);
+        $fields[] = MMessage::getStaticMessage('infoInadimplencia', $message, MMessage::TYPE_INFORMATION);
+
+        $fields[] = new MDiv();
+        
+        // Período
+        $businessPeriod = new BusinessAcademicBusPeriod();
+        $periodId = new MComboBox('periodId', $this->getFormValue('periodId', SAGU::getParameter('BASIC', 'CURRENT_PERIOD_ID')), _M('Período',$module), $businessPeriod->listPeriod(), true );
+        $periodId->setJsHint(_M('Selecione um período', $module));
+        $periodId->setIsRequired(true);
+        $fields[] = $periodId;
+        
+        $fields[] = new MSeparator();
+        
+        // Curso
+        $courseLabel = new MLabel(_M('Curso', $module) . ':');
+        $courseLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $courseLabel->setClass('m-caption m-caption-required');
+        
+        $busCourse = new BusinessAcademicBusCourse();
+        $courseId = new MComboBox('courseId', $this->getFormValue('courseId'), null, $busCourse->listCourse(true), false, _M("Somente listados cursos que possuem alunos ativos.", $module));
+        $validators[] = new MRequiredValidator('courseId', _M('Curso',$module));
+        $fields[] = new MHContainer('hctCourse', array($courseLabel, $courseId));
+        
+        $visualizarClassificacao = new MButton('visualizarClassficacao', _M('Visualizar classificação', $module)); //, SForm::getAjaxAction('visualizarClassificacao', 'divClassificacao', false));
+        $visualizarClassificacao->addBoxStyle('margin-left', '44%');
+        $fields[] = $visualizarClassificacao;
+        
+        $fields[] = new MDiv('divClassificacao');
+        
+        parent::defineFields(array('fields' => $fields, 'validators' => $validators));
+    }
+    
+    /**
+     * Monta a grid de disciplinas
+     */
+    public function visualizarClassficacao_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $acdEnroll = new AcdEnroll();
+                        
+        $courseId = $MIOLO->_REQUEST('courseId');
+        $periodId = $MIOLO->_REQUEST('periodId');
+        
+        $filters = new stdClass();
+        $filters->periodId = $periodId;
+        $filters->courseId = $courseId;
+        
+        $gridData = $acdEnroll->obtemDisciplinasClassificacaoDeMatricula($filters);
+                
+        $fields[] = $grid = $MIOLO->getUI()->getGrid($module, 'GrdClassificacaoDeMatricula');
+        $grid->setClose(false);
+        $grid->setData($gridData);
+        $grid->addActionSelect();
+        $grid->actionColumnName = _M('Classificação', $module);
+        
+        $fields[] = $aplicarClassificacao = new MButton('aplicarClassificacao', _M('Aplicar', $module), SForm::getAjaxAction('aplicarClassificacao', 'divAplicarClassificacao', false));
+        $aplicarClassificacao->addBoxStyle('margin-left', '47%');
+        
+        $fields[] = new MDiv('divAplicarClassificacao');
+        
+        $this->addFields($fields);
+    }
+    
+    /**
+     * Monta a popup com as informações da classificação dos alunos
+     * 
+     * @param type $args
+     */
+    public function popupVizualisarClassificacao($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+                
+        $disciplina = trim(utf8_decode($args->disciplina));
+        $ocorrencia = trim(utf8_decode($args->ocorrencia));
+        
+        $fields[] = new MDiv();
+        
+        $args->simulacao = DB_TRUE;
+        $args->selectGrdClassificacaoDeMatricula = array($args->groupId);
+        $gridAlunos = $this->aplicarClassificacao($args);
+        
+        $flds[] = $grid = $MIOLO->getUI()->getGrid($module, 'GrdClassificacaoDeMatriculaAlunos');
+        $grid->setData($gridAlunos);
+        
+        $flds[] = new MDiv();
+        
+        $flds[] = $aplicar = new MButton('fecharVisualizacao', _M('Fechar visualização', $module), SForm::getAjaxAction('fecharVisualizacao', 'divPopup', false));
+        $aplicar->addBoxStyle('margin-left', '43%');
+        
+        $fields[] = new MDiv('divPopup', $flds);
+        
+        MPopup::show('popupVizualisarClassificacao', $fields, "Classificação dos alunos na oferecida $args->groupId - $disciplina, $ocorrencia.");
+    }
+    
+    public function fecharVisualizacao($args)
+    {
+        MPopup::remove();
+    }
+    
+    /**
+     * Aplica/simula a classificação
+     * 
+     * @param type $args
+     */
+    public function aplicarClassificacao($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $busEnrollStatus = new BusinessAcademicBusEnrollStatus();
+        $busGroup = new BusinessAcademicBusGroup();
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $busReceivableInvoice = new BusinessFinanceBusReceivableInvoicePupilUser();
+        
+        $oferecidasSelecionadas = $args->selectGrdClassificacaoDeMatricula;
+                           
+        if ( !count($oferecidasSelecionadas) > 0 )
+        {
+            $this->addError(_M('É necessário que seja selecionado ao menos uma disciplina oferecida para aplicar a classificação', $module));
+            return;
+        }
+        
+        try
+        {
+            SDatabase::beginTransaction();
+            
+            $processoDeClassificacaoDeMatricula = new AcdProcessoDeClassificacaoDeMatricula();
+            $processoDeClassificacaoDeMatricula->periodId = $args->periodId;
+            $processoDeClassificacaoDeMatricula->courseId = $args->courseId;
+            $processoDeClassificacaoDeMatricula->save();
+            
+            $processoDeClassificacaoDeMatriculaId = $processoDeClassificacaoDeMatricula->getLastInsertId();
+            
+            foreach ( $oferecidasSelecionadas as $groupId )
+            {                
+                $alunos = $this->obtemClassificacaoDosAlunos($groupId);
+                $infoDisciplina = $busGroup->getGroup($groupId);
+                                
+                foreach ( $alunos as $aluno )
+                {
+                    $contractId = $aluno[9];
+                    $classificado = $aluno[10];
+
+                    // Obtém o código do status inicial
+                    $filters = new stdClass();
+                    $filters->description = $aluno[3];
+                    $statusInicial = $busEnrollStatus->searchEnrollStatus($filters);
+                    
+                    // Código previsto é igual ao inicial, será populado após o processamento de confirmação de matrícula
+                    $statusFinal = $statusInicial;
+                    
+                    // Insere o registro na tabela de classificação
+                    $classificacaoDoAluno = new AcdAlunoProcessadoNaClassificacaoDaDisciplina();
+                    $classificacaoDoAluno->processoDeClassificacaoDeMatriculaId = $processoDeClassificacaoDeMatriculaId;
+                    $classificacaoDoAluno->contractId = $contractId;
+                    $classificacaoDoAluno->groupId = $groupId;
+                    $classificacaoDoAluno->posicaoDoAlunoNoProcessoDaDisciplina = substr($aluno[0], 0, -1);
+                    $classificacaoDoAluno->statusDeMatriculaInicial = $statusInicial[0][0]; // $aluno[3] status da matricula inicial
+                    $classificacaoDoAluno->disciplinaEDoCursoDoAluno = $aluno[4];
+                    $classificacaoDoAluno->coeficienteDeClassificacaoNoProcesso = $aluno[5];
+                    $classificacaoDoAluno->dataDaMatriculaNaDisciplina = $aluno[6];
+                    $classificacaoDoAluno->statusDeMatriculaFinal = $statusFinal[0][0]; // $aluno[7] status da matricula inicial
+                    $classificacaoDoAluno->classificado = $classificado; 
+                    $classificacaoDoAluno->save();
+                                        
+                    if ( $classificado == DB_TRUE )
+                    {
+                        // Executa o processo de confirmação de matrícula
+                        sPreMatricula::confirmacaoDePreMatricula($contractId, $infoDisciplina->learningPeriodId);
+                    }
+                    else
+                    {
+                        // Cancela a disciplina do aluno
+                        $data = $this->obtemObjetoEnroll($contractId, $groupId);
+                        $data->statusId = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_CANCELLED');
+                        $data->dateEnroll = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+                        $data->reasonCancellationId = SAGU::getParameter('ACADEMIC', 'MOTIVO_CANCELAMENTO_MATRICULA_CLASSIFICACAO_DE_MATRICULA');
+
+                        $busEnroll->updateEnroll($data);
+                                                
+                        if ( ($args->simulacao != DB_TRUE) && (SAGU::getParameter('BASIC', 'MODULE_FINANCE_INSTALLED') == 'YES') )
+                        {
+                            // Reprocessa o financeiro
+                            $busReceivableInvoice->generateReceivableInvoicesFromEnrollSummaries($contractId, $infoDisciplina->learningPeriodId);
+                        }
+                    }
+                    
+                    $enroll = $this->obtemObjetoEnroll($contractId, $groupId);
+                    
+                    // Status previsto
+                    $aluno[8] = $enroll->statusDescription;
+                    
+                    // Dados para a grid de classificação
+                    $gridData[] = $aluno;
+                    
+                    // Atualiza o status da tabela de log
+                    $classificacaoDoAluno->statusDeMatriculaFinal = $enroll->status;
+                    $classificacaoDoAluno->save();
+                }
+            }
+            
+            if ( $args->simulacao == DB_TRUE )
+            {
+                SDatabase::rollback();
+                                
+                return $gridData;
+            }
+            else
+            {
+                SDatabase::commit();
+                
+                $MIOLO->information(_M('Classificação de matrícula executada com sucesso.', $module));
+            }
+        }
+        catch ( Exception $e )
+        {
+            SDatabase::rollback();
+            
+            if ( $this->isNotTest == true )
+            {
+                throw new Exception( $e->getMessage() );
+            }
+        }
+    }
+    
+    /**
+     * Obtém obejto da enroll
+     * 
+     * @param type $contractId
+     * @param type $groupId
+     * @return type
+     */
+    public function obtemObjetoEnroll($contractId, $groupId)
+    {
+        $busEnroll = new BusinessAcademicBusEnroll();
+        
+        $filters = new stdClass();
+        $filters->contractId = $contractId;
+        $filters->groupId = $groupId;
+        $searchEnroll = $busEnroll->searchEnroll($filters);
+
+        $enrollId = $searchEnroll[0][0];
+        $enroll = $busEnroll->getEnroll($enrollId);
+        
+        return $enroll;
+    }
+    
+    /**
+     * Obtém a lista de classificação dos alunos
+     * 
+     * @param type $groupId
+     * @return type
+     */
+    public function obtemClassificacaoDosAlunos($groupId)
+    {
+        $acdEnroll = new AcdEnroll();
+        
+        $filters = new stdClass();
+        $filters->groupId = $groupId;
+        $gridData = $acdEnroll->obtemAlunosClassificacaoDeMatricula($filters);
+        
+        return $gridData;
+    }
+}
+

@@ -1,0 +1,172 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda. e
+ * Univates - Centro Universitário.
+ * 
+ * Este arquivo é parte do programa Gnuteca.
+ * 
+ * O Gnuteca é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * @author Nataniel I. da Silva [nataniel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * @since
+ * Class created on 15/01/2015
+ *
+ **/
+
+class FinNfe extends SType
+{
+    public $nfeId;
+    public $rpsId;
+    public $estaCancelada;
+    public $emissaoLoteNfeId;
+    public $numeroNotaFiscal;
+    public $codigoVerificacao;
+    public $inscricaoPrestador;
+    
+    /**
+     * Obtem as notas fiscais para a consulta das notas solicitadas
+     * 
+     * @param type $emissaoLoteNfeId
+     * @return type array
+     */
+    public static function obtemNFesParaConsulta($emissaoLoteNfeId)
+    {
+        $sql = " SELECT B.nfeid,
+                        numeroNotaFiscal as numeroNotaFiscal,
+                        ROUND(C.value, 2) as valor,
+                        CASE B.estaCancelada 
+                            WHEN true 
+                            THEN
+                                'CANCELADA'
+                            ELSE
+                                'EMITIDA'
+                        END as situacao,
+                        getPersonName(D.personId) as pessoa,
+                        C.invoiceId as titulo,
+                        C.entryId as lancamento,    
+                        datetouser(C.entryDate) as dataPagamento
+                   FROM finemissaoLoteNfe A
+             INNER JOIN finNfe B
+                     ON (A.emissaoLoteNfeId = B.emissaoLoteNfeId)
+             INNER JOIN finEntry C
+                     ON (B.rpsId = C.entryId)
+        INNER JOIN ONLY finInvoice D
+                     ON (C.invoiceId = D.invoiceId)
+                  WHERE A.emissaoLoteNfeId = ? ";
+        
+        $args[] = $emissaoLoteNfeId;
+        
+        return SDatabase::query($sql, $args);
+    }
+    
+    /**
+     * Obtem informacoes do prestador de servico para a geração da cancelamento de nfe
+     * 
+     * @param type $nfeId
+     * @return \stdClass
+     */
+    public static function obtemInformacoesDoPrestador($nfeId)
+    {
+        $sql = " SELECT D.personId,
+                        D.codigoServicoPrestado,
+                        D.cnpj,
+                        D.cityRegistration as codidoMunicipio
+                   FROM finNfe A 
+             INNER JOIN finEmissaoLoteNfe B
+                     ON (A.emissaoLoteNfeId = B.emissaoLoteNfeId)
+             INNER JOIN basUnit C
+                     ON (B.unitId = C.unitId)
+             INNER JOIN basLegalPerson D 
+                     ON (C.personId = D.personId)
+                  WHERE A.nfeId = ? 
+                  LIMIT 1 ";        
+        $args[] = $nfeId;
+        $result = SDatabase::query($sql, $args);
+        
+        $sqlFile = " SELECT filepath || uploadfilename as completePath,
+                            filepath as filePath
+                       FROM basFile
+                      WHERE uploadFileName ilike ? ";        
+        $argsFile[] = $result[0][0] . '%';
+        $resultFile = SDatabase::query($sqlFile, $argsFile);
+                
+        $return = new stdClass();
+        $return->personId = $result[0][0]; 
+        $return->codigoServicoPrestado = $result[0][1]; 
+        $return->cnpj = $result[0][2]; 
+        $return->codigoMunicipio = $result[0][3]; 
+        $return->completePath = $resultFile[0][0]; 
+        $return->filePath = $resultFile[0][1]; 
+        
+        return $return;
+    }
+    
+    /**
+     * Atualiza o campo estacancelada para true, metodo chamado apos o cancelamento de nfe
+     * 
+     * @param type $nfeId
+     * @return type
+     */
+    public static function atualizaSituacaoNFe($nfeId)
+    {
+        $sql = " UPDATE finNfe
+                    SET estacancelada = TRUE 
+                  WHERE nfeId = ? ";
+        
+        $args[] = $nfeId;
+        
+        return SDatabase::execute($sql, $args);
+    }
+    
+    /**
+     * Retorna o número da nota fiscal relacionada com o título, no caso de
+     * algum lançamento possuir um número de nota fiscal.
+     * 
+     * @param (int) $invoiceId - Código do título.
+     * @param (boolean) $retornarNfe - Retorna toda a Nfe, não somente o número
+     * da nota fiscal.
+     * 
+     * @return (int ou object) - Código da nota fiscal, ou toda a nfe.
+     */
+    public static function obterNumeroNotaFiscalAPartirDeTitulo($invoiceId, $retornarNfe = false)
+    {
+        $sql = " SELECT B.numeroNotaFiscal,
+                        B.nfeId
+                   FROM finReceivableInvoice C
+             INNER JOIN finEntry A
+                     ON (C.invoiceId = A.invoiceId)
+             INNER JOIN finNfe B
+                     ON (A.entryId = B.rpsId)
+                  WHERE B.estaCancelada IS FALSE
+                    AND C.invoiceId = ? ";
+        
+        $result = SDatabase::query($sql, array($invoiceId));
+        $return = $result[0][0];
+        
+        // Caso deseja retornar toda a nota fiscal
+        if ( $retornarNfe )
+        {
+            $return = new FinNfe($result[0][1]);
+        }
+        
+        return $return;
+    }
+}

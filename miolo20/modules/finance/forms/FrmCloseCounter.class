@@ -1,0 +1,309 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Close Counter form
+ *
+ * @author Armando Taffarel Neto [taffarel@solis.coop.br] and Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ * Cristian Edson Göhl [cristian@solis.coop.br]
+ *
+ * @since
+ * Class created on 02/01/2006
+ *
+ **/
+
+/**
+ * Form to manipulate a close counter
+ **/
+class FrmCloseCounter extends SManagementForm
+{
+
+    /**
+     * Class constructor
+     **/
+    public function __construct()
+    {
+        parent::__construct(new FinCloseCounter(), array('closeCounterId'), 'BusCloseCounter');
+    }
+
+    /**
+     * Default method to define fields
+     **/
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        $readOnly = false;
+        
+        if ( in_array($function, array(SForm::FUNCTION_UPDATE, SForm::FUNCTION_DELETE)) )
+        {
+            $pk = $this->getObjectPk();
+            $data = $this->busObject->getCloseCounter($pk->closeCounterId);
+            $fields[] = new MHiddenField('closeCounterId', $pk->closeCounterId);
+        }
+        
+        try
+        {
+            //Get login
+            $loginUser = $MIOLO->GetLogin();
+            //Business person
+            $businessPhysicalPersonEmployee = new BusinessBasicBusPhysicalPersonEmployee();
+            //Object person
+            $person = $businessPhysicalPersonEmployee->getPersonByMioloUserName($loginUser->id);
+            
+            if ( !(is_object($person)) )
+            {
+                //Business counter
+                $msg = _M('Erro: Você não tem permissão para acessar este processo!', $module);
+                $msg .= '<ul><li>' . _M('O usuário logado deve ser um funcionário', $module) . '.' . '</li></ul>';
+                throw new Exception($msg);
+            }
+        }
+        catch ( Exception $e )
+        {
+            $MIOLO->error($e->getMessage());
+        }
+        
+        //User responsable        
+        $fields[] = new MHiddenField('userNameResponsible', $loginUser->id);
+        $responsibleId['responsibleIdLabel'] = new MText('responsiblePersonId', _M('Código do responsável', $module) . ':');
+        $responsibleId['responsibleIdLabel']->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $responsibleId['responsibleId'] = new MTextLabel('responsibleId', $person->personId);
+        $hctId = new MHContainer('hctId', $responsibleId);
+        $responsibleName['responsibleNameLabel'] = new MText('responsibleNameLabel', _M('Nome do resposável', $module) . ':');
+        $responsibleName['responsibleNameLabel']->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $responsibleName['responsibleName'] = new MTextLabel('responsibleName', $person->name);
+        $hctName = new MHContainer('hctName', $responsibleName);
+        $fields[] = new MBaseGroup('baseA', _M('Responsável pelo caixa',$module), array($hctId, $hctName), 'vertical');
+        
+        $busCounter = new BusinessFinanceBusCounter();
+        
+        if ( $MIOLO->checkAccess('FrmCloseCounter', A_ADMIN, false, true) )
+        {
+            $listCounter = $busCounter->listCountersInOperation();
+        }
+        else
+        {
+            $listCounter = $busCounter->listCountersInOperation($loginUser->id);
+        }
+
+        
+        $fields[] = new MSeparator();
+        $fields['a'] = new MSelection('counter', $data->counterId, _M('Caixa do responsável',$module), $listCounter);
+        $fields['a']->addAttribute('onchange', $this->getAjaxAction('counterInformation', 'divCounter', false));
+        
+        $fields[] = new MSeparator();
+        $fields[] = new MDiv('divCounter');
+        $fields[] = new MSeparator();
+        
+        $validators[] = new MRequiredValidator('counter');
+        
+        parent::defineFields($fields, $validators, $data);
+    }
+
+    public function counterInformation($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        if ( strlen($args->counter) > 0 )
+        {
+            //Business open counter
+            $businessOpenCounter = new BusinessFinanceBusOpenCounter();
+            
+            //Filter counter
+            $filters = new stdClass();
+            $filters->counterId = $args->counter;
+            $filters->notConfirmed = 't';
+            $filters->userNameResponsible = $args->responsibleUserName;
+            //Get data counter
+            $openCounter = $businessOpenCounter->searchOpenCounter($filters);
+            $objectOpenCounter = $businessOpenCounter->getOpenCounter($openCounter[0][0]);
+            
+            //Id open counter
+            $idOpenCounter['idOpenLabel'] = new MText('idOpenCounterlabel', _M('Código da abertura de caixa', $module) . ':');
+            $idOpenCounter['idOpenLabel']->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $idOpenCounter['openCounter'] = new MTextLabel('openCounterIdLabel', $objectOpenCounter->openCounterId);
+            $idOpenCounter['openCounterId'] = new MHiddenField('openCounterId', $objectOpenCounter->openCounterId);
+            $hctIdOpenCounter = new MHContainer('hctValue', $idOpenCounter);
+            
+            //Operator
+            $operator['operatorLabel'] = new MText('operatorLabel', _M('Operador', $module) . ':');
+            $operator['operatorLabel']->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $operator['operatorId'] = new MTextLabel('operatorId', $objectOpenCounter->operatorId);
+            $operator['operatorName'] = new MTextLabel('operatorName', $objectOpenCounter->operatorName);
+            $hctOperator = new MHContainer('hctOperator', $operator);
+            
+            //Initial value
+            $valueOpenCounter['valueLabel'] = new MText('valueLabel', _M('Valor inicial em caixa', $module) . ':');
+            $valueOpenCounter['valueLabel']->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $valueOpenCounter['value'] = new MTextLabel('valueOpenCounter', $objectOpenCounter->value);
+            $hctValue = new MHContainer('hctValue', $valueOpenCounter);
+            
+            //Operation
+            $operation['operationLabel'] = new MText('operationLabel', _M('Operação', $module) . ':');
+            $operation['operationLabel']->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            
+            //Type operation
+            $businessOperation = new BusinessFinanceBusOperation();
+            $messagesType = $businessOperation->listOperationTypeId(0);
+            
+            $operation['operation'] = new MTextLabel('operation', $messagesType[$objectOpenCounter->operation]);
+            $hctOperation = new MHContainer('hctOperation', $operation);
+            
+            $fields[] = new MBaseGroup('baseOpenCounter', _M('Abertura de caixa', $module), array($hctIdOpenCounter, $hctOperator, $hctValue, $hctOperation), 'vertical');
+            
+            //Field value 
+            $busCloseCounter = new BusinessFinanceBusCloseCounter();
+            
+            $dataCloseCounter = $busCloseCounter->totalValueCloseCounter($objectOpenCounter->openCounterId);
+            $labelValue = new MText('labelValueCloseCounter', _M('Valor de fechamento esperado', $module));
+            $labelValue->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $value = new MTextField('value', str_replace(',', '.', $this->getFormValue('value', $dataCloseCounter->value)), '', SAGU::getParameter('BASIC', 'FIELD_MONETARY_SIZE'), _M('Ex.: 1.00', $module));
+            $value->setReadOnly(true);
+            $value->setJsHint(_M('Informe o valor de fechamento esperado', $module));
+            $hctValueClouseCounter = new MHContainer('hctValueClouseCounter', array($labelValue, $value));
+            
+            $business = new BusinessFinanceBusOperation();
+            $messagesType = $business->listOperationTypeId(1);
+            
+            //Field operation
+            $operationLabel = new MText('operationLabel', _M('Operação', $module) . ':');
+            $operationLabel->setClass('m-caption m-caption-required');
+            $operationLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $operation = $this->GetFormValue('operation', $dataCloseCounter->operation);
+            $messagesType = $business->listOperationTypeId(0);
+            $operation = new MSelection('operation', $operation, '', $messagesType);
+            $operation->setReadOnly(true);
+            $hctOperation = new MHContainer('hctOperation', array($operationLabel, $operation));
+            
+            $valorApuradoEmDinheiro = $busCloseCounter->totalValorEmEspecie($objectOpenCounter->openCounterId);
+            $labelDeterminedValue = new MText('labelDeterminatedValue', _M('Valor apurado em dinheiro', $module));
+            $labelDeterminedValue->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $labelDeterminedValue->setClass('m-caption m-caption-required');
+            $determinatedValue = new MTextField('determinedValue', $this->getFormValue('determinedValue', $valorApuradoEmDinheiro), '', SAGU::getParameter('BASIC', 'FIELD_MONETARY_SIZE'), _M('Ex.: 1.00', $module));
+            $determinatedValue->setJsHint(_M('Informe o valor apurado', $module));
+            $determinatedValue->setReadOnly(true);
+            $hctDeterminatedValue = new MHContainer('hctDeterminatedValue', array($labelDeterminedValue, $determinatedValue));
+            
+            $validators[] = new MFloatValidator('determinedValue', _M('Valor apurado'), '.', 2, 'required');            
+            $this->setValidators($validators);
+                        
+            //Field observation
+            $observationLabel = new MText('observationLabel', _M('Observação', $module) . ':');
+            $observationLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $flds[] = $observationLabel;
+            $observation = new MMultiLineField('observation', $this->getFormValue('observation', $data->observation), '', 40, 4, 40);
+            $observation->setReadOnly(false);
+            $flds[] = $observation;
+            $hctObservation = new MHContainer('hctObservation', $flds);
+            
+            $fields[] = new MBaseGroup('baseOpenCounter', _M('Fechamento de caixa', $module), array($hctValueClouseCounter, $hctOperation, $hctDeterminatedValue, $hctObservation, $isConfirmed), 'vertical');
+            
+            //Business counter movement
+            $busCounterMovement = new BusinessFinanceBusCounterMovement();
+            
+            unset($filters);
+            $filters = new stdClass();
+            $filters->openCounterId = $objectOpenCounter->openCounterId;
+            
+            $dataMovement = $busCounterMovement->searchCounterMovement($filters);
+            
+            $dataTable = array();
+            if ( is_array($dataMovement) )
+            {
+                $columns[] = _M('Código', $module);
+                $columns[] = _M('Data de movimentação', $module);
+                $columns[] = _M('Espécie', $module);
+                $columns[] = _M('Valor', $module);
+                $columns[] = _M('Operação', $module);
+                $columns[] = _M('Observação', $module);
+                
+                foreach ( $dataMovement as $key => $line )
+                {
+                    $dataTable[$key][0] = $line[0];
+                    $dataTable[$key][1] = $line[1];
+                    $dataTable[$key][2] = $line[3];
+                    $dataTable[$key][3] = $line[4];
+                    $dataTable[$key][4] = $messagesType[$line[5]];
+                    //Wraps a string in a given number of characters
+                    $dataTable[$key][5] = "<span>" . wordwrap($line[6], 80, "<br>", true) . "</span>";
+                }
+                
+                $fields[] = new MSeparator();
+                $fields['tableMovement'] = new MTableRaw(_M('Movimentações', $module), $dataTable, $columns);
+                $fields[] = new MSeparator();
+            }
+        }
+        
+        return ($fields);
+    }
+    
+    /**
+     * Event triggered when user chooses Save from the toolbar
+     */
+    public function tbBtnSave_click($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $busCloseCounter = new BusinessFinanceBusCloseCounter();
+        
+        $function = MIOLO::_REQUEST('function');
+
+        $data = $this->getTypesData();
+        $data->isConfirmed = DB_TRUE;
+        
+        $data->saldoFechamento = $busCloseCounter->totalValorEmEspecie($data->openCounterId);
+        
+        $filters = new stdClass();
+        $filters->openCounterId = $data->openCounterId;
+        $searchData = $busCloseCounter->searchCloseCounter($filters);
+        
+        if( count($searchData) > 0 )
+        {
+            $data->closeCounterId = $searchData[0][0];
+            $ok = $busCloseCounter->updateCloseCounter($data);
+        }
+        else
+        {
+            $ok = $busCloseCounter->insertCloseCounter($data);
+        }
+        
+        $this->confirmInsertUpdate($ok);
+    }
+}
+
+?>

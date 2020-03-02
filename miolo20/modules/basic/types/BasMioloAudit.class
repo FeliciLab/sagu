@@ -1,0 +1,506 @@
+<?php
+/**
+ * <--- Copyright 2005-2012 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulário de auditoria.
+ *
+ * @author Nataniel I. da Silva [nataniel@solis.coop.br]
+ *
+ * @since
+ * Class created on 13/01/2014
+ * 
+ */
+
+class BasMioloAudit extends SType
+{
+    /*
+     * Type integer
+     */
+    public $audit_id;
+    
+    /*
+     * Type string
+     */
+    public $schema_name;
+    
+    /*
+     * Type String
+     */
+    public $table_name;
+    
+    /*
+     * Type string
+     */
+    public $user_name;
+    
+    /*
+     * Type timestamp without time zone
+     */
+    public $action_timestamp_utc;
+    
+    /*
+     * Type string
+     */
+    public $action;
+    
+    /*
+     * Type string
+     */
+    public $query;
+    
+    /*
+     * String de conexão
+     * 
+     */
+    public $stringConexao;
+    
+    
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $MIOLO->uses('/classes/bBaseDeDados.class.php', 'base');
+        
+        $stringConexao = SAGU::getParameter('BASIC', 'MIOLO_AUDIT_DATABASE');
+        $databaseName = $MIOLO->getConf('db.basic.name');
+        
+        $this->stringConexao = 'dbname='.$databaseName.'_auditoria '.$stringConexao;
+        
+    } 
+    
+    public function search($filters, $grid)
+    {
+        global $state; // utilizado na MGrid
+   
+        $conn = pg_pconnect($this->stringConexao);
+        if (!$conn) 
+        {   
+            //Ocorreu um erro ao se conectar com a base
+            return false;
+        }
+        
+        $campos =  "audit_id,
+                    schema_name,
+                    table_name,
+                    user_name,
+                    TO_CHAR(action_timestamp_utc, 'dd/mm/yyyy hh24:mi'),
+                    action,
+                    query,
+                    versaoSistema";
+        
+        $sql = " SELECT {$campos}
+                   FROM miolo_audit
+	     INNER JOIN miolo_audit_detail 
+                  USING (audit_id)
+		  WHERE audit_id IS NOT NULL ";
+        
+        if( strlen($filters->dataInicial) > 0 )
+        {
+            $sql .= " AND action_timestamp_utc::DATE >= TO_DATE('{$filters->dataInicial}', 'dd/mm/yyyy') ";            
+        }
+        
+        if( strlen($filters->dataFinal) > 0 )
+        {
+            $sql .= " AND action_timestamp_utc::DATE <= TO_DATE('{$filters->dataFinal}', 'dd/mm/yyyy') ";            
+        }
+        
+        if( strlen($filters->action) > 0 )
+        {
+            $sql .= " AND action LIKE '{$filters->action}' ";            
+        }
+        
+        if( strlen($filters->user_name) > 0 )
+        {
+            $filters->user_name = utf8_encode($filters->user_name);
+            $sql .= " AND UPPER(user_name) LIKE UPPER('{$filters->user_name}') ";            
+        }
+        
+        if( strlen($filters->table_name) > 0 )
+        {
+            $sql .= " AND table_name LIKE '{$filters->table_name}' ";            
+        }
+        
+        if( strlen($filters->audit_id) > 0 )
+        {
+            $sql .= " AND audit_id = '{$filters->audit_id}' ";            
+        }
+        
+        if ( strlen($filters->originalValue) > 0 )
+        {
+            $filters->originalValue = utf8_encode($filters->originalValue);
+            $sql .= " AND UPPER(original_value) LIKE UPPER('{$filters->originalValue}') ";
+        }
+        
+        if ( strlen($filters->newValue) > 0 )
+        {
+            $filters->newValue = utf8_encode($filters->newValue);
+            $sql .= " AND UPPER(new_value) LIKE UPPER('{$filters->newValue}') ";;
+        }
+        
+        if ( strlen($filters->versaoSistema) > 0 )
+        {
+            $filters->versaoSistema = utf8_encode($filters->versaoSistema);
+            $sql .= " AND UPPER(versaoSistema) LIKE UPPER('{$filters->versaoSistema}') ";;
+        }
+        
+        $groupBy = '';
+        
+        if( count($filters->chavesPrimarias) > 0 )
+        {
+            $count = count($filters->chavesPrimarias);
+            
+            $chavesPrimarias = $this->sqlChavePrimarias($filters->chavesPrimarias, $filters->schema_name, $filters->table_name);
+            
+            if ( strlen($chavesPrimarias) > 0 )
+            {
+                $sql .= " AND ({$chavesPrimarias}) ";
+            }
+            
+            $groupBy = " GROUP BY audit_id ";
+            $sql .= $groupBy;
+            
+            $sql .= " HAVING count(*) >= {$count} ";
+        }
+        
+        //
+        // para evitarmos um estouro de memoria
+        //
+        if ( $grid instanceof MGrid )
+        {
+            //
+            // gera SQL de COUNT(*) , para grids
+            //
+            $sqlCount = $sql;
+            $sqlCount = str_replace($campos, 'COUNT(*)', $sqlCount);
+
+            if ( strlen($groupBy) > 0 )
+            {
+                $sqlCount = str_replace($groupBy, '', $sqlCount);
+            }
+
+            $resultCount = pg_query($conn, $sqlCount);
+            while ($countRow=pg_fetch_row($resultCount,$i)) 
+            {   
+                $returnCount[] = $countRow;
+            }
+            $rowCount = $returnCount[0][0];
+//            $grid->rowCount = $rowCount;
+            MIOLO::getInstance()->setConf('auditoria.rowcount', $rowCount);
+            $state->set('rowCount', $rowCount, $grid->name);
+            
+            $sql .= ' ORDER BY action_timestamp_utc DESC ';
+            
+            // gera LIMIT e OFFSET
+            $sql .= " LIMIT {$grid->pageLength} ";
+            
+            $grid->setOffset(($grid->pageNumber - 1) * $grid->pageLength);
+            
+            if ( $grid->getOffset() )
+            {
+                $sql .= " OFFSET {$grid->getOffset()} ";
+            }
+        }
+
+        $result = pg_query($conn, $sql);
+        if (!$result) 
+        {
+            //Ocorreu um erro ao fazer a consulta
+            return false;
+        }
+        
+        while ($row=pg_fetch_row($result,$i)) 
+        {   
+            $return[] = $row;
+        }
+        
+        return $return;
+    }
+    
+    /**
+     * 
+     * @param type array() $chavesPrimarias
+     */
+    public function sqlChavePrimarias($chavesPrimarias, $schema, $tableName)
+    {
+        foreach ( $chavesPrimarias as $key => $value )
+        {
+            if ( strlen($value) > 0 )
+            {
+                if ( strlen($sql) > 0 )
+                {
+                    $sql .= " OR ";
+                }
+                
+                $value = "'{$value}'";
+                if ( strlen($schema) > 0 && strlen($tableName) > 0 )
+                {
+                    // Retorna as chaves primarias da tabela e seus respectivos tipos Ex.: contractid => integer
+                    $pkeysTable = bBaseDeDados::obterChavePrimaria($schema, $tableName);
+                    
+                    if ( stristr($pkeysTable[strtolower($key)], 'timestamp') )
+                    {
+                        // Adicionado função convertToTimestamp caso o valor seja um timestamp fora de padrão será convertido se não retorna o mesmo valor passado para a função
+                        $value = " convertToTimestamp($value) ";
+                    }
+                }
+                
+                $sql .= " ( column_name = '$key' AND (original_value = {$value} OR new_value = {$value}) ) ";
+            }
+        }
+        
+        return $sql;
+    }
+    
+    /*
+     *  Função que chama as funções para migrar e excluir dados de auditoria
+     * 
+     */
+    public static function migrarDadosDeAuditoria($excluirRegistros = true)
+    {
+        try
+        {
+            $MIOLO = MIOLO::getInstance();
+            $module = MIOLO::getCurrentModule();
+            $parameter = SAGU::getParameter('BASIC', 'MIOLO_AUDIT_DATABASE');
+            $return = true;
+            $now = date('Y-m-d G:i:s');
+            if ( strlen($parameter) > 0 )
+            {
+                if ( self::migrarDadosParaBaseDeAuditorias($now) )
+                {
+                    if ( $excluirRegistros )
+                    {
+                        if ( !self::excluirDadosMigrados($now) )
+                        {
+                            $return = false;
+                        }
+                    }
+                }
+                else
+                {
+                    $return = false;
+                }
+            }
+            else
+            {
+                $return = false;
+                throw new Exception (_M('Falha na sincronização. O parâmetro MIOLO_AUDIT_DATABASE não está configurado.', $module));
+                //Interrompe o processo, pois não está configurado o parâmetro MIOLO_AUDIT_DATABASE
+            }
+
+            return $return;
+            }
+        catch (Exception $err)
+        {
+            $MIOLO = MIOLO::getInstance();
+            $module = MIOLO::getCurrentModule();
+            
+            $MIOLO->error($err->getMessage(), $MIOLO->getActionURL($module, $action));
+        }
+    }
+
+    /*
+     * Realiza a migração dos dados da tabela miolo_audit e miolo_audit_detail do sagu
+     * para a base de auditoria configurado no parâmetro MIOLO_AUDIT_DATABASE
+     * 
+     * A migração é realizada apenas para os registros auditados a mais de um dia
+     * 
+     */
+    private static function migrarDadosParaBaseDeAuditorias($now)
+    {
+        try
+        {
+            $MIOLO = MIOLO::getInstance();
+            $module = MIOLO::getCurrentModule();
+
+            $parameter = SAGU::getParameter('BASIC', 'MIOLO_AUDIT_DATABASE');
+
+            $database = $MIOLO->getConf('db.basic.name');
+            $password = $MIOLO->getConf('db.basic.password');
+            $port = $MIOLO->getConf('db.basic.port');
+            $host = $MIOLO->getConf('db.basic.host');
+            $user = $MIOLO->getConf('db.basic.user');
+
+            $databaseAuditoria = $database.'_auditoria';
+
+            //Cria estrings de conexão para a base do sagu e base da auditoria
+            $path = "host=$host dbname=$database port=$port user=$user password=$password";
+            $pathAuditoria = $parameter . " dbname=".$databaseAuditoria;
+
+            // Abre conexão com a base de auditoria
+            $conexaoAuditoria = pg_connect($pathAuditoria);
+            
+            $result = true;
+            
+            if ( !$conexaoAuditoria )
+            {
+                $result = false;
+                throw new Exception(_M('Falha na sincronização. Não foi possível se conectar na base de auditoria.', $module));
+            }
+
+            // Executa begin
+            $query = 'BEGIN;';
+            $begin = pg_exec($conexaoAuditoria, $query);
+
+           if ( $begin && $result )
+           {
+                // Insere na miolo_audit
+                $sqlAudit = " INSERT INTO miolo_audit
+                                    (audit_id, 
+                                     schema_name, 
+                                     table_name, 
+                                     user_name, 
+                                     action_timestamp_utc, 
+                                     action, 
+                                     query,
+                                     versaosistema) 
+                              SELECT audit_id, 
+                                     schema_name, 
+                                     table_name, 
+                                     user_name, 
+                                     action_timestamp_utc, 
+                                     action, 
+                                     query,
+                                     versaosistema
+                                FROM dblink('{$path}', 
+                                            'SELECT audit_id, 
+                                                     schema_name, 
+                                                     table_name, 
+                                                     user_name, 
+                                                     action_timestamp_utc, 
+                                                     action, 
+                                                     query,
+                                                     versaosistema
+                                                FROM miolo_audit') AS miolo_audit_sagu
+                                      (audit_id int, 
+                                      schema_name text, 
+                                      table_name text, 
+                                      user_name text, 
+                                      action_timestamp_utc timestamp without time zone, 
+                                      action text, 
+                                      query text,
+                                      versaosistema character varying)
+                                WHERE NOT EXISTS ( SELECT audit_id 
+                                                     FROM miolo_audit
+                                                    WHERE audit_id = miolo_audit_sagu.audit_id)
+                                      AND action_timestamp_utc < '$now';";
+
+                $audit = pg_exec($conexaoAuditoria, $sqlAudit);
+
+                if ( $audit )
+                {
+                    // Insere na miolo_audit_detail
+                    $sqlDetail = " INSERT INTO miolo_audit_detail
+                                                (audit_id, 
+                                                 column_name, 
+                                                 original_value, 
+                                                 new_value, 
+                                                 is_pkey) 
+                                          SELECT audit_id, 
+                                                 column_name, 
+                                                 original_value, 
+                                                 new_value, 
+                                                 is_pkey 
+                                            FROM dblink('{$path}', 
+                                                        'SELECT audit_id, 
+                                                                 column_name, 
+                                                                 original_value, 
+                                                                 new_value, 
+                                                                 is_pkey
+                                                            FROM miolo_audit_detail
+                                                      INNER JOIN miolo_audit
+                                                           USING (audit_id)
+                                                           WHERE miolo_audit.action_timestamp_utc < ''$now''') AS miolo_audit_detail_sagu
+                                                 (audit_id int, 
+                                                  column_name text, 
+                                                  original_value text, 
+                                                  new_value text, 
+                                                  is_pkey boolean)
+                                            WHERE NOT EXISTS ( SELECT audit_id 
+                                                                 FROM miolo_audit_detail
+                                                                WHERE audit_id = miolo_audit_detail_sagu.audit_id);";
+                                            
+                    $detail = pg_exec($conexaoAuditoria, $sqlDetail);
+
+                    // Se não aconteceu nenhum erro commit, se não rollback
+                    if ( $detail )
+                    {
+                        // Executa commit
+                        $query = 'COMMIT;';
+                        $commit = pg_exec($conexaoAuditoria, $query);
+                        $result = true;
+                    }
+                    else
+                    {
+                        // Executa rollback
+                        $query = 'ROLLBACK;';
+                        $rollback = pg_exec($conexaoAuditoria, $query);
+                        $result = false;
+                        throw new Exception(_M('Falha na sincronização. Não foi possível realizar o registro na base de auditoria, rollback executado.', $module));
+                    }
+                }
+                else
+                {
+                    // Executa rollback
+                    $query = 'ROLLBACK;';
+                    $rollback = pg_exec($conexaoAuditoria, $query);
+                    $result = false;
+                    throw new Exception(_M('Falha na sincronização. Não foi possível realizar o registro na base de auditoria, rollback executado.', $module));
+                }
+            }
+            else
+            {
+                // Não foi possível iniciar uma transsação
+                $result = false;
+                throw new Exception(_M('Falha na sincronização. Não foi possível iniciar uma transação.', $module));
+            }
+
+            pg_close($conexaoAuditoria);
+
+            return $result;
+        }
+        catch ( Exception $err )
+        {
+            $MIOLO = MIOLO::getInstance();
+            $module = MIOLO::getCurrentModule();
+            $MIOLO->error($err->getMessage(), $MIOLO->getActionURL($module, $action));
+        }
+    }
+
+    /*
+     *  Exclui os registros auditados a mais de um dia das tabelas miolo_audit e miolo_audit_detail
+     */
+    private static function excluirDadosMigrados($now)
+    {
+        $sqlDetail = "DELETE FROM miolo_audit_detail X
+                WHERE (SELECT action_timestamp_utc
+                                     FROM miolo_audit 
+                                    WHERE X.audit_id = audit_id) < '$now';";
+        $resultDetail = SDatabase::execute($sqlDetail, array(), false);
+        
+        $sql = "DELETE FROM miolo_audit
+                WHERE action_timestamp_utc < '$now';";
+        $result = SDatabase::execute($sql, array(), false);
+        
+        return $result;
+    }
+    
+}
+   

@@ -1,0 +1,225 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Curso
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class Created on 13/11/2013
+ *
+ **/
+class FrmInscricaoExterna extends FrmInscricao
+{
+    public function __construct()
+    {
+        $this->setEnableToolbar(false);
+        parent::__construct(new AcpInscricao(), array('inscricaoid'), null, _M('Inscrição'));
+        
+        SMainMenu::esconderMenu(true);
+    }
+    
+    /**
+     * Obtém o campo para seleção da pessoa, pode ser reescrito para obter pessoa logada no portal
+     * @return \sEscolha
+     */
+    public function obterCampoPessoa()
+    {
+        $pessoa = $this->getPhysicalPersonLogged();
+        return new SHiddenField('personid', $pessoa->personId);
+    }
+    
+    public function getLinkedDefs()
+    {
+        if ( !$this->defs )
+        {
+            $ofertacursoid = MIOLO::_REQUEST('ofertacursoid');
+            if( strlen($ofertacursoid) > 0 )
+            {
+                $regras = $this->obterRegrasDaOfertaDeCurso($ofertacursoid);
+            }
+            
+            $defs = $this->newDef()
+                    ->setChave('inscricaoid')
+                    ->addForm( $this->newFormDef()->setLabel('Curso')->setModule('pedagogico')->setAction('main:process:inscricaoexterna')->setTipo(self::TIPO_UM_PARA_UM) );
+            
+            if ( strlen($regras->termoinscricao) > 0 )
+            {
+                $defs->addForm( $this->newFormDef()->setLabel('Termo de inscrição')->setModule('pedagogico')->setAction('main:process:termodeinscricao')->setTipo(self::TIPO_UM_PARA_UM));
+            }
+            
+            if( $regras->utilizarmensageminicial == DB_TRUE )
+            {
+                $defs->addForm( $this->newFormDef()->setLabel('Informações')->setModule('pedagogico')->setAction('main:process:mensageminicial')->setTipo(self::TIPO_UM_PARA_UM) );
+            }                    
+            $defs->addForm( $this->newFormDef()->setLabel('Turma')->setModule('pedagogico')->setAction('main:process:inscricaoturmaexterna')->setTipo(self::TIPO_UM_PARA_UM) );
+
+            //Verifica se o curso não é gratuito ou possui taxa de inscrição
+            if( strlen($ofertacursoid) > 0 )
+            {
+                $ofertacurso = new AcpOfertaCurso($ofertacursoid);
+                if( $ofertacurso->ocorrenciacurso->curso->gratuito == DB_FALSE || $ofertacurso->taxainscricao == DB_TRUE )
+                {
+                    $defs->addForm( $this->newFormDef()->setLabel('Condições de pagamento')->setModule('pedagogico')->setAction('main:process:inscricaopagamentoexterna')->setTipo(self::TIPO_UM_PARA_UM) );
+                }
+
+                if( $regras->utilizarmensagemfinal == DB_TRUE )
+                {
+                    $defs->addForm( $this->newFormDef()->setLabel('Fim')->setModule('pedagogico')->setAction('main:process:mensagemfinal')->setTipo(self::TIPO_UM_PARA_UM) );
+                }
+            }
+
+            $this->defs = $defs;
+        }
+        
+        return $this->defs;
+    }
+    
+    public function btnSaveAndGo_click() 
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        if ( $this->isInsertFunction() )
+        {
+            $_REQUEST[ $this->obterChave() ] = $this->getTypeObjectPopulated()->getPkeyValue();            
+        }
+        
+        // Cria url para proximo "passo"
+        $form = $this->obterFormSeguinteDoAtual();
+        $url = $this->obterURLForm($form, array('ofertacursoid' => MIOLO::_REQUEST('ofertacursoid'), 'personid' => MIOLO::_REQUEST('personid'), 'function' => 'insert'));
+        
+        $MIOLO->page->Redirect( $url );
+    }
+    
+    /**
+     * Sobrescrita do método de finalização.
+     * 
+     * @param object $sender
+     */
+    public function btnSaveAndFinish_click($sender = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        // Verifica se a inscrição está sendo efetuada externamente.
+        $inscricaoid = SAGU::NVL(MIOLO::_REQUEST('inscricaoid'), MIOLO::_REQUEST('inscricaoId'));
+        if ( strlen($inscricaoid) > 0 )
+        {
+            // Verifica se foram geradas mensalidades para o aluno.
+            $titulosInscricao = PrcTituloInscricao::obterInformacoesTitulo($inscricaoid, PrcTituloInscricao::TIPO_INSCRICAO, true);
+            $titulosMensalidades = PrcTituloInscricao::obterInformacoesTitulo($inscricaoid, PrcTituloInscricao::TIPO_MATRICULA, true);
+            $msg          = null;
+            
+            if ( count($titulosMensalidades) > 0 || count($titulosInscricao) > 0 )
+            {
+                //Link para imprimir o boleto (pega o primeiro da inscrição ou o primeiro da matrícula)
+                $invoicePrint = SAGU::NVL($titulosInscricao[0]['invoiceid'], $titulosMensalidades[0]['invoiceid']);
+                $action = $MIOLO->getActionUrl('finance', 'main', null, array('invoices' => $invoicePrint, 'event' => 'generateCarnetByInvoicesPassedByURL'));
+                $opts = array( '_invoiceId' => $invoicePrint, 'event' => 'submit_button_click' );                    
+                $hrefPrint = $MIOLO->getActionURL( 'finance', "main:process:printInvoice", null, $opts );
+                $linkPrint = new MLink('btnImprimirBoleto', _M('AQUI'), $hrefPrint, NULL, '_blank');
+                $linkPrint->addAttribute('style', 'font-size: 15px;');
+                
+                $msg = "<br><br>Clique {$linkPrint->generate()} para imprimir o BOLETO.<br>";
+                
+                $enviouEmail = $this->enviarBoletoPorEmail($invoicePrint);
+                
+                if ( $enviouEmail === DB_TRUE )
+                {
+                    $msg .= "<br>O boleto também foi enviado para o seu e-mail.<br>";
+                }
+                else
+                {
+                    $msg .= "<br>Não foi possível enviar o boleto para o seu e-mail. Mas você ainda pode baixá-lo clicando no botão AQUI acima, ou pelas consultas financeiras logando no portal (ao clicar em OK).<br>";
+                }
+            }
+            
+            $msg .= "<br>Clique em OK para acessar o portal do aluno.<br>";
+            
+            $goto = $MIOLO->GetActionURL('portal', 'main');
+            
+            $MIOLO->information(_M("Inscrição efetuada com sucesso!{$msg}"), $goto);
+        }
+    }
+    
+    /**
+     * Obtém o campo de oferta de curso.
+     * 
+     * @param int $ofertacursoid
+     * @return \MSelection
+     */
+    public function obterCampoOfertaDeCurso($ofertacursoid)
+    {
+        return new MSelection('ofertacursoid', $ofertacursoid, _M('Curso'), AcpOfertaCurso::listarCursosInscricaoExterna());
+    }
+    
+    /**
+     * Monta e envia e-mail com primeiro boleto a vencer.
+     * 
+     * @param int $invoiceId
+     * @return string
+     */
+    public function enviarBoletoPorEmail($invoiceId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        $MIOLO->uses('classes/IntegrationSAGUSAB.class', 'finance');
+        
+        // Monta boleto
+        $integrationSab = new IntegrationSAGUSAB($invoiceId);
+        $integrationSab->generateInvoice(false);
+
+        // Dados do e-mail
+        $busCompany = new BusinessBasicBusCompany();
+        $dataCompany = $busCompany->getCompany(SAGU::getParameter('BASIC', 'DEFAULT_COMPANY_CONF'));
+      
+        $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+        $busReceivableInvoice = new BusinessFinanceBusReceivableInvoice();
+        $titulo = $busReceivableInvoice->getInvoice($invoiceId);
+        $pessoa = $busPhysicalPerson->getPhysicalPerson($titulo->personId);
+        
+        $from = SAGU::getParameter('PEDAGOGICO', 'EMAIL_FROM_DEFAULT');
+        $fromName = $dataCompany->acronym;
+        $recipient[$pessoa->name] = strtolower($pessoa->email);
+        $subject = _M('Boleto de inscrição', $module);
+        
+        $body = _M("Em anexo, boleto de inscrição, realizada dia "  . SAGU::getDateNow() . '.');
+        
+        // Cria e-mail
+        $sendEmail = new sendEmail($from, $fromName, $recipient, $subject, $body);
+        
+        // Anexa boleto
+        $sendEmail->AddAttachment($integrationSab->fileName);
+        
+        // Envia e-mail
+        $ok = $sendEmail->sendEmail();
+        
+        // Se houver erro, retorna a mensagem de erro
+        !$ok ? $ok = $sendEmail->getErrors() : $ok = DB_TRUE;
+        
+        return $ok;
+    }
+}
+?>

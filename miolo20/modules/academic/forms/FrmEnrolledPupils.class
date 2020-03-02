@@ -1,0 +1,1865 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Leovan Tavares da Silva [leovan@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 20/01/2006
+ */
+
+MIOLO::Import('extensions::cpaint.inc.php','cpaint');
+
+class FrmEnrolledPupils extends MForm
+{
+    private $module;
+    private $urlOpts;
+    private $isReadOnlyMode;
+    private $hasDetailedStatus;
+    
+    public $blockByDate = false;
+
+    /**
+     * Class constructor
+     */
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        if ( MIOLO::_REQUEST('event') == 'closeGroup_click' )
+        {
+            $title = _M('Fechamento de disciplina', $module);
+        }
+        else
+        {
+            $title = _M('Digitação de nota', $module);
+        }
+        
+        parent::__construct($title);
+
+        // hide the 'Submit' button
+        $this->setShowPostButton(false);
+        $this->setHelp(get_class($this), MIOLO::getCurrentModule(), MIOLO::getCurrentAction());
+
+        $MIOLO->page->addScript('m_popup_control.js');
+        $MIOLO->page->addScript('ajax.js', 'basic');
+        $MIOLO->page->addScript(SAGU::ABSOLUTE_URL_JS_FILES . 'sagu.js');
+        $MIOLO->getRequiredJS4Ajax();
+        
+        if (($f = $this->page->request('cpaint_function')) != "")
+        {
+            if ( $f == 'ajaxCallBack' )
+            {
+                $args = $this->page->request('cpaint_argument');
+                $fields = SForm::ajaxCallBack($args, $this);
+                exit($fields);
+            }
+            else
+            {
+                $this->manager->getTheme()->clearContent();
+                $this->$f($this->page->request('cpaint_argument'));
+            }
+            
+            $this->page->generateMethod = 'generateAJAX';
+        }
+        else
+        {            
+            $this->defineFields();
+            $this->eventHandler();
+        }
+    }
+
+    /**
+     *  Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $groupId = MIOLO::_request('groupId');
+
+        $fields[] = new MHiddenField('groupId', $groupId);
+        $fields[] = new MDiv('divExtra', null);
+        $busGradeTyping = new BusinessAcademicBusGradeTyping();
+        $groupData = $busGradeTyping->getGroupData($groupId);
+        $data = $busGradeTyping->listGroupEnrolledPupils($groupId);
+        $learningPeriodId = $groupData->learningPeriodId;
+
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $busGroup = new BusinessAcademicBusGroup();
+        $busSchedule = new BusinessAcademicBusSchedule();
+        $busEvaluation = new BusinessAcademicBusEvaluation();
+        $busEnrollStatus = new BusinessAcademicBusEnrollStatus();
+        $busDegreeEnroll = new BusinessAcademicBusDegreeEnroll();
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $busFrequenceAndNotes = new BusinessServicesBusFrequencyAndNotes();
+        $busPerson = new BusinessBasicBusPerson();
+        
+        $loginPerson = $busPerson->getCurrentLoginPerson();
+        
+        $enrollStatusList = $this->getEnrollStatusList();
+        $this->hasDetailedStatus = count($enrollStatusList) > 0;
+
+        if ( $busGroup->isFinalExaminationGroup($groupId) )
+        {
+            $learningPeriod = $busLearningPeriod->getLearningPeriod($learningPeriodId); 
+            
+            //$true Caso alguma disciplina ja foi detalhada bloqueia
+            if( $learningPeriod->blockFinalExaminationGradesTyping == DB_TRUE )
+            {
+                $url = $MIOLO->getActionURL('academic', 'main:process:finalExamination');
+                $erro = new MLink('acd', _M('Clique aqui para efetuar o detalhamento do TCC por aluno.', $this->module), $url, null, '_self');
+                $msg .= _M('Essa disciplina exige o detalhamento do TCC, nao sendo possível registrar notas por essa interface.' . $erro->generate());
+                $MIOLO->error($msg);
+            }
+        }
+        
+        //
+        // Define nota maxima
+        //
+        $notaMaxima = $busLearningPeriod->obterNotaMaximaDaDisciplina($groupId);
+        
+        if ( strlen($notaMaxima) > 0 )
+        {
+            $this->page->addJsCode("notaMaxima = '{$notaMaxima}';");
+        }
+
+        //
+        // Define atributos de permissao
+        //
+        // Define como modo somente-leitura esta tela quando preferencia SOMENTE_PROFESSOR_RESPONSAVEL estiver ativada e pessoa logada NAO for professor responsavel por esta disciplina
+        if( SAGU::userIsFromServices() )
+        {
+            $this->isReadOnlyMode = (
+                            ( strlen($loginPerson->personId) > 0 ) &&
+                            MUtil::getBooleanValue(SAGU::getParameter('ACADEMIC', 'SOMENTE_PROFESSOR_RESPONSAVEL')) &&
+                            ( $loginPerson->personId != $groupData->professorResponsible ) );
+        }
+        
+        $learningPeriodData = $busLearningPeriod->getLearningPeriod($groupData->learningPeriodId);
+
+        $toolbar = new MToolbar('toolbar');
+        $toolbar->disableButton('tbBtnNew');
+        $toolbar->disableButton('tbBtnDelete');
+        $toolbar->disableButton('tbBtnSearch');
+
+        if ( $this->isReadOnlyMode )
+        {
+            $toolbar->disableButton( MToolBar::BUTTON_SAVE );
+        }
+
+        if ($learningPeriodData->isClosed == DB_TRUE && $groupData->isClosed == DB_TRUE && $groupData->useConcept == DB_FALSE)
+        {
+            $toolbar->disableButton( MToolBar::BUTTON_SAVE );
+            $this->addInfo(_M('Tanto o período letivo quanto a disciplina estão fechados, então nenhuma alteração é possível. Para alterar qualquer informação é necessário reabrir o período letivo e a disciplina.', $module));
+        }
+        elseif ($groupData->isClosed == DB_TRUE && $groupData->useConcept == DB_FALSE )
+        {
+            $toolbar->disableButton( MToolBar::BUTTON_SAVE );
+
+            $this->addInfo(_M('Esta disciplina está fechada, por isso nenhuma alteração é possível. Para alterar qualquer informação, reabra a disciplina.', $module));
+        }
+        elseif ($learningPeriodData->isClosed == DB_TRUE && $groupData->useConcept == DB_FALSE )
+        {
+            $toolbar->disableButton( MToolBar::BUTTON_SAVE );
+            $this->addInfo(_M('Período letivo está fechado. Nenhuma alteração é permitida.', $module));
+
+            $groupData->isClosed = DB_TRUE;
+        }
+        else if ( SAGU::userIsFromServices() && !$busLearningPeriod->permiteRegistrarNotaOuFrequencia($groupId) )
+        {            
+            $this->blockByDate = true;
+            $toolbar->disableButton( MToolBar::BUTTON_SAVE );
+            $this->addAlert( $busLearningPeriod->obterMensagemDigitacaoBloqueada($groupId) );
+        }
+
+        $fields[] = new MHiddenField('isFromNoteEdit');
+        $fields[] = new MHiddenField('currentEnrollId');
+        $fields[] = new MHiddenField('currentDegreeId');
+        // Escala de arrendondamento do grau final da instituição
+        $fields[] = new SHiddenField('escala', SAGU::getParameter('ACADEMIC', 'ESCALA_DE_ARREDONDAMENTO_DO_GRAU_FINAL'));
+        // Controlar pontuação máxima das avaliações do professor
+        $fields[] = new SHiddenField('controlePontuacao', SAGU::getParameter('ACADEMIC', 'CONTROLE_PONTUACAO_MAXIMA_AVALIACAO'));
+
+        if ( $action != 'main:professor:gradesTyping' )
+        {
+            $fields[] = $toolbar;
+        }
+
+        $cols = array(_M('Código', $module), _M('Nome', $module), _M('Curso', $module));
+
+        //Valor recebido de FrmProfessorGradesTyping
+        $groupSelect = MIOLO::_REQUEST('mtSelect');
+
+        $learningPeriodDegrees = $busGradeTyping->getLearningPeriodDegrees($learningPeriodId, $groupSelect);
+        
+        // Define valores pai
+        $degreeIdMedia = $busGradeTyping->getDegreeIdMedia($learningPeriodId);
+        $degreesJs[] = " degreeIdMedia = '{$degreeIdMedia}' ";
+        $degreeIdNotaFinal = $busGradeTyping->getDegreeIdNotaFinal($learningPeriodId);
+        $degreesJs[] = " degreeIdNotaFinal = '{$degreeIdNotaFinal}' ";
+        $degreeIdExame = $busGradeTyping->getDegreeIdExame($learningPeriodId);
+        $degreesJs[] = " degreeIdExame = '{$degreeIdExame}' ";
+                
+        if ( count($learningPeriodDegrees) > 0 )
+        {
+            foreach ($learningPeriodDegrees as $degree)
+            {
+                $degreeColumn = new MText('degree_' . $degree->degreeId, $degree->description);
+                $degreeColumn->setBold(true);
+                $degreeColumn->addAttribute('align', 'center');
+
+                $filters->degreeId = $degree->degreeId;
+                $filters->groupId = $groupId;
+                
+                if (count($busEvaluation->searchEvaluation($filters)) > 0)
+                {
+                    $evalButton = new MImageLink('evalButton' . $degree->degreeId, null, "javascript:degrees.showEvaluations($degree->degreeId)", $MIOLO->getUI()->getImageTheme(SAGU::getCurrentTheme(), 'evaluation-12x12.png') );
+                    $evalButton->setJsHint(_M('Exibir avaliações', $module));
+
+                    $divCol = new MDiv('divCol' . $degree->degreeId, array($degreeColumn, $evalButton), null, null);
+                    $divCol->addBoxStyle('vertical-align', 'middle');
+
+                    $cols[] = $degreeColumn->generate() . ' ' . $evalButton->generate();
+                }
+                else
+                {
+                    $cols[] = $degree->description;
+                }
+                
+                $mayBeNull = $degree->mayBeNull == DB_TRUE ? 'true' : 'false';
+                
+                // Adiciona este grau aos objetos js
+                $degreesJs[] = "var mydegree = new tableDegree();";
+                $degreesJs[] = "mydegree.setDegreeId({$degree->degreeId});";
+                $degreesJs[] = "mydegree.setParentDegreeId({$degree->parentDegreeId});";
+                $degreesJs[] = "mydegree.setWeight({$degree->weight});";
+                $degreesJs[] = "mydegree.setNotaMinimaNaoPegarExame({$learningPeriodData->finalAverage});";
+                $degreesJs[] = "mydegree.setPoderSerNulo({$mayBeNull});";
+
+                if ( $degree->examCalcMethod == BusinessAcademicBusDegree::EXAME_MEDIA_GRAU_PAI )
+                {
+                    $degreesJs[] = "mydegree.setMediaComGrauPai(true);";
+                }
+                else if ( $degree->examCalcMethod == BusinessAcademicBusDegree::EXAME_SUBSTITUI_GRAU_PAI )
+                {
+                    $degreesJs[] = "mydegree.setSubstituiGrauPai(true);";
+                }
+                else if ( $degree->examCalcMethod == BusinessAcademicBusDegree::TROCA_MENOR_NOTA_OBRIGATORIA )
+                {
+                    $degreesJs[] = "mydegree.setExameSubstituiMenorNota(true);";
+                }
+
+                if ( $degree->isExam == DB_TRUE )
+                {
+                    $degreesJs[] = "mydegree.setIsExam(true);";
+                }
+
+                if ( strlen($degree->examMinimumNote) > 0 )
+                {
+                    $degreesJs[] = "mydegree.setExamMinimumNote({$degree->examMinimumNote});";
+                }
+                
+                if ( strlen($degree->examMaximumNote) > 0 )
+                {
+                    $degreesJs[] = "mydegree.setExamMaximumNote({$degree->examMaximumNote});";
+                }
+                
+                // Define se e uma nota normal
+                $notaNormal = in_array($degree->degreeId, array($degreeIdMedia, $degreeIdNotaFinal, $degreeIdExame)) ? 'false' : 'true';
+                $degreesJs[] = "mydegree.setENotaNormal({$notaNormal});";
+                
+                $degreesJs[] = " tableDegrees.push(mydegree); ";
+            }
+        }
+
+        $cols[] = _M('Frequência', $module);
+        $cols[] = _M('Estado', $module);
+
+        unset($tableData);
+        $degreesJsLast = array();
+
+        $degreesJs[] = ' var degrees = new objDegrees() ';
+
+        //Quando for utilizado conceito, envia para a classe objDegrees (javascript) os dados de conceito
+        if ( ($groupData->useConcept == DB_TRUE) && (strlen($groupData->conceptGroupId) > 0) )
+        {
+            $filters = new stdClass();
+            $filters->conceptGroupId = $groupData->conceptGroupId;
+
+            $busConcept = new BusinessAcademicBusConcept();
+            $rows = $busConcept->searchConceptAsObject($filters);
+
+            foreach ( (array) $rows as $row )
+            {
+                $degreesJs[] = "concept = new objConcept();";
+                $degreesJs[] = "concept.description = '{$row->descriptionConcept}'";
+                $degreesJs[] = "concept.enrollStatusId = {$row->enrollStatusId}";
+
+                $degreesJs[] = "degrees.addConcept(concept);";
+            }
+
+            //Define os estados
+            $listEnrollStatus = $busEnrollStatus->listEnrollStatus(1);
+            $degreesJs[] = "var enrollStatus = new Array();";
+            foreach ( (array) $listEnrollStatus as $enrollStatusId => $value)
+            {
+                $degreesJs[] = "enrollStatus['{$enrollStatusId}'] = '{$value}';";
+            }
+            $degreesJs[] = "degrees.setEnrollStatusList(enrollStatus);";
+
+            //Define o estado REPROVADO
+            $enrollStatusId = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_DISAPPROVED');
+            $degreesJs[] = "degrees.setEnrollStatusDisapproved({$enrollStatusId});";
+
+            //Define se deve informar justificativa quando conceito final for REPROVADO
+            $justifyDisapprovals = $learningPeriodData->justifyDisapprovals == DB_TRUE ? 'true' : 'false';
+
+            $degreesJs[] = "degrees.setJustifyDisapprovals({$justifyDisapprovals});";
+        }
+        
+        if ( $this->hasDetailedStatus )
+        {
+            $cols[] = _M('Estado detalhado', $module);
+        }
+
+        $fields[] = new MDiv('divPopup');
+        
+        // Para fazer as atualizações dos campos automaticamente.
+        foreach ( $learningPeriodDegrees as $enrollStatusId => $degree )
+        {
+            $allDegreesId .= "  allDegreesId.push({$degree->degreeId});";
+        }
+        
+        $this->page->addJsCode($allDegreesId);
+
+        if (count($data) > 0)
+        {
+            foreach ($data as $groupPupil)
+            {
+                list($enrollId, $personId, $personName, $courseId, $enrollStatusIdValue) = $groupPupil;
+
+                $busEnroll = new BusinessAcademicBusEnroll();
+                $enroll = $busEnroll->getEnroll($enrollId);
+
+                if( $busGroup->isFinalExaminationGroup($groupId) && strlen($enroll->finalExaminationTheme) > 0 )
+                {
+                    $url = $MIOLO->getActionURL('academic', 'main:process:finalExamination');
+                    $erro = new MLink('acd', _M('Clique aqui para efetuar o detalhamento do TCC por aluno.', $this->module), $url, null, '_self');
+                    $msg .= _M('Esta disciplina possui alunos com detalhamento do TCC realizado, desta forma você deve continuar o processo utilizando a tela de detalhamento de Tcc.' . $erro->generate());
+                    $MIOLO->error($msg);
+                }
+                
+                $personName = new MText('personName_' . $enrollId, $personName);
+                $line = array($personId, $personName, $courseId);
+                $enrollData = $busEnroll->getEnroll($enrollId);
+                
+                foreach ( (array) $learningPeriodDegrees as $enrollStatusId => $degree)
+                {
+                    $currentDegreeObj = " degrees.getDegreeEnroll({$degree->degreeId},{$enrollId}) ";
+                 
+                    $degreeGrade = $busDegreeEnroll->getDegreeEnrollCurrentGrade($degree->degreeId, $enrollId);
+                    $degreeHistory = $busDegreeEnroll->getDegreeEnrollHistory($degree->degreeId, $enrollId);
+
+                    $degreeName = 'degree[' . $degree->degreeId . '][' . $enrollId . ']';
+                    $degreeValue = new MTextField($degreeName, $degreeGrade, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE') / 2);
+                    
+                    // Pode mudar conceito final se: for nota final e instituição trabalhar com nota por conceito. Ticket #30053.
+                    $podeMudarConceitoFinal = $degree->degreeNumber == 0 && $degree->parentDegreeId == NULL && $groupData->useConcept == DB_TRUE;
+                    if ( strlen($degreeGrade) > 0 )
+                    {
+                        if ( !$podeMudarConceitoFinal )
+                        {
+                            $degreeValue->setReadOnly(true);
+                        }
+                    }
+                    
+                    // Cria field extra para valores que devem ser salvos mas usuario nao pode ver
+                    $degreeExtra = 'degreeExtra[' . $degree->degreeId . '][' . $enrollId . ']';
+                    $degreeFlds[] = new SHiddenField($degreeExtra);
+                    
+                    // validacao de data limite
+                    if ( SAGU::userIsFromServices() && strlen($degree->limitDate) > 0 )
+                    {
+                        $mask = SAGU::getParameter('BASIC', 'MASK_DATE');
+                        $limiteAtingido = SAGU::compareTimestamp(SAGU::getDateNow(), '>', $degree->limitDate, $mask);
+                        
+                        if ( $limiteAtingido )
+                        {
+                            $degreeValue->setReadOnly(true);
+                            $degreeValue->jsHint = _M('A data limite para registro desta nota é @1', null, $degree->limitDate);
+                        }
+                    }
+                    
+                    // Label Frequencia insuficiente
+                    if ( $degree->degreeId == $degreeIdExame )
+                    {
+                        $degreeFlds[] = $div = new MDiv("divFreqIns[{$enrollId}]", '');
+                        $div->setVisibility(false);
+                    }
+                    
+                    if ( $this->isReadOnlyMode || ( $enrollStatusIdValue == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_CANCELLED') ) )
+                    {
+                        if ( !$podeMudarConceitoFinal )
+                        {
+                            $degreeValue->setReadOnly(true);
+                        }
+                    }
+
+                    if ( $action == 'main:professor:gradesTyping' && SAGU::getParameter('ACADEMIC', 'ENABLE_TYPING_FINISHING') == 'YES' )
+                    {
+                        if ( ($groupData->gradesTypingFinished == DB_TRUE || $groupData->isClosed == DB_TRUE || $this->blockByDate) )
+                        {
+                            if ( !$podeMudarConceitoFinal )
+                            {
+                                $degreeValue->setReadOnly(true);
+                            }
+                        }
+                    }
+                    elseif (strlen($degreeGrade) > 0 || $groupData->isClosed == DB_TRUE || $this->blockByDate)
+                    {
+                        if ( !$podeMudarConceitoFinal )
+                        {
+                            $degreeValue->setReadOnly(true);
+                        }
+                    }
+
+                    if ($groupData->useConcept == DB_TRUE)
+                    {
+                        $degreeValue->addAttribute('onchange', "degrees.validateConcept({$degree->degreeId}, {$enrollId}, this); ");
+                    }
+                    else
+                    {
+                        // Atualiza nota ao clicar em cima ou carregar a tela
+                        $jsUpdateNote = "{$currentDegreeObj}.updateValue(true)";
+                        $degreeValue->addAttribute('onblur', $jsUpdateNote);
+                        $degreeValue->addAttribute('onfocus', $jsUpdateNote);
+                        $degreeValue->addAttribute("onChange", "atualizaNotas({$degree->degreeId}, {$enrollId})");
+                        $degreesJsLast[] = $jsUpdateNote;
+                        
+                        $degreesJsLast[] = " document.getElementById('{$degreeName}').onfocus() ";
+
+                        $degreeOnBlur = " {$currentDegreeObj}.formatNote('" . SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR') . "',"  . SAGU::getParameter('BASIC', 'GRADE_ROUND_VALUE') .  ");";
+
+                        $degreeValue->addAttribute('onblur', $degreeOnBlur);
+                        $this->addValidator(new MFloatValidator($degreeName, _M('Nota', $module), SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), SAGU::getParameter('BASIC', 'GRADE_ROUND_VALUE')));
+
+                        if (strlen($degree->parentDegreeId) > 0)
+                        {
+                            $degreeValue->addAttribute('onchange', " {$currentDegreeObj}.updateValue(false)");
+                        }
+                    }
+
+                    $degreeFlds[] = $degreeValue;
+                    $degreeName = $degree->degreeId . '_' . $enrollId;
+
+                    $enableTypingFinishing = ( $action == 'main:professor:gradesTyping' && SAGU::getParameter('ACADEMIC', 'ENABLE_TYPING_FINISHING') == 'YES' ) && ( $groupData->gradesTypingFinished == DB_TRUE );
+                    
+                    // Verifica se a nota está embranco por que foi editada para vazia ou ainda não foi inserida.
+                    if ( SAGU::getParameter('academic', 'ENABLE_EMPTY_NOTE') == DB_TRUE )
+                    {
+                        $filters = new stdClass();
+                        $filters->degreeId = $degree->degreeId;
+                        $filters->enrollId = $enrollId;
+                        $degreeEnroll = $busDegreeEnroll->searchDegreeEnroll($filters);
+                    }
+                    
+                    $hasDegree = ( ( strlen($degreeGrade) > 0 ) || ( ( SAGU::getParameter('academic', 'ENABLE_EMPTY_NOTE') == DB_TRUE ) && ( isset($degreeEnroll) ) ) );
+                    
+                    if ( ( $hasDegree || $enableTypingFinishing ) && ( ! $this->isReadOnlyMode ) )
+                    {
+                        $img = $MIOLO->getUI()->getImageTheme(SAGU::getCurrentTheme(), 'edit.png');
+                        $label = _M('Atualizar nota', $module);
+                        
+                        if ( !$busGradeTyping->eNotaEspecial($degree->degreeId) )
+                        {
+                            $degreeFlds[] = $this->getUpdateButton($label, $img, $degree->degreeId, $enrollId);
+                        
+                            // Imagem indicando que nota ja sofreu alteracao
+                            if ( count($degreeHistory) > 1 )
+                            {
+                                $img = $MIOLO->getActionUrl('basic', 'html:images:warning_small.png');
+                                $label = _M('Esta nota já sofreu alteração.', $module);
+                                $degreeFlds[] = $this->getUpdateButton($label, $img, $degree->degreeId, $enrollId);
+                            }
+                        }
+                    }
+
+                    $filters->degreeId = $degree->degreeId;
+
+                    $cntDegree = new MHContainer('cntDegree' . $degreeName, $degreeFlds);
+                    unset($degreeFlds);
+                    $degreeEvaluationsDiv = new MDiv('divEvaluations' . $degreeName, null, null, 'display=none');
+
+                    $cntControls = new MVContainer('cntControls' . $degreeName, array($cntDegree, $degreeEvaluationsDiv));
+
+                    $line[] = $cntControls->generate();
+
+                    $this->generateShowFunction($degree->degreeId, $enrollId);
+
+                    $mayBeNullJs = $degree->mayBeNull == DB_TRUE ? 'true' : 'false';
+                    $degreeParent = strlen($degree->parentDegreeId) > 0 ? $degree->parentDegreeId : 'null';
+
+                    // Nota máxima do grau final cadastrado no período letivo, caso não definido atribui 10000 para burlar a validação
+                    if( !$learningPeriodData->maximumFinalAverage > 0 )
+                    {
+                        $learningPeriodData->maximumFinalAverage = 10000;
+                    }
+                    $degreesJs[] = "var degree = new objDegreeEnroll({$degree->degreeId},{$enrollId},{$degree->weight},{$degreeParent},{$mayBeNullJs},".$learningPeriodData->maximumFinalAverage.");";
+
+                    $degreesJs[] = "degree.setFinalAverage('{$learningPeriodData->finalAverage}')";
+                    if ( $degree->methodCalculating == BusinessAcademicBusDegree::CALCULO_SOMA )
+                    {
+                        $degreesJs[] = "degree.setUtilizaCalculoPorSoma(true)";
+                        $fields[] = new SHiddenField("calc",'true');
+                    }
+                    $maxFinalAvg = $learningPeriodData->maximumFinalAverage;
+                    if ( strlen($maxFinalAvg) > 0 )
+                    {
+                        $degreesJs[] = "degree.setMaximumFinalAverage({$maxFinalAvg})";
+                    }
+
+                    //Define o estado REPROVADO
+                    $enrollStatusId = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_DISAPPROVED');
+                    $degreesJs[] = "degree.setEnrollStatusDisapproved({$enrollStatusId});";
+
+                    //Define o estado APROVADO
+                    $enrollStatusId = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPROVED');
+                    $degreesJs[] = "degree.setEnrollStatusApproved({$enrollStatusId});";
+
+                    //Define o estado REPROVADO POR FALTAS
+                    $enrollStatusId = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_DISAPPROVED_FOR_LACKS');
+                    $degreesJs[] = "degree.setEnrollStatusDisapprovedForLacks({$enrollStatusId});";
+
+                    $value = AcdEvaluationType::BY_FREQUENCY;
+                    $degreesJs[] = "degree.setEvaluationTypeByFrequency({$value});";
+
+                    $value = AcdEvaluationType::BY_NOTE_AND_FREQUENCY;
+                    $degreesJs[] = "degree.setEvaluationTypeByNoteAndFrequency({$value});";
+                    
+                    $degreesJs[] = "degree.setEvaluationTypeId({$groupData->evaluationTypeId});";
+
+                    //Define valor da frequencia minima
+                    $degreesJs[] = "degree.setMinimumFrequency({$groupData->minimumFrequency});";
+                    
+                    $degreesJs[] = "degrees.addDegreeEnroll(degree);";
+                }
+
+                // Campo Frequencia
+                $frequencyField = new MTextField('frequency[' . $enrollId . ']', $enrollData->frequency, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE') / 2, _M('H', $module));
+                $frequencyField->setJsHint(_M('Informe a frequência em horas', $module));
+                $allowEdit = SAGU::getParameter('ACADEMIC', 'GRADE_TYPING_ALLOW_EDIT_FREQUENCY') == DB_TRUE;
+                $isClosed = $groupData->isClosed == DB_TRUE;
+                if ( $isClosed || $action == 'main:professor:gradesTyping' || !$allowEdit || $this->blockByDate )
+                {
+                    $frequencyField->setReadOnly(true);
+                }
+
+                $line[] = new MHContainer('cntFrequency_' . $enrollId, array($frequencyField));
+
+                if ($groupData->useConcept == DB_TRUE && $groupData->isClosed == DB_FALSE && !$this->blockByDate)
+                {
+                    $enrollStatusId = new MDiv("statusDisplay[{$enrollId}]");
+                    $degreesJs[] = "document.getElementById('statusDisplay[{$enrollId}]').innerHTML = changeStatus('{$listEnrollStatus[$enrollData->statusId]}')";
+                    
+                    $fields[] = new SHiddenField("status[{$enrollId}]", $enrollData->statusId);
+                    
+                    $degreesJs[] = "degrees.alternateStatus('{$enrollId}', '{$degree->degreeId}');";
+                }
+                else
+                {
+                    $statusData = $busEnrollStatus->getEnrollStatus($enrollData->statusId);
+                    $enrollStatusId = new MText('status_' . $enrollId, $statusData->description);
+                    $enrollStatusId->setBold(true);
+
+                    if ($enrollStatusIdValue != SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED'))
+                    {
+                        if (in_array($enrollStatusIdValue, array(SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPROVED'), SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_EXCUSED'))))
+                        {
+                            $enrollStatusId->setColor('blue');
+                        }
+                        else
+                        {
+                            $enrollStatusId->setColor('red');
+                        }
+                    }
+                }
+
+                $line[] = $enrollStatusId->generate();
+                
+                $fields[] = new SHiddenField("finalState[{$enrollId}]", $enrollData->detailEnrollStatusId);
+
+                // Coluna estado detalhado
+                if ( $this->hasDetailedStatus )
+                {
+                    $line[] = $div = new MDiv("detailedStatusDiv[{$enrollId}]", $enrollData->detailEnrollStatusDescription);
+                }
+                
+                $tableData[] = $line;
+            }
+        }
+
+        $degreesJs[] = "degrees.updateChilds();";
+
+        // Adiciona js final
+        $degreesJs = array_merge($degreesJs, $degreesJsLast);
+        for ($i = 0; $i < count($degreesJs); $i++)
+        {
+            $this->page->addJsCode($degreesJs[$i]);
+        }
+
+        $fields = array_merge($fields, $this->getInformations($groupData));
+
+        //
+        //Código de filtros referente ao modulo SERVICES
+        //
+        if ( $action == 'main:professor:gradesTyping' )
+        {
+            $groupData = $busGroup->getGroup($groupId);
+
+            $btnBack = new MButton('tbBtnBack', '<< ' . _M('Voltar', $module), $MIOLO->getActionURL('services', 'main:professor:curricularComponents', null, $opts ));
+            $btnSave = new MButton( MToolBar::BUTTON_SAVE , _M('Salvar', $module), null, $MIOLO->getUI()->getImageTheme(SAGU::getCurrentTheme(), 'save-16x16.png'));
+            
+            if ( $this->blockByDate )
+            {
+                $btnSave->setVisibility(false);
+            }
+
+            if ( SAGU::getParameter('SERVICES', 'SHOW_FILTER') == DB_TRUE )
+            {
+                //Field selct degree
+                $selectDegree = new MSelection('selectionDegree', '', '', $busFrequenceAndNotes->searchDegreeByGroup($groupData->learningPeriodId, $groupId));
+                $mtSelect = new MMultiTextField3( 'mtSelect', $groupSelect, _M('Mostrar somente as notas', $module ), array($selectDegree ), 200, true, 'horizontal' );
+                $fields[] = $mtSelect;
+
+                $fields[] = new MHiddenField('periodId', $periodId);
+                $fields[] = new MHiddenField('groupId', $groupId);
+
+                $groupSelect = str_replace('[', '', $groupSelect);
+                $groupSelect = str_replace(']', '', $groupSelect);
+
+                $btnFiltrar = new MButton('filter', _M('Filtrar', $module), 'SUBMIT');
+                $buttons = array($btnBack, $btnFiltrar, $btnSave);
+            }
+            else
+            {
+                $buttons = array($btnBack, $btnSave);
+            }
+
+            if ( $action == 'main:professor:gradesTyping' && SAGU::getParameter('ACADEMIC', 'ENABLE_TYPING_FINISHING') == 'YES' )
+            {
+                if ($groupData->gradesTypingFinished == DB_FALSE)
+                {
+                    $args = array();
+
+                    $btnFinish = new MButton('btnFinish', _M('Finalizar', $module));
+                    $buttons[] = $btnFinish;
+                }
+                else
+                {
+                    $btnPrint = new MButton('tbBtnPrint', _M('Imprimir', $module));
+                    $buttons[] = $btnPrint;
+                }
+            }
+
+            $fields[] = new MHContainer('htcButons', $buttons);
+        }
+        //
+        //End
+        //
+        
+        if ( SAGU::getParameter('ACADEMIC', 'DIGITACAO_NOTAS_MENSAGEM') )
+        {
+            $msgLabel = new MLabel( SAGU::getParameter('ACADEMIC', 'DIGITACAO_NOTAS_MENSAGEM') );
+        }
+        else
+        {
+            $msgLabel = new MDiv('divMsg', null);
+        }
+        
+        $fields[] = $msgLabel;
+
+        $tableRaw = new MTableRaw(null, $tableData, $cols);
+        $fields[] = $tableRaw;
+
+        $fields[] = $msgLabel;
+        
+        $busGroup = new BusinessAcademicBusGroup();
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $dataGroup = $busGroup->getGroup($groupData->groupId);
+        $dataLearningPeriod = $busLearningPeriod->getLearningPeriod($dataGroup->learningPeriodId);
+
+        if ( $action == 'main:professor:gradesTyping' )
+        {
+            $buttons = array($btnBack, $btnSave);
+        }
+        else
+        {
+            $buttons = new MButton('backButton', _M('Voltar', $module), $MIOLO->getActionURL($module, 'main:process:gradesTyping', null, array('periodId'=>$dataLearningPeriod->periodId, 'courseId'=>$dataLearningPeriod->courseId, 'courseVersion'=>$dataLearningPeriod->courseVersion, 'turnId'=>$dataLearningPeriod->turnId, 'classId'=>$dataGroup->classId, 'event'=>'btnList_click')));
+        }
+
+        $fields[] = new MSeparator('<hr>');
+        $fields[] = new MHContainer('htcButtons', $buttons);
+        $fields[] = new MHiddenField('currentUrl', str_replace('&amp;', '&', $MIOLO->getCurrentURL()));
+        $fields[] = new MHiddenField('round_value', SAGU::getParameter('BASIC', 'GRADE_ROUND_VALUE'));
+        $fields[] = new MHiddenField('degreesArray', base64_encode(serialize(array())));
+        $fields[] = new MHiddenField('evaluationsArray', base64_encode(serialize(array())));
+        $fields[] = new MDiv('divLimboImg', null);
+        $fields[] = new MDiv('divEditForm', null);
+
+        $this->setFields($fields);
+
+        $MIOLO->getRequiredJS4Ajax();
+        $this->page->addScript('m_lookup_ajax.js');
+        $this->page->addScript('m_validate.js');
+        $this->page->addScript(SAGU::ABSOLUTE_URL_JS_FILES . 'sagu.js');
+        $this->page->scripts->add($MIOLO->getActionURL('academic', 'html:scripts:gradesTyping.js'));
+    }
+
+    public function generateShowFunction($degreeId, $enrollId)
+    {
+        $js = "
+            function showResult{$degreeId}_{$enrollId}(result)	
+            {
+                document.getElementById('divEvaluations{$degreeId}_{$enrollId}').innerHTML = result;
+                   document.getElementById('divEvaluations{$degreeId}_{$enrollId}').style.display = 'block';
+                   MIOLO_parseAjaxJavascript(result);
+
+                   stopShowLoading();
+            }";
+
+        $this->page->addJSCode($js);
+    }
+
+    public function getDegreeEvaluations($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $usuario = SAGU::getUsuarioLogado();
+
+        $args = explode(',', $args[0]);
+
+        $degreeId = $args[0];
+        $enrollId = $args[1];
+        $groupId = $args[2];
+
+        $busGroup = new BusinessAcademicBusGroup();
+        $busEvaluation = new BusinessAcademicBusEvaluation();
+        $busEvaluationEnroll = new BusinessAcademicBusEvaluationEnroll();
+
+        $filters->degreeId = $degreeId;
+        $filters->groupId = $groupId;
+        $evaluations = $busEvaluation->searchEvaluation($filters);
+        $groupData = $busGroup->getGroup($groupId);
+
+        unset($fields);
+        if (count($evaluations) > 0)
+        {
+            foreach ($evaluations as $evaluation)
+            {
+                $evaluationData = $busEvaluation->getEvaluation($evaluation[0]);
+                $evaluationGrade = $busEvaluationEnroll->getEvaluationEnrollCurrentGrade($evaluationData->evaluationId, $enrollId, $groupData->useConcept == DB_TRUE);
+
+                $notSave = '';
+                if ( (strlen($evaluationGrade) == 0) && (strlen($evaluationData->moodleEvaluationId)>0) )
+                {
+                    $notSave = '<b>' . ' (' . _M('Não salva', $module) .') ' . '</b>';
+                    //Bus enroll
+                    $busEnroll = new BusinessAcademicBusEnroll();
+                    //Object enroll
+                    $enroll = $busEnroll->getEnroll($enrollId);
+                    //Bus contract
+                    $busContract = new BusinessAcademicBusContract();
+                    //Object contract
+                    $contract = $busContract->getContract($enroll->contractId);
+                    //Person id
+                    $personId = $contract->personId;
+                    //Bus person
+                    $busPerson = new BusinessBasicBusPerson();
+                    //Object person
+                    $person = $busPerson->getPerson($personId);
+                    //Person user name
+                    $personUserName = $person->mioloUserName;
+                    //Bus moodle
+                    $busMoodle = new BusinessAcademicBusMoodle();
+
+                    //Get moodle assignment note to student
+                    $filtersMoodle = new stdClass();
+                    $filtersMoodle->groupId = $groupId;
+                    $filtersMoodle->moodleEvaluationId = $evaluationData->moodleEvaluationId;
+                    $filtersMoodle->userName = $personUserName;
+
+                    $result = $busMoodle->getMoodleAssignmentNoteToStudent($filtersMoodle);
+
+                    $evaluationGrade = $result;
+                }
+                unset($evalFields);
+
+                $fieldName = 'evaluation[' . $evaluationData->evaluationId . '][' . $enrollId . ']';
+                                
+                $evalField = new MTextField($fieldName, $evaluationGrade, $evaluationData->description.$notSave, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+
+                if ($groupData->useConcept == DB_TRUE)
+                {
+                    $evalField->addAttribute('onchange', "degrees.validateConcept(null, null, this)");
+                }
+                else
+                {
+                    $evalField->addAttribute('onchange', "degrees.getDegreeEnroll({$evaluationData->degreeId},{$enrollId}).updateValue(false)");
+                }
+
+                if (strlen($evaluationGrade) > 0 || $groupData->isClosed == DB_TRUE)
+                {
+                    $evalField->setReadOnly(true);
+                }
+                
+                // Verifica se o campo 'pode digitar' está com 'P'(apenas o professor informado/apenas eu) e bloquea o processo
+                // de digitação para a avaliação, permitindo apenas o professor que cadastrou a avaliação 
+                if ( $evaluationData->podeDigitar == BusinessServicesBusProfessor::APENAS_O_PROFESSOR_INFORMADO )
+                {
+                    if ( $usuario->personId != $evaluationData->professorId )
+                    {
+                        $evalField->setReadOnly(true);
+                    }
+                }
+
+                $evalFields[] = $evalField;
+
+                $fieldName = $evaluationData->evaluationId . '_' . $enrollId;
+
+                if ( strlen($evaluationGrade) > 0 )
+                {
+                    $subsButton = new MImageLink('subsEvalButton' . $fieldName, '&nbsp', 'javascript:void(0)', $MIOLO->getUI()->getImageTheme(SAGU::getCurrentTheme(), 'edit.png') );
+                    $subsButton->setJsHint(_M('Substituição', $module));
+                    $ajaxAction = SForm::getAjaxAction('getEditForm', 'divEditForm', true, array('enrollId' => $enrollId, 'evaluationId' => $evaluationData->evaluationId, 'type' => 'E'));
+                    $subsButton->addAttribute('onclick', $ajaxAction);
+                    $evalFields[] = $subsButton;
+                }
+
+                $fields[] = new MHContainer('cntEvaluation' . $fieldName, $evalFields);
+                
+                $maxPoints = SAGU::NVL($evaluationData->maxPoints, 10000);
+                
+                echo "<script type = \"text/javascript\">";
+                echo "evaluation = new objEvaluationEnroll({$evaluationData->evaluationId}, {$enrollId}, {$evaluationData->degreeId}, {$evaluationData->weight}, {$maxPoints});";
+                echo "degrees.getDegreeEnroll({$evaluationData->degreeId}, {$enrollId}).addEvaluation(evaluation);";
+                echo "</script>";
+            }
+        }
+
+        if (is_array($fields))
+        {
+            $cntEvaluations = new MVContainer('cntEvaluations' . $degreeId . '_' . $enrollId, $fields);
+            $cntEvaluations = new MBaseGroup('cntEvaluations' . $degreeId . '_' . $enrollId, _M('Avaliações', $module), $fields, 'vertical', 'css');
+            $this->manager->getTheme()->setContent($cntEvaluations);
+        }
+    }
+
+    public function getEditForm($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'academic';
+
+        $enrollId = $args->enrollId;
+        $groupId = $args->groupId;
+        $degreeId = $args->degreeId;
+        $evaluationId = $args->evaluationId;
+        $type = $args->type;
+
+        $businessGroup = new BusinessAcademicBusGroup();
+        $groupData = $businessGroup->getGroup($groupId);
+
+        $businessEnroll = new BusinessAcademicBusEnroll();
+        $enrollData = $businessEnroll->getEnroll($enrollId);
+
+        $businessContract = new BusinessAcademicBusContract();
+        $contractData = $businessContract->getContract($enrollData->contractId);
+
+        if ($type == 'E')
+        {
+            $businessEvaluation = new BusinessAcademicBusEvaluation();
+            $businessEvaluationEnroll = new BusinessAcademicBusEvaluationEnroll();
+            $gradeData = $businessEvaluation->getEvaluation($evaluationId);
+            $updateHistory = $businessEvaluationEnroll->getEvaluationEnrollHistory($evaluationId, $enrollId, $groupData->useConcept == DB_TRUE);
+        }
+        else if ($type == 'D')
+        {
+            $businessDegree = new BusinessAcademicBusDegree();
+            $businessDegreeEnroll = new BusinessAcademicBusDegreeEnroll();
+            $gradeData = $businessDegree->getDegree($degreeId);
+            $updateHistory = $businessDegreeEnroll->getDegreeEnrollHistory($degreeId, $enrollId, $groupData->useConcept == DB_TRUE);
+        }
+
+        $textName = new MText('textName', $contractData->personName);
+        $textName->setBold(true);
+        $fields[] = $textName;
+
+        $textGrade = new MText('textGrade', $groupData->isClosed == DB_FALSE ? _M('Atualizando @1', $module, $gradeData->description) : _M('Consultando @1', $module, $gradeData->description));
+        $fields[] = $textGrade;
+        $fields[] = new MSeparator();
+
+        $gradeDesc = $groupData == DB_TRUE ? _M('Conceito', $module) : _M('Nota', $module);
+        $columns = array($gradeDesc, _M('Motivo', $module), _M('Data/Hora', $module), _M('Alterado por', $module));
+
+        $tableHistory = new MTableRaw(_M('Histórico de alterações', $module), $updateHistory, $columns);
+        $fields[] = $tableHistory;
+        $fields[] = new MSeparator();
+
+        if ($groupData->isClosed == DB_FALSE)
+        {
+            $gradeLabel = $groupData->useConcept == DB_TRUE ? _M('Novo conceito', $module) : _M('Nova nota', $module);
+
+            $podeExcluir = $MIOLO->checkAccess('FrmGradesTyping', A_DELETE) || $MIOLO->checkAccess('FrmProfessorGradesTyping', A_DELETE);
+            $fields[] = $newGrade = new MTextField('newGrade', null, $gradeLabel, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), $podeExcluir ? _M('Para excluir a nota atual, deixe este campo em branco.') : NULL);
+
+            if ( $groupData->useConcept == DB_TRUE )
+            {
+                $newGrade->addAttribute('onchange', "degrees.validateConcept(null, null, this); ");
+            }
+
+            $fields[] = $description = new MTextField('description', null, _M('Motivo', $module), SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+
+            // Atualizar
+            $passValue = SAGU::NVL($evaluationId, $degreeId);
+            $passArgs = array('degreeOrEvaluationId' => $passValue, 'enrollId' => $enrollId, 'type' => $type, 'groupId' => $groupId);
+            $ajaxAction = SForm::getAjaxAction('saveGrade', 'divEditForm', true, $passArgs);
+            $btnUpdate = new MButton('saveButton', _M('Atualizar', $module), $ajaxAction);
+            $fields[] = $btnUpdate;
+            $btnUpdate->label = '';
+        }
+
+        $title = $groupData->isClosed == DB_FALSE ? _M('Atualizar', $module) : _M('Histórico', $module);
+        $flds[] = $pop = new MPopup($module, $fields, $title);
+
+        return SAGU::alignFields($flds);
+    }
+
+    public function saveGrade($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'academic';
+
+        $degreeOrEvaluationId = $args->degreeOrEvaluationId;
+        $enrollId = $args->enrollId;
+        $type = $args->type;
+        $newGrade = $args->newGrade;
+        $description = $args->description;
+        $extraMsg = '';
+
+        $busDegreeEnroll = new BusinessAcademicBusDegreeEnroll();
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $busDegree = new BusinessAcademicBusDegree();
+                
+        $notaMaxima = $busLearningPeriod->obterNotaMaximaDaDisciplina($args->groupId);
+        
+        try
+        {
+            $podeExcluir = $MIOLO->checkAccess('FrmGradesTyping', A_DELETE) || $MIOLO->checkAccess('FrmProfessorGradesTyping', A_DELETE);
+            if ( $podeExcluir )
+            {
+                if ( ( !SAGU::allIsFilled($description) ) )
+                {
+                    throw new Exception( _M('Deve ser informado um motivo.') );
+                }
+            }
+            else
+            {
+                if ( !SAGU::allIsFilled($description) )
+                {
+                    if ( !SAGU::allIsFilled($newGrade) )
+                    {
+                        throw new Exception( _M('Você não tem permissão para excluir esta nota.') );
+                    }
+                    else
+                    {
+                        throw new Exception( _M('Deve ser informado um motivo.') );
+                    }
+                }
+                elseif ( !SAGU::allIsFilled($newGrade) )
+                {
+                    throw new Exception( _M('Você não tem permissão para excluir esta nota.') );
+                }
+            }
+            
+            if ( $notaMaxima && $newGrade > $notaMaxima )
+            {
+                throw new Exception( _M("A nota digitada é maior do que a nota máxima permitida ($notaMaxima).") );
+            }
+            
+            $degree = $busDegree->getDegree($degreeOrEvaluationId);
+            $parentDegreeId = $degree->parentDegreeId;
+
+            if ( strlen($args->degreesArray) == 0 || strlen($args->degreesArray) == 8 ) // Quando for zero (vazio) ou oito (array vazio serializado), nao utilizar
+            {
+                $dArray = $args->evaluationsArray;
+            }
+            else
+            {
+                $dArray = $args->degreesArray;
+            }
+            
+            $descArray = '';
+            $descArray = unserialize(base64_decode($dArray));
+            $descArray[$degreeOrEvaluationId . '_' . $enrollId] = $description;
+            $descArray = base64_encode(serialize($descArray));
+
+            // Se preferencia ativada exibe no formulario a maior nota ao fechar a popup
+            $notaMaiorQueAtual = 'false';
+            if ( SAGU::getParameter('ACADEMIC', 'CONSIDER_HIGHER_PUNCTUATION_DEGREE') == DB_TRUE )
+            {
+                $notaMaiorAtual = $busDegreeEnroll->getDegreeEnrollCurrentGrade($degreeOrEvaluationId, $enrollId);
+                if ( ( strlen($newGrade) > 0 ) && ( strlen($notaMaiorAtual) > 0 ) && ( is_numeric($notaMaiorAtual) || is_double($notaMaiorAtual) ) )
+                {
+                    $isMaior = SAGU::calcNumber(" {$notaMaiorAtual} > {$newGrade} ") == DB_TRUE;
+                    if ( $isMaior )
+                    {
+                        $notaMaiorQueAtual = 'true';
+                        $extraMsg .= _M('Esta nota é inferior à nota existente e não será substituída.', $module);
+                    }
+                }
+            }
+
+            // Arredonda
+            if ( is_numeric($newGrade) )
+            {
+                $newGrade = SAGU::calcNumber(" {$newGrade} + 0 ", true);
+            }
+
+            $closeFunction = "javascript:updateFieldValue({$degreeOrEvaluationId}, {$enrollId}, '{$newGrade}', '{$type}', '{$descArray}', {$notaMaiorQueAtual}, '{$parentDegreeId}');";
+            $closeFunction .= "mpopup.remove()";
+
+            $msg = _M('Nota atualizada. @1', $module, $extraMsg);
+            $fields[] = MPrompt::Information($msg, $closeFunction);
+        }
+        catch (Exception $e)
+        {
+            $fields[] = MPrompt::Error( $e->getMessage(), 'mpopup.remove()' );
+        }
+        
+        $closeFunction = "javascript:updateFieldValue({$degreeOrEvaluationId}, {$enrollId}, '{$newGrade}', '{$type}', '{$descArray}', {$notaMaiorQueAtual}, '{$parentDegreeId}');";
+        $closeFunction .= "mpopup.remove()";
+
+        $flds[] = $pop = new MPopup('popupSaveGrade', $fields, _M('Atualizar', $module));
+        return $flds;
+    }
+
+    public function btnFinish_click()
+    {
+        $this->tbBtnSave_click();
+    }
+
+    public function tbBtnSave_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'academic';
+        $action = MIOLO::getCurrentAction();
+
+        $businessGradeTyping = new BusinessAcademicBusGradeTyping();
+        $businessGroup = new BusinessAcademicBusGroup();
+        $businessEnroll = new BusinessAcademicBusEnroll();
+        $businessDegreeEnroll = new BusinessAcademicBusDegreeEnroll();
+        $businessEvaluationEnroll = new BusinessAcademicBusEvaluationEnroll();
+        $busDegree = new BusinessAcademicBusDegree();
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+
+        $evaluation = MIOLO::_request('evaluation');
+        $frequency = MIOLO::_request('frequency');
+        $groupId = MIOLO::_request('groupId');
+        $degrees = (array) MIOLO::_request('degree');
+        $degreesExtra = (array) MIOLO::_request('degreeExtra');
+        $status = MIOLO::_request('status');
+        $detailEnrollStatus = MIOLO::_request('detailedStatus');
+        $finishGradesTyping = MIOLO::_request('btnFinish');
+        $notasCompostas = $busDegree->listCompositeDegrees();
+        $notaMaxima = $busLearningPeriod->obterNotaMaximaDaDisciplina($groupId);
+        $notaMaximaDigitada = FALSE;
+
+        // Junta os degreesExtra com os degrees, caso tenha valores
+        foreach ( $degreesExtra as $key => $val )
+        {
+            foreach ( $val as $_key => $_val )
+            {
+                if ( strlen($_val) > 0 )
+                {
+                    $degrees[$key][$_key] = $_val;
+                }
+            }
+        }
+        
+        $degreesArray = unserialize(base64_decode(MIOLO::_request('degreesArray')));
+        $evaluationsArray = unserialize(base64_decode(MIOLO::_request('evaluationsArray')));
+
+        $transaction = $businessDegreeEnroll->getDatabase()->getTransaction();
+        $transaction->_beginTransaction();
+
+        try
+        {
+            $groupData = $businessGroup->getGroup($groupId);
+
+            if (count($degrees) > 0)
+            {
+                foreach ($degrees as $degreeId => $degreeEnrolls)
+                {
+                    if (count($degreeEnrolls) > 0)
+                    {
+                        foreach ($degreeEnrolls as $enrollId => $grade)
+                        {
+                            // Verifica se a nota está embranco por que foi editada para vazia ou ainda não foi inserida.
+                            $filters = new stdClass();
+                            $filters->degreeId = $degreeId;
+                            $filters->enrollId = $enrollId;
+                            $degreeEnroll = $businessDegreeEnroll->searchDegreeEnroll($filters);
+                            if ( ( strlen($grade) > 0 ) || ( isset($degreeEnroll) ) )
+                            {
+                                $degreeCurrentGrade = $businessDegreeEnroll->getDegreeEnrollCurrentGrade($degreeId, $enrollId, $groupData->useConcept == DB_TRUE);
+
+                                if (strlen($degreeCurrentGrade) == 0 || $grade != $degreeCurrentGrade)
+                                {
+                                    $degreeData = new AcdDegreeEnroll();
+
+                                    $degreeData->degreeId = $degreeId;
+                                    $degreeData->enrollId = $enrollId;
+                                    $degreeData->recordDate = date(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP'));
+
+                                    if ($groupData->useConcept == DB_TRUE)
+                                    {
+                                        $degreeData->concept = $grade;
+                                    }
+                                    else
+                                    {
+                                        $degreeData->note = number_format($grade, SAGU::getParameter('BASIC', 'GRADE_ROUND_VALUE'), SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), '');
+                                    }
+
+                                    if (strlen($degreesArray[$degreeId . '_' . $enrollId]) > 0)
+                                    {
+                                        $degreeData->description = $degreesArray[$degreeId . '_' . $enrollId];
+                                    }
+                                    else if (strlen($degreeCurrentGrade) == 0)
+                                    {
+                                        $degreeData->description = _M('Nota inserida pelo usuário', $module);
+                                    }
+                                    else if ( $groupData->gradesTypingFinished == DB_FALSE )
+                                    {
+                                        $degreeData->description = _M('Nota modificada pelo usuário');
+                                    }
+                                    else
+                                    {
+                                        // Verificacao de seguranca devido a um bug ter ocorrido (#18498)
+//                                        if ( !in_array($degreeId, $notasCompostas) )
+//                                        {
+//                                            // Log em arquivo
+//                                            $ses = $_SESSION;
+//                                            unset($ses['sMainMenusMainMenuJS']);
+//                                            $file = dirname(__FILE__) . '/digitacao_' . date('Y-m-d_H_i') . '.log';
+//                                            $logs = array(
+//                                                'URL' => '/miolo20/html/index.php?module=academic&action=main:process:listenrolledpupils&&groupId=' . $groupId,
+//                                                'GROUP_ID' => $groupId,
+//                                                'DEGREE_ID_ERRO' => $degreeId,
+//                                                'DEGREE_DATA' => $degreeData,
+//                                                'LOGIN ATUAL' => $MIOLO->auth->login,
+//                                                'NOTAS_COMPOSTAS' => $notasCompostas,
+//                                                'DEGREES' => $degrees,
+//                                                'DEGREES_ARRAY' => $degreesArray,
+//                                                'DEGREES_EXTRA' => $evaluationsArray,
+//                                                'EVALUATIONS' => $evaluation,
+//                                                'EVALUATION_ARRAY' => $evaluationsArray,
+//                                                'SESSAO' => $ses,
+//                                            );
+//                                            @file_put_contents($file, var_export($logs, true));
+//                                            
+//                                            $degreeEnroll = $businessDegreeEnroll->getByEnrollAndDegreeLast($enrollId, $degreeId);
+//                                            $desc = $enrollId . ' - ' . $degreeId;
+//
+//                                            $MIOLO = MIOLO::getInstance();
+//                                            $url = $MIOLO->getActionURL( MIOLO::getCurrentModule(), MIOLO::getCurrentAction(), null, array('groupId' => $groupId) );
+//                                            $link = new MLink('lnkReload', _M('Clicando aqui', $module), $url);
+//                                            throw new Exception(_M('Não foi possível salvar a(s) nota(s), pois houve um erro inesperado. Recarregue o formulário @1 e tente novamente.', $module, $link->generate()));
+//                                        }
+                                        
+                                        $degreeData->description = _M('Nota atualizada automaticamente', $module);
+                                    }
+                                    
+                                    if ( strlen($grade) == 0 )
+                                    {
+                                        $degreeData->description = _M('Nota excluída. Motivo: ') . $degreeData->description;
+                                    }
+                                    
+                                    if ( $notaMaxima && $degreeData->note > $notaMaxima )
+                                    {
+                                        $notaMaximaDigitada = TRUE;
+                                    }
+                                    else
+                                    {
+                                        $businessDegreeEnroll->insertDegreeEnroll(clone($degreeData));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (count($evaluation) > 0)
+            {
+                foreach ($evaluation as $evaluationId => $evaluationEnrolls)
+                {
+                    if (count($evaluationEnrolls) > 0)
+                    {
+                        foreach ($evaluationEnrolls as $enrollId => $grade)
+                        {
+                            $evaluationCurrentGrade = $businessEvaluationEnroll->getEvaluationEnrollCurrentGrade($evaluationId, $enrollId, $groupData->useConcept == DB_TRUE);
+
+                            if (strlen($evaluationCurrentGrade) == 0 || $grade != $evaluationCurrentGrade)
+                            {
+                                $evaluationData = new AcdEvaluationEnroll();
+
+                                $evaluationData->evaluationId = $evaluationId;
+                                $evaluationData->enrollId = $enrollId;
+                                $evaluationData->recordDate = date(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP'));
+
+                                if ($groupData->useConcept == DB_TRUE)
+                                {
+                                    $evaluationData->concept = $grade;
+                                }
+                                else
+                                {
+                                    $evaluationData->note = $grade;
+                                }
+
+                                if (strlen($evaluationCurrentGrade) == 0)
+                                {
+                                    $evaluationData->description = _M('Nota inserida pelo usuário', $module);
+                                }
+                                elseif (strlen($evaluationsArray[$evaluationId . '_' . $enrollId]) > 0)
+                                {
+                                    $evaluationData->description = $evaluationsArray[$evaluationId . '_' . $enrollId];
+                                }
+                                else if ( $groupData->gradesTypingFinished == DB_FALSE )
+                                {
+                                    $evaluationData->description = _M('Nota modificada pelo usuário', $module);
+                                }
+                                else
+                                {
+                                    $evaluationData->description = _M('Nota atualizada automaticamente', $module);
+                                }
+
+                                $businessEvaluationEnroll->insertEvaluationEnroll(clone($evaluationData));
+                            }
+                        }
+                    }
+                }
+            }
+
+
+            $groupPupils = $businessGradeTyping->listGroupEnrolledPupils($groupId);
+
+            //Atualiza dados novos
+            foreach ( $groupPupils as $groupPupil )
+            {
+                list($enrollId) = $groupPupil;
+                $enroll = $businessEnroll->getEnroll($enrollId);
+
+                $allowEdit = SAGU::getParameter('ACADEMIC', 'GRADE_TYPING_ALLOW_EDIT_FREQUENCY') == DB_TRUE;
+                if( $allowEdit )
+                {
+                    $enroll->frequency = strlen($frequency[$enrollId]) > 0 ? $frequency[$enrollId] : $enroll->frequency; //frequency in hours
+                }
+                if ( $groupData->useConcept != DB_TRUE )
+                {
+                    $enroll->statusId = strlen($status[$enrollId]) > 0 ? $status[$enrollId] : $enroll->statusId;
+//                    $enroll->detailEnrollStatusId = $detailEnrollStatus[$enrollId];
+                }
+
+                $businessEnroll->updateEnroll($enroll);
+            }
+
+            if ( $businessGroup->checkGradesTyping($groupId) )
+            {
+                $groupData->gradesTypingFinished = DB_TRUE;
+                $businessGroup->updateGroup($groupData);
+            }
+            elseif ( strlen($finishGradesTyping) > 0 )
+            {
+                throw new Exception(_M('Para finalizar a digitação, todas as notas devem ser informadas', $module));
+            }
+
+            $transaction->_commit();
+
+            if ( $action == 'main:professor:gradesTyping' ) //Modulo SERVICES
+            {
+                $goto = $MIOLO->getActionURL('services', 'main:professor:curricularComponents');
+            }
+            else
+            {
+                $goto = $MIOLO->getActionURL($module, 'main:process:gradesTyping');
+            }
+
+            $msg = _M('Notas gravadas com sucesso.', $module) . ' ';
+            
+            if ( $notaMaximaDigitada )
+            {
+                throw new Exception(_M("Foram digitadas notas maiores do que a nota máxima permitida ($notaMaxima). Por favor verifique."));
+            }
+
+            $MIOLO->information($msg, $goto);
+        }
+        catch (Exception $e)
+        {
+            $transaction->_rollback();
+
+            $msg = _M('Erro ao processar as notas.', $module) . '. ' . $e->getMessage();
+
+            $this->addError($msg);
+        }
+    }
+
+    public function closeGroup_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $groupId = $MIOLO->_request('groupId');
+        
+        $busGradeTyping = new BusinessAcademicBusGradeTyping();
+        $groupData = $busGradeTyping->getGroupData($groupId);
+
+        // Limpa lixos
+        $this->infos = array();
+        $this->ClearFields();
+        $MIOLO->page->jscode->clear();
+
+        
+        SDatabase::beginTransaction();
+        $ok = $this->tryCloseGroup();
+        SDatabase::rollback();
+
+        // Exibe erros caso necessario
+        if ( $ok )
+        {
+            $this->AddFields( $this->getInformations($groupData) );            
+
+            // Confirmacao
+            $gotoNo = $MIOLO->getActionURL($module, $action, null, array('groupId' => $groupId));
+
+            $btnSave = new MButton('closeGroupApply', _M('Confirmar fechamento de disciplina', $module));
+            $btnCancel = new MButton('btnCancel', _M('Cancelar', $module), $gotoNo);
+
+            $this->AddField( new MHContainer(rand(), array($btnSave, $btnCancel)) );
+            
+            // Tabela exibida na hora da confirmacao de fechamento de disciplina
+            $this->AddField($this->getTableReadOnly());
+        }
+    }
+    
+    public function closeGroupApply_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $groupId = $MIOLO->_request('groupId');
+        
+        $ok = FALSE;        
+        SDatabase::beginTransaction();
+        
+        try
+        {
+            $ok = $this->tryCloseGroup();
+        
+            if ( $ok )
+            {
+                $this->saveDetailedStatus();
+
+                SDatabase::commit();
+
+                $goto = $MIOLO->getActionURL($module, $action, null, array('groupId' => $groupId));
+                $MIOLO->information(_M('Disciplina oferecida fechada com sucesso.', $module), $goto);
+            }
+            else
+            {
+                SDatabase::rollback();
+                
+                $goto = $MIOLO->getActionURL($module, $action, null, array('groupId' => $groupId));
+                $MIOLO->error(_M('Houve um erro ao fechar a disciplina.', $module), $goto);
+            }
+        }
+        catch ( Exception $e )
+        {
+            SDatabase::rollback();
+            
+            $goto = $MIOLO->getActionURL($module, $action, null, array('groupId' => $groupId));
+            $MIOLO->error(_M('Houve um erro ao fechar a disciplina.<br>Motivo: ' . $e->getMessage(), $module), $goto);
+        }
+    }
+    
+    private function saveDetailedStatus()
+    {
+        $busEnroll = new BusinessAcademicBusEnroll();
+        
+        // Salva estados detalhados
+        $detailEnrollStatusList = (array) MIOLO::_REQUEST('detailedStatus');
+
+        foreach ( $detailEnrollStatusList as $enrollId => $statusId )
+        {
+            $enroll = $busEnroll->getEnroll($enrollId);
+            $enroll->detailEnrollStatusId = $statusId;
+
+            $busEnroll->updateEnroll($enroll);
+        }
+    }
+    
+    /**
+     * Tenta fechar a disciplina
+     * 
+     * @return boolean
+     */
+    private function tryCloseGroup()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $groupId = $MIOLO->_request('groupId');
+        $ok = false;
+        
+        $busGroup = new BusinessAcademicBusGroup();
+        
+        try
+        {
+            $ok = $busGroup->closeGroup($groupId);
+        }
+        catch (Exception $e)
+        {
+            $this->addError(_M('Não foi possível fechar a disciplina oferecida pelos seguintes motivos:', $module));
+            $this->addError($e->getMessage());
+            $this->addError($busGroup->getErrors());
+        }
+        
+        return $ok;
+    }
+
+    public function openGroup_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'academic';
+
+        $groupId = $MIOLO->_request('groupId');
+        $busGroup = new BusinessAcademicBusGroup();
+        $transaction = $busGroup->getDatabase()->getTransaction();
+
+        try
+        {
+            $transaction->_beginTransaction();
+
+            if ( $busGroup->reopenGroup($groupId) )
+            {
+                $transaction->_commit();
+            }
+            
+            $MIOLO->information(_M('Disciplina oferecida reaberta com sucesso.', $module), $MIOLO->getActionURL($module, $action, null, array('groupId'=>$groupId)));
+        }
+        catch (Exception $e)
+        {
+            $transaction->_rollback();
+
+            $this->addError(_M('Não foi possível reabrir a disciplina oferecida pelos seguintes motivos:', $module));
+            $this->addError($e->getMessage());
+        }
+    }
+
+
+    public function openDisapprovalReason($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        list($enrollId) = $args;
+
+        $disapprovalReasonLabel = new MTextLabel('disapprovalReasonLabel', _M('Motivo de reprovação') . ':');
+        $disapprovalReasonLabel->setClass('m-caption m-caption-required');
+        $disapprovalReason = new MTextField('disapprovalReason', null, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $fields[] = new MHContainer('disapprovalReasonCnt', array($disapprovalReasonLabel, $disapprovalReason));
+
+        $fields[] = new MButton('saveDisapprovalReason', _M('Salvar', $module), 'javascript:_saveDisapprovalReason(false)');
+
+        MPopup::show('divPopup', $fields, _M('Motivo de reprovação', $module));
+
+        $MIOLO->page->addAJAXJsCode("
+            document.getElementById('mPopup').style.position = 'fixed';
+            document.getElementById('disapprovalReason').focus();
+        ");
+    }
+
+    public function saveDisapprovalReason($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        list($degreeId,
+                $enrollId,
+                $disapprovalReason,
+                $descArray) = explode(',', $args[0]);
+
+        $descArray = unserialize(base64_decode($descArray));
+        $descArray[$degreeId . '_' . $enrollId] = $disapprovalReason;
+        $descArray = base64_encode(serialize($descArray));
+
+        $MIOLO->page->addAJAXJsCode("
+        setDegreesArray('{$descArray}');
+     ");
+    }
+
+    /**
+     * Imprime relatorio de notas e frequencias
+     */
+    public function tbBtnPrint_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $groupId = MIOLO::_REQUEST('groupId');
+
+        $parameters = array();
+        $parameters['GROUP_ID'] = (int) $groupId;
+
+        $report = new SReport(array(
+            'module' => 'academic',
+            'reportName' => 'notesAndFrequencies',
+            'parameters' => $parameters
+        ));
+        
+        if ( !$report->generate() )
+        {
+            $this->addError(_M('Não foi possível gerar o documento.', $module ));
+        }
+    }
+    
+    /**
+     * Obtem link de atualizacao de nota
+     *
+     * @param string $label
+     * @param string $imgLocation
+     * @param int $degreeId
+     * @param int $enrollId
+     * @return MImageLink 
+     */
+    public function getUpdateButton($label, $imgLocation, $degreeId, $enrollId)
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $subsButton = new MImageLink('subsButton' . rand(), null, 'javascript:void(0)', $imgLocation);
+        $subsButton->setJsHint($label);
+        $ajaxAction = SForm::getAjaxAction('getEditForm', 'divEditForm', true, array('enrollId' => $enrollId, 'degreeId' => $degreeId, 'type' => 'D'));
+        $subsButton->addAttribute('onclick', $ajaxAction);
+
+        return $subsButton;
+    }
+    
+    /**
+     *
+     * @return array
+     */
+    private function getInformations($groupData)
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $busSchedule = new BusinessAcademicBusSchedule();
+        $professors = $busSchedule->getGroupProfessors($groupData->groupId);
+
+        if (is_array($professors))
+        {
+            $groupData->professor = implode(', ', $professors);
+        }
+        else
+        {
+            $groupData->professor = _M('Professor não definido', $module);
+        }
+
+        $fields[] = new MTextLabel('curricularComponent', $groupData->curricularComponent, _M('Disciplina', $module));
+        $fields[] = new MTextLabel('course', $groupData->curriculumCourseId . '/' . $groupData->curriculumCourseVersion . ' - ' . $groupData->curriculumCourseName, _M('Curso', $module));
+        $fields[] = new MTextLabel('period', $groupData->periodId, _M('Período', $module));
+        $fields[] = new MTextLabel('professor', $groupData->professor, _M('Professor(es)', $module));
+        $fields[] = new MTextLabel('unit', $groupData->unit, _M('Unidade', $module));
+        $fields[] = new MTextLabel('group', $groupData->groupId, _M('Disciplina oferecida', $module));
+        $fields[] = new MTextLabel('learningPeriod', $groupData->learningPeriodId . ' - ' . $groupData->learningPeriodDescription, _M('Período letivo', $module));
+        $fields[] = new MTextLabel('credits', $groupData->credits, _M('Créditos', $module));
+        $fields[] = new MTextLabel('minimumFrequency', $groupData->minimumFrequency . _M('H', $module), _M('Frequência mínima', $module));
+
+        if ($groupData->useConcept == DB_FALSE)
+        {
+            $fields[] = new MTextLabel('finalAverage', $groupData->finalAverage, _M('Média final', $module));
+
+            if ($learningPeriodData->isClosed == DB_FALSE && $groupData->isClosed == DB_FALSE)
+            {
+                $txtInstruction = new MText('txtInstruction', '* ' . _M('Informe as notas utilizando até @1 casas decimais.', $module, SAGU::getParameter('BASIC', 'GRADE_ROUND_VALUE')));
+                $txtInstruction->setColor('blue');
+
+                $fields[] = new MSeparator();
+                $fields[] = $txtInstruction;
+            }
+        }
+        
+        return $fields;
+    }
+    
+    /**
+     * @return array 
+     */
+    private function getEnrollStatusList()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $busEnrollStatus = new BusinessAcademicBusEnrollStatus();
+        $esList = array();
+
+        foreach ( (array) $busEnrollStatus->listEnrollStatus(1) as $enrollStatusId => $desc )
+        {
+            $filters = new stdClass();
+            $filters->parentStatus = $enrollStatusId;
+            $list = AcdDetailedEnrollStatus::listRecords($filters);
+
+            // Se a array está vazia, n?o precisa inseri-la na $esList.
+            if ( count($list) > 0 )
+            {
+                $esList[$enrollStatusId] = $list;
+            }
+        }
+        
+        return $esList;
+    }
+
+    private function getTableReadOnly()
+    {
+        $groupId = MIOLO::_request('groupId');
+        
+        $busGradeTyping = new BusinessAcademicBusGradeTyping();
+        
+        $groupData = $busGradeTyping->getGroupData($groupId);
+        $pupilData = $busGradeTyping->listGroupEnrolledPupilsObject($groupId);
+        $learningPeriodId = $groupData->learningPeriodId;
+        $degrees = $busGradeTyping->getLearningPeriodDegrees($learningPeriodId);
+        $tableHeaders = $this->getTableHeaders($degrees);
+        $tableData = array();
+        $detailedList = $this->getEnrollStatusList();
+        
+        foreach ( $pupilData as $pupil )
+        {
+            $tableData[] = $this->getTableLine($degrees, $detailedList, $pupil);
+        }
+        
+        $table = new MTableRaw(null, $tableData, $tableHeaders);
+        
+        return $table;
+    }
+    
+    /**
+     * @return array
+     */
+    private function getTableLine($degrees, array $detailedList = null, $pupil)
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $busDegreeEnroll = new BusinessAcademicBusDegreeEnroll();
+        $busEnroll = new BusinessAcademicBusEnroll();
+        $busEnrollStatus = new BusinessAcademicBusEnrollStatus();
+
+        $line = array();
+        $line[] = $pupil->personId;
+        $line[] = $pupil->personName;
+        $line[] = $pupil->courseId;
+
+        // Notas dinamicas
+        $notaExame = false;
+        foreach ( (array) $degrees as $degree )
+        {
+            $degree instanceof AcdDegree;
+            
+            $nota = $busDegreeEnroll->getDegreeEnrollCurrentGrade($degree->degreeId, $pupil->enrollId);
+            
+            if ( $degree->isExam == DB_TRUE )
+            {
+                $notaExame = $nota ? true : false;
+            }
+
+            $line[] = $nota;
+        }
+
+        $enroll = $busEnroll->getEnroll($pupil->enrollId);
+        
+        // estado futuro
+        $futureStatusId = $busEnroll->getFutureStatusId($pupil->enrollId);
+        $futureStatus = $busEnrollStatus->getEnrollStatus($futureStatusId);
+        
+        // Posição já selecionada:
+        // - se for APROVADO: Selecionar por padrão APROVADO POR MÉDIA
+        // - se for APROVADO e tiver nota de exame: Selecionar por padrão APROVADO POR EXAME
+        // - se for REPROVADO: Selecionar por padrão REPROVADO POR MÉDIA
+        // - se for REPROVADO e tiver nota de exame: Selecionar por padrão REPROVADO POR EXAME        
+        if ( $futureStatusId == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPROVED') )
+        {            
+            if ( $notaExame )
+            {
+                foreach ( $futureStatus->detailEnrollStatus as $key => $futureState )
+                {
+                    if ( $futureState->isexam == DB_TRUE )
+                    {
+                        $selectedPosition = $futureStatus->detailEnrollStatus[$key]->detailEnrollStatusId;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                $count = 0;
+                $chave = NULL;
+                foreach ( $futureStatus->detailEnrollStatus as $key => $futureState )
+                {
+                    if ( $futureState->isexam == DB_FALSE )
+                    {
+                        $count++;
+                        $chave = $futureStatus->detailEnrollStatus[$key]->detailEnrollStatusId;
+                    }
+                }
+                
+                if ( $count == 1 )
+                {
+                    $selectedPosition = $chave;
+                }
+            }
+        }
+        elseif ( $futureStatusId == SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_DISAPPROVED') )
+        {
+            if ( $notaExame )
+            {
+                foreach ( $futureStatus->detailEnrollStatus as $key => $futureState )
+                {
+                    if ( $futureState->isexam == DB_TRUE )
+                    {
+                        $selectedPosition = $futureStatus->detailEnrollStatus[$key]->detailEnrollStatusId;
+                        break;
+                    }
+                }
+            }
+            else
+            {
+                $count = 0;
+                $chave = NULL;
+                foreach ( $futureStatus->detailEnrollStatus as $key => $futureState )
+                {
+                    if ( $futureState->isexam == DB_FALSE )
+                    {
+                        $count++;
+                        $chave = $futureStatus->detailEnrollStatus[$key]->detailEnrollStatusId;
+                    }
+                }
+                
+                if ( $count == 1 )
+                {
+                    $selectedPosition = $chave;
+                }
+            }
+        }
+        else
+        {
+            $selectedPosition = $futureStatus->detailEnrollStatus[0]->detailEnrollStatusId;
+        }
+
+        $line[] = $enroll->frequency . _M('H', $module);
+        $line[] = $enroll->statusDescription;
+        $line[] = $futureStatus->description;
+        $line[] = $this->getDetailedStatusSelect($detailedList, $pupil->enrollId, $futureStatusId, $enroll->detailEnrollStatusId, $pupil->personName, $degree->isExam, $selectedPosition);
+
+        return $line;
+    }
+    
+    /**
+     * 
+     * @return \MSelection 
+     */
+    private function getDetailedStatusSelect(array $detailedList = null, $enrollId, $futureStatusId, $detailEnrollStatusId = null, $personName, $isExam, $selectedPosition = null)
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        $busEnrollStatus = new BusinessAcademicBusEnrollStatus();
+        $filters = new stdClass();
+        $filters->parentstatus = $futureStatusId;
+
+        if ( count($detailedList) > 0 )
+        {
+            $options = $detailedList[$futureStatusId];
+
+            if ( count($options) > 0 )
+            {
+                $fieldName = 'detailedStatus[' . $enrollId . ']';
+
+                $position = $selectedPosition;
+                $sel = new MSelection($fieldName, $position, null, $options, true);
+
+                $this->AddValidator( new MRequiredValidator($fieldName, _M('Estado detalhado (@1)', $module, $personName)) );
+
+                return $sel;
+            }
+        }
+        
+        return null;
+    }
+    
+    /**
+     *
+     * @return array
+     */
+    private function getTableHeaders(array $degrees = null)
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $tableHeaders = array(
+            _M('Código', $module),
+            _M('Nome', $module),
+            _M('Curso', $module),
+        );
+        
+        foreach ( (array) $degrees as $degree )
+        {
+            $degree instanceof AcdDegree;
+            $tableHeaders[] = $degree->description;
+        }
+        
+        $tableHeaders[] = _M('Frequência', $module);
+        $tableHeaders[] = _M('Estado atual', $module);
+        $tableHeaders[] = _M('Estado futuro', $module);
+        
+        if ( count($this->getEnrollStatusList()) > 0 )
+        {
+            $tableHeaders[] = _M('Estado detalhado', $module);
+        }
+        
+        return $tableHeaders;
+    }
+}
+?>

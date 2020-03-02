@@ -1,0 +1,328 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file handles the connection and actions for finCounter table
+ *
+ * @author Armando Taffarel Neto [taffarel@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ * Cristian Edson Göhl [cristian@solis.coop.br]
+ * 
+ * @since
+ * Class created on 03/01/2006
+ *
+ **/
+
+/**
+ * Class to manipulate the finCounter table
+ **/
+class BusinessFinanceBusCounter extends sBusiness
+{
+    /**
+     * List all records from the table handled by the class
+     *
+     * @param: $onlyClosed (boolean): TRUE para listar apenas caixas fechados. 
+     *
+     * @returns (array): Return an array with the entire table
+     *
+     **/
+    public function listCounter($onlyClosed = FALSE)
+    {
+        $sql = ' SELECT A.counterId,
+                        A.description
+                   FROM finCounter A ';
+        
+        if ( $onlyClosed )
+        {
+            $sql .= ' WHERE A.counterId NOT IN (
+                SELECT counterId FROM finopencounter WHERE opencounterid NOT IN (
+                    SELECT opencounterid FROM finclosecounter
+                )
+            )';
+        }
+        
+        $sql .= ' ORDER BY 1 ';
+
+        $db = $this->getDatabase();
+        
+        $return = $db->query($sql);
+
+        return $return;
+    }
+    
+    /**
+     * Lista todos caixas ativos
+     *
+     * @returns (array): Return an array with the entire table
+     *
+     **/
+    public function listCounterActive($counterId = null)
+    {
+        $sql = ' SELECT A.counterId,
+                        A.description
+                   FROM finCounter A
+                  WHERE isActive IS TRUE ';
+
+        if ( $counterId )
+        {
+            $sql .= ' AND A.counterId <> ? ';
+            $args[] = $counterId;
+        }
+        
+        $sql .= ' ORDER BY A.counterId ';
+        
+        $db = $this->getDatabase();
+        
+        $return = $db->query(SAGU::prepare($sql, $args));
+
+        return $return;
+    }
+
+    /**
+     * List counters in operation
+     *
+     * @param: None
+     *
+     * @returns (array): Return an array with the entire table
+     *
+     **/
+    public function listCountersInOperation($responsibleUserName = null)
+    {
+        $module = 'finance';
+        
+        $sql = ' SELECT A.counterId,              
+                        A.counterId || \' - \' || A.description,
+                        OC.openCounterId
+                   FROM finCounter A
+             INNER JOIN basUnit C
+                     ON ( A.unitId = C.unitId )
+              LEFT JOIN finOpenCounter OC
+                     ON OC.counterId = A.counterId
+                    AND OC.openCounterId NOT IN ( SELECT CC.openCounterId
+                                                    FROM finOpenCounter FOC
+                                              INNER JOIN finCloseCounter CC
+                                                      ON CC.openCounterId = FOC.openCounterId
+                                                   WHERE FOC.counterId = A.counterId )
+                  WHERE A.counterId 
+                     IN ( SELECT O.counterId 
+                            FROM finopenCounter O';
+        
+        //Get only counters where user is the responsible
+        if ( strlen($responsibleUserName) > 0 )
+        {
+            $sql .= ' WHERE O.username = lower(?) AND ';
+            $args[] = $responsibleUserName;
+        }
+        else
+        {
+            $sql .= ' WHERE ';
+        }
+        
+        $sql .= ' O.openCounterId NOT IN (SELECT E.openCounterId
+                                              FROM finopenCounter E
+                                        INNER JOIN fincloseCounter D
+                                                ON (E.openCounterId = D.openCounterId AND isconfirmed=\'t\'))) ';
+        
+        $db = $this->getDatabase();
+        $return = $db->query(SAGU::prepare($sql, $args));
+        
+        return $return;
+    }
+
+    /**
+     * Return a specific record from the database
+     *
+     * @param $counterId (integer): Primary key of the record to be retrieved
+     *
+     * @return (object): Return an object of the type handled by the class
+     *
+     **/
+    public function getCounter($counterId)
+    {
+        $sql = 'SELECT A.counterId,
+                       A.description,
+                       A.unitId,
+                       A.isActive,
+                       A.userName,
+                       TO_CHAR(A.dateTime,\'' . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . '\'),
+                       A.isCounterTreasury,
+                       A.accountSchemeId
+                  FROM finCounter A
+                 WHERE A.counterId = ?';
+
+        $db = $this->getDatabase();
+        $result = $db->query(SAGU::prepare($sql, $counterId));
+        
+        $counter = new FinCounter();
+        
+        list ( $counter->counterId, $counter->description, $counter->unitId, $counter->isActive, $counter->userName, $counter->dateTime, $counter->isCounterTreasury, $counter->accountSchemeId ) = $result[0];
+        
+        return $counter;
+    }
+
+    /**
+     * Do a search on the database table handled by the class
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): An array containing the search results
+     **/
+    public function searchCounter($data)
+    {
+        $sql = 'SELECT A.counterId,
+                       A.description,
+                       A.unitId,
+                       C.description,
+                       A.isActive,
+                       A.isCounterTreasury
+                  FROM finCounter A
+            INNER JOIN basUnit C
+                    ON (A.unitId = C.unitId)';
+
+        $where = '';
+        unset($args);
+        if ( strlen($data->counterId) > 0 )
+        {
+            $where .= ' AND A.counterId = ? ';
+            $args[] = $data->counterId;
+        }
+        if ( strlen($data->description) > 0 )
+        {
+            $where .= ' AND A.description ILIKE ? ';
+            $args[] = $data->description . '%';
+        }
+        
+        if ( strlen($data->unitId) > 0 )
+        {
+            $where .= ' AND A.unitId = ?';
+            $args[] = $data->unitId;
+        }
+        if ( strlen($data->unitDescription) > 0 )
+        {
+            $where .= ' AND C.description ILIKE ? ';
+            $args[] = $data->unitDescription . '%';
+        }
+        if ( strlen($data->isActive) > 0 )
+        {
+            $where .= ' AND A.isActive=? ';
+            $args[] = $data->isActive;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 4) . ' ORDER BY 2';
+            
+            $db = $this->getDatabase();
+            $result = $db->query(SAGU::prepare($sql, $args));
+        }
+
+        return $result;
+    }
+
+    /**
+     * Insert a new record
+     *
+     * @param $data (object): An object of the type handled by the class
+     *
+     * @return True if succed, otherwise False
+     *
+     **/
+    public function insertCounter($data)
+    {
+        $db = $this->getDatabase();
+
+        $sql = 'INSERT INTO finCounter
+                           (description,
+                            unitId,
+                            isActive,
+                            isCounterTreasury,
+                            accountSchemeId)
+                    VALUES (?,?,?,?,?)';
+        
+        $args = array($data->description, $data->unitId, $data->isActive, $data->isCounterTreasury, $data->accountSchemeId);
+        
+        $db = $this->getDatabase();
+        $result = $db->execute(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+
+    /**
+     * Update data from a specific record
+     *
+     * @param $data (object): Data which will replace the old record data
+     *
+     * @return (boolean): True if succeed, otherwise False
+     *
+     **/
+    public function updateCounter($data)
+    {
+        $sql = 'UPDATE finCounter
+                   SET description = ?,
+                       unitId = ?,
+                       isActive = ?,
+                       isCounterTreasury = ?,
+                       accountSchemeId = ?
+                 WHERE counterId  = ?';
+        
+        $args = array($data->description, $data->unitId, $data->isActive, $data->isCounterTreasury, $data->accountSchemeId, $data->counterId);
+        
+        $db = $this->getDatabase();
+        $sqls = SAGU::prepare($sql, $args);
+        for ( $i = 0; $i < count($sqls); $i++ )
+        {
+            $result = $db->execute($sqls[$i]);
+        }
+        return $result;
+    }
+
+    /**
+     * Delete a record
+     *
+     * @param $counterId (string): Primary key for deletion
+     *
+     * @return (boolean): True if succeed, otherwise False
+     *
+     **/
+    public function deleteCounter($pk)
+    {
+        $sql = 'DELETE FROM finCounter
+                      WHERE counterId = ?';
+
+        $db = $this->getDatabase();
+        $result = $db->execute(SAGU::prepare($sql, $pk));
+        
+        return $result;
+    }
+}
+
+?>

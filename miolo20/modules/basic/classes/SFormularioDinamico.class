@@ -1,0 +1,1017 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2015 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Classe reponsável pela geração dinâmica do formulário de INSERÇÃO, UPDATE e 
+ * REMOÇÃO de registro
+ *
+ * @author Luís Augusto Weber Mercado [luis_augusto@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Luís Augusto Weber Mercado [luis_augusto@solis.com.br]
+ *
+ * @since
+ * Classe criada em 03/06/2015
+ */
+class SFormularioDinamico extends SManagementForm
+{
+
+    private $modulo;
+    private $funcao;
+
+    public function __construct($parametros, $titulo = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->uses("/ui/controls/msubdetail.class");
+
+        $tipo = SType::obterInstanciaDoTipoPeloNome($parametros["tipo"]);
+        $colunaChavePrimaria = $tipo->getPrimaryKey();
+
+        $this->modulo = $parametros["modulo"];
+
+        $this->funcao = $parametros["funcao"];
+
+        parent::__construct($tipo, array($colunaChavePrimaria), NULL, $titulo, $this->modulo);
+
+        SFormularioDinamico::reconfiguraBarraFerramentas($this);
+
+        // Caso INSERT ou UPDATE, desabilita o botão de exclusão
+        if ( $this->isInsertOrUpdate() )
+        {
+            $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        }
+
+    }
+
+    /**
+     * Reconfigura a barra de ferramentas:
+     * 
+     * - Corrige a url dos botões da barra de ferramentas para considerar o atributo "type"
+     * 
+     * @param SFormularioDinamico|SFormularioDinamicoDeBusca Formulário a ser corrigido
+     */
+    public static function reconfiguraBarraFerramentas($frmDinamico)
+    {
+        $botoes = $frmDinamico->toolbar->getToolBarButtons();
+
+        // Para cada botão, concatena o parametro de 'type' a url deste
+        foreach ( $botoes as $botao )
+        {
+            // Não configura o botão de fechar
+            if ( $botao->name !== "tbBtnClose" )
+            {
+                $url = $botao->getUrl();
+
+                $function = "&function";
+
+                $urlAdaptada = str_replace($function, "&type=" . $frmDinamico->getObject()->getClassName() . $function, $url);
+
+                $botao->setUrl($urlAdaptada);
+            }
+        }
+
+        $frmDinamico->toolbar->setToolBarButtons($botoes);
+
+    }
+
+    /**
+     * Método para definir os campos
+     * 
+     * @param Boolean $montarCampos Se é necessário montar os campos dinâmicos
+     */
+    public function defineFields($montarCampos = TRUE, $ordem = null)
+    {
+        $campos = $ordem = array();
+
+        if ( $montarCampos )
+        {
+            list($campos, $validadores) = $this->obterCampos($ordem);
+        }
+
+        parent::defineFields($campos, $validadores);
+
+    }
+
+    /**
+     * Obtém os campos gerados dinamicamente
+     * 
+     * @param Array $ordem Ordem dos campos
+     * @return Array Campos e validadores
+     */
+    private function obterCampos($ordem)
+    {
+        // Obtém os campos e validadores do formulário
+        list($campos, $validadores) = $this->gerarCampos();
+
+        // Obtém as MSubDetails
+        $camposSubDetail = $this->gerarCamposSubDetail();
+
+        // Mescla os componentes MSubDetail com o restante dos campos
+        $camposReordenados = $this->reordenarCamposConformeOrdem(array_merge($campos, $camposSubDetail), $ordem);
+
+        return array($camposReordenados, $validadores);
+
+    }
+
+    /**
+     * Gera os campos e seus validadores
+     *
+     * @return Array Array com os campos e validadores
+     */
+    private function gerarCampos()
+    {
+        // Obtém as colunas da tabela.
+        $colunas = $this->getObject()->obterEstruturaDaTabelaDoCatalogo();
+
+        $campos = array();
+        $validadores = array();
+
+        foreach ( $colunas as $coluna )
+        {
+            // Se o campo não está definido no type
+            if ( !$this->obterPropriedadeCorretaDoTipo($this->getObject(), $coluna->nome) )
+            {
+                continue;
+            }
+
+            // Gera o campo e validador para a coluna
+            list($campo, $validador) = $this->gerarCampoPelaColuna($coluna);
+
+            $campos[$coluna->nome] = $campo;
+
+            if ( $validador )
+            {
+                $validadores[$coluna->nome] = $validador;
+            }
+        }
+
+        return array($campos, $validadores);
+
+    }
+
+    /**
+     * Gera o campo (e seu validador) conforme as informações da coluna
+     * 
+     * @param bInfoColuna $coluna Informações da coluna
+     * @return Array Lista com campo e validador do mesmo
+     */
+    private function gerarCampoPelaColuna(bInfoColuna $coluna)
+    {
+        // Obtém o campo "DEFAULT"
+        list($campo, $validador) = $this->obterCampoDeTabela($coluna->nome, $coluna->tabela);
+
+        $tipoRelacionado = $this->obterTipoRelacionadoAColunaDoTipo($coluna, $this->getObject());
+        if ( $tipoRelacionado )
+        {
+            list($campo, $validador) = $this->gerarCampoChaveEstrangeiraPorColuna($coluna, $tipoRelacionado);
+        }
+        else if ( $coluna->eChavePrimaria() )
+        {
+            // Corrige o identificador da coluna
+            $idColuna = explode('__', $coluna->campo);
+            $coluna->campo = end($idColuna);
+
+            $campo = new SHiddenField($coluna->campo, $campo->value);
+        }
+        
+        // Sobrescreve o valor default que possa vir com o campo
+        $tipoPopulado = $this->getTypeObjectPopulated();
+        $valor = strlen($tipoPopulado->{$coluna->nome}) > 0 ? $tipoPopulado->{$coluna->nome} : $campo->getValue();  
+        $campo->setValue($valor);
+        
+        return array($campo, $validador);
+
+    }
+
+    /**
+     * Obtém o tipo relacionado (se existir) à coluna, caso esta seja uma FOREIGN KEY
+     * Verifica as relações do tipo informado e as colunas que mantém estas
+     * 
+     * @param bInfoColuna $coluna Coluna a ser verificada
+     * @param SType $tipoPaiDaColuna Tipo a qual pertence a coluna
+     * @return Mixed Tipo relacionado ou FALSE, caso a coluna não seja relacionada
+     */
+    private function obterTipoRelacionadoAColunaDoTipo(bInfoColuna $coluna, SType $tipoPaiDaColuna)
+    {
+        // Obtém o nome dos tipos que estão relacionados ao tipo principal
+        $tiposRelacionados = $tipoPaiDaColuna->getAssociations();
+
+        foreach ( $tiposRelacionados as $relacao )
+        {
+            $tipoRelacionado = $relacao->getTypeObject();
+
+            // Verifica se a relação é apenas de 1 (fk)
+            if ( $relacao->isModeOne() && strtolower($tipoRelacionado->getTableName()) === strtolower($coluna->fkTabela) )
+            {
+                return $tipoRelacionado;
+            }
+        }
+
+        return false;
+
+    }
+
+    /**
+     * Gera o campo SEscolha para colunas FOREIGN KEY
+     * 
+     * @param bInfoColuna $coluna Coluna FK
+     * @param SType $tipoRelacionado Tipo relacionado a esta
+     * @return Array Campo SEscolha e seu validador
+     */
+    private function gerarCampoChaveEstrangeiraPorColuna(bInfoColuna $coluna, SType $tipoRelacionado)
+    {
+        // Corrige o identificador da coluna
+        $idColuna = explode('__', $coluna->campo);
+        $coluna->campo = end($idColuna);
+
+        $campo = new sEscolha($coluna->campo, NULL, $coluna->titulo, $tipoRelacionado);
+        $validador = $coluna->obrigatorio == DB_TRUE ? new MRequiredValidator($coluna->campo, "", $coluna->tamanho) : null;
+
+        return array($campo, $validador);
+
+    }
+
+    /**
+     * Gera os componentes MSubDetail relacionadas ao formulário
+     * 
+     * @return Array Vetor com componentes MSubDetail
+     */
+    private function gerarCamposSubDetail()
+    {
+        // Obtém o nome dos tipos que estão relacionados ao tipo principal
+        $tiposRelacionados = $this->getObject()->getAssociations();
+
+        if ( !is_array($tiposRelacionados) )
+        {
+            return NULL;
+        }
+
+        $subDetails = array();
+
+        foreach ( $tiposRelacionados as $relacao )
+        {
+            if ( $relacao->isModeMany() )
+            {
+                $subDetails[$relacao->getTypeClass()] = $this->gerarSubDetailDoTipoRelacionado($relacao);
+
+                $this->popularSubDetailConformeTipoRelacionado($relacao);
+            }
+        }
+
+        return $subDetails;
+
+    }
+
+    /**
+     * Gera a SubDetail para uma dada relação com o tipo principal
+     * 
+     * @param sTypeAssociation $relacao Relação do tipo com o tipo principal
+     * @return MSubDetail SubDetail do tipo relacionado
+     */
+    private function gerarSubDetailDoTipoRelacionado(sTypeAssociation $relacao)
+    {
+        $tipoRelacionado = $relacao->getTypeObject();
+
+        list($campos, $validadores, $colunas) = $this->obterInformacoesParaSubDetailDoTipo($tipoRelacionado);
+
+        $campoSubDetail = new MSubDetail($tipoRelacionado->getClassName(), $tipoRelacionado->obterComentarioDaTabela());
+        $campoSubDetail->setFields($campos);
+        $campoSubDetail->setValidators($validadores);
+        $campoSubDetail->setColumns($colunas);
+
+        return $campoSubDetail;
+
+    }
+
+    /**
+     * Gera as informações (campos, validadores e colunas) da subdetail relacionada
+     * ao tipo especificado
+     * 
+     * @param SType $tipo Tipo com a qual a subdetail está relacionada
+     * @return Array Lista com as informações da subdetail: {$campos, $validadores, $colunas}
+     */
+    private function obterInformacoesParaSubDetailDoTipo(SType $tipo)
+    {
+        $campos = $validadores = $colunas = array();
+
+        foreach ( $tipo->obterEstruturaDaTabelaDoCatalogo() as $campoId => $coluna )
+        {
+            $ehChaveRelacionada = strtolower($coluna->fkTabela) === strtolower($this->getObject()->getTableName());
+
+            // Se eh chave relacionada ou não a coluna não estiver definida no type
+            if ( $ehChaveRelacionada || !$this->obterPropriedadeCorretaDoTipo($tipo, $coluna->nome) )
+            {
+                continue;
+            }
+
+            $campoIdSubDetail = $tipo->getClassName() . "_" . $campoId;
+
+            list($campo, $validador, $colunaGrid) = $this->obterCampoParaSubDetailBaseadoNaColunaETipo($campoIdSubDetail, $coluna, $tipo);
+
+            $campos[$campoIdSubDetail] = $campo;
+            $colunas[$campoIdSubDetail] = $colunaGrid;
+
+            if ( $validador )
+            {
+                $validadores[$campoIdSubDetail] = $validador;
+            }
+        }
+
+        return array($campos, $validadores, $colunas);
+
+    }
+
+    /**
+     * Obtém o dado campo baseado nas informações da coluna
+     * 
+     * @param String $campoId Identificador do campo
+     * @param bInfoColuna $coluna Informações da coluna
+     * @param SType $tipo Tipo que a coluna está relacionada
+     * @return Array Lista com as informações do campo a ser adicionado na subdetail: {$campo, $validador, $colunaGrid}
+     */
+    private function obterCampoParaSubDetailBaseadoNaColunaETipo($campoId, bInfoColuna $coluna, SType $tipo)
+    {
+        list($campo, $validador) = $this->gerarCampoParaSubDetailBaseadoNaColuna($campoId, $coluna);
+        
+        if ( $coluna->eChaveEstrangeira() )
+        {
+            $tipoRelacionado = $this->obterTipoRelacionadoAColunaDoTipo($coluna, $tipo);
+
+            if ( $tipoRelacionado )
+            {
+                list($campo, $validador) = $this->gerarCampoChaveEstrangeiraPorIdEColuna($campoId, $coluna, $tipoRelacionado);
+            }
+        }
+
+        $mostrarColuna = !$coluna->eChavePrimaria();
+        // Define o alinhamento da coluna da grid da subdetail
+        $alinhamento = $this->obterAlinhamentoDaColunaDaGridPeloTipoDeDado($coluna->tipo);
+
+        $colunaGrid = new MGridColumn($coluna->titulo, $alinhamento, true, null, $mostrarColuna, $campoId);
+        
+        return array($campo, $validador, $colunaGrid);
+
+    }
+
+    /**
+     * Gera o campo SEscolha para colunas FOREIGN KEY com identificador personalizado
+     * 
+     * @param String $campoId Identificador de campo
+     * @param bInfoColuna $coluna Coluna FK
+     * @param SType $tipoRelacionado Tipo relacionado a esta
+     * @return Array Campo SEscolha e seu validador
+     */
+    private function gerarCampoChaveEstrangeiraPorIdEColuna($campoId, bInfoColuna $coluna, SType $tipoRelacionado)
+    {
+        $campo = new sEscolha($campoId, NULL, $coluna->titulo, $tipoRelacionado);
+        $validador = $coluna->obrigatorio == DB_TRUE ? new MRequiredValidator($campoId, "", $coluna->tamanho) : null;
+
+        return array($campo, $validador);
+
+    }
+
+    /**
+     * Gera o campo conforme as propriedades da coluna que este é relacionado
+     * 
+     * @param String $campoId Identificador do campo
+     * @param bInfoColuna $coluna Informações da coluna
+     * @return Array Lista com campo e validador do mesmo
+     */
+    private function gerarCampoParaSubDetailBaseadoNaColuna($campoId, bInfoColuna $coluna)
+    {
+        list($campo, $validador) = $this->obterCampoDeTabela($coluna->nome, $coluna->tabela);
+
+        $campo->setNameAndId($campoId);
+        $validador->field = $campoId;
+
+        // Esconde chave primaria na subdetail
+        if ( $coluna->eChavePrimaria() )
+        {
+            $campo = new SHiddenField($campoId, $campo->value);
+        }
+                
+        return array($campo, $validador);
+
+    }
+
+    /**
+     * Obtém o alinhamento da coluna na grid conforme o tipo da coluna
+     * 
+     * @param String $tipo Tipo da coluna
+     * @return String Alinhamento da coluna
+     */
+    private function obterAlinhamentoDaColunaDaGridPeloTipoDeDado($tipo)
+    {
+        // Alinhamento default
+        $alinhamento = "left";
+
+        if ( in_array($tipo, array(bInfoColuna::TIPO_BOOLEAN, bInfoColuna::TIPO_DATA, bInfoColuna::TIPO_TIMESTAMP)) )
+        {
+            $alinhamento = "center";
+        }
+        elseif ( in_array($tipo, array(bInfoColuna::TIPO_TEXTO_LONGO, bInfoColuna::TIPO_TEXTO, bInfoColuna::TIPO_INTEIRO, bInfoColuna::TIPO_NUMERIC)) )
+        {
+            $alinhamento = "right";
+        }
+
+        return $alinhamento;
+
+    }
+
+    /**
+     * Popula a SubDetail conforme a relação o tipo relacionado
+     * 
+     * @param sTypeAssociation $relacao Relação com o tipo principal
+     */
+    private function popularSubDetailConformeTipoRelacionado(sTypeAssociation $relacao)
+    {
+        if ( !MIOLO::_REQUEST('__EVENTTARGETVALUE') )
+        {
+            // Limpa a subdetail
+            MSubDetail::clearData($relacao->getTypeClass());
+
+            if ( $this->funcao === SForm::FUNCTION_UPDATE )
+            {
+                MSubDetail::setData($this->converterDadosDoTipoRelacionadoPopuladoParaSubDetail($relacao), $relacao->getTypeClass());
+            }
+        }
+
+    }
+
+    /**
+     * Converte os dados populados pelo método getTypeObjectPopulated() do tipo 
+     * relacionado para um formato compatível com a SubDetail
+     * 
+     * @param sTypeAssociation $relacao Relação com o tipo principal
+     * @return Array Dados compatíveis com a SubDetail
+     */
+    private function converterDadosDoTipoRelacionadoPopuladoParaSubDetail(sTypeAssociation $relacao)
+    {
+        $nomeDaRelacao = $relacao->_getName();
+
+        $dadosTipo = (array) $this->getTypeObjectPopulated()->$nomeDaRelacao;
+        $dadosConvertidos = array();
+
+        if ( is_array($dadosTipo) )
+        {
+            foreach ( $dadosTipo as $dado )
+            {
+                $dadoEmArray = get_object_vars($dado);
+                $dadosParaSubDetail = $this->filtrarPropriedadesRelacionaisDosDadosDoTipoRelacionadoParaSubDetail($dadoEmArray, $relacao);
+
+                if ( $dadosParaSubDetail )
+                {
+                    $dadosConvertidos[] = $dadosParaSubDetail;
+                }
+            }
+        }
+
+        return $dadosConvertidos;
+
+    }
+
+    /**
+     * Obtém apenas as propriedades válidas (as não relacionais com tipo principal)
+     * do tipo relacionado
+     * 
+     * @param Array $dados Dados a serem convertido
+     * @param sTypeAssociation $relacao Relação com o tipo principal
+     * @return Objeto Com as propriedades a serem adicionad
+     */
+    private function filtrarPropriedadesRelacionaisDosDadosDoTipoRelacionadoParaSubDetail(array $dados, sTypeAssociation $relacao)
+    {
+        $dadosValidos = new stdClass();
+
+        foreach ( $dados as $propriedade => $valor )
+        {
+            if ( strtolower($propriedade) !== $relacao->getJoinColumnRight() )
+            {
+                $campo = $relacao->getTypeClass() . "_" . $propriedade;
+
+                $dadosValidos->$campo = $valor;
+            }
+        }
+
+        return $dadosValidos;
+
+    }
+
+    /**
+     * Reordena uma dada lista de campos conforme a ordem informada
+     * 
+     * @param Array $camposDesordenados Campos desordenados
+     * @param Array $ordem Lista com os nomes dos campos na ordem desejada
+     * @return Array Campos reordenados
+     */
+    protected function reordenarCamposConformeOrdem($camposDesordenados, $ordem)
+    {
+        $camposOrdenados = array();
+
+        // Realiza a ordenação dos campos caso necessário.
+        if ( $ordem )
+        {
+            foreach ( $ordem as $nomeCampo )
+            {
+                $camposOrdenados[$nomeCampo] = $camposDesordenados[$nomeCampo];
+            }
+        }
+
+        return count($camposOrdenados) > 0 ? $camposOrdenados : $camposDesordenados;
+
+    }
+
+    /**
+     * Gera os campos específicos da base de dados
+     * 
+     * Metodo alternativo criado para evitar o problema de um campo ser adicionado
+     * no formulário automaticamente ao ser adicionado na base de dados, podendo causar bugs
+     *
+     * @return Array Campos gerados
+     */
+    public function gerarCamposEspecificos(array $lista, $ordem = null)
+    {
+        list($campos, $validadores) = $this->gerarCampos();
+
+        $camposGerados = array_merge($campos, $this->gerarCamposSubDetail());
+        $camposRet = array();
+        $validadoresRet = array();
+
+        foreach ( $lista as $campoASerGerado )
+        {
+            $camposRet[$campoASerGerado] = $camposGerados[$campoASerGerado];
+
+            if ( isset($validadores[$campoASerGerado]) )
+            {
+                $validadoresRet[$campoASerGerado] = $validadores[$campoASerGerado];
+            }
+        }
+
+        return array($this->reordenarCamposConformeOrdem($camposRet, $ordem), $validadoresRet);
+
+    }
+
+    /**
+     * OVERRIDE do método da classe pai 
+     * 
+     * Evento chamado quando o usuário clica no botão de salvar o registro
+     */
+    public function tbBtnSave_click()
+    {
+        SDatabase::beginTransaction();
+
+        try
+        {
+            $this->tentarSalvar();
+
+            SDatabase::commit();
+
+            if ( $this->funcao === SForm::FUNCTION_UPDATE )
+            {
+                $this->displayMessageUpdate();
+            }
+            else
+            {
+                $this->displayMessageInsert();
+            }
+        }
+        catch ( Exception $e )
+        {
+            SDatabase::rollback();
+
+            $this->AddError(_M("Erro ao salvar.") . " <br>" . $e->getMessage());
+        }
+
+    }
+
+    /**
+     * Tenta salvar os dados do formulário
+     * 
+     */
+    private function tentarSalvar()
+    {
+        if ( $this->salvarTipoPrincipal() )
+        {
+            if ( $this->salvarTiposRelacionados() )
+            {
+                $this->salvaCamposCustomizaveis();
+            }
+        }
+
+    }
+
+    /**
+     * Salva o tipo principal do formulário
+     * 
+     * @return Boolean Se foi possível ou não salvar
+     */
+    private function salvarTipoPrincipal()
+    {
+        $tipo = $this->getTypesData();
+
+        return $tipo->save();
+
+    }
+
+    /**
+     * Salva os tipos relacionados ao tipo principal do formulário
+     * 
+     * @return Boolean Se foi possível ou não salvar
+     */
+    private function salvarTiposRelacionados()
+    {
+        // Obtém o nome dos tipos que estão relacionados ao tipo principal
+        $tiposRelacionados = $this->getObject()->getAssociations();
+
+        foreach ( $tiposRelacionados as $relacao )
+        {
+            $ok = $this->operarSobreRelacao($relacao);
+
+            if ( !$ok )
+            {
+                return false;
+            }
+        }
+
+        return true;
+
+    }
+
+    /**
+     * Opera sobre a relação, verificando se é necessário excluir/inserir/atualizar
+     * algum registro desta
+     * 
+     * @param sTypeAssociation $relacao Relação com o tipo principal
+     * @return Boolean Se a operação foi bem sucedida
+     */
+    private function operarSobreRelacao(sTypeAssociation $relacao)
+    {
+        $idRelacional = $this->obterValorDaChavePrimariaDoTipoPrincipal();
+
+        if ( !$idRelacional )
+        {
+            return false;
+        }
+
+        $dadosTipoRelacionado = $this->obterDadosDoTipoRelacionado($relacao);
+
+        // Para cada linha da subdetail, cria outra instância do tipo, popula este, e o salva
+        foreach ( $dadosTipoRelacionado as $linha )
+        {
+            if ( $linha["removeData"] === TRUE )
+            {
+                $this->removerOcorrenciaDaRelacao($linha, $relacao);
+            }
+            else
+            {
+                $this->salvarOcorrenciaDaRelacao($linha, $relacao, $idRelacional);
+            }
+        }
+
+        return true;
+
+    }
+
+    /**
+     * Obtém o valor da chave primaria do tipo principal do formulário
+     * 
+     * @return String Identificador
+     */
+    private function obterValorDaChavePrimariaDoTipoPrincipal()
+    {
+        $tipo = $this->getTypeObjectPopulated();
+        $colunaChavePrimaria = $tipo->getPrimaryKey();
+        $valorChavePrimaria = $tipo->$colunaChavePrimaria;
+
+        if ( $this->funcao === SForm::FUNCTION_INSERT )
+        {
+            // Pega a última inserção (que é a feita no método "salvarTipoPrincipal")
+            $valorChavePrimaria = $this->getObject()->getLastInsertId();
+        }
+
+        return $valorChavePrimaria;
+
+    }
+
+    /**
+     * Obtém os dados do formulário vinculados ao tipo relacionado
+     * 
+     * @param sTypeAssociation $relacao Relação com o tipo principal
+     * @return Array Array associativo com os dados no formato propriedade => valor
+     */
+    private function obterDadosDoTipoRelacionado(sTypeAssociation $relacao)
+    {
+        $tipoRelacionado = $relacao->getTypeObject();
+        $nomeDoTipoRelacionado = $tipoRelacionado->getClassName();
+
+        $dadosSubDetail = MSubDetail::getData($nomeDoTipoRelacionado);
+
+        $dadosTipoRelacionado = array();
+
+        foreach ( $dadosSubDetail as $valores )
+        {
+            // Converte a stdClass para um array
+            $valoresEmArray = get_object_vars($valores);
+
+            $dados = $this->converterDadosParaPropriedadesDoTipoRelacionado($valoresEmArray, $nomeDoTipoRelacionado);
+
+            if ( count($dados) > 0 )
+            {
+                $dadosTipoRelacionado[] = $dados;
+            }
+        }
+
+        return $dadosTipoRelacionado;
+
+    }
+
+    /**
+     * Obtém os dados num array associativo que se assemelha aos atributos do tipo
+     * de nome informado
+     * 
+     * @param Array $dados Dados a serem convertidos
+     * @param String $nomeDoTipoRelacionado Nome do tipo que deve ter seus parâmetros considerados
+     * @return Array Array com os valores informados convertidos para o formato dos parâmetros
+     */
+    private function converterDadosParaPropriedadesDoTipoRelacionado(array $dados, $nomeDoTipoRelacionado)
+    {
+        $dadosTipoRelacionado = array();
+
+        foreach ( $dados as $propriedadePrefixada => $valor )
+        {
+            // Se é o campo prefixado
+            if ( strpos($propriedadePrefixada, $nomeDoTipoRelacionado . "_") === 0 )
+            {
+                $propriedade = str_replace($nomeDoTipoRelacionado . "_", "", $propriedadePrefixada);
+
+                $dadosTipoRelacionado[$propriedade] = $valor;
+            }
+            else if ( $propriedadePrefixada === "removeData" ) // Se está marcada para exclusão
+            {
+                $dadosTipoRelacionado[$propriedadePrefixada] = $valor;
+            }
+        }
+
+        return $dadosTipoRelacionado;
+
+    }
+
+    /**
+     * Remove a ocorrência do tipo relacionado
+     * 
+     * @param Array $dados Dados a serem salvos
+     * @param sTypeAssociation $relacao Relação com o tipo principal
+     */
+    private function removerOcorrenciaDaRelacao(array $dados, sTypeAssociation $relacao)
+    {
+        $nomeDoTipoRelacionado = $relacao->getTypeObject()->getClassName();
+
+        // Pega uma nova instância
+        $tipoRelacionado = new $nomeDoTipoRelacionado();
+        $tipoRelacionadoPopulado = $this->popularTipoRelacionadoComDados($tipoRelacionado, $dados);
+
+        $colunaChavePrimaria = $tipoRelacionado->getPrimaryKey();
+
+        // Deleta apenas se o identificador está definido
+        if ( !is_null($tipoRelacionado->$colunaChavePrimaria) )
+        {
+            $tipoRelacionadoPopulado->delete();
+        }
+
+    }
+
+    /**
+     * Salva (cria ou atualiza) a ocorrência do tipo relacionado
+     * 
+     * @param Array $dados Dados a serem salvos
+     * @param sTypeAssociation $relacao Relação com o tipo principal
+     * @param String $idVinculo Valor do identificador de vínculo (para a propriedade
+     * que relaciona os dois tipos)
+     */
+    private function salvarOcorrenciaDaRelacao(array $dados, sTypeAssociation $relacao, $idVinculo)
+    {
+        $nomeDoTipoRelacionado = $relacao->getTypeObject()->getClassName();
+
+        // Pega uma nova instância
+        $tipoRelacionado = new $nomeDoTipoRelacionado();
+        $tipoRelacionadoPopulado = $this->popularTipoRelacionadoComDados($tipoRelacionado, $dados);
+
+        // Obtém a coluna de relação
+        $colunaRelacionada = $relacao->getJoinColumnRight();
+        // Atribui o id corrente do tipo principal ao tipo relacionado,
+        // efetivando a relação
+        $tipoRelacionadoPopulado->$colunaRelacionada = $idVinculo;
+
+        $tipoRelacionadoPopulado->save();
+
+    }
+
+    /**
+     * Popula um dado tipo com um dado array de dados
+     * 
+     * @param SType $tipoRelacionado Tipo relacionado a ser populado
+     * @param Array $dados Dados para popular o tipo
+     * @return SType Tipo populado
+     */
+    private function popularTipoRelacionadoComDados(SType $tipoRelacionado, array $dados)
+    {
+        foreach ( $dados as $propriedade => $valor )
+        {
+            $propriedadeCorreta = $this->obterPropriedadeCorretaDoTipo($tipoRelacionado, $propriedade);
+
+            if ( $propriedadeCorreta )
+            {
+                $tipoRelacionado->$propriedadeCorreta = $valor;
+            }
+        }
+
+        return $tipoRelacionado;
+
+    }
+
+    /**
+     * OVERRIDE do método da classe pai
+     * 
+     * Obtém a url de destino pós a ação de inserção
+     * <b>Chamado no método 'displayMessageInsert'</b>
+     * 
+     * @return String URL de destino
+     * 
+     * @see SManagementForm::displayMessageInsert()
+     */
+    public function getInsertGotoNo()
+    {
+        return $this->obterURLPosConfirmacao();
+
+    }
+
+    /**
+     * OVERRIDE do método da classe pai
+     * 
+     * Obtém as opções para geração de url de destino pós a ação de atualização
+     * de registro.
+     * <b>Chamado no método 'displayMessageUpdate'</b>
+     * 
+     * @return String URL de destino
+     * 
+     * @see SManagementForm::displayMessageUpdate()
+     */
+    public function getUpdateOpts()
+    {
+        $opcoesPai = parent::getUpdateOpts();
+        $opcoes = array();
+        $opcoes["type"] = $this->getObject()->getClassName();
+
+        return array_merge($opcoes, $opcoesPai);
+
+    }
+
+    /**
+     * OVERRIDE do método da classe pai 
+     * 
+     * Evento chamado quando o usuário clica no botão de exclusão, tanto na grid
+     * quando no botão da barra de ferramentas
+     */
+    public function tbBtnDelete_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $acao = MIOLO::getCurrentAction();
+
+        $opcoes = array(
+            'event' => 'tbBtnDelete_confirm',
+            'function' => SForm::FUNCTION_DELETE,
+            'type' => $this->getObject()->getClassName()
+        );
+
+        foreach ( $this->pkey as $chavePrimaria )
+        {
+            $opcoes[$chavePrimaria] = MIOLO::_request($chavePrimaria);
+        }
+
+        $goToYes = $MIOLO->getActionURL($this->modulo, $acao, null, $opcoes);
+        $goToNo = $this->getInsertGotoNo();
+        $mensagem = SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE');
+
+        SAGU::question($mensagem, $goToYes, $goToNo);
+
+    }
+
+    /**
+     * OVERRIDE do método da classe pai 
+     * 
+     * Evento chamado quando o usuário clica no botão "Sim" do diálogo de confirmação
+     * de exclusão
+     */
+    public function tbBtnDelete_confirm()
+    {
+        $modulo = $this->modulo;
+        $this->defaultDisabledButtonsToolbar();
+
+        SDatabase::beginTransaction();
+
+        try
+        {
+            $this->tentaExcluir();
+
+            SDatabase::commit();
+        }
+        catch ( Exception $e )
+        {
+            SDatabase::rollback();
+
+            $mensagem = _M("Erro ao excluir.", $modulo) . " <br>" . $e->getMessage();
+
+            $this->messageError($mensagem, $this->obterURLPosConfirmacao());
+        }
+
+    }
+
+    /**
+     * Método que tenta realizar a exclusão
+     * 
+     * @throws Exception Caso não seja possível realizar a exclusão
+     */
+    private function tentaExcluir()
+    {
+        $ok = $this->getTypeObjectPopulated()->delete();
+
+        // Tenta deletar o conteúdo customizado
+        if ( $ok && ( count($this->mioloCustomFields) > 0 ) )
+        {
+            $ok = $this->deleteCustomFieldValues($this->getPkeyCustomizedId());
+        }
+
+        if ( $ok )
+        {
+            $mensagem = SAGU::getParameter("BASIC", "MSG_RECORD_DELETED");
+
+            $this->messageSuccess($mensagem, $this->obterURLPosConfirmacao());
+        }
+        else
+        {
+            throw new Exception(_M("Erro executando a operação solicitada.", $this->modulo));
+        }
+
+    }
+
+    /**
+     * Busca a propriedade no type independentemente da capitalização desta
+     * 
+     * @param SType $tipo Tipo onde deve ser feita a pesquisa
+     * @param String $propriedadeDesejada Nome da propriedade a ser pesquisada
+     * @return mixed Propriedade do type, FALSE caso não seja encontrada nenhuma propriedade
+     */
+    private function obterPropriedadeCorretaDoTipo(SType $tipo, $propriedadeDesejada)
+    {
+        $propriedades = array_keys(get_object_vars($tipo));
+
+        foreach ( $propriedades as $propriedade )
+        {
+            if ( strtolower($propriedade) === strtolower($propriedadeDesejada) )
+            {
+                return $propriedade;
+            }
+        }
+
+        return false;
+
+    }
+
+    /**
+     * Obtém a URL comum para eventos pós confirmação (tela de pesquisa)
+     * 
+     * @return String URL para tela de pesquisa
+     */
+    private function obterURLPosConfirmacao()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $action = MIOLO::getCurrentAction();
+
+        $url = $MIOLO->getActionURL($this->modulo, $action, null, array("type" => $this->getObject()->getClassName()));
+
+        return $url;
+
+    }
+
+}
+
+?>

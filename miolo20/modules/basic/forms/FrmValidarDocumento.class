@@ -1,0 +1,176 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulario de validacao de documento
+ *
+ * @author Moises Heberle [moises@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.com.br]
+ *
+ * @since
+ * Class created on 21/08/2013
+ *
+ */
+class FrmValidarDocumento extends SForm
+{
+    public function __construct($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        parent::__construct(_M('Validação de documentos', $module), null, null);
+
+        $this->disableToolbar();
+    }
+
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+        $event = MIOLO::_REQUEST('event');
+
+        try
+        {   
+            $verificacao = DB_FALSE;
+            if ( SAGU::getParameter('BASIC', 'HABILITA_DOWNLOAD_DOCUMENTO') == DB_TRUE )
+            {
+                $codigo = new MTextField('codVerificador', $this->GetFormValue('codVerificador'), _M('Código de validação do documento', $module), SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'), _M('Digite o código verificador impresso no documento. Ex.: 509680FACB', $module));
+                $fields[] = $codigo;
+                $verificacao = DB_TRUE;
+            }
+            if ( SAGU::getParameter('BASIC', 'VALIDACAO_DE_DOCUMENTOS_POR_NUMERO_DE_REGISTRO') == DB_TRUE )
+            {
+                $numero = new MIntegerField('numeroRegistro', $this->GetFormValue('numeroRegistro'), _M('Número de registro do documento', $module), SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'), _M('Digite o número de registro impresso no documento. Ex.: 123', $module));
+                $fields[] = $numero;
+                $verificacao = DB_TRUE;
+            }
+            if($verificacao == DB_FALSE)
+            {
+                throw new Exception( _M('Esta funcionalidade está desabilitada no sistema. Para habiliatar está funcionalidade altere o parâmetro HABILITA_DOWNLOAD_DOCUMENTO(verificação pelo código de validação) ou VALIDACAO_DE_DOCUMENTOS_POR_NUMERO_DE_REGISTRO(verificação pelo número de registro). <br> Para mais informações contate o Administrador.', $module) );
+            }
+
+            $fields[] = $btn = new MButton('btnVerificar', _M('Verificar', $module));
+            $btn->setLabel('');
+
+            $fields[] = new MSeparator();
+
+            $fields = array(new sBaseGroup('bgrCheck', _M('Validação de documentos', $module), $fields));
+
+            $this->setFields($fields);
+            $this->setValidators($validators);
+        }
+        catch (Exception $e)
+        {
+            $this->AddError($e->getMessage());
+        }
+        
+        parent::defineFields();
+    }
+
+    public function btnVerificar_click($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $data = $this->getData();
+                
+        try
+        {
+            $busFile = new BusinessBasicBusFile();
+            $basDocumento = new BasDocumentoGerado();
+            $basDocument = new BusinessBasicBusDocument();
+            
+            if ( !strlen($data->codVerificador) > 0 && !strlen($data->numeroRegistro) > 0 )
+            {
+                throw new Exception( _M('Informe um filtro para a validação de documento.', $module) );                
+            }
+            
+            $documento = $basDocumento->buscaPeloIdentificador($data->codVerificador, $data->numeroRegistro);
+            $documento->pessoa = new BasPessoa($documento->personiddocumento);
+            
+            $infoCpf = $basDocument->getDocument($documento->personiddocumento, SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF'));
+            $cpf = strlen($infoCpf->content) > 0 ? ', CPF: ' . $infoCpf->content : ''; 
+            
+            // Caso os filtros passados não retornem registro
+            if ( !($documento instanceof BasDocumentoGerado) )
+            {
+                throw new Exception( _M('Nenhum documento foi encontrado.', $module) );
+            }
+            else
+            {
+                $informacoes = array();
+                $informacoes[_M('Código verificador', $module)] = strlen($documento->codigoverificador) > 0 ? $documento->codigoverificador : '-';
+                $informacoes[_M('Documento', $module)] = $documento->titulo;
+                $informacoes[_M('Gerado em', $module)] = $documento->datageracao;
+                
+                $informacoes[_M('Número de registro', $module)] = strlen($documento->numeroregistro) > 0 ? $documento->numeroregistro : '-';
+                
+                if ( strlen($documento->personiddocumento) > 0 )
+                {
+                    $informacoes[_M('Gerado para', $module)] = $documento->pessoa->name . ' (Código: ' . $documento->pessoa->personid . $cpf .')';
+                }
+
+                // Dl link
+                if ( strlen($documento->fileid) > 0 )
+                {
+                    $informacoes[_M('Link para download', $module)] = $busFile->getLink($documento->fileid)->generate();
+                }
+                
+                $patterns[] = '/int_/';
+                $patterns[] = '/boo_/';
+                $patterns[] = '/dbl_/';
+                $patterns[] = '/str_/';
+                
+                $documento->parametros = preg_replace($patterns, 'str_', $documento->parametros);
+                
+                $parametros = explode('str_', $documento->parametros);
+                foreach ( $parametros as $key => $parametro )
+                {
+                    if ( strlen($parametro) > 0 )
+                    {
+                        $parametro = str_replace('=', ' = ', $parametro);
+                        
+                        $informacoes[_M("Filtros utilizados {$key}", $module)] = strtoupper(trim($parametro));
+                    }
+                }
+            }
+                        
+            $field[] = new SInformationField(array(
+                'value' => $informacoes,
+                'columns' => 1
+            ), '500');
+            
+            $this->AddField($field);
+        }
+        catch (Exception $e)
+        {
+            $this->addError($e->getMessage());
+        }
+    }
+}
+?>

@@ -1,0 +1,1066 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Luís Augusto Weber Mercado [luis_augusto@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Luís Augusto Weber Mercado [luis_augusto@solis.com.br]
+ * 
+ * @since
+ * Class created on 06/04/2015
+ *
+ **/
+
+class FrmConstrutorDeRelatoriosVisualizar extends SForm
+{
+    
+    /**
+     * Objeto com as informações do relatório
+     * 
+     * @var SType $type
+     */
+    private $type;
+    
+    /**
+     * Como terão alguns filtros não definidos, a consulta irá variar
+     * 
+     * @var String $consulta 
+     */
+    private $consulta;
+    
+    /**
+     * Validadores dos parâmetros obrigatórios
+     * 
+     * @var Array $validators
+     */
+    private $validators;
+    
+    /**
+     * Informações adicionais (como o filtro genérico) devem ser adicionadas 
+     * nesse array
+     * 
+     * @var Array 
+     */
+    private $informacoesRelatorio;
+    
+    /**
+     * Construtor da classe
+     * 
+     */
+    public function __construct()
+    {
+        $module = MIOLO::getCurrentModule();
+        
+        $this->type = new BasConstrutorDeRelatorios(MIOLO::_REQUEST("relatorioid"));
+        
+        $this->type->dados = utf8_encode($this->type->dados);
+        
+        $titulo = $this->type->nome;
+        
+        $this->validators = $this->informacoesRelatorio = array();
+        
+        parent::__construct(_M("Construtor de relatórios :: " . $titulo, $module), null, null);
+        
+        if( $this->type->publicado === DB_FALSE )
+        {
+            $MIOLO = MIOLO::getInstance();
+            
+            $MIOLO->error(_M("Este relatório não está habilitado. Habilite-o na tela de edição deste no Construtor de relatórios (Básico::Relatório::Construtor de relatórios)."), $MIOLO->GetAbsoluteURL(""));
+            
+        }
+        
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+                
+    }
+    
+    /**
+     * Método que define os campos do formulário
+     * 
+     */
+    public function defineFields()
+    {
+        $fields = array();
+        
+        $fields[] = new MHiddenField("relatorioid", MIOLO::_REQUEST("relatorioid"));
+        
+        // Se há uma descrição no relatório
+        if( strlen($this->type->descricao) > 0 )
+        {
+            $descricao = SString::construct($this->type->descricao);
+            $fields[] = MMessage::getStaticMessage('reportDescription', $descricao->getString(), MMessage::TYPE_INFORMATION);
+            $fields[] = new MDiv();
+            
+        }
+        
+        // Pega os parâmetros que necessitarão de valores
+        $parametros = $this->getInformacaoParametros();
+        
+        foreach( $parametros as $parametro )
+        {
+            $fields[] = $this->getParametroFormulario($parametro);
+            
+        }
+        
+        // Pega os campos que necessitarão de valores
+        $campos = $this->getInformacaoCampos();
+        
+        foreach( $campos as $campo )
+        {
+            $scampos = $this->getCampoFormulario($campo);
+            
+            // Se for um filtro de data
+            if( is_array($scampos) )
+            {
+                $fields[] = $scampos[0];
+                $fields[] = $scampos[1];
+                
+                continue;
+                
+            }
+            
+            $fields[] = $scampos;
+                        
+        }
+        
+        $fields[] = new MTextField("buscaGenerica", "", _M("Filtro"), SAGU::getParameter("BASIC", "FIELD_DESCRIPTION_SIZE"), "Filtre por palavras chaves de qualquer um dos campos");
+        
+        $fields[] = new MButton("btnGerarRelatorio",_M("Gerar relatório"));
+        
+        // Os validadores estão sendo definidos em $this->getParametroFormulario()
+        parent::defineFields(array("fields" => $fields, "validators" => $this->validators));
+        
+        // Força chamada do evento
+        // Se for um clique da navegação da grid
+        if ( ( MIOLO::_REQUEST("gridName") || ( strlen(MIOLO::_REQUEST("orderby")) > 0 ) ) && ( SAGU::getEventName() != "btnGerarRelatorio:click" ) )
+        {
+            $this->btnGerarRelatorio_click();
+            
+        }
+                
+    }
+    
+    /**
+     * Procura, entre as informações do relatório, os parâmetros necessitados de
+     * preenchimento
+     * 
+     * @return Array de objetos com as informações dos parâmetros
+     */
+    private function getInformacaoParametros()
+    {
+        // Os dados estão no formato JSON
+        $dados = json_decode($this->type->dados);
+        $retornos = array();
+        
+        for( $i = 0; $i < count($dados->parametros); $i++ )
+        {
+            // Caso não seja definido pelo usuário
+            if( !$dados->parametrosValorDefinitivo[$i] )
+            {
+                // Vai para o proxima "volta" do loop
+                continue;
+                
+            }
+            
+            $info = new stdClass();
+            
+            $info->id = $dados->parametros[$i]->id;
+            $info->indice = $i;
+            $info->tipo = $dados->parametros[$i]->tipo;
+            $info->apelido = !is_null($dados->apelidosParametros[$i]) ? $dados->apelidosParametros[$i] : $dados->parametros[$i]->nome;
+            $info->valor = $dados->parametrosValor[$i];
+            
+            $retornos[] = $info;
+            
+        }
+        
+        return $retornos;
+        
+    }
+    
+    /**
+     * Procura, entre as informações do relatório, os parâmetros necessitados de
+     * preenchimento
+     * 
+     * @return Array de objetos com as informações dos parâmetros
+     */
+    private function getInformacaoCampos()
+    {
+        // Os dados estão no formato JSON
+        $dados = json_decode($this->type->dados);
+        $retornos = array();
+        
+        for( $i = 0; $i < $dados->countCampo; $i++ )
+        {
+            // Caso não seja definido pelo usuário
+            if( !$dados->camposEhFiltroUsuario[$i] )
+            {
+                // Vai para o proxima "volta" do loop
+                continue;
+                
+            }
+            
+            $info = new stdClass();
+            
+            $info->id = $dados->ordemCampo[$i]->id;
+            $info->indice = $i;
+            $info->tipo = $dados->ordemCampo[$i]->tipo;
+            $info->apelido = !is_null($dados->apelidosCampo[$i]) ? $dados->apelidosCampo[$i] : $dados->ordemCampo[$i]->nome;
+                        
+            $retornos[] = $info;
+            
+        }
+        
+        return $retornos;
+        
+    }
+        
+    /**
+     * Gera o campo conforme as informações do parâmetro
+     * 
+     * @param Object $parametro Parametro a ter suas informações consideradas
+     * 
+     * @return Campo para o formulário
+     */
+    private function getParametroFormulario($parametro)
+    {
+        $campo = null;
+        $id = "parametros[{$parametro->indice}]";
+        $label = utf8_decode($parametro->apelido); // Corrige os problemas de codificação
+        
+        switch( $parametro->tipo )
+        {
+            case "date":
+                $this->validators[] = new MDateDMYValidator($id, $label, "required");
+        
+                $campo = new MCalendarField($id, $this->getValorParametros($parametro->indice), $label, SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+                
+                break;
+            
+            case "boolean":
+                $this->validators[] = new MRequiredValidator($id, $label, "required");
+                
+                $campo = new MRadioButtonGroupFixed($id, $this->getValorParametros($parametro->indice), $label, array("t" => _M("Verdadeiro"), "f" => _M("Falso")));
+                
+                break;
+            
+            default:
+                $this->validators[] = new MRequiredValidator($id, $label, "required");
+                
+                $campo = new MTextField($id, $this->getValorParametros($parametro->indice), $label);
+            
+        }
+        
+        return $campo;
+        
+    }
+    
+    /**
+     * Pega o valor do parâmetro
+     * 
+     * @param Integer $indice Índice no campo parametros[]
+     * @return String Valor do campo
+     */
+    private function getValorParametros($indice)
+    {
+        $filtros = MIOLO::_REQUEST("parametros");
+        
+        return $filtros[$indice];
+        
+    }
+    
+    /**
+     * Gera o campo conforme as informações do parâmetro
+     * 
+     * @param Object $infocampo Campo a ter suas informações consideradas
+     * 
+     * @return Campo para o formulário
+     */
+    private function getCampoFormulario($infocampo)
+    {
+        $campo = null;
+        $id = "campos[{$infocampo->indice}]";
+        $idCampoAuxiliar = "campos_data[{$infocampo->indice}]";
+        $label = utf8_decode($infocampo->apelido); // Corrige os problemas de codificação
+        
+        switch( $infocampo->tipo )
+        {
+            case "date":
+                $this->validators[] = new MDateDMYValidator($id, $label . "(De)", "optional");
+                $this->validators[] = new MDateDMYValidator($idCampoAuxiliar, $label . "(Até)", "optional");
+                
+                $campos = array(
+                    new MCalendarField($id, $this->getValorCampos($infocampo->indice),  $label . "(De)", SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE')),
+                    new MCalendarField($idCampoAuxiliar, $this->getValorCamposData($infocampo->indice), $label . "(Até)", SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'))
+                );
+                
+                $campo = $campos;
+                        
+                break;
+            
+            case "boolean":
+                $this->validators[] = new MRequiredValidator($id, $label, "optional");
+                
+                $valor =  $this->getValorCampos($infocampo->indice);
+                
+                $campo = new MRadioButtonGroupFixed($id, $valor, $label, array("t" => _M("Verdadeiro"), "f" => _M("Falso")));
+                
+                break;
+            
+            default:
+                $val = new MRequiredValidator($id, $label, "required");
+                $val->type = "optional";
+                $this->validators[] = $val;
+                
+                $valor =  $this->getValorCampos($infocampo->indice);
+                
+                $campo = new MTextField($id, $valor, $label);
+            
+        }
+        
+        return $campo;
+        
+    }
+    
+    /**
+     * Pega o valor do filtro dos campos
+     * 
+     * @param Integer $indice Índice no campo campos[]
+     * @return String Valor do campo
+     */
+    private function getValorCampos($indice)
+    {
+        $filtros = MIOLO::_REQUEST("campos");
+        
+        return $filtros[$indice];
+        
+    }
+    
+    /**
+     * Pega o valor do filtro dos campos de data
+     * 
+     * @param Integer $indice Índice no campo campos[]
+     * @return String Valor do campo
+     */
+    private function getValorCamposData($indice)
+    {
+        $filtros = MIOLO::_REQUEST("campos_data");
+        
+        return $filtros[$indice];
+        
+    }
+    
+    /**
+     * Adiciona as informações de filtros
+     * 
+     * @param String $label Label do filtro
+     * @param String $valor Valor do filtro
+     */
+    private function adicionaInformacaoRelatorio($label, $valor)
+    {
+        $this->informacoesRelatorio[$label] = $valor;
+        
+    }
+    
+    /**
+     * Aplica os filtros informados ao dos dados do relatório
+     * 
+     * @param Object $dados Dados do relatório
+     */
+    private function getDadosComFiltros($dados)
+    {
+        $filtros = MIOLO::_REQUEST("parametros");
+        $filtrosCampos = MIOLO::_REQUEST("campos");
+        
+        if( $filtros || $filtrosCampos )
+        {
+            $dados = $this->processaDadosComCampos($this->processaDadosComParametros($dados, $filtros), $filtrosCampos);
+            
+        }
+        
+        return $dados;
+        
+    }
+    
+    /**
+     * Processa os dados e atribui aos respectivos locais o filtro informado
+     * 
+     * @param Objeto $dados Dados do relatório
+     * @param String $filtros Valor do filtro
+     * 
+     * @return Object Dados do relatório
+     */
+    private function processaDadosComCampos($dados, $filtros)
+    {
+        for( $j = 0; $j < $dados->countCampo; $j++ )
+        {
+            if( array_key_exists($j, $filtros) && strlen($filtros[$j]) > 0)
+            {
+                $dados = $this->getDadosComValorCampo($dados, $j, $filtros[$j]);
+
+                // Adiciona também aos array de informações, para que os filtros
+                // Utilizados apareçam no relatório em PDF
+                $apelido = !is_null($dados->apelidosCampo[$j]) ? $dados->apelidosCampo[$j] : $dados->ordemCampo[$j]->nome;
+                $this->adicionaInformacaoRelatorio($apelido, $filtros[$j]);
+
+            }
+
+        }
+        
+        return $dados;
+        
+    }
+    
+    /**
+     * Processa os dados e atribui aos respectivos locais o filtro informado
+     * 
+     * @param Objeto $dados Dados do relatório
+     * @param String $filtros Valor do filtro
+     * 
+     * @return Object Dados do relatório
+     */
+    private function processaDadosComParametros($dados, $filtros)
+    {
+        for( $i = 0; $i < count($dados->parametros); $i++ )
+        {
+            if( array_key_exists($i, $filtros) )
+            {
+                $dados = $this->getDadosComValorParametro($dados, $i, $filtros[$i]);
+
+            }
+
+        }
+        
+        return $dados;
+        
+    }
+    
+    /**
+     * Modifica as informações do relatório com os filtros informados
+     * 
+     * @param Objeto $dados Dados do relatório
+     * @param Integer $indice Índice do campo
+     * @param String $filtro Valor do filtro
+     * 
+     * @return Object Dados do relatório
+     */
+    private function getDadosComValorCampo($dados, $indice, $filtro)
+    {
+        if( $dados->ordemCampo[$indice]->tipo === "date" )
+        {
+            $dados->filtrosCampo[$indice] = array();
+
+            $dados->filtrosCampo[$indice][0] = $this->corrigeData($filtro);
+            
+            if( strlen($this->getValorCamposData($indice)) > 0  )
+            {
+                $dados->filtrosCampo[$indice][1] = $this->corrigeData($this->getValorCamposData($indice));
+                
+            }
+            else
+            {
+                $dados->filtrosCampo[$indice][1] = null;
+
+            }
+
+        }
+        else
+        {
+            $dados->filtrosCampo[$indice] = $this->getValorFormatadoPorTipo($filtro, $dados->ordemCampo[$indice]->tipo);
+            
+        }
+        
+        return $dados;
+
+    }
+    
+    /**
+     * Modifica as informações do relatório com os filtros informados
+     * 
+     * @param Objeto $dados Dados do relatório
+     * @param Integer $indice Índice do campo
+     * @param String $filtro Valor do filtro
+     * 
+     * @return Object Dados do relatório
+     */
+    private function getDadosComValorParametro($dados, $indice, $filtro)
+    {
+        $dados->parametrosValor[$indice] = $this->getValorFormatadoPorTipo($filtro, $dados->parametros[$indice]->tipo);
+                    
+        // Adiciona também aos array de informações, para que os filtros
+        // Utilizados apareçam no relatório em PDF
+        $apelido = !is_null($dados->apelidosParametros[$indice]) ? $dados->apelidosParametros[$indice] : $dados->parametros[$indice]->nome;
+        $this->adicionaInformacaoRelatorio($apelido, $filtro);
+        
+        return $dados;
+
+    }
+                
+    /**
+     * Salva as informações da grid na sessão
+     * 
+     * @param Array $colunas Colunas da grid
+     * @param Array $dados Dados da grid
+     */
+    public function salvaInformacaoGridSessao($colunas, $dados)
+    {
+        // Junta os dados e salva na sessão
+        MIOLO::getInstance()->session->setValue("crGridDataVisualizacao", array_merge(array(array_values($colunas)), $dados));
+        
+    }
+    
+    /**
+     * OVERRIDE do método getGridData()
+     * 
+     * Pega os dados da grid armazenados na sessão
+     * 
+     * @see SForm::getGridData()
+     * 
+     * @return Array Array com os dados da grid
+     */
+    public function getGridData()
+    {
+        return MIOLO::getInstance()->session->getValue("crGridDataVisualizacao");
+        
+    }
+    
+    /**
+     * Se informado um filtro genérico, retorna a dada consulta com as clausulas
+     * para filtro
+     * 
+     * @param String $sql Consulta SQL
+     */
+    private function getConsultaComFiltroGenerico($sql)
+    {
+        $filtroGenerico = $this->GetFieldValue("buscaGenerica");
+                
+        // Se o filtro for válido
+        if( $filtroGenerico || $filtroGenerico !== "" )
+        {
+            $this->adicionaInformacaoRelatorio("Filtro", $filtroGenerico);
+            
+            $colunasQuery = SDatabase::getQueryColumns($sql);
+            
+            $adicionouWhere = false;
+            $arrayWhere = $params = array();
+            
+            // Navega pelos tipos de colunas
+            foreach ( SDatabase::getQueryTypes($sql) as $i => $tipo )
+            {
+                $where = $this->getWherePorTipo($tipo, $colunasQuery[$i], $filtroGenerico);
+                
+                if ( $where )
+                {
+                    $arrayWhere[] = $where;
+                    
+                    $adicionouWhere = true;
+                    
+                    $params[] = $this->getValorFormatadoPorTipo($filtroGenerico, $tipo);
+                    
+                }
+                
+            }
+                        
+        }
+        
+        $consulta = SAGU::prepare("SELECT * FROM ({$sql}) as consulta" . ($adicionouWhere ? " WHERE " . implode(" OR ", $arrayWhere) : ""), $params);
+        
+        return $consulta;
+        
+    }
+    
+    /**
+     * Cria a cláusula WHERE para o SQL baseado no tipo da coluna
+     * 
+     * @param String $tipo Tipo da coluna
+     * @param String $coluna Coluna a ser comparada
+     * @param String $valor Valor a ser comparado
+     * 
+     * @return String|boolean Clausula where se for um valor válido; false se 
+     * contrário
+     */
+    public function getWherePorTipo($tipo, $coluna, $valor)
+    {
+        $where = false;
+               
+        if( $tipo == "text" || $tipo == "varchar" )
+        {
+            $where = "UNACCENT(\"{$coluna}\") ILIKE UNACCENT(?)";
+        }
+        else 
+        {
+            $data = $this->corrigeData($valor);
+                        
+            if( ( $data !== false && $tipo === "date" )
+             || ( is_numeric(str_replace(",", ".", $valor)) && in_array($tipo, array("numeric", "integer", "int4", "int8", "float8")) )
+             || ( ( $tipo == "bool" || $tipo == "boolean" ) && in_array($valor, array("f", "F", "false", "FALSE", "t", "T", "true", "TRUE")) ) )
+            {
+                $where = "\"{$coluna}\" = ?";
+                
+            }
+            
+        }
+        
+        return $where;
+        
+    }
+    
+    /**
+     * Conforme o tipo, retorna um valor compativel com este
+     * 
+     * @param Mixed $valor Valor
+     * @param String $tipo Tipo do valor
+     * 
+     * @return Mixed Valor corrigido conforme o tipo
+     */
+    private function getValorFormatadoPorTipo($valor, $tipo)
+    {
+        if( $tipo == "text" || $tipo == "varchar" )
+        {
+            return "%{$valor}%";
+            
+        }
+                
+        $numero = str_replace(",", ".", $valor);
+        
+        if(is_numeric($numero) )
+        {
+            if( $tipo === "float8" )
+            {
+                return floatval($numero);
+
+            }
+            else if( in_array($tipo, array("numeric", "integer", "int4", "int8")) )
+            {
+                return intval($numero);
+                
+            }
+            
+        }
+        
+        return $valor;
+        
+    }
+    
+    /**
+     * Corrige uma dada data para o formato aaaa-mm-dd
+     * 
+     * @param String $data Data no formato dd/mm/aaaa
+     * 
+     * @return String|Boolean Data formatada se esta for válida ou false caso 
+     * contrário
+     */
+    public function corrigeData($data)
+    {
+        if( SAGU::isDate($data) )
+        {
+            $explode = explode("/", $data);
+        
+            return implode("-", array_reverse($explode));
+            
+        }
+        else
+        {
+            // Se esta no formato correto
+            return ( preg_match("/[0-9]{4,4}-[0-9]{2,2}-[0-9]{2,2}/", $data) ? $data : false );
+            
+        }
+        
+    }
+    
+    /**
+     * Pega um row do resultado da consulta
+     * 
+     * 
+     * @param String $sql Consulta SQL
+     * 
+     * @return Array Com um row do resultado
+     */
+    private function getRowExemplo($sql)
+    {
+        $query = SDatabase::query($sql);
+        
+        return $query[0];
+        
+    }
+    
+    /**
+     * Dado um objeto SGrid, formata os dados deste
+     * 
+     * @param String $query String SQL que gera os dados da grid
+     * @param Objeto $infoColunas Informações das colunas profindos do método
+     * FrmEditorDeSQL::getInformacaoColunasPorQuery()
+     * 
+     * @see FrmEditorDeSQL::getInformacaoColunasPorQuery()
+     * 
+     * @return SGrid Com os dados formatados, NULL se nâo houver dados
+     */
+    public function getGridComDadosFormatados($query, $infoColunas)
+    {
+        $grid = new SGrid(null, $this->getColunas($infoColunas), null);
+        $grid->setQuery($query, MIOLO::getCurrentModule());
+        $grid->clearActions();
+        $dados = $grid->getData();
+        
+        if( count($dados) === 0 )
+        {
+            $this->AddError(_M("A busca com a consulta informada não retornou dados."));
+            
+            return null;
+            
+        }
+        
+        // Verifica se precisa formatar
+        if( $this->precisaFormatar($infoColunas->tipos) )
+        {
+            $grid->data = $this->getDadosFormatados($dados, $infoColunas->tipos);
+                        
+        }
+        
+        return $grid;
+        
+    }
+    
+    /**
+     * Pega as informações das colunas baseada na query
+     * 
+     * @param String $query String SQL
+     * 
+     * @return stdClass Objeto com as informações das colunas ($obj): 
+     * $obj->nomes = Nomes das colunas;
+     * $obj->tipos = Tipo das colunas
+     */
+    public function getInformacaoColunasPorQuery($query)
+    {
+        if ( stristr($query, 'limit') === false )
+        {
+            $query .= " LIMIT 1 ";
+        }
+        
+        $rowExemplo = $this->getRowExemplo($query);
+        
+        $obj = new stdClass();
+        
+        $obj->nomes = SDatabase::getQueryColumns($query);
+        $obj->tipos = SDatabase::getQueryTypes($query);
+        
+        // Verifica os tipos de dados
+        for( $i = 0; $i < count($obj->tipos); $i++ )
+        {
+            $obj->tipos[$i] = $this->getTipoCorretoColunaBaseadoEmValor($obj->tipos[$i], $rowExemplo[$i]);
+                        
+        }
+        
+        return $obj;
+        
+    }
+    
+    /**
+     * Pega as colunas e às converte a um objeto MGridColumn
+     * 
+     * @param Objeto $infoColunas Informações das colunas profindos do método
+     * FrmEditorDeSQL::getInformacaoColunasPorQuery()
+     * 
+     * @see FrmEditorDeSQL::getInformacaoColunasPorQuery()
+     * 
+     * @return Array Array com objetos MGridColumn
+     */
+    public function getColunas($infoColunas)
+    {
+        $colunas = array();
+        
+        $nomes = $infoColunas->nomes;
+        $tipos = $infoColunas->tipos;
+        
+        foreach( $nomes as $i => $nome )
+        {
+            $colunas[] = new MGridColumn($nome, sRelatorioPDF::getColAlign($tipos[$i]), false, null, true, null, true);
+                        
+        }
+        
+        return $colunas;
+        
+    }
+    
+    /**
+     * Função que retorna o tipo correto baseado no valor
+     * Pois pode acontecer que, em alguns casos, haja uma data em uma String
+     * 
+     * @param String $tipo Tipo informado
+     * @param String $valor Valor
+     * @return String Tipo de acordo com o valor da variável
+     */
+    public function getTipoCorretoColunaBaseadoEmValor($tipo, $valor)
+    {
+        // Se o tipo da coluna for 'text' ou 'varchar', verifica se o valor da primeira linha é uma data. Se for, troca o tipo da coluna.
+        if ( $tipo == "text" || $tipo == "varchar" )
+        {
+            if ( SAGU::isDate($valor) )
+            {
+                $tipo = "date";
+                
+            }
+            else if ( is_numeric($valor) )
+            {
+                $tipo = "int4";
+                
+            }
+            
+        }
+        
+        return $tipo;
+        
+    }
+    
+    /**
+     * Verifica se há a necessidade de formatar os dados
+     * 
+     * @param Array $tipos Array com os tipos das colunas
+     * @return Boolean TRUE se necessário, FALSE caso contrário
+     */
+    public function precisaFormatar($tipos)
+    {
+        // Verifica se algum dos tipos que necessitam informaçãoes
+        // está entre os tipos das colunas
+        return in_array("float8", $tipos)
+            || in_array("decimal", $tipos)
+            || in_array("numeric", $tipos)
+            || in_array("date", $tipos)
+            || in_array("timestamp", $tipos)
+            || in_array("timestamptz", $tipos)
+            || in_array("boolean", $tipos)
+            || in_array("bool", $tipos);
+        
+    }
+    
+    /**
+     * Formata os dados
+     * 
+     * @param Array $dados Dados da grid
+     * @param Array $tipos Tipos dos dados
+     * 
+     * @return Array Dados formatados
+     */
+    public function getDadosFormatados($dados, $tipos)
+    {
+        foreach( $dados as $i => $row )
+        {
+            foreach( $row as $j => $valor )
+            {
+                $dados[$i][$j] = $this->getDadoFormatado($valor, $tipos[$j]);
+
+            }
+
+        }
+        
+        return $dados;
+        
+    }
+    
+    /**
+     * Formata um dado valor em função do seu tipo
+     * 
+     * @param String $valor Valor do dado
+     * @param String $tipo Tipo do dado
+     * 
+     * @return Mixed Dado formatado
+     */
+    public function getDadoFormatado($valor, $tipo)
+    {
+        if ( in_array($tipo, array("float8", "decimal", "numeric")) )
+        {
+            return number_format($valor, 2, ",", ".");
+        }
+        else if ( $tipo == "date" )
+        {
+            return !SAGU::validaData($valor) ? date('d/m/Y', strtotime($valor)) : $valor;
+        }
+        else if ( $tipo == "timestamptz" || $tipo == "timestamp" )
+        {
+            return date("d/m/Y H:i", strtotime($valor));
+        }
+        else if ( $tipo == "boolean" || $tipo == "bool" )
+        {
+            return SAGU::getYesNo($valor);
+        }
+        
+        return $valor;
+    }
+    
+    /**
+     * Eventos
+     * 
+     */
+    
+    /**
+     * Evento do botão "Gerar relatório"
+     * 
+     * Monta a consulta e gera a grid
+     * 
+     * @see BasConstrutorDeRelatorios::geraSQL()
+     */
+    public function btnGerarRelatorio_click()
+    {
+        $dados = $this->getDadosComFiltros(json_decode($this->type->dados));
+                
+        $consulta = BasConstrutorDeRelatorios::geraSQL($dados);
+        
+        $this->consulta = $this->getConsultaComFiltroGenerico($consulta);
+        
+        // Filtra o SQL para não pegar as operações iReports
+        $infoColunas = $this->getInformacaoColunasPorQuery(SExportacaoPDF::filtraSQL($this->consulta));
+        
+        $gridFormatada = $this->getGridComDadosFormatados($this->consulta, $infoColunas);
+            
+        if( $gridFormatada )
+        {
+            $this->salvaInformacaoGridSessao($infoColunas->nomes, $gridFormatada->data);
+
+            $this->AddField($gridFormatada);
+
+        }
+                
+    }
+    
+    /**
+     * Exporta os dados da grid em HTML
+     * 
+     */
+    public function exportGridAsHTML_click()
+    {
+        try
+        {
+            $nome = $this->type->nome;
+            $sqlFiltrado = SExportacaoPDF::filtraSQL($this->consulta);
+            
+            $exportacao = new SExportacao($nome, SExportacao::TIPO_HTML, $sqlFiltrado);
+            $exportacao->exporta(SExportacao::DISPLAY_BROWSER);
+                
+        }
+        catch(Exception $e)
+        {
+            $this->AddError($e->getMessage());
+            
+        }
+        
+    }
+    
+    /**
+     * Exporta os dados da grid para uma planilha CSV
+     * 
+     */
+    public function exportGridAsCSV_click()
+    {
+        try
+        {
+            $exportacao = new SExportacao("Construtor de relatórios", SExportacao::TIPO_CSV, SExportacaoPDF::filtraSQL($this->consulta));
+            $exportacao->exporta();
+            
+        }
+        catch(Exception $e)
+        {
+            $this->AddError($e->getMessage());
+            
+        }
+        
+    }
+    
+    /**
+     * Gera um arquivo PDF com os dados da grid
+     * 
+     */
+    public function exportGridAsPDF_click()
+    {
+        try
+        {
+            $nome = $this->type->nome;
+            $sql = $this->consulta;
+            
+            $dadosRelatorio = new stdClass();
+            $dadosRelatorio->reportInfo = $this->informacoesRelatorio;
+            $dadosRelatorio->sintetico = MIOLO::_REQUEST('crSintetico') == DB_TRUE;
+            
+            $exportacao = new SExportacao($nome, SExportacao::TIPO_PDF, $sql);
+            $exportacao->exporta(SExportacao::DISPLAY_DOWNLOAD, $dadosRelatorio);
+        
+        }
+        catch(Exception $e)
+        {
+            $this->AddError($e->getMessage());
+            
+        }
+        
+    }
+    
+    /**
+     * Gera um arquivo JRXML com os dados da grid
+     * 
+     */
+    public function exportGridAsJRXML_click()
+    {
+        try
+        {
+            $nome = $this->type->nome;
+            $sql = $this->consulta;
+
+            $dadosRelatorio = new stdClass();
+            
+            $exportacao = new SExportacao($nome, SExportacao::TIPO_JRXML, $sql);
+            $exportacao->exporta(SExportacao::DISPLAY_DOWNLOAD, $dadosRelatorio);
+        
+        }
+        catch(Exception $e)
+        {
+            $this->AddError($e->getMessage());
+            
+        }
+        
+    }
+    
+    /**
+     * Exporta os dados da grid para uma planilha XLS
+     * 
+     */
+    public function exportGridAsXLS_click()
+    {
+        try
+        {
+            $nome = $this->type->nome;
+            $sqlFiltrado = SExportacaoPDF::filtraSQL($this->consulta);
+
+            $exportacao = new SExportacao($nome, SExportacao::TIPO_XLS, $sqlFiltrado);
+            $exportacao->exporta();
+
+        }
+        catch(Exception $e)
+        {
+            $this->AddError($e->getMessage());
+            
+        }
+        
+    }
+    
+}
+?>

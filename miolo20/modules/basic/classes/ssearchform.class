@@ -1,0 +1,585 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Intermediate form that inherits SForm
+ * and implements basic search functions
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 05/07/2010
+ *
+ **/
+
+class SSearchForm extends SForm
+{
+    /**
+     *
+     * @var SGrid
+     */
+    protected $grid;
+    
+    protected $business;
+    
+    protected $busObject;
+    
+    protected $customFieldValues;
+    
+    /**
+     * Cria o campo código automaticamente
+     *
+     * @var boolean 
+     */
+    protected $campoCodigoAutomatico = false;
+    
+    /**
+     * Cria o campo busca generica automaticamente
+     * 
+     * @var boolean
+     */
+    protected $campoBuscaGenerica = false;
+    
+    /**
+     * Recebe a quantidade total de registros filtrados, que serão listados na grid.
+     * 
+     * @var type 
+     */
+    protected $countTotalRows;
+    
+    /**
+     * Recebe a quantidade de registros para offset na paginação da grid.
+     * 
+     * @var type 
+     */
+    protected $offsetDataGrid;
+
+    public function __construct($title = null, $object, $pkey, $business = null, $module = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        if( is_null($module) )
+        {
+            $module = MIOLO::getCurrentModule();
+        }
+        
+        if ( !is_null($business) )
+        {
+            $this->business = $business;
+            $this->busObject = MIOLO::getInstance()->getBusiness($module, $business);
+        }
+
+        if ( is_null($title) )
+        {
+            $title = _M('Localizar', $module);
+        }
+        
+        // Verifica filtros de sessao
+        $sessionFilters = $this->getSessionFilters();
+        if ( count($sessionFilters) > 0 )
+        {
+            foreach ( $sessionFilters as $key => $val )
+            {
+                $value = MIOLO::_REQUEST($key);
+                if (!isset($value))
+                {
+                    $_REQUEST[$key] = $val;
+                }
+                $value = MIOLO::_REQUEST($key.'S');
+                if (!isset($value))
+                {
+                    $_REQUEST[$key.'S'] = $val;
+                }
+            }
+        }
+        
+        parent::__construct($title, $object, $pkey);
+    }
+
+    /**
+     * Create fields and grid for a search form.
+     *
+     * @param (array) $fields Array containing all filters which will be present in the search form.
+     * @param (string) $gridModule Module from which $gridName grid will be retrieved.
+     * @param (string) $gridName Name of the grid to be used.
+     * @param (array) $validators Form validators.
+     */
+    public function defineFields($fields, $gridModule, $gridName, $validators = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        //
+        // Grid filters
+        //
+        $gridFilters = $this->getTypesData();
+        // Save filters on session, to get on ->getPreviousURL() method after
+        $this->saveSessionFilters($gridFilters);
+        $sessionFilters = $this->getSessionFilters();
+        if ( count($sessionFilters) > 0 )
+        {
+            if ( MIOLO::_REQUEST('event') == 'tbBtnSearch:click' )
+            {
+                $this->clearSessionFilters();
+            }
+            foreach ( $sessionFilters as $key => $val )
+            {
+                if ( is_null($gridFilters->$key) )
+                {
+                    $gridFilters->$key = $val;
+                }
+            }
+        }
+
+        // Create basic fields
+        parent::defineFields();
+
+        // Disable buttons which won't be used in searches
+        $this->toolbar->disableButton('tbBtnSave');
+        $this->toolbar->disableButton('tbBtnDelete');
+        $this->toolbar->disableButton('tbBtnPrint');
+
+        // Adiciona filtro padrao id
+        if ( $this->object instanceof SType && $this->campoCodigoAutomatico )
+        {
+            $pkeyField = new MTextField($this->object->getPkeyWithAlias(), null, _M('Código', $module), SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+            $pkeyField->setJsHint(_M('Informe o código', $module));
+            
+            $this->AddField($pkeyField);
+        }
+        
+        if ( $this->campoBuscaGenerica )
+        {
+            $valorPadrao = null;
+            
+            // Obtem valor chave primaria passado quando retorna de uma insercao/atualizacao
+            if ( ( $this->object instanceof SType ) && ( count($this->getPkey()) == 1 ) )
+            {
+                $column = $this->object->getColumnWithAlias(current($this->getPkey()));
+                $valorPadrao = MIOLO::_REQUEST($column . 'S');
+            }
+            
+            if ( !$valorPadrao && ( count($this->getPkey()) == 1 ) )
+            {
+                $valorPadrao = MIOLO::_REQUEST( current($this->getPkey()) . 'S' );
+            }
+            
+            if ( !$valorPadrao )
+            {
+                $valorPadrao = $MIOLO->session->getValue('temp.filter.pkey');
+            }
+
+            $field = new MTextField('buscaS', $valorPadrao, _M('Busca',$module), SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+            $this->AddField($field);
+        }
+        
+        $this->AddFields($fields);
+        $this->setValidators($validators);
+
+        // Obtem customFields (utilizado para grid e campos no form)
+        $this->getCustomFields( $this->getTransaction(), MIOLO::_REQUEST( $this->pkey[0] ), 'S' );
+        
+        // Foi desabilitado os filtros para campos customizados, ainda nao há a necessidade e deve ser implementado alguma maneira mais funcional para retornar os resultados
+//        $this->addCustomFields( $this->getTransaction() , MIOLO::_REQUEST( $this->pkey[0] )  ,'S' );
+        
+        // Query button
+        $fieldsExtra[] = new MButton('btnSearch', _M('Localizar', $module));
+
+        // Instantiate the results grid
+        $grid = $this->grid = $MIOLO->getUI()->getGrid($gridModule, $gridName, $gridFilters);
+        $grid instanceof SGrid;
+                
+        //Obtem o nome da tabela pelo stype/sbusiness
+        $tableName = $this->business ? $this->busObject->getTableName() : ($this->object ? $this->object->getTableName() : null);
+        
+        if ( method_exists($grid, 'setTableName') )
+        {
+            // Tabelas do schema res
+            if ( stristr(substr($tableName, 0, 3), 'Res') )
+            {
+                $grid->setTableName(substr($tableName, 3), false);
+                $grid->setSchemaName(null, 'res');
+            }
+            // Tabelas do schema med
+            else if ( stristr(substr($tableName, 0, 3), 'Med') )
+            {
+                $grid->setTableName(substr($tableName, 3), false);
+                $grid->setSchemaName(null, 'med');
+            }
+            else
+            {
+                $grid->setTableName($tableName);    
+            }
+        }
+            
+        if ( $this->object instanceof SType && $this->object->utilizaNovoPadrao() )
+        {
+            $grid->setTypeObject($this->object);
+        }
+
+        if ( !$grid->hasOffset() )
+        {                        
+            $gridData = $this->searchObject($gridFilters);            
+            $columns = $grid->columns;
+            $colIndexes = array();
+
+            if ( count( $this->mioloCustomFields ) > 0 && method_exists( $grid, 'getPrimaryKey' ) && !$this->isCompositePkey() )
+            {
+                foreach ( $this->mioloCustomFields  as $line => $field )
+                {
+                    $field instanceof MCustomField;
+                    $colIndexes[$field->id] = count($columns);
+                    $replace = $field->getListSQL();
+
+                    $columns[] = new MGridColumn($field->label, 'left', true, null, MUtil::getBooleanValue( $field->visible), $replace, true);
+                }
+                
+                $primaryKey = $grid->getPrimaryKey();
+                
+                //determina qual coluna dos dados é o id
+                $pKey = array_values($primaryKey);
+                //tira os percents que vem da grid
+                $pKey = str_replace('%','', $pKey[0] );
+                
+                if ( is_array( $this->customFieldValues ) )
+                {
+                    //ajeita o array de data para poder adicionar no gridData
+                    foreach ( $this->customFieldValues as $line => $info )
+                    {
+                        list($id, $customizedId, $customFieldId, $value) = $info;
+                        $newCustomData[$customizedId][$customFieldId] = $value;
+                    }
+                    
+                    if ( is_array( $gridData ))
+                    {
+                        foreach ( $gridData as $line => $info)
+                        {
+                            //encontra o customized id dentro dos dados
+                            $customizedId = $info[$pKey];
+                            
+                            //dado real do registro
+                            $myNewCustomData = $newCustomData[$customizedId];
+                            
+                            if ( is_array( $myNewCustomData ) )
+                            {
+                                foreach ( $myNewCustomData as $l => $i )
+                                {
+                                    $colIndex = $colIndexes[$l];
+                                    $gridData[$line][$colIndex] = $i;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if ( count($gridData) > 0 )
+            {
+                $grid->setData($gridData, $this->countTotalRows);
+                $grid->setOffset($this->offsetDataGrid);
+            }
+            
+            $grid->setColumns( $columns );
+        }
+        
+        $fieldsExtra[] = $grid;
+        
+        $this->addFields( $fieldsExtra );
+        
+        // Aplica padroes de campos
+        foreach ( $this->getFormControlFields() as $field )
+        {
+            $field instanceof MFormControl;
+            $this->setFieldDefaults($field);
+        }
+    }
+
+    /*
+     * Adds the letter S in the name of the fields
+     *
+     * @param (array) $fields Array containing all filters which will be present in the search form.
+     */
+    public function AddFields($fields)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $goto = SAGU::getStackBackUrl();
+        $goto = strlen($goto) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+
+        if ( is_array($fields) )
+        {
+            foreach ( $fields as $key => $field )
+            {                
+                $lastLetter = str_split($field->id, strlen($field->id) - 1);
+
+                if ( !$field instanceof MButton &&
+                     !$field instanceof MDiv &&
+                     !$field instanceof MGrid &&
+                     !$field instanceof MContainer &&
+                     !$field instanceof MHContainer &&
+                     !$field instanceof MVContainer &&
+                     !$field instanceof MSeparator )
+                {
+                    if ( $field->id[strlen($field->id) - 1] != 'S' )
+                    {
+                        $MIOLO->error(_M('Todos os campos pertencentes a forms que extendem o SSearchForm devem ter o sufixo "S". O campo @1 deve ser renomeado.', 'basic', $field->id));
+                    }
+                }
+            }
+        }
+
+        parent::AddFields($fields);
+    }
+
+    /*
+     * Search a specific record from the database
+     * 
+     * @return array
+     */
+    public function searchObject($filters)
+    {        
+        $search = str_replace('Bus', 'search', $this->business);
+        $data = array();
+        
+        $search = $this->business == 'BusSubstitutionUnblock' && $this->className == 'frmsubstitutionunblocksearch' ? $search.'FormGrid' : $search;
+
+        $filtersMerged = array_merge( $this->getCustomFieldValues(), (array) $filters );
+        $utilizaNovoPadrao = $this->object instanceof SType && $this->object->utilizaNovoPadrao();
+        
+        if ( count(array_filter($filtersMerged)) == 0 && !$utilizaNovoPadrao )
+        {
+            //return array();
+        }
+        
+        if ( count($this->mioloCustomFields) )
+        {
+            // verifica se existem campos customizados e retorna o resultado da busca, caso exista
+            $this->customFieldValues = $this->searchCustomFieldValues($this->getTransaction());
+        }
+
+        // caso tenha adicionado mais algum resultado busca pelos itens adicionais e concatena na grid
+        if ( is_array($this->customFieldValues) && !$this->isCompositePkey() )
+        {            
+            // Quando está sendo utilizado padrão novo SType
+            if ( $this->object instanceof SType )
+            {
+                if ( method_exists($this->object, 'searchGrid') )
+                {
+                    $myData = $this->object->searchGrid($filters);
+                }
+                else
+                {
+                    $myData = $this->object->search($filters);
+                }
+            }
+            // Quando está sendo utilizado padrão antigo business
+            else if ( !is_null($this->busObject) )
+            {
+                $myData = $this->busObject->$search($this->ajustarFiltrosParaPaginacaoLimitOffset($filters, $search));
+            }
+
+            //Percorre cada valor de  campo costomizado do formulário
+            foreach( $this->customFieldValues as $cod=>$linha )
+            {
+                //Busca busca o registro referente e adiciona o valor customizado no final             
+                foreach($myData as $c => $l )
+                {
+                    //Adiciona o valor do campo personalizado na próxima coluna
+                    $myData[$c][] = ($myData[$c][0] == $linha[1] ? $linha[3] : '');
+                }
+            }
+            
+            $data = $myData;
+        }
+        else
+        {
+            // Quando está sendo utilizado padrão novo SType
+            if ( $this->object instanceof SType )
+            {
+                if ( method_exists($this->object, 'getSearchGridSQL') )
+                {
+                    $sql = $this->object->getSearchGridSQL($filters);
+                    $this->grid->setQuery($sql, SDatabase::getDefaultDb());
+                }
+                else if ( method_exists($this->object, 'searchGrid') )
+                {
+                    $data = $this->object->searchGrid($filters);
+                }
+                else if ( $this->object->utilizaNovoPadrao() )
+                {
+                    // Chama metodo que define data na grid a partir do type instanciado
+                    $this->grid->setGridDataType( $this->object, $this->getRequestValues() );
+                }
+                else if ( method_exists($this->object, 'search') )
+                {
+                    $data = $this->object->search($filters);
+                }
+                else if ( !is_null($this->busObject) )
+                {
+                    $data = $this->busObject->$search($filters);
+                }
+            }
+            // Quando está sendo utilizado padrão antigo business
+            else if ( !is_null($this->busObject) )
+            {
+                $data = $this->busObject->$search($this->ajustarFiltrosParaPaginacaoLimitOffset($filters, $search));
+            }
+        }
+
+        return $data;
+    }
+    
+    /**
+     * Prepara os filtros para utilizar a paginação de grid por limit offset.
+     * 
+     * @param stdClass $filters
+     * @param String $searchFunction
+     * @return stdClass
+     */
+    private function ajustarFiltrosParaPaginacaoLimitOffset($filters, $searchFunction)
+    {
+        // Se o business estiver configurado para utilizar o modo de listagem por paginação com limit offset.
+        if ( $this->busObject->modoDePaginacaoPorLimitOffset() )
+        {
+            // Obtém a quantidade total de registros que foram retornados.
+            $filters->returnCount = true;
+            $countTotalRows       = $this->busObject->$searchFunction($filters);
+            $this->countTotalRows = $countTotalRows[0][0];
+
+            // Retorna somente a quantidade configurada de registros, para listagem por página.
+            $pnPage               = (int)SAGU::NVL(MIOLO::_REQUEST('pn_page'), 1);        
+            $filters->limit       = (int)SAGU::getParameter('BASIC', 'LISTING_NREGS');
+            $filters->offset      = $this->offsetDataGrid = (int)SAGU::getParameter('BASIC', 'LISTING_NREGS') * ($pnPage - 1);    
+            $filters->returnCount = false;
+        }
+        
+        return $filters;
+    }
+    
+    /**
+     * Save filters on session
+     *
+     * @param stdClass $gridFilters 
+     */
+    private function saveSessionFilters($gridFilters)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $uniqueId = null;
+        if ( $gridFilters )
+        {
+            $uniqueId = rand();
+            
+            $new = new stdClass();
+            foreach ( $gridFilters as $key => $val )
+            {
+                $new->$key = $val;
+            }
+            $new->urlModule = MIOLO::getCurrentModule();
+            $new->urlAction = MIOLO::getCurrentAction();
+            
+            $MIOLO->session->set("searchFilters_{$uniqueId}", $new);
+        }
+
+        $MIOLO->setConf('uniqueSearchId', $uniqueId);
+    }
+    
+    
+    /**
+     * Get unique search session filters
+     * 
+     * @return array form filters
+     */
+    public static function getSessionFilters()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $uniqueId = MIOLO::_REQUEST('uniqueSearchId');
+        $data = array();
+        
+        if ( strlen($uniqueId) > 0 )
+        {
+            $id = "searchFilters_{$uniqueId}";
+            $data = $MIOLO->session->get($id);
+        }
+        
+        return $data;
+    }
+    
+    
+    /**
+     * Clean the search filters in current uniqueId session
+     */
+    private function clearSessionFilters()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $uniqueId = $this->getRequestValue('uniqueSearchId');
+        $MIOLO->session->set("searchFilters_{$uniqueId}", null);
+    }
+    
+    public function getGridPageLength()
+    {
+        return $this->grid->pageLength;
+    }
+    
+    /**
+     * @return SGrid
+     */
+    public function getGrid()
+    {
+        return $this->grid;
+    }
+
+    public function setGrid($grid)
+    {
+        $this->grid = $grid;
+    }
+    
+    public function getRequestValues()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $values = parent::getRequestValues();
+        
+        $pkValue = $MIOLO->session->getValue('temp.filter.pkey');
+        
+        if ( ( strlen($pkValue) > 0 ) && !$this->isCompositePkey() )
+        {
+            $pkey = $this->getPkeySingleName();
+            
+            if ( !isset($values[$pkey]) )
+            {
+                $values[$pkey] = $pkValue;
+            }
+            
+            $MIOLO->session->unregister('temp.filter.pkey');
+        }
+
+        return $values;
+    }
+}
+?>

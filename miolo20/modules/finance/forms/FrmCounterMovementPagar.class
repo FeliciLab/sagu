@@ -1,0 +1,2408 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2015 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Formulário de movimentação de caixa para realizar pagamentos
+ *
+ * @author Luís August Weber Mercado [luis_augusto@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Luís August Weber Mercado [luis_augusto@solis.com.br]
+ * 
+ * @since
+ * Classe criada em 20/05/2015
+ *
+ **/
+
+MIOLO::uses('/forms/FrmChequesPopup.class', 'finance');
+MIOLO::uses('/forms/FrmCreditCardPopup.class', 'finance');
+MIOLO::uses('/forms/FrmBankMovementPopup.class', 'finance');
+
+class FrmCounterMovementPagar extends SForm
+{
+    
+    public $caixa;
+
+    const ERROR_NO_OPEN_COUNTER = 1; // Nao possui caixa aberto
+
+    /**
+     * Construtor da classe
+     * 
+     */
+
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $session = $MIOLO->getSession();
+
+        if ( (!$MIOLO->page->isPostBack() ) && ( MIOLO::_REQUEST('cpaint_function') != 'ajaxCallBack' ) && ( MIOLO::_REQUEST('cpaint_function') != 'popupCheques' ) && ( MIOLO::_REQUEST('cpaint_function') != 'addToTable' ) && ( MIOLO::_REQUEST('__EVENTTARGETVALUE') != 'btnFinalize:click' ) && ( MIOLO::_REQUEST('event') != 'removerTitulo_click' ) && ( MIOLO::_REQUEST('not_remove') != 1 ) )
+        {
+            //Limpa os dados da grid da sessão
+            $session->setValue('counterMovementItems', null);
+            $session->setValue('totalValue', 0);
+            $session->setValue('totalMissing', 0);
+            $session->setValue('totalReturn', 0);
+            $session->setValue('totalReceived', 0);
+
+            // Limpa cache da subdetail de cheques no primeiro acesso ao form
+            MSubDetail::clearData('cheques');
+
+            if ( MIOLO::_request('event') != 'btnCloseCounter_confirm' )
+            {
+                $MIOLO->page->onload("document.getElementById('m_bsgCounterActions').style.display='block'"); //Exibe as ações do caixa
+            }
+        }
+
+        if ( MIOLO::_request('__EVENTTARGETVALUE') == 'OK:click' )
+        {
+            $MIOLO->page->onload("document.getElementById('m_bsgCounterActions').style.display='block'"); //Exibe as ações do caixa
+        }
+
+        // trabalha junto com counterMovement.js, definindo como false o evento pressionado
+        if ( MIOLO::_REQUEST('cpaint_function') == 'ajaxCallBack' )
+        {
+            $MIOLO->page->AddAJAXJsCode("eventTriggered = false;");
+        }
+
+        parent::__construct(_M('Movimentação de caixa', $module), new FinCounterMovement(), array('counterMovementId'));
+
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+
+    }
+
+    /**
+     * Obtém os dados do operador de caixa
+     */
+    public function getOperatorData($defaultException = true)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        try
+        {
+            //Get login
+            $loginUser = $MIOLO->GetLogin();
+            //Business person
+            $businessPhysicalPersonEmployee = $MIOLO->getBusiness('basic', 'BusPhysicalPersonEmployee');
+            //Object person
+            $person = $businessPhysicalPersonEmployee->getPersonByMioloUserName($loginUser->id);
+
+            if ( is_object($person) )
+            {
+                //Business open counter
+                $businessOpenCounter = $MIOLO->getBusiness($module, 'BusOpenCounter');
+                $businessCloseCounter = $MIOLO->getBusiness($module, 'BusCloseCounter');
+                $businessCounterMovement = $MIOLO->getBusiness($module, 'BusCounterMovement');
+                $businessCounter = $MIOLO->getBusiness($module, 'BusCounter');
+
+                //Filter counter
+                $filter = new stdClass();
+                $filter->operatorId = $person->personId;
+                $filter->open = 't';
+                //Get data counter
+                $openCounter = $businessOpenCounter->searchOpenCounter($filter);
+                if ( is_array($openCounter) )
+                {
+                    $objectOpenCounter = $businessOpenCounter->getOpenCounter($openCounter[0][0]);
+                    $caixa = $businessCounter->getCounter($objectOpenCounter->counterId);
+
+                    //Verificar se o caixa foi aberto no dia anterior, caso sim exigir o fechamento do mesmo
+                    if ( ( SAGU::dateDiff(SAGU::getDateNow(), $objectOpenCounter->date) > SAGU::getParameter($module, 'DAYS_TO_OPEN_COUNTER') ) && ( MIOLO::_request('event') != 'btnCloseCounter_confirm') )
+                    {
+                        $std = new stdClass();
+                        $std->messages[] = _M('O fechamento do caixa deve ser realizado diariamente. O caixa do dia anterior ainda não foi fechado.', $module);
+                        $this->btnCloseCounter_click($std);
+                    }
+
+                    $data->openCounterId = $objectOpenCounter->openCounterId;
+                    $data->counterId = $objectOpenCounter->counterId;
+                    $data->counterDescription = $objectOpenCounter->counterDescription;
+                    $data->unitDescription = $objectOpenCounter->unitDescription;
+                    $data->operatorId = $objectOpenCounter->operatorId;
+                    $data->user = $loginUser->id;
+                    $data->operatorName = $objectOpenCounter->operatorName;
+                    $data->value = $objectOpenCounter->value;
+                    $data->responsibleUserName = $objectOpenCounter->responsibleUserName;
+                    $data->openDate = $objectOpenCounter->date;
+                    $data->totalValue = $businessCloseCounter->totalValueCloseCounter($objectOpenCounter->openCounterId);
+                    $data->moneyValue = $businessCounterMovement->totalSpeciesValue($objectOpenCounter->openCounterId, SAGU::getParameter('FINANCE', 'MONEY_SPECIES_ID'));
+                    $data->isCounterTreasury = $caixa->isCounterTreasury;
+                    $data->valorEmDinheiro = $businessCloseCounter->totalValorEmEspecie($objectOpenCounter->openCounterId);
+                }
+                else
+                {
+                    $msg = _M('Erro. Você não tem permissão para acessar este processo!', $module);
+                    $msg .= '<ul><li>' . _M('O usuário logado deve ser um operador de caixa', $module) . '.' . '</li></ul>';
+                    throw new Exception($msg, self::ERROR_NO_OPEN_COUNTER);
+                }
+            }
+            else
+            {
+                $msg = _M('Você não tem permissão para acessar este processo!', $module);
+                $msg .= '<ul><li>' . _M('O usuário logado deve ser um funcionário', $module) . '.' . '</li></ul>';
+                $msg .= '<ul><li>' . _M('O usuário logado deve ser um operador de caixa', $module) . '.' . '</li></ul>';
+                $defaultException = true;
+                throw new Exception($msg);
+            }
+        }
+        catch ( Exception $e )
+        {
+            if ( $defaultException )
+            {
+                $MIOLO->error($e->getMessage());
+            }
+            else
+            {
+                throw new Exception($e->getMessage(), $e->getCode());
+            }
+        }
+
+        return $data;
+
+    }
+
+    public function openCounter($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $session = $MIOLO->getSession();
+
+        $flds[] = new MDiv('divOpenCounterPopup');
+
+        // Campo usuário
+        $flds[] = $user = new MTextField('user', null, _M('Usuário', $module), 20);
+        $user->setJsHint(_M('Informe o usuário', $module));
+
+        // Campo senha
+        $flds[] = $password = new MPasswordField('password', null, _M('Senha', $module), 20);
+        $password->setJsHint(_M('Informe a senha', $module));
+
+        $busCounter = $MIOLO->getBusiness($module, 'BusCounter');
+        $listCounter = $busCounter->listCounter(true);
+
+        // Caixa
+        $caixa = new MSelection('counterId', $this->getFormValue('counterId', $data->counterId), _M('Caixa', $module), $listCounter);
+        $caixa->addAttribute('onChange', SForm::getAjaxAction('verificaSaldoDeFechamento', 'divVerificaSaldoDeFechamento', true));
+        $flds[] = $caixa;
+
+        //Valor
+        $value = new MTextField('value', $this->getFormValue('value', $data->value), _M('Valor de abertura', $module), SAGU::getParameter('BASIC', 'FIELD_MONETARY_SIZE'), _M('Ex.: 1.00', $module));
+        $value->setReadOnly($readOnly);
+        $value->setJsHint(_M('Informe o valor de abertura', $module));
+        $flds[] = $value;
+
+        $flds[] = new MButton('btnSaveOpenCounter', _M('Abrir o caixa', $module), SForm::getAjaxAction('btnSaveOpenCounter', 'divOpenCounterPopup'));
+
+        $flds[] = $divs = new MDiv('divVerificaSaldoDeFechamento');
+
+        // popup
+        $fields[] = $popup = new MPopup('popupOpenCounter', $flds, _M('Abertura de caixa', $module));
+        $popup->setWidth('70%; top:50px!important');
+
+        $MIOLO->page->onload(" xGetElementById('mPopupClose').setAttribute('class', ''); ");
+
+        return $fields;
+
+    }
+
+    public function btnSaveOpenCounter($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $session = $MIOLO->getSession();
+
+        $bus[] = $busUser = $MIOLO->getBusiness('admin', 'user');
+        $bus[] = $busPerson = $MIOLO->getBusiness('basic', 'BusPerson');
+        $bus[] = $busOpenCounter = $MIOLO->getBusiness('finance', 'BusOpenCounter');
+        $bus[] = $busCounterMovement = $MIOLO->getBusiness('finance', 'BusCounterMovement');
+        foreach ( $bus as $b )
+        {
+            $b->db = SDatabase::getInstance();
+        }
+
+        $businessPhysicalPersonEmployee = $MIOLO->getBusiness('basic', 'BusPhysicalPersonEmployee');
+        $loginUser = $MIOLO->GetLogin();
+        $loginPerson = $businessPhysicalPersonEmployee->getPersonByMioloUserName($loginUser->id, false);
+
+        //Usuário e senha
+        $user = $args->user;
+        $password = $args->password;
+        $value = $args->value;
+        $counterId = $args->counterId;
+
+        $fields[] = array();
+        try
+        {
+            if ( !is_numeric($value) )
+            {
+                throw new Exception(_M('Deve ser informado um valor válido', $module));
+            }
+
+            if ( (strlen($user) <= 0) || (strlen($password) <= 0) )
+            {
+                throw new Exception(_M('Informe o usuário e senha', $module));
+            }
+
+            // Valida se valor digitado e maior que saldo atual
+            if ( strlen($counterId) <= 0 )
+            {
+                throw new Exception(_M('Deve ser selecionado um caixa', $module));
+            }
+
+            $BusUser = new BusinessAdminBusUser();
+            $passwordMD5 = $BusUser->convertPasswordToMD5($password);
+
+            $person = $busPerson->getPersonByMioloUserName($user);
+
+            if ( $person->mioloPassword != $password ) // Se a senha digitada "normal" é diferente a da base
+            {
+                if ( $person->mioloPassword != $passwordMD5 ) // Se a senha digitada "convertida pra MD5" é diferente a da base.
+                {
+                    throw new Exception(_M('Usuário ou senha inválido(s).', $module));
+                }
+            }
+
+            $rights = $busUser->getByLogin($user)->getRights();
+            $right = $rights['FrmOpenCounter'];
+            if ( $right < A_INSERT )
+            {
+                throw new Exception(_M('O usuário não possui permissão.', $module));
+            }
+
+            $std = new stdClass();
+            $std->counterId = $counterId;
+            $std->operatorId = $loginPerson->personId;
+            $std->value = $value;
+            $std->operation = 'C';
+            $std->date = SAGU::getDateNow();
+
+            if ( !$busOpenCounter->validFormOpenCounter($std) )
+            {
+                throw new Exception(_M('O caixa selecionado ja está aberto', $module));
+            }
+
+            $busOpenCounter->insertOpenCounter($std);
+
+            $fields[] = MPrompt::information(_M('Abertura de caixa realizada com sucesso!', $module));
+        }
+        catch ( Exception $e )
+        {
+            $prompt = MPrompt::Error($e->getMessage());
+            $fields[] = $prompt;
+        }
+
+        return $fields;
+
+    }
+
+    /**
+     * Método que define os campos
+     * 
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        // Para o fluxo de aprovações
+        if ( !strlen($MIOLO->_REQUEST('fluxosolicitacaoid')) > 0 )
+        {
+            $fields[] = new MHiddenField('acao', 'pagar');
+            
+            $fields[] = FinFluxoAprovacaoConfiguracao::obterAvisoDeQueOProcessoPossuiConfiguracao(FinFluxoAprovacaoProcesso::BAIXA_DE_TITULOS);
+
+            $fields[] = new MHiddenField('counterMovementId');
+            $fields[] = new MDiv('divLimbo');
+
+            try
+            {
+                $data = $this->getOperatorData(false); //Obtém as informações do operador de caixa
+            }
+            catch ( Exception $e )
+            {
+                if ( $e->getCode() == self::ERROR_NO_OPEN_COUNTER )
+                {
+                    $fields[] = $this->openCounter();
+                }
+            }
+            
+            $finTransferenciaDeCaixa = new FinTransferenciaDeCaixa();
+
+            // Retorna mensagem se existe transferência de caixa a ser aceita
+            $fields[] = $finTransferenciaDeCaixa->verificaSePossuiPendenciasDeTransferencia($data->counterId, $data->user);
+
+            // Id open counter
+            $fields[] = new MHiddenField('openCounterId', $data->openCounterId);
+
+            // Carrega as informações referentes ao caixa atual
+            $this->caixa = new FinCounter($data->counterId);
+            
+            $operacao = new MRadioButtonGroupFixed("operacao", "pagar", "", array("receber" => "Receber contas", "pagar" => "Pagar conta"), "", "horizontal");
+            $operacao->setShowLabel(false);
+            $div = new MDiv("divOpcoesDeOperacao", $operacao);
+            $div->addBoxStyle("display", "block");
+            $div->addBoxStyle("margin", "0 auto");
+            $div->addBoxStyle("width", "300px");
+
+            $fields[] = $div;
+
+            $argumentos = new stdClass();
+            $argumentos->operacao = "p";
+
+            $this->limpaItensDeMovimentacaoBancariaDaSessao();
+            $campos = $this->getCamposPagar();
+            $label = _M("Pagar conta");
+
+            $urlTrocaDeAcoes = str_replace("&amp;", "&", $MIOLO->GetActionURL($module, $MIOLO->getCurrentAction()));
+            
+            $MIOLO->page->AddJsCode(""
+                . "(function() {"
+                    . "var radios = document.querySelectorAll('input[name=\"operacao\"]');"
+                    . "for(var i = 0; i < radios.length; i++) {"
+                        . "radios[i].style.cursor = 'pointer';"
+                        . "radios[i].addEventListener('click', function()"
+                        . "{"
+                                . "location.href = '{$urlTrocaDeAcoes}&acao=' + this.value;"
+                        . "});"
+                    . "}"
+                . "})();");
+
+            $fields[] = new MDiv("divCamposOperacoes", array(new MBaseGroup("bsgCamposOperacoes", $label, $campos, "vertical")));
+            
+            //Ações do caixa - Somente exibidas enquanto nenhuma operação estiver ativa
+            $balanceLabel = new MLabel(_M('Saldo em dinheiro', $module));
+            $balanceLabel->addAttribute('style', 'font-size:200%; font-weight: bold;');
+            $balance = new MTextField('currentBalance', $data->valorEmDinheiro, null);
+            $balance->setJsHint(_M('Valor de abertura + lançamentos em dinheiro'));
+            $balance->setReadOnly(true);
+            $balance->addAttribute('style', 'font-size:200%; height:20px; border:solid;');
+            $currentBalance = new MHContainer('ctnCurrentBalance', array($balanceLabel, $balance));
+
+            $ctActions[] = new MButton('btnCloseCounter', _M('Fechar caixa', $module));
+
+            $ctActions[] = new MButton('btnConsult', _M('Consultar movimentações', $module), SForm::getAjaxAction('showMovements', 'divLimbo'));
+
+            if ( $MIOLO->checkAccess('FrmLancamentoSemVinculo', A_INSERT, false, true) )
+            {
+                $url = $MIOLO->getActionURL($module, 'main:register:lancamentoSemVinculo', null, array('function' => SForm::FUNCTION_INSERT));
+                $btnLanc = new MButton('btnLancamentoSemVinculo', _M('Lançamento sem vínculo', $module), "window.open('{$url}');");
+                $ctActions[] = $btnLanc;
+            }
+
+            $acao = SForm::getAjaxAction("evtMostraSaldosCaixasBancos", "divLimbo");
+
+            $btnSaldo = new MButton('btnVerSaldos', _M('Saldos de caixa/banco (F6)'), $acao);
+            
+            $ctActions[] = $btnSaldo;
+            $ctActions[] = new MButton('btnWithdrawMoney', _M('Retirar dinheiro', $module), SForm::getAjaxAction('withdrawMoney', 'divWithdrawMoney'));
+            $ctActions[] = $currentBalance;
+
+            $bsgActions = new MBaseGroup('bsgCounterActions', _M('Ações do caixa', $module), $ctActions, 'horizontal');
+            $bsgActions->addBoxStyle('display', 'none');
+            $fields[] = $bsgActions;
+
+            //Cria as teclas de atalho para a interface        
+            $this->page->scripts->add($MIOLO->getActionURL($module, 'html:scripts:counterMovement.js'));
+            $this->page->addJsCode("document.body.setAttribute('onkeydown','myCustomKeyHandler(event)');");
+            
+            $fields[] = new MDiv('divWithdrawMoney');
+            $fields[] = new MDiv('divPrintResponse');
+            
+            $fields[] = new MText('labelUser', SAGU::getDateNow() . ' - ' . $data->counterDescription . ' - Operador ' . $data->user);
+                        
+            // Caso saldo atual seja maior que configuracao de limite maximo, abre popup bloqueando
+            // E não seja um caixa da tesouraria
+            $parameterValue = SAGU::getParameter('FINANCE', 'COUNTER_MAX_BALANCE');
+            if ( ($data->moneyValue->value > $parameterValue) && ($data->isCounterTreasury == DB_FALSE) )
+            {
+                $fields[] = $this->getLimitExcededPopup();
+            }
+
+            parent::defineFields(array('fields' => $fields));
+        }
+
+    }
+
+    /**
+     * Gera os campos relacionados ao pagamento
+     * 
+     * @return stdClass Objeto com a propriedade 'campos' e 'camposEsquerda'
+     */
+    private function getCamposPagar()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $botoes = array();
+        $campos = array();
+        $fieldsCentralizados = array();
+
+        $filtro = new MTextField("filtroConta", "", _M("Busca"), 50, _M("Buscar em dados da compra ou fornecedor"));
+        $filtro->showLabel = false;
+
+        $divLabelFiltro = new MDiv("divLabelFiltro", new MLabel(_M("Busca:")));
+        $divLabelFiltro->addBoxStyle("width", "100px");
+        $divLabelFiltro->addBoxStyle("text-align", "right");
+        $divLabelFiltro->addBoxStyle("display", "inline-block");
+
+        $hctFiltroConta = new MHContainer("hcFiltroConta", array($divLabelFiltro, $filtro));
+        $hctFiltroConta->setShowLabel(false);
+
+        $fieldsCentralizados[] = $hctFiltroConta;
+
+        $divClear = new MDiv("divClear", array());
+        $divClear->addBoxStyle("clear", "both");
+        $fieldsCentralizados[] = $divClear;
+
+        $dti = MIOLO::_REQUEST("filtroDataInicialVencimento") ? MIOLO::_REQUEST("filtroDataInicialVencimento") : SAGU::getDateNow();
+        $dtf = MIOLO::_REQUEST("filtroDataFinalVencimento") ? MIOLO::_REQUEST("filtroDataFinalVencimento") : SAGU::getDateNow();
+
+        $divLabelVencimento = new MDiv("divLabelVencimento", new MLabel(_M("Vencimento:")));
+        $divLabelVencimento->addBoxStyle("width", "100px");
+        $divLabelVencimento->addBoxStyle("text-align", "right");
+        $divLabelVencimento->addBoxStyle("display", "inline-block");
+        //$divLabelVencimento->addBoxStyle("margin-right", "-4px");
+
+        $labelAteh = new MLabel(_M("até"));
+        $campoDtInicial = new MCalendarField("filtroDataInicialVencimento", $dti, "", SAGU::getParameter("BASIC", "FIELD_DATE_SIZE"));
+        $campoDtFinal = new MCalendarField("filtroDataFinalVencimento", $dtf, "", SAGU::getParameter("BASIC", "FIELD_DATE_SIZE"));
+
+        $fieldsCentralizados[] = new MHContainer("hcFiltrosContas", array($divLabelVencimento, $campoDtInicial, $labelAteh, $campoDtFinal));
+
+        $acao = SForm::getAjaxAction("evtFazBuscaContas", "divGridResultadoContas");
+
+        $divBotao = new MDiv("", new MButton("btnBuscarContas", _M("Buscar"), $acao));
+        $divBotao->addBoxStyle("text-align", "center");
+        $divBotao->addBoxStyle("padding", "5px 0");
+
+        $fieldsCentralizados[] = $divBotao;
+
+        $div = new MDiv("divFiltrosContas", $fieldsCentralizados);
+        $div->addBoxStyle("display", "block");
+        $div->addBoxStyle("width", "60%");
+        $div->addBoxStyle("margin", "0 auto");
+        $div->addBoxStyle("text-align", "center");
+
+        $campos[] = $div;
+
+        // Oculta botões
+        if ( MIOLO::_request('__EVENTTARGETVALUE') != 'btnFinalize:click' )
+        {
+            $campos[] = new MHContainer('pagButtons', $botoes);
+        }
+
+        if ( MIOLO::_request('__EVENTTARGETVALUE') == 'btnCancel:click' )
+        {
+            $this->SetFormValue('paymentValue', null);
+        }
+
+        $grid = $MIOLO->getUI()->getGrid($module, 'GrdCounterMovementContas');
+        $grid->setData(CompatibilidadeCAP::getContasDisponiveisEntreIntervalo($dti, $dtf));
+        $grid->setSaldo($this->getSaldoAtual());
+        $grid->clearActions();
+        $grid->addAcaoPagarConta();
+        $grid->showExportAsCSV = false;
+        $campos[] = new MDiv("divGridResultadoContas", array($grid));
+
+        return $campos;
+
+    }
+
+    /**
+     * Evento AJAX:
+     * Carrega a tela de pagamento de conta
+     * 
+     * @param stdClass $args Argumentos enviados via AJAX
+     * @return MBaseGroup Container com os campos para pagamento de conta
+     */
+    public function evtCarregaTelaPagamentoConta($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $camposLeft = $camposRight = $camposPagamento = $camposDescontosJuros = $botoes = array();
+
+        // Dados da conta
+        $data = CompatibilidadeCAP::getInformacaoContaPorTitulo($args->tituloid);
+
+        $valorConta = $data[0][6];
+
+        $grid = $MIOLO->getUI()->getGrid($module, 'GrdCounterMovementContas');
+        $grid instanceof SGrid;
+        $grid->setData($data);
+        $grid->setSaldo($this->getSaldoAtual());
+        $grid->clearActions();
+        $grid->disablePagination();
+        $grid->disableExports();
+        $grid->showExportAsCSV = false;
+
+        // Adiciona a grid aos campos
+        $camposLeft[] = $grid;
+
+        $acaoInformacaoPagamento = $this->getAcaoAtualizarInformacoesPagamento();
+
+        // Campos de descunto e juros
+        $validadorDescontos = new MFloatValidator("txtDescontoPagamento", _M("Valor de desconto"), SAGU::getParameter("BASIC", "FLOAT_SEPARATOR"), SAGU::getParameter("BASIC", "REAL_ROUND_VALUE"), "optional");
+        $validadorJuros = new MFloatValidator("txtJurosPagamento", _M("Valor de juros"), SAGU::getParameter("BASIC", "FLOAT_SEPARATOR"), SAGU::getParameter("BASIC", "REAL_ROUND_VALUE"), "optional");
+
+        $txtDesconto = new MTextField("txtDescontoPagamento", "", "", SAGU::getParameter('BASIC', 'FIELD_MONETARY_SIZE'), _M('Ex.: 1.00'));
+        $txtDesconto->addAttribute("onchange", "{$acaoInformacaoPagamento}");
+        $labelDesconto = new MDiv("", new MLabel(_M("Valor de desconto") . ":"));
+        $this->addValidator($validadorDescontos);
+
+        $labelDesconto->addBoxStyle("width", "140px");
+        $labelDesconto->addBoxStyle("text-align", "right");
+        $labelDesconto->addBoxStyle("display", "inline-block");
+
+        $txtJuros = new MTextField("txtJurosPagamento", "", "", SAGU::getParameter('BASIC', 'FIELD_MONETARY_SIZE'), _M('Ex.: 1.00'));
+        $txtJuros->addAttribute("onchange", "{$acaoInformacaoPagamento}");
+        $labelJuros = new MDiv("", new MLabel(_M("Valor de juros") . ":"));
+        $this->addValidator($validadorJuros);
+
+        $labelJuros->addBoxStyle("width", "140px");
+        $labelJuros->addBoxStyle("text-align", "right");
+        $labelJuros->addBoxStyle("display", "inline-block");
+
+        $camposDescontosJuros[] = new MHContainer("hctDesconto", array($labelDesconto, $txtDesconto));
+        $camposDescontosJuros[] = new MHContainer("hctJuros", array($labelJuros, $txtJuros));
+
+        $camposLeft[] = new MBaseGroup("bsgDescontosJuros", _M("Desconto/Juros"), $camposDescontosJuros, "vertical");
+
+        $operacao = new MRadioButtonGroupFixed("tipoPagamento", "C", "", array("C" => "De caixa", "B" => "Bancária"), "", "horizontal");
+        $operacao->setShowLabel(false);
+        $div = new MDiv("divRadiosTipoPagamento", $operacao);
+        $div->addBoxStyle("display", "block");
+        $div->addBoxStyle("margin", "0 auto");
+        $div->addBoxStyle("width", "300px");
+
+        // Para não zerar o valor total da conta
+        $args->valorConta = $valorConta;
+        $divRepostaTipoPagamento = new MDiv("divRespostaTipoPagamento", $this->evtCarregaTipoPagamento($args));
+
+        // Atribui a ação de clique no radio button do tipo de pagamento
+        $MIOLO->page->addAJAXJsCode("
+            (function atribuiHandlerTipoPagamento()
+            {
+                var radios = document.querySelectorAll('input[name=\"tipoPagamento\"]');
+                
+                if( radios.length > 0 ) 
+                {
+                    for(var i = 0; i < radios.length; i++)
+                    {
+                        radios[i].addEventListener('click', function()
+                        {
+                            saguDoAjax('evtCarregaTipoPagamento','divRespostaTipoPagamento',false,'&tipoPagamento=' + this.value); return false;
+                        });
+                    }
+                }
+                else
+                {
+                    setTimeout(atribuiHandlerTipoPagamento, 5);
+                }
+            })();
+        ");
+
+        $camposLeft[] = new MBaseGroup("bsgPagamentos", _M("Tipo de movimentação"), array($div, $divRepostaTipoPagamento), "vertical");
+
+        $camposLeft[] = new MHiddenField("valorConta", $valorConta);
+        $camposLeft[] = new MHiddenField("tituloConta", $args->tituloid);
+        $camposLeft[] = new MDiv("divPopupCadastrarMovBankReposta", "");
+
+        $acaoFinalizar = SForm::getAjaxAction("evtFinalizarPagamento", "divRespostaFinalizarPagamento");
+        $acaoCancelar = SForm::getAjaxAction("evtCancelarPagamento", "divCamposOperacoes");
+
+        // Botões
+        $botoes[] = new MButton("btnCancel", _M("Cancelar (ESC)"), $acaoCancelar);
+        $divBotaoFinalizar = new MButton("btnFinalizarPagamento", _M("Finalizar (F10)"), $acaoFinalizar);
+        $divBotaoFinalizar->addBoxStyle("display", "inline-block");
+        $botoes[] = $divBotaoFinalizar;
+
+        $camposRight = array();
+
+        $totalValueLabel = new MLabel(_M("Total", $module));
+        $totalValueLabel->addAttribute("style", "font-size:200%; font-weight: bold;");
+        $totalValue = new MTextField("valorTotal", SAGU::calcNumber(floatval($valorConta), true), null);
+        $totalValue->setReadOnly(true);
+        $totalValue->addAttribute("style", "font-size:200%; height:20px; border:solid;");
+        $bsgTotal = new MVContainer("bsgTotalPag", array($totalValueLabel, $totalValue));
+        $camposRight[] = $bsgTotal;
+
+        $valorPagoLabel = new MLabel(_M("Valor pago", $module));
+        $valorPagoLabel->addAttribute("style", "font-size:200%; font-weight: bold;");
+        $valorPago = new MTextField("valorPago", SAGU::calcNumber(0, true), null);
+        $valorPago->setReadOnly(true);
+        $valorPago->addAttribute("style", "font-size:200%; height:20px; border:solid;");
+        $bsgValorPago = new MVContainer("bsgValorPag", array($valorPagoLabel, $valorPago));
+        $camposRight[] = $bsgValorPago;
+
+        $valorTrocoLabel = new MLabel(_M("Troco", $module));
+        $valorTrocoLabel->addAttribute("style", "font-size:200%; font-weight: bold;");
+        $valorTroco = new MTextField("valorTroco", SAGU::calcNumber(0, true), null);
+        $valorTroco->setReadOnly(true);
+        $valorTroco->addAttribute("style", "font-size:200%; height:20px; border:solid;");
+        $bsgValorTroco = new MVContainer("bsgValorPag", array($valorTrocoLabel, $valorTroco));
+        $camposRight[] = $bsgValorTroco;
+
+        $divLeft = new MDiv("divCamposPagamentoContaEsq", $camposLeft);
+        $divRight = new MDiv("divCamposPagamentoContaDir", $camposRight);
+        $divBottom = new MDiv("divCamposPagamentoContaBot", $botoes);
+
+        $divLeft->addBoxStyle("float", "left");
+        $divLeft->addBoxStyle("width", "80%");
+        $divLeft->addBoxStyle("box-sizing", "border-box");
+        $divLeft->addBoxStyle("display", "inline-block");
+
+        $divRight->addBoxStyle("float", "left");
+        $divRight->addBoxStyle("width", "20%");
+        $divRight->addBoxStyle("box-sizing", "border-box");
+        $divRight->addBoxStyle("display", "inline-block");
+        $divRight->addBoxStyle("padding", "10px");
+
+        $divBottom->addBoxStyle("clear", "both");
+
+        return new MBaseGroup("bsgCamposOperacoes", _M("Pagar conta"), array(new MDiv("", array($divLeft, $divRight, $divBottom, new MDiv("divRespostaFinalizarPagamento", "")))), "vertical");
+
+    }
+
+    public function getAcaoAtualizarInformacoesPagamento()
+    {
+        return SForm::getAjaxAction("evtAtualizaInformacoesPagamento", "divLimbo");
+
+    }
+
+    /**
+     * Evento AJAX:
+     * Carrega a tela de pagamento bancário ou em dinheiro
+     * 
+     * @param stdClass $args Argumentos enviados via AJAX
+     * 
+     * @return MHContainer Container com os campos referente ao tipo de pagamento
+     */
+    public function evtCarregaTipoPagamento($args)
+    {
+        $camposPagamento = array();
+
+        $camposPagamento[] = new MHiddenField("tipoMovimentacao", $args->tipoPagamento);
+
+        $acaoInformacaoPagamento = $this->getAcaoAtualizarInformacoesPagamento();
+
+        $args->txtPagamentoDinheiro = 0;
+        $args->txtTotalMovimentacaoBancaria = 0;
+        $this->evtAtualizaInformacoesPagamento($args);
+
+        if ( $args->tipoPagamento === "B" )
+        {
+            // Campos relacionados ao pagamento
+            $labelMovBancaria = new MDiv("", new MLabel(_M("Movimentação bancária") . ":"));
+
+            $labelMovBancaria->addBoxStyle("width", "140px");
+            $labelMovBancaria->addBoxStyle("text-align", "right");
+            $labelMovBancaria->addBoxStyle("display", "inline-block");
+
+            $acao = SForm::getAjaxAction("evtPopupCadastrarMovimentacaoBancaria", "divPopupCadastrarMovBankReposta");
+
+            $txtBanco = new MTextField("txtTotalMovimentacaoBancaria", "", "", SAGU::getParameter('BASIC', 'FIELD_MONETARY_SIZE'), "", null, true);
+            $txtBanco->addAttribute("onchange", "{$acaoInformacaoPagamento}");
+
+            $camposPagamento[] = new MHContainer("hctMovBancaria", array(
+                $labelMovBancaria,
+                $txtBanco,
+                new MDiv("", new MButton("btnInformarMovimentacaoBancaria", _M("Informar movimentação bancária"), $acao))
+            ));
+        }
+        else
+        {
+            $this->limpaItensDeMovimentacaoBancariaDaSessao();
+
+            $labelDinheiro = new MDiv("", new MLabel(_M("Dinheiro") . ":"));
+
+            $labelDinheiro->addBoxStyle("width", "140px");
+            $labelDinheiro->addBoxStyle("text-align", "right");
+            $labelDinheiro->addBoxStyle("display", "inline-block");
+
+            $txtDinheiro = new MTextField("txtPagamentoDinheiro", "", "", SAGU::getParameter('BASIC', 'FIELD_MONETARY_SIZE'), _M('Ex.: 1.00'));
+            $txtDinheiro->addAttribute("onchange", "{$acaoInformacaoPagamento}");
+
+            $validadorDinheiro = new MFloatValidator("txtPagamentoDinheiro", _M("Dinheiro"), SAGU::getParameter("BASIC", "FLOAT_SEPARATOR"), SAGU::getParameter("BASIC", "REAL_ROUND_VALUE"), "optional");
+            $camposPagamento[] = new MHContainer("hctDinheiro", array($labelDinheiro, $txtDinheiro));
+            $this->addValidator($validadorDinheiro);
+        }
+
+        return $camposPagamento;
+
+    }
+
+    /**
+     * Evento AJAX:
+     * Atualiza os dados referentes ao valor pago, total de despesas etc.
+     * 
+     * @param stdClass $args Argumentos enviados via AJAX
+     * 
+     * @return MPopup Popup com o formulário de adição/edição/exclusão de movimentações
+     */
+    public function evtAtualizaInformacoesPagamento($args)
+    {
+        $desconto = $args->txtDescontoPagamento !== "" ? floatval($args->txtDescontoPagamento) : 0;
+        $juros = $args->txtJurosPagamento !== "" ? floatval($args->txtJurosPagamento) : 0;
+        $valorInicialConta = floatval($args->valorConta);
+
+        if ( $desconto > $valorInicialConta )
+        {
+            $desconto = 0;
+            MIOLO::getInstance()->page->addAJAXJsCode("document.getElementById('txtDescontoPagamento').value = parseFloat('0').toFixed(2);");
+        }
+
+        // O valor total é o valor da conta - o desconto + o valor dos juros
+        $valor = $valorInicialConta - $desconto + $juros;
+        $valorTotalPago = floatval($args->txtPagamentoDinheiro) + floatval($args->txtTotalMovimentacaoBancaria);
+        $valorTotalTroco = $valorTotalPago - $valor;
+
+        // Se o troco é negativo, quer dizer que ainda não foi pago totalmente
+        if ( $valorTotalTroco < 0 )
+        {
+            $valorTotalTroco = 0;
+        }
+
+        $js = "
+            if( document.getElementById('valorTotal') !== null )
+            {
+                document.getElementById('valorTotal').value = '" . SAGU::calcNumber($valor, true) . "';
+                document.getElementById('valorPago').value = '" . SAGU::calcNumber($valorTotalPago, true) . "';
+                document.getElementById('valorTroco').value = '" . SAGU::calcNumber($valorTotalTroco, true) . "';
+            }
+        ";
+
+        MIOLO::getInstance()->page->addAJAXJsCode($js);
+
+    }
+
+    /**
+     * Evento AJAX:
+     * Finaliza o pagamento, efetivando todas as transações feitas na tela
+     * 
+     * @param stdClass $args Argumentos enviados via AJAX
+     */
+    public function evtFinalizarPagamento($args)
+    {
+        $this->evtAtualizaInformacoesPagamento($args);
+
+        if ( $this->validaValoresAntesDeFinalizar($args) )
+        {
+            $valorInicialConta = floatval($args->valorConta);
+            $desconto = $args->txtDescontoPagamento !== "" ? floatval($args->txtDescontoPagamento) : 0;
+            $juros = $args->txtJurosPagamento !== "" ? floatval($args->txtJurosPagamento) : 0;
+            // O valor total é o valor da conta - o desconto + o valor dos juros
+            $valorTotal = $valorInicialConta - $desconto + $juros;
+
+            $tituloId = intval($args->tituloConta);
+
+            // Insere o lançamento referente ao valor pago
+            $this->insereLancamentoCAP($tituloId, $args->tipoMovimentacao, $valorTotal, "capoperacaopagamentoid");
+
+            // Se o juros foi informado
+            if ( $juros > 0 )
+            {
+                // Insere o lançamento referente ao juros informado
+                $this->insereLancamentoCAP($tituloId, $args->tipoMovimentacao, $juros, "capoperacaojurosid");
+            }
+
+            // Se o desconto foi informado
+            if ( $desconto > 0 )
+            {
+                // Insere o lançamento referente ao juros informado
+                $this->insereLancamentoCAP($tituloId, $args->tipoMovimentacao, $desconto, "capoperacaodescontoid");
+            }
+            
+            $MIOLO = MIOLO::getInstance();
+            
+            $url = $MIOLO->GetActionURL($MIOLO->getCurrentModule(), $MIOLO->getCurrentAction(), "", array("acao" => "pagar"));
+            
+            $MIOLO->information(_M("Pagamento realizado com sucesso"), $url);
+        }
+
+    }
+
+    /**
+     * Faz a validação dos dados informados na tela de pagamento de conta
+     * 
+     * @param stdClass $args Referência aos argumentos enviados via AJAX
+     * 
+     * @return Boolean TRUE se a validação foi bem sucedida, FALSE caso contrário
+     */
+    private function validaValoresAntesDeFinalizar($args)
+    {
+        $valorInicialConta = floatval($args->valorConta);
+        $desconto = $args->txtDescontoPagamento !== "" ? floatval($args->txtDescontoPagamento) : 0;
+        $juros = $args->txtJurosPagamento !== "" ? floatval($args->txtJurosPagamento) : 0;
+        // O valor total é o valor da conta - o desconto + o valor dos juros
+        $valorTotal = $valorInicialConta - $desconto + $juros;
+        $valorPago = floatval($args->txtPagamentoDinheiro) + floatval($args->txtTotalMovimentacaoBancaria);
+
+        $temErro = false;
+
+        // Caso a despesa não tenha sido paga
+        if ( $valorPago < $valorTotal && $args->tipoMovimentacao !== "B" )
+        {
+            $this->addError(_M("O valor pago deve ser maior ou igual ao valor total!"));
+            $temErro = true;
+        }
+
+        // Caso tenha sido feita alguma modificação depois de ter adicionado
+        // a movimentação bancária
+        if ( $valorPago !== $valorTotal && $args->tipoMovimentacao === "B" )
+        {
+            $this->addError(_M("O valor pago deve ser igual ao valor total da conta. Por favor, atualize a movimentação bancária."));
+            $temErro = true;
+        }
+
+        if ( $desconto > $valorInicialConta )
+        {
+            $this->addError(_M("O desconto não pode ser maior que o valor da conta"));
+            $temErro = true;
+        }
+
+        if ( $valorPago > $this->getSaldoAtual() && $args->tipoMovimentacao === 'C' )
+        {
+            $this->addError(_M("Não é possível pagar uma quantia maior que a disponível para este caixa."));
+            $temErro = true;
+        }
+        
+        return !$temErro;
+
+    }
+
+    /**
+     * Insere os lançamentos relativos as operações
+     * 
+     * @param Integer $tituloId Identificador do título sendo pago
+     * @param String $tipoMovimentacao Tipo da movimentação (de (C)aixa ou (B)ancária)
+     * @param Float $valor Valor do lançamento
+     * @param String $operacao Coluna da finoperationdefault relativa a operação
+     */
+    private function insereLancamentoCAP($tituloId, $tipoMovimentacao, $valor, $operacao)
+    {
+        $titulo = CompatibilidadeCAP::getTipo("captitulo", $tituloId);
+
+        $valorNormalizado = sprintf("%.2F", $valor);
+
+        $informacaoOperacao = FinDefaultOperations::getInformacaoOperacaoPorOperacaoPadrao($operacao);
+        $lancamento = CompatibilidadeCAP::getTipo("caplancamento");
+        $lancamento->tituloid = $tituloId;
+        $lancamento->tipolancamento = $informacaoOperacao->operationtypeid;
+        $lancamento->operationid = $informacaoOperacao->operationid;
+        $lancamento->valor = $valorNormalizado;
+
+        if ( $tipoMovimentacao === "B" )
+        {
+            // Pega a movimentação cadastrada
+            $dado = $this->getItemMovimentcaoBancariaDaSessao(0);
+            $lancamento->contabancariaid = $dado["idconta"];
+        }
+        else
+        {
+            $lancamento->speciesid = SAGU::getParameter('FINANCE', 'MONEY_SPECIES_ID');
+        }
+
+        $lancamento->accountschemeid = $titulo->accountschemeid;
+        $lancamento->costcenterid = $titulo->costcenterid;
+
+        $lancamento->inserir();
+
+        // Verifica se todos os titulos da solicitacao não estao mais abertos, caso sim, altera o estado da solicitacao para FECHADO
+        if ( !$titulo->existeTituloEmAbertoDaSolicitacao($tituloId) )
+        {
+            $solicitacaoId = $titulo->obterCodSolicitacao($tituloId);
+
+            $solicitacao = new capsolicitacao($solicitacaoId);
+            $solicitacao->solicitacaoestadoid = capsolicitacaoestado::FECHADO;
+            $solicitacao->editar();
+        }
+
+    }
+
+    /**
+     * Evento AJAX:
+     * Ao clicar em cancelar o pagamento (botão "Cancelar (ESC)" na tela de pagamento)
+     * 
+     * @param stdClass $args Argumentos enviados via AJAX
+     * 
+     * @return Campos da operação de "Pagar conta"
+     */
+    public function evtCancelarPagamento($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        unset($_SESSION["CounterMovement"]["movimentacoesBancarias"]);
+
+        MIOLO::getInstance()->page->Redirect($MIOLO->GetActionURL($MIOLO->getCurrentModule(), $MIOLO->getCurrentAction(), "", array("acao" => "pagar")));
+
+    }
+
+    /**
+     * Evento AJAX:
+     * Abre o popup para cadastro de movimentações bancárias
+     * 
+     * @param stdClass $args Argumentos enviados via AJAX
+     * 
+     * @return MPopup Popup com o formulário de adição/edição/exclusão de movimentações
+     */
+    public function evtPopupCadastrarMovimentacaoBancaria($args)
+    {
+        $campos = $botoes = $camposInput = array();
+
+        $dado = $this->getItemMovimentcaoBancariaDaSessao(0);
+
+        $camposInput = $this->getCamposInputMovimentacaoBancaria($dado);
+
+        $divCampos = new MVContainer("", $camposInput);
+
+        $campos[] = $divCampos;
+
+        $acaoBtAdicionar = SForm::getAjaxAction("evtAddMovimentacaoBancaria", "divOperacoesCadastroMovBank");
+        $botoes[] = new MButton("btnAdicionarMovBank", _M("Salvar"), $acaoBtAdicionar);
+
+        if ( $dado )
+        {
+            $acaoBtExcluir = SForm::getAjaxAction("evtExcluirMovimentacaoBancaria", "divOperacoesCadastroMovBank");
+            $botoes[] = new MButton("btnExcluirMovBank", _M("Limpar movimentação"), $acaoBtExcluir);
+        }
+
+        $divBotoes = new MDiv("divBotoesMovBank", $botoes);
+        $divBotoes->addBoxStyle("text-align", "center");
+
+        $campos[] = $divBotoes;
+
+        $campos[] = new MDiv("divOperacoesCadastroMovBank", array());
+
+        $campos[] = new MDiv("");
+
+        $acaoBotaoMostrarSaldos = SForm::getAjaxAction("evtTrocaVisibilidadeGridSaldosDeCaixaEBanco", "divRespostaMostrarSaldos", false);
+
+        $divBotaoSaldos = new MDiv("divBotaoMostrarSaldos", array(new MButton("btnMostrarSaldoCaixasBancos", _M("Mostrar saldos de caixa/banco (F6)"), $acaoBotaoMostrarSaldos)));
+        $divBotaoSaldos->addBoxStyle("text-align", "center");
+
+        $campos[] = $divBotaoSaldos;
+        $divRespostaSaldos = new MDiv("divRespostaMostrarSaldos", "");
+        $divRespostaSaldos->addBoxStyle("display", "none");
+        $campos[] = $divRespostaSaldos;
+        $popup = new MPopup("mpopupCadastrarMovBank", $campos, _M("Adicionar movimentação bancária"));
+
+        return $popup;
+
+    }
+
+    /**
+     * Gera os campos de input para movimentações bancárias
+     * 
+     * @param stdClass $dado Valores predefindos do campo (ação editar)
+     * @return Array Array com os campos referentes ao input de informações de
+     * movimentações bancárias
+     */
+    private function getCamposInputMovimentacaoBancaria($dado)
+    {
+        $camposInput = array();
+
+        $bankAccount = new FinBankAccount();
+        $options = $bankAccount->findList();
+
+        $camposInput[] = $contaBancaria = new MSelection("contaBancariaMovBank", strlen($dado["idconta"]) > 0 ? $dado["idconta"] : null, _M("Conta bancária"), $options);
+        $this->addValidator(new MRequiredValidator("contaBancariaMovBank", _M("Conta bancária")));
+
+        $camposInput[] = new MCalendarField("dataCompetenciaMovBank", strlen($dado["data"]) > 0 ? $dado["data"] : SAGU::getDateNow(), _M("Data do agendamento"), SAGU::getParameter("BASIC", "FIELD_DATE_SIZE"));
+        $this->addValidator(new MDateDMYValidator("dataCompetenciaMovBank", _M("Data do agendamento"), "required"));
+
+        $camposInput[] = new MTextField("valorMovBank", strlen($dado["valor"]) > 0 ? $dado["valor"] : "", _M("Valor"), SAGU::getParameter("BASIC", "FIELD_MONETARY_SIZE"), _M("Ex.: 1.00"));
+        $this->addValidator(new MFloatValidator("valorMovBank", _M("Valor"), SAGU::getParameter("BASIC", "FLOAT_SEPARATOR"), SAGU::getParameter("BASIC", "REAL_ROUND_VALUE"), "required"));
+
+        $mmulti = new MMultiLineField("informacaoMovBank", strlen($dado["info"]) > 0 ? $dado["info"] : "", _M("Informações"), SAGU::getParameter("BASIC", "FIELD_DESCRIPTION_SIZE"), 5);
+        $mmulti->hint = _M("Adicione informações sobre o pagamento. Ex.: 'Cartão de crédito: Nº XXXX[...]'");
+        $this->addValidator(new MRequiredValidator("informacaoMovBank", _M("Informações")));
+        $camposInput[] = $mmulti;
+
+        return $camposInput;
+
+    }
+
+    /**
+     * Evento AJAX:
+     * Ação do botão de adicionar items de movimentação bancária
+     * 
+     * @param stdClass $args Argumentos enviados via AJAX
+     * 
+     * @return SGrid Grid com os dados atualizados
+     */
+    public function evtAddMovimentacaoBancaria($args)
+    {
+        $dado = $this->getDadoMovimentacaoBancariaNormalizado($args);
+
+        if ( $this->validaCadastroMovimentacaoBancaria($dado, floatval($args->valorTotal)) )
+        {
+            $this->limpaItensDeMovimentacaoBancariaDaSessao();
+
+            $this->adicionaItemDeMovimentacaoBancariaNaSessao($dado);
+
+            // Remove os validadores previamente adicionados
+            $this->removeAJAXValidator("contaBancariaMovBank");
+            $this->removeAJAXValidator("dataCompetenciaMovBank");
+            $this->removeAJAXValidator("valorMovBank");
+            $this->removeAJAXValidator("informacaoMovBank");
+
+            $this->atualizaTotalizadorMovimentacaoBancaria($this->getTodasMovimentcoesBancariasDaSessao());
+
+            MIOLO::getInstance()->page->addAJAXJsCode($this->getJSSetaValorCamposInputMovimentacaoBancaria() . "mpopup.remove();");
+        }
+
+        return array();
+
+    }
+
+    /**
+     * Valida uma dada movimentação bancária
+     * 
+     * @param Array $dado Movimentação bancária
+     * @param Float $valorDaConta Valor da conta a ser comparadas
+     * 
+     * @return Boolean TRUE caso não haja erro com os dados, FALSE caso contrário
+     */
+    private function validaCadastroMovimentacaoBancaria($dado, $valorDaConta)
+    {
+        $temErro = false;
+
+        // Caso a data tenha sido informada
+        if ( strlen($dado["data"]) === 0 )
+        {
+            $this->addError(_M("É necessário informar a data de competência"));
+            $temErro = true;
+        }
+
+        if ( $dado["valor"] <= 0 )
+        {
+            $this->addError(_M("Não é possível processar valores negativos ou iguais a 0. Informe apenas valores positivos maiores que 0"));
+            $temErro = true;
+        }
+
+        if ( !$this->validaValorInformadoComContaBancaria($dado) )
+        {
+            $this->addError(_M("Não é possível cadastrar um valor que seja superior ao da conta relacionada. Por favor, selecione outra conta ou diminua o valor informado."));
+            $temErro = true;
+        }
+
+        if ( $dado["valor"] !== $valorDaConta )
+        {
+            $this->addError(_M("O valor informado deve ser igual ao da conta a ser paga"));
+            $temErro = true;
+        }
+
+        return !$temErro;
+
+    }
+
+    /**
+     * Verifica a movimentação bancária com a conta relacionada a esta
+     * 
+     * @param Array $dado Movimentação bancária
+     * 
+     * @return Boolean TRUE caso o valor informado seja menor ou igual ao saldo
+     * da conta bancária que este está relacionado
+     */
+    private function validaValorInformadoComContaBancaria($dado)
+    {
+        $conta = $dado["conta"];
+
+        $totalInformado = $dado["valor"];
+
+        $saldoDaConta = $this->getSaldoDaConta($conta);
+
+        // Faz a verificação se o total dos valores informados não excede o limite da conta
+        return $totalInformado <= $saldoDaConta;
+
+    }
+
+    /**
+     * Pega o saldo de uma dada conta bancária
+     * 
+     * @param String $nomeDaConta Nome da conta bancária
+     * 
+     * @return Float Saldo da conta
+     */
+    private function getSaldoDaConta($nomeDaConta)
+    {
+        $saldos = FinBankMovement::getSaldosBancos();
+        $saldoDaConta = 0;
+
+        foreach ( $saldos as $info )
+        {
+            // $info[0] é o nome da conta do banco
+            if ( $info[0] === $nomeDaConta )
+            {
+                // $info[1] é o valor que tem na conta do banco
+                $saldoDaConta = floatval($info[1]);
+            }
+        }
+
+        return $saldoDaConta;
+
+    }
+
+    /**
+     * Evento AJAX:
+     * Ação de excluir os itens da grid
+     * 
+     * @param stdClass $args Argumentos enviados via AJAX
+     * 
+     * @return SGrid Grid com os dados atualizados
+     */
+    public function evtExcluirMovimentacaoBancaria()
+    {
+        $this->removeItemDeMovimentacaoBancariaDaSessao(0);
+
+        // Remove os validadores previamente adicionados
+        $this->removeAJAXValidator("contaBancariaMovBank");
+        $this->removeAJAXValidator("dataCompetenciaMovBank");
+        $this->removeAJAXValidator("valorMovBank");
+        $this->removeAJAXValidator("informacaoMovBank");
+
+        $this->atualizaTotalizadorMovimentacaoBancaria($this->getTodasMovimentcoesBancariasDaSessao());
+
+        MIOLO::getInstance()->page->addAJAXJsCode($this->getJSSetaValorCamposInputMovimentacaoBancaria() . "mpopup.remove();");
+
+        return array();
+
+    }
+
+    /**
+     * Dado as informações de uma movimentação bancária, seta estas nos campos de 
+     * input de cadastro de movimentações bancárias
+     * 
+     * @param Array $dado Informações de uma movimentação bancária. NULL para zerar
+     * os campos
+     * 
+     * @return String Código JS
+     */
+    private function getJSSetaValorCamposInputMovimentacaoBancaria($dado)
+    {
+        // Se concatenar normalmente, converte o float conforme o LOCALE
+        $valor = sprintf("%.2F", $dado["valor"]);
+
+        $js = "
+            (function()
+            {
+                document.getElementById('contaBancariaMovBank').value = '{$dado["idconta"]}';
+                document.getElementById('dataCompetenciaMovBank').value = '{$dado["data"]}';
+                document.getElementById('valorMovBank').value = '{$valor}';
+                document.getElementById('informacaoMovBank').value = '{$dado["info"]}';
+            })();
+        ";
+
+        return $js;
+
+    }
+
+    /**
+     * Dado o array com os valores dos campos, pega os campos relacionados a
+     * movimentações bancárias e normaliza estes
+     * 
+     * @param stdClass $args Argumentos da requisição AJAX <b>que contenham os
+     * valores dos inputs dos dados de movimentação bancária</b>
+     * 
+     * @return Array Array associativo com as informações da movimentação
+     */
+    private function getDadoMovimentacaoBancariaNormalizado($args)
+    {
+        $bankAccount = new FinBankAccount();
+        $options = $bankAccount->findList();
+
+        $dado = array(
+            "conta" => $options[intval($args->contaBancariaMovBank)],
+            "data" => $args->dataCompetenciaMovBank,
+            "valor" => floatval($args->valorMovBank),
+            "info" => $args->informacaoMovBank,
+            "idconta" => intval($args->contaBancariaMovBank)
+        );
+
+        return $dado;
+
+    }
+
+    /**
+     * Atualiza o campo que totaliza os valores das movimentações bancárias
+     * 
+     * @param Float $dados Dados das movimentações bancárias a serem atualizadas
+     */
+    private function atualizaTotalizadorMovimentacaoBancaria($dados)
+    {
+        $total = 0;
+
+        // Faz a totalização
+        foreach ( $dados as $dado )
+        {
+            $total += (float) $dado["valor"];
+        }
+
+        $js = "
+            document.getElementById('txtTotalMovimentacaoBancaria').value = '" . SAGU::calcNumber($total, true) . "';
+            document.getElementById('txtTotalMovimentacaoBancaria').dispatchEvent(new Event('change'));
+        ";
+
+        MIOLO::getInstance()->page->addAJAXJsCode($js);
+
+    }
+
+    /**
+     * Adiciona um item de movimentação bancária a posição dedicada a estes na sessão
+     * 
+     * @param Array $dado Dados da movimentação bancária
+     */
+    private function adicionaItemDeMovimentacaoBancariaNaSessao($dado)
+    {
+        if ( isset($_SESSION["CounterMovement"]["movimentacoesBancarias"]) )
+        {
+            $_SESSION["CounterMovement"]["movimentacoesBancarias"][] = $dado;
+        }
+        else
+        {
+            $_SESSION["CounterMovement"]["movimentacoesBancarias"] = array($dado);
+        }
+
+    }
+
+    /**
+     * Remove um item com dado identificador da sessão e atualiza a mesma
+     * 
+     * @param Integer $indice Índice da movimentação <b>na grid</b>
+     */
+    private function removeItemDeMovimentacaoBancariaDaSessao($indice)
+    {
+        $dados = $this->getTodasMovimentcoesBancariasDaSessao();
+
+        array_splice($dados, $indice, 1);
+
+        $_SESSION["CounterMovement"]["movimentacoesBancarias"] = $dados;
+
+    }
+
+    /**
+     * Limpa as movimentações bancárias armazenadas na sessão
+     * 
+     */
+    private function limpaItensDeMovimentacaoBancariaDaSessao()
+    {
+        unset($_SESSION["CounterMovement"]["movimentacoesBancarias"]);
+
+    }
+
+    /**
+     * Pega os itens de movimentação bancária da sessão
+     * 
+     * @param Integer $indice Índice da movimentação <b>na grid</b>
+     * 
+     * @return Array Array com os dados da movimentação bancária
+     */
+    private function getItemMovimentcaoBancariaDaSessao($indice)
+    {
+        $dados = $this->getTodasMovimentcoesBancariasDaSessao();
+
+        return $dados[$indice];
+
+    }
+
+    /**
+     * Pega os itens de movimentação bancária da sessão
+     * 
+     * @return Array Dados das movimentações
+     */
+    private function getTodasMovimentcoesBancariasDaSessao()
+    {
+        return $_SESSION["CounterMovement"]["movimentacoesBancarias"];
+
+    }
+
+    /**
+     * Evento AJAX:
+     * Muda o estado (visível/invisível) da div que contém os saldos dos caixas/contas de banco
+     * 
+     */
+    public function evtTrocaVisibilidadeGridSaldosDeCaixaEBanco($args)
+    {
+        MIOLO::getInstance()->page->addAJAXJsCode("
+            var divSaldos = document.getElementById('divRespostaMostrarSaldos');
+            if(divSaldos !== null)
+            {
+                var botaoMostrarSaldos = document.getElementById('btnMostrarSaldoCaixasBancos');
+                if(botaoMostrarSaldos !== null)
+                {
+                    if( divSaldos.style.display !== 'none' ) // Caso a div esteja visível
+                    {
+                        divSaldos.style.display = 'none';
+                        botaoMostrarSaldos.innerHTML = '" . _M("Mostrar saldos de caixa/banco (F6)") . "';
+                    }
+                    else
+                    {
+                        divSaldos.style.display = 'block';
+                        botaoMostrarSaldos.innerHTML = '" . _M("Ocultar saldos de caixa/banco (F6)") . "';
+                    }
+                }
+            }
+        ");
+
+        // Para renderizar numa div ao invés de um popup
+        $args->modo = "div";
+
+        return $this->evtMostraSaldosCaixasBancos($args);
+
+    }
+
+    /**
+     * Pega o saldo atual do caixa em aberto
+     * 
+     * @return Double Valor do saldo atual
+     */
+    private function getSaldoAtual()
+    {
+        $businessCloseCounter = new BusinessFinanceBusCloseCounter();
+        $operatorData = $this->getOperatorData(); //openCounterId
+        return $businessCloseCounter->totalValorEmEspecie($operatorData->openCounterId);
+
+    }
+
+    /**
+     * Evento AJAX:
+     * Realiza a busca das contas dado os filtros
+     * 
+     * @param stdClass $args Argumentos via requisição AJAX (filtros para a pesquisa)
+     * 
+     * @return SGrid Grid com as contas disponíveis
+     */
+    public function evtFazBuscaContas($args)
+    {
+        $grid = MIOLO::getInstance()->getUI()->getGrid(MIOLO::getCurrentModule(), 'GrdCounterMovementContas');
+        $grid->setData(CompatibilidadeCAP::getContasDisponiveisEntreIntervalo($args->filtroDataInicialVencimento, $args->filtroDataFinalVencimento, $args->filtroConta));
+        
+        // Soma o saldo do caixa e o saldo do banco
+        $saldo = $this->getSaldoAtual();
+        foreach ( FinBankMovement::getSaldosBancos() as $banco )
+        {
+            $saldo = $banco[1] + $saldo;
+        }
+        
+        $grid->setSaldo($saldo);
+        $grid->clearActions();
+        $grid->addAcaoPagarConta();
+        $grid->showExportAsCSV = false;
+
+        return $grid;
+    }
+    
+    /**
+     * Evento AJAX:
+     * Mostra o saldo dos caixas e bancos
+     * 
+     * 
+     * @param stdClass $args Argumentos via requisição AJAX (filtros para a pesquisa)
+     * $args->modo Define o modo de retorno (Div ou Popup)
+     *  
+     * @return Mixed Div ou MPopup com as informações
+     */
+    public function evtMostraSaldosCaixasBancos($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $grid = $MIOLO->getUI()->getGrid($module, 'GrdCounterMovementSaldosCaixas');
+        $grid->setPageLength(null);
+        $grid->clearActions();
+        $grid->setData(FinOpenCounter::getInformacaoCaixasAbertos());
+
+        $divLeft = new MDiv("divSaldoCaixas", array($grid));
+        $divLeft->addBoxStyle("box-sizing", "border-box");
+        $divLeft->addBoxStyle("float", "left");
+        $divLeft->addBoxStyle("width", "100%");
+        //$divLeft->addBoxStyle("height", "250px");
+        $divLeft->addBoxStyle("padding", "5px");
+
+        $gridB = $MIOLO->getUI()->getGrid($module, 'GrdCounterMovementSaldosBancos');
+        $gridB->setPageLength(null);
+        $gridB->clearActions();
+        $gridB->setData(FinBankMovement::getSaldosBancos());
+
+        $div = new MDiv("", array());
+        $div->addBoxStyle("box-sizing", "border-box");
+        $div->addBoxStyle("float", "left");
+        $div->addBoxStyle("width", "100%");
+        $div->addBoxStyle("padding", "10px");
+
+        $divRight = new MDiv("divSaldoBanco", array($gridB));
+        $divRight->addBoxStyle("box-sizing", "border-box");
+        $divRight->addBoxStyle("float", "left");
+        $divRight->addBoxStyle("width", "100%");
+        //$divRight->addBoxStyle("height", "250px");
+        $divRight->addBoxStyle("padding", "5px");
+
+        $divContainer = new MDiv("", array($divLeft, $div, $divRight));
+        $divContainer->addBoxStyle("width", "100%");
+        //$divContainer->addBoxStyle("height", "500px");
+        $divContainer->addBoxStyle("display", "inline-block");
+
+        $elemento = null;
+
+        $modo = $args->modo;
+
+        if ( strlen($modo) === 0 )
+        {
+            $elemento = new MPopup('popupSaldoCaixaBanco', array($divContainer), _M('Saldos de caixa/banco', $module));
+        }
+        else
+        {
+            $elemento = new MDiv('divSaldoCaixaBanco', array($divContainer));
+        }
+
+        return $elemento;
+
+    }
+
+    /**
+     * Exibe mensagem de confirmação para fechamento do caixa
+     */
+    public function btnCloseCounter_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        //Caixa que transferiu
+        $caixa->openCounterId = $MIOLO->_REQUEST('openCounterId');
+        $finTransferenciaDeCaixa = new FinTransferenciaDeCaixa();
+
+        if ( strlen($caixa->openCounterId) > 0 )
+        {
+            $transferencias = $finTransferenciaDeCaixa->obtemValoresTransferidos($caixa->openCounterId);
+
+            foreach ( $transferencias as $transferencia )
+            {
+                if ( $transferencia[3] == DB_FALSE )
+                {
+                    $MIOLO->error(_M('Este caixa não pode ser fechado pois existe uma transferência de caixa aberta.', $module));
+                }
+            }
+
+            //Caixa a receber
+            $busOpenCounter = new BusinessFinanceBusOpenCounter();
+            $caixaInfo = $busOpenCounter->getOpenCounter($caixa->openCounterId);
+            $transferenciasReceber = $finTransferenciaDeCaixa->obtemTransferencias($caixaInfo->counterId);
+
+            if ( count($transferenciasReceber) > 0 )
+            {
+                $MIOLO->error(_M('Este caixa não pode ser fechado pois existe uma transferência de caixa aberta.', $module));
+            }
+        }
+
+        $messages[] = _M('Tem certeza que deseja fechar o caixa?', $module);
+        if ( is_array($args->messages) )
+        {
+            $messages = array_merge($args->messages, $messages);
+        }
+
+        $opts['event'] = 'btnCloseCounter_confirm';
+        
+        $gotoYes = $MIOLO->getActionURL($module, $action, null, $opts);
+        $goto = SAGU::getStackBackUrl();
+        $gotoNo = strlen($goto) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+        $caption = _M('Questão', $module);
+        SAGU::question($messages, $gotoYes, $gotoNo);
+
+    }
+
+    /**
+     * Obtém as informações utilizadas na geração dos comprovantes
+     * @return array
+     */
+    public function getVoucherTags($openCounterId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        $businessCompany = $MIOLO->getBusiness('basic', 'BusCompany');
+        $businessCompany->db = SDatabase::getInstance();
+        $businessLegalPerson = $MIOLO->getBusiness('basic', 'BusLegalPerson');
+        $businessLegalPerson->db = SDatabase::getInstance();
+        $businessOpenCounter = $MIOLO->getBusiness($module, 'BusOpenCounter');
+        $businessOpenCounter->db = SDatabase::getInstance();
+
+        if ( SAGU::checkParameter('DEFAULT_COMPANY_CONF') )
+        {
+            $companyData = $businessCompany->getCompany(SAGU::getParameter('BASIC', 'DEFAULT_COMPANY_CONF'));
+
+            if ( is_null($companyData->companyId) )
+            {
+                throw new Exception(_M('Parâmetro DEFAULT_COMPANY_CONF aponta para a empresa inexistente @1.', $module, SAGU::getParameter('BASIC', 'DEFAULT_COMPANY_CONF')));
+            }
+        }
+        else
+        {
+            throw new Exception(_M('Problemas ao procurar as informações da instituição. Por favor, verifique o cadastro da instituição e o parâmetro DEFAULT_COMPANY_CONF'));
+        }
+
+        //Obtem os dados da empresa
+        $personData = $businessLegalPerson->getLegalPerson($companyData->personId);
+
+        //Obtem dados do operador
+        $counterData = $businessOpenCounter->getOpenCounter($openCounterId);
+
+        //Cria o vetor para substituição das tags
+        $tags = array
+            (
+            '$COMPANYNAME' => $personData->name,
+            '$LOCATION1' => $personData->locationType . $personData->location . ', ' . $personData->number,
+            '$NEIGHBORHOOD1' => $personData->neighborhood,
+            '$CITY1' => $personData->cityName . '-' . $personData->stateId,
+            '$ZIPCODE1' => $personData->zipCode,
+            '$PHONE1' => $personData->phone,
+            '$CNPJ1' => $personData->cnpj,
+            '$IE1' => $personData->stateRegistration,
+            '$OPERATORID' => $counterData->operatorId,
+            '$OPERATORNAME' => $counterData->operatorName
+        );
+
+        return $tags;
+
+    }
+
+    /**
+     * Fecha o caixa e imprime extrato com as movimentações
+     */
+    public function btnCloseCounter_confirm($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        $data = $this->getOperatorData(); //Obtém as informações do operador de caixa
+        //Get login
+        $loginUser = $MIOLO->GetLogin();
+
+        $busCloseCounter = $MIOLO->getBusiness($module, 'BusCloseCounter');
+        $busCloseCounter->db = SDatabase::getInstance();
+        $busCounterMovement = $MIOLO->getBusiness($module, 'BusCounterMovement');
+        $busCounterMovement->db = SDatabase::getInstance();
+        $businessPhysicalPersonEmployee = $MIOLO->getBusiness('basic', 'BusPhysicalPersonEmployee');
+        $businessPhysicalPersonEmployee->db = SDatabase::getInstance();
+        $businessCompany = $MIOLO->getBusiness('basic', 'BusCompany');
+        $businessCompany->db = SDatabase::getInstance();
+        $businessLegalPerson = $MIOLO->getBusiness('basic', 'BusLegalPerson');
+        $businessLegalPerson->db = SDatabase::getInstance();
+        $businessPerson = $MIOLO->getBusiness('basic', 'BusPerson');
+        $businessPerson->db = SDatabase::getInstance();
+        $businessDocument = $MIOLO->getBusiness('basic', 'BusDocument');
+        $businessDocument->db = SDatabase::getInstance();
+        $businessEntry = $MIOLO->getBusiness($module, 'BusEntry');
+        $businessEntry->db = SDatabase::getInstance();
+        $businessInvoice = $MIOLO->getBusiness($module, 'BusReceivableInvoice');
+        $businessInvoice->db = SDatabase::getInstance();
+        $businessDefaultOperations = $MIOLO->getBusiness($module, 'BusDefaultOperations');
+        $businessDefaultOperations->db = SDatabase::getInstance();
+        $businessOpenCounter = $MIOLO->getBusiness($module, 'BusOpenCounter');
+        $businessOpenCounter->db = SDatabase::getInstance();
+        $businessOperation = $MIOLO->getBusiness($module, 'BusOperation');
+        $businessOperation->db = SDatabase::getInstance();
+        $businessSpecies = $MIOLO->getBusiness($module, 'BusSpecies');
+        $businessSpecies->db = SDatabase::getInstance();
+        $businessIncomeSource = $MIOLO->getBusiness($module, 'BusIncomeSource');
+        $businessIncomeSource->db = SDatabase::getInstance();
+
+        try
+        {
+            SDatabase::beginTransaction();
+
+            //Obtem o valor e tipo de operação do caixa em aberto
+            $closeCounterData = $busCloseCounter->totalValueCloseCounter($data->openCounterId);
+
+            $closeCounter = new stdClass();
+            $closeCounter->value = $closeCounterData->value;
+            $closeCounter->operation = $closeCounterData->operation;
+            $closeCounter->openCounterId = $data->openCounterId;
+            $closeCounter->isConfirmed = DB_TRUE; //Define flag do fechamento como confirmado
+
+            $saldoFechamento = $busCloseCounter->totalValorEmEspecie($data->openCounterId);
+
+            $closeCounter->counterId = $data->counterId;
+            $closeCounter->saldoFechamento = $saldoFechamento;
+
+            //Insere o fechamento do caixa
+            $ok = $busCloseCounter->insertCloseCounter($closeCounter);
+
+            if ( $ok )
+            {
+                //Gera comprovante
+                $tags1 = $this->getVoucherTags($data->openCounterId);
+
+                $entryArray = array();
+
+                $filters = new stdClass();
+                $filters->openCounterId = $data->openCounterId;
+                //Busca as Movimentações do caixa
+                $searchData = $busCounterMovement->searchCounterMovement($filters);
+                if ( count($searchData) > 0 )
+                {
+                    $count = 0;
+                    foreach ( $searchData as $cod => $linha )
+                    {
+                        unset($invoice);
+                        unset($incomeSource);
+
+                        if ( $count == 0 )
+                        {
+                            $lastMovementDate = $linha[1];
+                        }
+                        //Se existir título
+                        if ( strlen($linha[8]) > 0 )
+                        {
+                            $invoice = $businessInvoice->getReceivableInvoice($linha[8]);
+                            if ( strlen($invoice->incomeSourceId) > 0 )
+                            {
+                                $incomeSource = $businessIncomeSource->getIncomeSource($invoice->incomeSourceId);
+                            }
+                        }
+
+                        if ( $count == count($searchData) - 1 )
+                        {
+                            $firstMovementDate = $linha[1];
+                        }
+
+                        if ( $linha[4] > 0 )
+                        {
+                            $value = ($linha[5] == 'D' ? '-' : '+') . $linha[4];
+                        }
+
+                        $orign = (strlen($incomeSource->description) > 0 ? $incomeSource->incomeSourceId . '-' . $incomeSource->description : $linha[10] );
+                        $entryArray[] = array($linha[8], $invoice->personId, $orign, $linha[2], str_pad(SAGU::formatNumber($value), 9, ' ', STR_PAD_LEFT));
+                        $orignTotal[$orign] = SAGU::calcNumber((!is_null($orignTotal[$orign]) ? $orignTotal[$orign] : '0' ) . ($linha[5] == 'D' ? '-' : '+') . $linha[4], true);
+                        $count++;
+                    }
+
+                    foreach ( $orignTotal as $orgCod => $orgVal )
+                    {
+                        $orignArray[] = array($orgCod, str_pad(($orgVal > 0 ? '+' : '-') . abs($orgVal), 14, ' ', STR_PAD_LEFT));
+                    }
+
+                    foreach ( $searchData as $cod => $linha )
+                    {
+                        //Agrupa as movimentações pelo código do título
+                        $voucherData[$linha[8]][] = $linha;
+                    }
+                    //Percorre as movimentações de cada título
+                    foreach ( $voucherData as $cod2 => $linha2 )
+                    {
+                        if ( $invoiceId != $cod2 )
+                        {
+                            //Adiciona o codigo do titulo
+                            $invoiceId = $cod2;
+                        }
+                        //Adiciona as movimentações do titulo
+                        foreach ( $linha2 as $cod3 => $linha3 )
+                        {
+                            $totalSpecie[$linha3[2] . '-' . $linha3[3]] = SAGU::calcNumber($totalSpecie[$linha3[2] . '-' . $linha3[3]] . ($linha3[5] == 'D' ? '-' : '+') . $linha3[4], true);
+                        }
+                    }
+
+                    //Buscar pelas origens dos lancamentos
+                    //Calcula e adiciona os totalizadores por espécie
+                    if ( count($totalSpecie) > 0 )
+                    {
+                        foreach ( $totalSpecie as $specieDescription => $specieValue )
+                        {
+                            $specieArray[] = array($specieDescription, str_pad(($specieValue > 0 ? '+' : '-') . $specieValue, 14, ' ', STR_PAD_LEFT));
+                        }
+                    }
+                }
+
+                $dataDefaultOperations = $businessDefaultOperations->getDefaultOperations();
+
+                //Obtem o modelo de comprovante
+                $printReceipt = SAGU::getParameter($module, 'PRINT_RECEIPT_CLOSE_COUNTER');
+
+                $validationString = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')) . ' ' . ' ' . number_format($data->totalValue->value, SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'), SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), '');
+                $validationString .= ' ' . substr(strtoupper(md5(date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')) . number_format($data->totalValue->value, SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'), SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), '') . '_s@gut1tul05')), 0, 8);
+
+                //Obtém as informações do responsável pelo caixa
+                $responsiblePerson = $businessPhysicalPersonEmployee->getPersonByMioloUserName($data->responsibleUserName);
+
+                $tags2['$COUNTER'] = $data->counterId . ' - ' . $data->counterDescription;
+                $tags2['$OPENCOUNTER'] = $data->openCounterId;
+                $tags2['$RESPONSIBLE'] = $responsiblePerson->name;
+                $tags2['$OPENDATE'] = $data->openDate; //Data/hora da abertura
+                $tags2['$DATE'] = SAGU::getDateNow('d/m/Y H:i:s');
+                $tags2['$TOTAL'] = str_pad($data->totalValue->value, 14, ' ', STR_PAD_LEFT);
+                $tags2['$FIRSTMOVEMENT'] = $firstMovementDate;
+                $tags2['$LASTMOVEMENT'] = $lastMovementDate;
+                $tags2['$CLOSEDATE'] = SAGU::getDateNow();
+                $tags2['$INCOMESOURCE'] = SAGU::interpretsReceipt('$DETAILOP1;30;$DETAILOP2;15;', array(), $orignArray);
+                $tags2['$SPECIE'] = SAGU::interpretsReceipt('$DETAILOP1;30;$DETAILOP2;15;', array(), $specieArray);
+                $tags2['$AUTHCODE'] = $validationString;
+
+                $validationString1 = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')) . ' ' . $loginUser->id . ' ' . number_format($data->totalValue->value, SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'), SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), '') . ' ' . $_SERVER['REMOTE_ADDR'];
+                $validationString2 = ' ' . strtoupper(md5($validationString1));
+                $tags2['$AUTHCODE1'] = $validationString1;
+                $tags2['$AUTHCODE2'] = $validationString2;
+
+                $tags = array_merge($tags1, $tags2);
+
+                $voucher = SAGU::interpretsReceipt($printReceipt, $tags, $entryArray);
+
+                //Salva as alterações caso a nota foi gerada com sucesso
+                SDatabase::commit();
+
+                //Imprime o comprovante
+                $this->page->onload($this->getAjaxAction('printVoucher', 'divPrintResponse', null, array('voucher' => $voucher)));
+
+                //Exibe a mensagem de sucesso
+                $msg = _M('Caixa fechado com sucesso', $module);
+                $msg .= '<ul>' .
+                        ' <li>' . _M('Clique OK para retornar ao módulo financeiro', $module) . '.</li>' .
+                        ' <li>' . _M('Caso o comprovante não foi impresso clique em REIMPRIMIR COMPROVANTE', $module) . '.</li>' .
+                        '</ul>';
+
+                $prompt = new MPrompt(_M('Questão', $module), $msg);
+                $prompt->setType('information');
+
+                $varsFinancial = array('personId' => $invoiceData->personId, 'event' => 'btnSearch_click');
+                $gotoFinancial = $MIOLO->getActionURL($module, 'main', null, $varsFinancial);
+                $prompt->addButton(_M('Ok', $module), $gotoFinancial);
+                $gotoPrint = $this->getAjaxAction('printVoucher', 'divPrintResponse', null, array('voucher' => $voucher));
+                $prompt->addButton(_M('Reimprimir comprovante', $module), $gotoPrint);
+                $MIOLO->getTheme()->setElement('toolbar', null);
+                $MIOLO->prompt($prompt);
+            }
+            else
+            {
+                throw new Exception(_M('Não foi possível inserir o fechamento do caixa', $module));
+            }
+        }
+        catch ( Exception $e )
+        {
+            SDatabase::rollback();
+            $MIOLO->error($e->getMessage());
+        }
+
+    }
+
+    /**
+     * Gera o comprovante de fechamento de caixa
+     * @param type $data 
+     */
+    public function generateCloseCounterVoucher($data)
+    {
+        if ( $ok ) //Imprimir extrato das movimentações
+        {
+            $msg = _M('Caixa fechado com sucesso', $module);
+            $msg .= '<ul>' .
+                    ' <li>' . _M('Clique OK para retornar ao módulo financeiro', $module) . '.</li>' .
+                    ' <li>' . _M('Clique IMPRIMIR para imprimir o comprovante fiscal', $module) . '.</li>' .
+                    '</ul>';
+
+            $prompt = new MPrompt(_M('Questão', $module), $msg);
+            $prompt->setType('information');
+
+            $varsFinancial = array('personId' => $invoiceData->personId, 'event' => 'btnSearch_click');
+            $gotoFinancial = $MIOLO->getActionURL($module, 'main', null, $varsFinancial);
+            $prompt->addButton(_M('Ok', $module), $gotoFinancial);
+
+            $gotoPrint = $this->getAjaxAction('printVoucher', 'divPrintResponse', null, array('action' => 'print'), true, false);
+            $prompt->addButton(_M('Imprimir comprovante', $module), $gotoPrint);
+
+            $MIOLO->getTheme()->setElement('toolbar', null);
+            $MIOLO->prompt($prompt);
+        }
+        else
+        {
+            $msg = _M('Erro executando a operação solicitada.', $module);
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Erro', $module);
+            SAGU::error($msg, $goto, $caption);
+        }
+
+    }
+
+    /**
+     * Exibe popup com todas movimentações desde a abertura do caixa
+     * @param type $args
+     * @return type MPopup
+     */
+    public function showMovements($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $data = $this->getOperatorData(); //Obtém as informações do operador de caixa
+        $dataSearch = FinCounterMovement::getMovimentacaoDoCaixaParaGrid($data->openCounterId);
+
+        //Cria a grid com todas as movimentações do caixa
+        $grid = $MIOLO->getUI()->getGrid($module, 'GrdCounterMovementMovimentacao');
+        $grid->setData($dataSearch);
+        $grid->clearActions();
+        $grid->addActionPrintVoucher();
+        $grid->showExportAsCSV = false;
+        $flds[] = new MDiv('divCounterMovements', array($grid));
+
+        $fields[] = new MPopup('popupMovements', $flds, _M('Movimentações', $module));
+
+        return $fields;
+
+    }
+
+    /**
+     * Exibe popup de retirada de dinheiro
+     * 
+     * @param stdClass $args
+     * @return array
+     */
+    public function withdrawMoney($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $flds[] = new MDiv('divWithdrawMoneyPopup');
+
+        $data = $this->getOperatorData(); //Obtém as informações do operador de caixa
+        // Campo usuário
+        $flds[] = $user = new MTextField('user', null, _M('Usuário', $module), 20);
+        $user->setJsHint(_M('Informe o usuário', $module));
+
+        // Campo senha
+        $flds[] = $password = new MPasswordField('password', null, _M('Senha', $module), 20);
+        $password->setJsHint(_M('Informe a senha', $module));
+
+        // Campo valor
+        $flds[] = $value = new MTextField('value', null, _M('Valor', $module));
+
+        $flds[] = $transferencia = new MCheckBox('transferencia', DB_TRUE, _M('É transferência', $module), $this->getFormValue('transferencia'), _M('Sim', $module));
+        $transferencia->addAttribute('onChange', SForm::getAjaxAction('caixaDestinatario', 'divTransferencia', true));
+
+        $div = new MDiv('divTransferencia');
+
+        $div->addBoxStyle("margin-left", "40px");
+        $flds[] = $div;
+
+        //
+        $flds[] = new MButton('btnSaveWithdraw', _M('Retirar', $module), SForm::getAjaxAction('btnSaveWithdraw', 'divWithdrawMoneyPopup'));
+
+        $flds[] = new MSeparator();
+
+        $busCounter = $MIOLO->getBusiness($module, 'BusCounter');
+        $finTransferenciaDeCaixa = new FinTransferenciaDeCaixa();
+        $gridData = $finTransferenciaDeCaixa->obtemValoresTransferidos($args->openCounterId);
+
+        if ( count($gridData) > 0 )
+        {
+            foreach ( $gridData as $key => $caixa )
+            {
+                $caixaDestino = $busCounter->getCounter($caixa[1]);
+                $gridData[$key][1] = $caixaDestino->description;
+            }
+        }
+
+        $grdResults = $MIOLO->getUI()->getGrid($module, 'GrdTransferenciaDeCaixa', $args);
+
+        $grdResults->setTitle(_M('Retiradas para transferência', $module));
+        $grdResults->setData($gridData);
+        $grdResults->setIsScrollable(false);
+
+        !is_null($gridData) ? $flds[] = new MDiv('divPop', $grdResults) : null;
+
+        $fields[] = $popup = new MPopup('popupWithdrawMoney', $flds, _M('Retirada de dinheiro', $module));
+        $popup->setWidth('70%; top:50px!important'); //Setado manualmente tamanho da popup para não estourar a tela em resoluções menores
+
+        return $fields;
+
+    }
+
+    /**
+     * Salva retirada de dinheiro
+     *
+     * @param stdClass $args
+     * @return array
+     */
+    public function btnSaveWithdraw($args)
+    {
+        return $this->salvarRetiradaDeDinheiro($args);
+
+    }
+
+    /**
+     * Exibe popup de bloqueio limite de saldo
+     * 
+     * @param stdClass $args
+     * @return array $fields
+     */
+    public function getLimitExcededPopup($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $session = $MIOLO->getSession();
+
+        $flds[] = new MDiv('divLimitExcededPopup');
+
+        $flds[] = $lbl = new MLabel(_M('O saldo atual excedeu o limite (@1), portanto, deve ser feito uma retirada.', $module, SAGU::getParameter('FINANCE', 'COUNTER_MAX_BALANCE')));
+        $lbl->setBold(true);
+
+        // Campo usuário
+        $flds[] = $user = new MTextField('user', null, _M('Usuário', $module), 20);
+        $user->setJsHint(_M('Informe o usuário', $module));
+
+        // Campo senha
+        $flds[] = $password = new MPasswordField('password', null, _M('Senha', $module), 20);
+        $password->setJsHint(_M('Informe a senha', $module));
+
+        // Campo valor
+        $flds[] = $value = new MTextField('value', null, _M('Valor', $module));
+
+        $flds[] = new MButton('btnLogin', _M('Retirar', $module), SForm::getAjaxAction('limitExcededLogin', 'divLimitExcededPopup'));
+
+        // popup
+        $fields[] = $popup = new MPopup('popupLimitExceded', $flds, _M('Abertura de caixa', $module));
+        $popup->setWidth('70%; top:50px!important');
+
+        // POG para remover botao close da popup
+        $MIOLO->page->onload(" xGetElementById('mPopupClose').setAttribute('class', ''); ");
+
+        return $fields;
+
+    }
+
+    /**
+     * Tenta autenticar com login do miolo
+     */
+    public function limitExcededLogin($args)
+    {
+        return $this->salvarRetiradaDeDinheiro($args);
+
+    }
+
+    /**
+     * Acao de retirada de dinheiro
+     *
+     * @param stdClass $args
+     * @return array
+     */
+    private function salvarRetiradaDeDinheiro($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $session = $MIOLO->getSession();
+        $data = $this->getOperatorData(); //Obtém as informações do operador de caixa
+
+        $bus[] = $busPerson = $MIOLO->getBusiness('basic', 'BusPerson');
+        $bus[] = $busOpenCounter = $MIOLO->getBusiness('finance', 'BusOpenCounter');
+        $bus[] = $busCounterMovement = $MIOLO->getBusiness('finance', 'BusCounterMovement');
+        $bus[] = $businessDefaultOperations = $MIOLO->getBusiness('finance', 'BusDefaultOperations');
+
+        foreach ( $bus as $b )
+        {
+            $b->db = SDatabase::getInstance();
+        }
+
+        //Usuário e senha
+        $user = $args->user;
+        $password = $args->password;
+        $value = $args->value;
+
+        $fields[] = array();
+        try
+        {
+            if ( !is_numeric($value) )
+            {
+                throw new Exception(_M('Deve ser informado um valor válido', $module));
+            }
+
+            // Valida se valor digitado e maior que saldo em dinheiro
+            if ( $value > $data->valorEmDinheiro )
+            {
+                throw new Exception(_M('O valor informado não pode ser maior que o saldo atual. (@1)', $module, $data->valorEmDinheiro));
+            }
+
+            if ( $args->transferencia == DB_TRUE && $args->caixaDestinatario == '' )
+            {
+                throw new Exception(_M('Para efetuar uma transferência de caixa, é necessário escolher um caixa destinatário.', $module));
+            }
+
+            //
+            $this->verificaOperadorDeCaixa($user, $password);
+
+            $dataDefaultOperations = $businessDefaultOperations->getDefaultOperations();
+
+            // Insere uma movimentacao
+            $insertData = new stdClass();
+            $insertData->openCounterId = $data->openCounterId;
+            $insertData->value = $value;
+            $insertData->operation = 'D';
+            $insertData->speciesId = 1;
+            $insertData->observation = _M('Retirada', $module);
+
+            $insertData->operationId = $args->transferencia == DB_TRUE ? $dataDefaultOperations->transferenciaDeValorDeCaixa : $dataDefaultOperations->withdrawOperation; //Operação padrão de retirada de caixa
+            $insertData->responsibleuser = $user;
+
+            //Insere registro na tabela fintransferenciadecaixa
+            $args->transferencia == DB_TRUE ? $this->salvarRetiradaDeDinheiroComTransferenciaDeCaixa($args) : null;
+
+            //Obtem o ultimo id inserido na tabela transferencia de caixa
+            $finTransferenciaDeCaixa = new FinTransferenciaDeCaixa();
+            $transferenciaDeCaixaId = $finTransferenciaDeCaixa->getLastInsertId();
+
+            $insertData->transferenciaDeCaixaId = $args->transferencia == DB_TRUE ? $transferenciaDeCaixaId : '';
+
+            $ok = $busCounterMovement->insertCounterMovement($insertData);
+
+            // Atualiza o userName do registro
+            $busCounterMovement->updateUserName($busCounterMovement->getLastInsertId(), $user);
+
+            //
+            if ( $ok )
+            {
+                if ( $args->transferencia == DB_TRUE )
+                {
+                    $MIOLO->page->addAJAXJsCode("document.getElementById('value').value = ' ';
+                                                 document.getElementById('caixaDestinatario').value = ' '; ");
+                }
+
+                //Atualizar o valor do campo saldo em dinheiro
+                $this->atualizaSaldoAtual();
+
+                $fields[] = MPrompt::information(_M('Movimentação inserida com sucesso.', $module));
+            }
+            else
+            {
+                throw new Exception(_M('Erro ao inserir registro.', $module));
+            }
+        }
+        catch ( Exception $e )
+        {
+            $prompt = MPrompt::Error($e->getMessage());
+            $fields[] = $prompt;
+        }
+
+        return $fields;
+
+    }
+
+    /**
+     * Faz verificacoes de usuario valido digitado no campo de login/senha
+     *   e verifica se é operador de caixa
+     *
+     * @param string $user
+     * @param string $password 
+     */
+    private function verificaOperadorDeCaixa($user, $password)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        //
+        $busPerson = $MIOLO->getBusiness('basic', 'BusPerson');
+        $busOpenCounter = $MIOLO->getBusiness('finance', 'BusOpenCounter');
+        $busUser = $MIOLO->getBusiness('admin', 'user');
+
+        if ( (strlen($user) <= 0) || (strlen($password) <= 0) )
+        {
+            throw new Exception(_M('Informe o usuário e senha', $module));
+        }
+
+        $person = $busPerson->getPersonByMioloUserName($user, false);
+
+        if ( !$busUser->getByLoginPass($user, $password)->idUser )
+        {
+            throw new Exception(_M('Usuário ou senha inválido(s).', $module));
+        }
+
+        // Verifica permissao ADMIN
+        $rights = $busUser->getByLogin($user)->getRights();
+        $right = $rights['FrmCounterMovement'];
+        if ( $right < A_ADMIN )
+        {
+            throw new Exception(_M('O usuário não possui permissão de ADMINISTRADOR para realizar esta operação.', $module));
+        }
+
+    }
+
+    public function caixaDestinatario($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $busOpenCounter = new BusinessFinanceBusOpenCounter();
+        $openCounter = $busOpenCounter->getOpenCounter($args->openCounterId);
+
+        $finTransferenciaDeCaixa = new FinTransferenciaDeCaixa();
+        $gridData = $finTransferenciaDeCaixa->obtemValoresTransferidos($args->openCounterId);
+        $counterId = NULL;
+        if ( count($gridData) > 0 )
+        {
+            $counter = $gridData[count($gridData) - 1];
+            $counterId = $counter[1];
+        }
+
+        if ( $args->transferencia != null )
+        {
+            $busCounter = new BusinessFinanceBusCounter();
+            $listCounter = $busCounter->listCounterActive($openCounter->counterId);
+
+            // Caixa
+            $label = new Mtext('labelCaixa', _M('Caixa destinatário', $module) . ':');
+            $flds[] = $label;
+            $caixa = new MSelection('caixaDestinatario', $counterId, '', $listCounter);
+            $flds[] = $caixa;
+        }
+
+        return $flds;
+
+    }
+
+    public function salvarRetiradaDeDinheiroComTransferenciaDeCaixa($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        try
+        {
+            if ( $args->value == '' )
+            {
+                throw new Exception(_M('Para efetuar uma transferência de caixa, é necessário informar o valor a ser transferido.', $module));
+            }
+            if ( $args->caixaDestinatario == '' )
+            {
+                throw new Exception(_M('Para efetuar uma transferência de caixa, é necessário escolher um caixa destinatário.', $module));
+            }
+
+            $finTransferenciaDeCaixa = new FinTransferenciaDeCaixa();
+            $finTransferenciaDeCaixa->caixaAbertoDeOrigem = $args->openCounterId;
+            $finTransferenciaDeCaixa->caixaDeDestino = $args->caixaDestinatario;
+            $finTransferenciaDeCaixa->valorTransferido = $args->value;
+
+            $finTransferenciaDeCaixa->save();
+        }
+        catch ( Exception $e )
+        {
+            throw new Exception($e->getMessage());
+        }
+
+    }
+
+    public function excluirTransferencia($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $transferenciaDeCaixaId = MIOLO::_REQUEST('transferenciaDeCaixaId');
+
+        if ( $transferenciaDeCaixaId )
+        {
+            try
+            {
+                $finTransferenciaDeCaixa = new FinTransferenciaDeCaixa();
+                $transferencia = $finTransferenciaDeCaixa->obtemTransferenciaById($transferenciaDeCaixaId);
+
+                if ( count($transferencia) > 0 )
+                {
+                    $filters->value = $transferencia[0][2];
+                    $filters->openCounterId = $transferencia[0][3];
+                    $filters->operation = 'D';
+
+                    $busCounterMovement = $MIOLO->getBusiness('finance', 'BusCounterMovement');
+                    $movimentacaoDeCaixa = $busCounterMovement->searchCounterMovement($filters);
+
+                    $busCounterMovement->deleteCounterMovement($movimentacaoDeCaixa[0][0]);
+
+                    $finTransferenciaDeCaixa->transferenciaDeCaixaId = $transferenciaDeCaixaId;
+                    $finTransferenciaDeCaixa->delete();
+
+                    $url = $MIOLO->GetActionURL($module, $action);
+
+                    $MIOLO->page->redirect($url);
+                }
+            }
+            catch ( Exception $e )
+            {
+                throw new Exception($e->getMessage());
+            }
+        }
+
+    }
+
+    public function verificaTransferencia($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        try
+        {
+            $caixa = $args->counterId;
+
+            $finTransferenciaDeCaixa = new FinTransferenciaDeCaixa();
+            $valor = $finTransferenciaDeCaixa->valorTotalTransferencia($caixa);
+
+
+            //valorDeTransferencia
+            if ( $valor )
+            {
+                $MIOLO->page->addAJAXJsCode("document.getElementById('value').value = '{$valor}';
+                                             document.getElementById('value').disabled= true;
+                                             document.getElementById('valorDeTransferencia').value = 't';");
+            }
+            else
+            {
+                $MIOLO->page->addAJAXJsCode("document.getElementById('value').value = ' ';
+                                             document.getElementById('value').disabled= false;
+                                             document.getElementById('valorDeTransferencia').value = 'f';");
+            }
+
+            return '';
+        }
+        catch ( Exception $e )
+        {
+            throw new Exception($e->getMessage());
+        }
+
+    }
+
+    public function insereMovimentacaoDeRecebimentoDeCaixa($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $dadosOperacionais = $this->getOperatorData();
+
+        $counterId = $args->counterId;
+        $value = $args->value;
+
+        try
+        {
+            $businessDefaultOperations = $MIOLO->getBusiness('finance', 'BusDefaultOperations');
+            $dataDefaultOperations = $businessDefaultOperations->getDefaultOperations();
+
+            $busCounterMovement = $MIOLO->getBusiness('finance', 'BusCounterMovement');
+            $finTransferenciaDeCaixa = new FinTransferenciaDeCaixa();
+            $valor = $finTransferenciaDeCaixa->valorTotalTransferencia($counterId);
+
+            if ( ($valor == $value) && !is_null($valor) )
+            {
+                $transferencias = $finTransferenciaDeCaixa->obtemTransferencias($counterId);
+
+                foreach ( $transferencias as $transferencia )
+                {
+                    $finTransferenciaDeCaixa->transferenciaDeCaixaId = $transferencia->transferenciaDeCaixaId;
+                    $finTransferenciaDeCaixa->transferido = 't';
+                    $finTransferenciaDeCaixa->save();
+                }
+
+                //Insere uma movimentacao de recebimento de transferência
+                $insertData = new stdClass();
+                $insertData->openCounterId = $dadosOperacionais->openCounterId;
+                $insertData->value = $value;
+                $insertData->operation = 'C';
+                $insertData->speciesId = 1;
+                $insertData->observation = _M('RECEBIMENTO DE VALOR DE CAIXA', $module);
+
+                $insertData->operationId = $dataDefaultOperations->recebimentoDeValorDeCaixa;
+                $insertData->responsibleuser = $args->user;
+
+                $busCounterMovement->insertCounterMovement($insertData);
+            }
+        }
+        catch ( Exception $e )
+        {
+            throw new Exception($e->getMessage());
+        }
+
+    }
+
+    /**
+     * Obtém o openCounterId para confirmar a transferência de caixa
+     * 
+     * @param type $args
+     * @return type
+     */
+    public function confirmacaoDeRecebimentoDeCaixa()
+    {
+        $finTransferenciaDeCaixa = new FinTransferenciaDeCaixa();
+
+        $dadosOperacionais = $this->getOperatorData();
+        $openCounterId = $dadosOperacionais->openCounterId;
+
+        return $finTransferenciaDeCaixa->confirmacaoDeRecebimentoDeCaixa($openCounterId);
+
+    }
+
+    /*
+     * Verifica se existe saldo do último fechamento do caixa a ser aberto
+     */
+
+    public function verificaSaldoDeFechamento($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        try
+        {
+            $caixa->counterId = $args->counterId;
+
+            $busCloseCounter = new BusinessFinanceBusCloseCounter();
+            $saldoDeFechamento = $busCloseCounter->searchCloseCounter($caixa, 'DESC');
+
+            $valor = $saldoDeFechamento[0][11];
+
+            $MIOLO->page->addAJAXJsCode("document.getElementById('value').value = '{$valor}';");
+
+            return '';
+        }
+        catch ( Exception $e )
+        {
+            throw new Exception($e->getMessage());
+        }
+
+    }
+
+    /**
+     * Atualiza o valor do campo saldo atual
+     * 
+     */
+    public function atualizaSaldoAtual()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $businessCloseCounter = new BusinessFinanceBusCloseCounter();
+
+        $operatorData = $this->getOperatorData(); //openCounterId
+
+        $totalValue = $businessCloseCounter->totalValorEmEspecie($operatorData->openCounterId);
+
+        if ( $this->GetField('currentBalance') )
+        {
+            $this->GetField('currentBalance')->setValue($totalValue);
+        }
+
+    }
+
+}
+
+?>

@@ -1,0 +1,3390 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file handles the connection and actions for finReceivableInvoice table
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Cristian Edson Göhl [cristian@solis.coop.br]
+ * Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Rafael Luís Spengler [rafael@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ *
+ * @since
+ * Class created on 13/12/2005
+ *
+ **/
+
+$MIOLO = MIOLO::getInstance();
+$MIOLO->uses( 'db/BusInvoice.class', 'finance' );
+
+/**
+ *
+ * Class to manipulate the finReceivableInvoice table
+ *
+ */
+class BusinessFinanceBusReceivableInvoice extends BusinessFinanceBusInvoice
+{
+
+    CONST REASON_CANCELATION_PEDAGOGICO = '-1';
+    CONST REASON_CANCELATION_SELECTIVE_PROCESS = '-2';
+    CONST REASON_CANCELATION_PROTOCOL = '-3';
+    
+    /**
+     * This attribute is an object used by the receivableInvoiceGeneration method,
+     * which breaks out as follows:
+     *
+     * generationData
+     * |
+     * +- totalIncomeForecasts: shows the number of income forecasts that need to be
+     * |                         processed.
+     * +- receivableInvoice: an array where the key is the invoice number. Each item
+     *    |                  of it contains two attributes named invoice and entries,
+     *    |                  explained below.
+     *    +- invoice: contains a FinReceivableInvoice object with all the information
+     *    |           about the generated invoice.
+     *    +- entries: contains all entries which composes the invoice.
+     */
+    public $generationData;
+
+    /**
+     *
+     * Class constructor to instantiate a new database connection.
+     * This makes possible to use transactions
+     *
+     */
+    public function __construct()
+    {
+        parent::__construct();
+    }
+
+    /**
+     * Return a the nominal value for the invoice
+     *
+     * @param $invoiceId (integer): Primary key of the record to be retrieved
+     *
+     * @return (float): Nominal value
+     *
+     */
+    public function getNominalValue($invoiceId)
+    {
+        $sql = '    SELECT ROUND(value, \'' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '\')
+                 FROM ONLY finReceivableInvoice
+                     WHERE invoiceId = ?';
+
+        $args = array( $invoiceId );
+
+        $return = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+
+        return $return[0][0];
+    }
+
+    /**
+     * Return a specific record from the database
+     *
+     * @param $data (object): data of the record to be retrieved
+     *
+     * @return (object): Return an object of the type handled by the class
+     *
+     */
+    public function getReceivableInvoiceCheckMaturityDate($data)
+    {
+        $sql = ' SELECT A.invoiceId,
+                         balance(A.invoiceId),
+                         TO_DATE( ?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') >= TO_DATE( ?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') ,
+                         B.discountPercent,
+                         B.bankTaxValue
+                    FROM finReceivableInvoice A,
+                         finPolicy B
+                   WHERE A.policyId = B.policyId
+                     AND (A.invoiceId = ?
+                         OR A.bankInvoiceId = ? )';
+
+        $args[] = $data->maturityDate;
+        $args[] = $data->entryDate;
+        $args[] = $data->invoiceId;
+        $args[] = $data->bankInvoiceId;
+
+        $result = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+
+        list( $receivableInvoice->invoiceId,
+              $receivableInvoice->balanceValue,
+              $receivableInvoice->checked,
+              $receivableInvoice->discountPercent,
+              $receivableInvoice->bankTaxValue ) = $result[0];
+
+        if ( is_array( $result ) );
+        {
+            return $receivableInvoice;
+        }
+
+        return false;
+    }
+
+    /**
+     * Return a specific record from the database
+     *
+     * @param $data (object): object of the record to be retrieved
+     *
+     * @return (object): Return an object of the type handled by the class weekDate and policyId.
+     *
+     */
+    public function getReceivableInvoiceReturnRemittance($data)
+    {
+        $sql = 'SELECT TO_CHAR(A.maturityDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE_WEEK') . '\') AS weekDate,
+                       TO_CHAR(A.maturityDate, \'dd/mm/yyyy\') AS maturityDate
+                  FROM finReceivableInvoice A
+                 WHERE A.invoiceId = ?
+                    OR A.bankinvoiceid = ? ';
+        
+        $result = $this->getDatabase()->query( SAGU::prepare( $sql, array( $data->invoiceId, $data->bankInvoiceId ) ) );
+
+        list( $data->weekDate,
+              $data->maturityDate ) = $result[0];
+
+        list( $receivableInvoice->sendDate,
+              $receivableInvoice->returnDate,
+              $receivableInvoice->returnFileId ) = $result[0];
+        return $data;
+    }
+
+    /**
+     * Return a specific record from the database
+     *
+     * @param $invoiceId (integer): Primary key of the record to be retrieved
+     *
+     * @return (object): Return an object of the type handled by the class
+     *
+     */
+    public function getReceivableInvoice($invoiceId)
+    {
+        $receivableInvoice = $this->getInvoice( $invoiceId );
+
+        $sql = 'SELECT TO_CHAR(A.sendDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') AS sendDate,
+                       TO_CHAR(A.returnDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') AS returnDate,
+                       A.returnFileId
+                  FROM finReceivableInvoice A
+                 WHERE A.invoiceId = ?';
+
+        $result = $this->getDatabase()->query( SAGU::prepare( $sql, $invoiceId ) );
+
+        list( $receivableInvoice->sendDate,
+              $receivableInvoice->returnDate,
+              $receivableInvoice->returnFileId ) = $result[0];
+
+        return $receivableInvoice;
+    }
+
+    /**
+     * Do a search on the database table handled by the class
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): An array containing the search results
+     */
+    public function searchReceivableInvoice($data)
+    {
+        $sql = $this->searchReceivableInvoiceSql($data);
+        
+        $retVal = null;
+        // FIXME: Esta não é a forma mais segura de verificar se tem WHERE no SQL, pois
+        // testar apenas uma string é arriscado, uma vez que o teste retornaria TRUE se
+        // estivéssemos selecionando de uma tabela que se chamasse "NOWHERE", por exemplo.
+        if ( strpos($sql, 'WHERE') !== false )
+        {
+            $retVal = $this->getDatabase()->query( $sql );
+        }
+        
+        return $retVal;
+    }
+    
+    /**
+     * Método que gera apenas o SQL que será utilizado para a consulta. Este método é útil
+     * para quando se deseja utilizar a funcionalidade de LIMIT e OFFSET da MGrid.
+     * 
+     * @param (object) $data
+     * @return (string) O SQL gerado, já com o SAGU::prepare() aplicado. 
+     */
+    public function searchReceivableInvoiceSql($data)
+    {
+        $sql = 'SELECT A.invoiceId,
+                       A.personId,
+                       A.accountSchemeId,
+                       A.costCenterId,
+                       NULL,
+                       NULL,
+                       NULL,
+                       A.parcelNumber,
+                       TO_CHAR(A.emissionDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       TO_CHAR(A.maturityDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       ROUND(A.value, \'' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '\'), 
+                       A.policyId,
+                       A.bankInvoiceId,
+                       A.automaticDebit,
+                       A.comments,
+                       A.incomeSourceId,
+                       A.bankAccountId,
+                       A.sagu1InvoiceId,
+                       TO_CHAR(A.sendDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       TO_CHAR(A.returnDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       A.returnFileId,
+                       COALESCE(getSectorDescription(sectorId), \'\'),                       
+                       CASE WHEN A.isCanceled = \'f\' THEN \'NÃO\' ELSE \'SIM\' END,
+                       A.emissionTypeId,
+                       NULL,
+                       NULL,
+                       TO_CHAR(A.referenceMaturityDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       ROUND((SELECT * FROM balanceWithPoliciesDated(A.invoiceId, NOW()::DATE)), 2),
+                       ROUND(A.balance, 2),
+                       ROUND(A.nominalValue, 2),
+                       titulodereferencia
+                  FROM finReceivableInvoice A';
+
+        $where = '';
+        unset( $args );
+        if ( strlen( $data->invoiceId ) > 0 )
+        {
+            $where .= '    AND   A.invoiceId = ?';
+            $args[] = $data->invoiceId;
+        }
+        if ( strlen( $data->personId ) > 0 )
+        {
+            $where .= '    AND   A.personId = ?';
+            $args[] = $data->personId;
+        }
+        if ( strlen( $data->accountSchemeId ) > 0 )
+        {
+            $where .= '    AND   A.accountSchemeId ILIKE ?';
+            $args[] = $data->accountSchemeId;
+        }
+        if ( strlen( $data->costCenterId ) > 0 )
+        {
+            $where .= '    AND   A.costCenterId ILIKE ?';
+            $args[] = $data->costCenterId;
+        }
+        if ( strlen( $data->parcelNumber ) > 0 )
+        {
+            $where .= '    AND   A.parcelNumber = ?';
+            $args[] = $data->parcelNumber;
+        }
+        if ( strlen( $data->emissionDate ) > 0 )
+        {
+            $where .= '    AND   A.emissionDate = TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $args[] = $data->emissionDate;
+        }
+        if ( strlen( $data->maturityDate ) > 0 )
+        {
+            $where .= '    AND   A.maturityDate = TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $args[] = $data->maturityDate;
+        }
+        //Pode passar TRUE neste filtro para buscar somente títulos vencidos com valor em aberto
+        if ( $data->vencido == DB_TRUE )
+        {
+            $where .= '    AND   A.maturityDate < NOW()::DATE';
+            $where .= '    AND   A.balance > 0';
+        }
+        //Pode passar TRUE neste filtro para buscar somente títulos que ainda nao venceram com valor em aberto
+        if ( $data->naoPagos == DB_TRUE )
+        {
+            $where .= '    AND   A.maturityDate >= NOW()::DATE';
+            $where .= '    AND   A.balance > 0';
+        }
+        if ( strlen( $data->value ) > 0 )
+        {
+            $where .= '    AND   A.value = ?';
+            $args[] = $data->value;
+        }
+        if ( strlen( $data->policyId ) > 0 )
+        {
+            $where .= '    AND   A.policyId = ?';
+            $args[] = $data->policyId;
+        }
+        if ( strlen( $data->bankInvoiceId ) > 0 )
+        {
+            $where .= '    AND   A.bankInvoiceId ILIKE ?';
+            $args[] = $data->bankInvoiceId;
+        }
+        if ( strlen( $data->automaticDebit ) > 0 )
+        {
+            $where .= '    AND   A.automaticDebit = ?';
+            $args[] = $data->automaticDebit;
+        }
+        if ( strlen( $data->emissionTypeId ) > 0 )
+        {
+            $where .= '    AND   A.emissionTypeId = ?';
+            $args[] = $data->emissionTypeId;
+        }
+        if ( strlen( $data->comments ) > 0 )
+        {
+            $where .= '    AND   A.comments ILIKE ?';
+            $args[] = $data->comments;
+        }
+        if ( strlen( $data->incomeSourceId ) > 0 )
+        {
+            $where .= '    AND   A.incomeSourceId = ?';
+            $args[] = $data->incomeSourceId;
+        }
+        if ( strlen( $data->bankAccountId ) > 0 )
+        {
+            $where .= '    AND   A.bankAccountId = ?';
+            $args[] = $data->bankAccountId;
+        }
+        if ( strlen( $data->sagu1InvoiceId ) > 0 )
+        {
+            $where .= '    AND   A.sagu1InvoiceId ILIKE ?';
+            $args[] = $data->sagu1InvoiceId;
+        }
+        if ( strlen( $data->sendDate ) > 0 )
+        {
+            $where .= '    AND   A.sendDate = TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $args[] = $data->sendDate;
+        }
+        if ( strlen( $data->returnDate ) > 0 )
+        {
+            $where .= '    AND   A.returnDate = TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $args[] = $data->returnDate;
+        }
+        if ( strlen( $data->returnFileId ) > 0 )
+        {
+            $where .= '    AND   A.returnFileId = ?';
+            $args[] = $data->returnFileId;
+        }
+        if ( strlen( $data->sectorId ) > 0 )
+        {
+            $where .= '    AND   A.sectorId = ? ';
+            $args[] = $data->sectorId;
+        }
+        if ( strlen($data->contractId) > 0 )
+        {
+            $where .= '    AND EXISTS (SELECT 1
+                                         FROM finEntry X
+                                        WHERE X.invoiceId = A.invoiceId
+                                          AND X.contractId = ?)';
+            $args[] = $data->contractId;
+        }
+        if ( strlen($data->learningPeriodId) > 0 )
+        {
+            $where .= '    AND EXISTS (SELECT 1
+                                         FROM finEntry X
+                                        WHERE X.invoiceId = A.invoiceId
+                                          AND X.learningPeriodId = ?)';
+            $args[] = $data->learningPeriodId;
+        }
+        if ( strlen( $data->referenceMaturityDate ) > 0 )
+        {
+            $where .= '    AND   A.referenceMaturityDate = TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $args[] = $data->referenceMaturityDate;
+        }
+        if ( strlen( $data->isCanceled ) > 0 )
+        {
+            $where .= '    AND   A.isCanceled = ?';
+            $args[] = $data->isCanceled;
+        }
+        if ( (strlen( $data->onlyOpen ) > 0) && ($data->onlyOpen == SAGU::getParameter('BASIC', 'DB_TRUE')))
+        {
+            $where .= ' AND balance(A.invoiceId)>0 ';
+        }
+        if ( strlen($data->isClosed) > 0)
+        {
+            $MIOLO = MIOLO::getInstance();
+            $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+            $defaultOperations = $busDefaultOperations->getDefaultOperations();
+
+            if ($data->isClosed == SAGU::getParameter('BASIC', 'DB_TRUE'))
+            {
+                $where .= ' AND ( balance(A.invoiceid) = 0 AND EXISTS (SELECT 1
+                                                                         FROM finEntry X
+                                                                        WHERE X.invoiceId = A.invoiceId
+                                                                          AND X.operationId = ?) )';
+            }
+            else
+            {
+                $where .= ' AND ( balance(A.invoiceid) > 0 OR NOT EXISTS (SELECT 1
+                                                                         FROM finEntry X
+                                                                        WHERE X.invoiceId = A.invoiceId
+                                                                          AND X.operationId = ?) )';
+            }
+
+            $args[] = $defaultOperations->paymentOperation;
+        }        
+        if ( strlen($data->isExpired) > 0 )
+        {
+            if( $data->isExpired == SAGU::getParameter('BASIC', 'DB_TRUE') )
+            {
+                $where .= ' AND A.maturityDate < date(now())';
+            }
+            else
+            {
+                $where .= ' AND A.maturityDate >= date(now())';
+            }
+        }
+        if ( strlen($data->operationId) > 0 )
+        {
+            $where .= ' AND EXISTS (SELECT 1
+                                      FROM finEntry X
+                                     WHERE X.invoiceId = A.invoiceId
+                                       AND X.operationId = ?) ';
+
+            $args[] = $data->operationId;
+        }
+        if( $data->isEnrollOperations == SAGU::getParameter('BASIC', 'DB_TRUE') )
+        {
+            $MIOLO = MIOLO::getInstance();
+            $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+            $defaultOperations = $busDefaultOperations->getDefaultOperations();
+            
+            $where .= ' AND EXISTS (SELECT 1
+                                      FROM finEntry X
+                                     WHERE X.invoiceId = A.invoiceId
+                                       AND X.operationId IN (?,?)) ';
+
+            $args[] = $defaultOperations->renewalOperation;
+            $args[] = $defaultOperations->enrollOperation;            
+        }
+        if( strlen($data->digitableNumber) > 0 )
+        {
+            $where .= ' AND EXISTS (SELECT 1
+                                      FROM finBankInvoiceInfo Y
+                                     WHERE Y.invoiceId = A.invoiceId
+                                       AND Y.digitableNumber = ?) ';
+
+            $args[] = $data->digitableNumber;
+        }
+        if( strlen($data->barCodeNumber) > 0 )
+        {
+            $where .= ' AND EXISTS (SELECT 1
+                                      FROM finBankInvoiceInfo Z
+                                     WHERE Z.invoiceId = A.invoiceId
+                                       AND Z.barCodeNumber = ?) ';
+
+            $args[] = $data->barCodeNumber;
+        }
+        
+        $order = '';
+        if ( $data->orderByParcelNumber == DB_TRUE )
+        {
+            $order = ' A.parcelnumber, ';
+        }
+
+        if ( strlen( $where ) > 0 )
+        {
+            $sql .= ' WHERE ' . substr( $where, 8 ) . ' ORDER BY ' . $order . ' A.maturityDate, A.referenceMaturityDate';
+
+            $sql = SAGU::prepare( $sql, $args );
+        }
+
+        return $sql;
+    }
+
+    /**
+     * Insert a new record
+     *
+     * @param $data (object): An object of the type handled by the class
+     *
+     * @return The new generated invoice id if succed, otherwise FALSE
+     *
+     */
+    public function insertReceivableInvoice($data)
+    {
+        $invoiceId = $this->insertInvoice( $data );
+
+        if ( $invoiceId !== false )
+        {
+            unset( $field, $prepareValue, $dataValue );
+
+            $field[]        = 'invoiceId';
+            $prepareValue[] = '?';
+            $dataValue[]    = $invoiceId;
+            $field[]        = 'personId';
+            $prepareValue[] = '?';
+            $dataValue[]    = $data->personId;
+            $field[]        = 'accountSchemeId';
+            $prepareValue[] = '?';
+            $dataValue[]    = $data->accountSchemeId;
+            $field[]        = 'costCenterId';
+            $prepareValue[] = '?';
+            $dataValue[]    = $data->costCenterId;
+            $field[]        = 'parcelNumber';
+            $prepareValue[] = '?';
+            $dataValue[]    = $data->parcelNumber;
+            $field[]        = 'emissionDate';
+
+            if ( is_null( $data->emissionDate ) )
+            {
+                $prepareValue[] = 'now()';
+            } 
+            else
+            {
+                $prepareValue[] = 'TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+                $dataValue[]    = $data->emissionDate;
+            }
+            $field[]        = 'maturityDate';
+            $prepareValue[] = 'TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $dataValue[]    = $data->maturityDate;
+            $field[]        = 'value';
+            $prepareValue[] = '?';
+            $dataValue[]    = $data->value;
+            $field[]        = 'policyId';
+            $prepareValue[] = '?';
+            $dataValue[]    = $data->policyId;
+            $field[]        = 'bankInvoiceId';
+            $prepareValue[] = '?';
+            $dataValue[]    = $data->bankInvoiceId;
+            $field[]        = 'automaticDebit';
+            $prepareValue[] = '?';
+            $dataValue[]    = $data->automaticDebit;
+            $field[]        = 'emissionTypeId';
+            $prepareValue[] = '?';
+            $dataValue[]    = $data->emissionTypeId;
+            $field[]        = 'comments';
+            $prepareValue[] = '?';
+            $dataValue[]    = $data->comments;
+            $field[]        = 'incomeSourceId';
+            $prepareValue[] = '?';
+            $dataValue[]    = $data->incomeSourceId;
+            $field[]        = 'bankAccountId';
+            $prepareValue[] = '?';
+            $dataValue[]    = $data->bankAccountId;
+            $field[]        = 'sagu1InvoiceId';
+            $prepareValue[] = '?';
+            $dataValue[]    = $data->sagu1InvoiceId;
+            $field[]        = 'sendDate';
+            $prepareValue[] = 'TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $dataValue[]    = $data->sendDate;
+            $field[]        = 'returnDate';
+            $prepareValue[] = 'TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $dataValue[]    = $data->returnDate;
+            $field[]        = 'returnFileId';
+            $prepareValue[] = '?';
+            $dataValue[]    = $data->returnFileId;
+            $field[]        = 'referenceMaturityDate';
+            $prepareValue[] = 'TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $dataValue[]    = $data->referenceMaturityDate;
+            $field[]        = 'invoiceIdDependence';
+            $prepareValue[] = '?';
+            $dataValue[]    = $data->invoiceIdDependence;
+            
+            // Insere a data de competencia
+            if ( strlen($data->competencyDate) > 0 )
+            {
+                $field[]        = 'competencyDate';
+                $prepareValue[] = 'TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+                $dataValue[]    = $data->competencyDate;
+            }
+
+            // In some cases, we don't need sectorId, so, verify... ;)
+            if ( strlen( $data->sectorId ) > 0 )
+            {
+                $field[]        = 'sectorId';
+                $prepareValue[] = '?';
+                $dataValue[]    = $data->sectorId;
+            }
+
+            $sql = 'INSERT INTO finReceivableInvoice
+                                (';
+            for ( $i = 0; $i < count( $field ); $i ++ )
+            {
+                $sql .= $field[$i] . ',';
+            }
+            $sql = substr( $sql, 0, strlen( $sql ) - 1 ) . ')
+                         VALUES (';
+            for ( $i = 0; $i < count( $prepareValue ); $i ++ )
+            {
+                $sql .= $prepareValue[$i] . ',';
+            }
+            $sql = substr( $sql, 0, strlen( $sql ) - 1 ) . ')';
+
+            
+            if ( ! $this->getDatabase()->execute( SAGU::prepare( $sql, $dataValue ) ) )
+            {
+                $invoiceId = false;
+            }
+            else
+            {
+                if( strlen($data->bankAccountId) > 0 )
+                {
+                    $MIOLO = MIOLO::getInstance();
+                    
+                    //Verifica e lanca lancamento de taxa bancária
+                    $busBankAccount = $MIOLO->getBusiness('finance', 'BusBankAccount');
+                    $bankAccount = $busBankAccount->getBankAccount($data->bankAccountId);
+                    
+                    if( $bankAccount->responsibletaxbank == 'S' )
+                    {
+                        $busEntry = $MIOLO->GetBusiness('finance', 'BusEntry');
+                        
+                        //Insere o lançamento da taxa bancária
+                        $dataEntry = new stdClass();
+                        $dataEntry->invoiceId = $invoiceId;
+                        $dataEntry->operationId = $bankAccount->taxbankdebtoperation;
+                        $dataEntry->entryDate = SAGU::getDateNow();
+                        $dataEntry->value = $bankAccount->taxbankvalue;
+                        $dataEntry->costCenterId = $data->costCenterId;
+                        $busEntry->insertEntry($dataEntry);
+                    }
+                }
+            }
+        }
+        
+        return $invoiceId;
+    }
+    
+    /**
+     * Update data from a specific record
+     *
+     * @param $data (object): Data which will replace the old record data
+     *
+     * @return (boolean): True if succeed, otherwise False
+     *
+     */
+    public function updateReceivableInvoice($data)
+    {
+        $this->updateInvoice( $data );
+
+        $sql = 'UPDATE finReceivableInvoice
+                   SET personId        = ?,
+                       accountSchemeId = ?,
+                       costCenterId    = ?,
+                       parcelNumber    = ?,
+                       emissionDate    = TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       maturityDate    = TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       value           = ?,
+                       policyId        = ?,
+                       bankInvoiceId   = ?,
+                       automaticDebit  = ?,
+                       emissionTypeId  = ?,
+                       comments        = ?,
+                       incomeSourceId  = ?,
+                       bankAccountId   = ?,
+                       sagu1InvoiceId  = ?,
+                       referenceMaturityDate = TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       invoiceIdDependence = ?,';
+
+        if ( strlen( $data->sectorId ) > 0 )
+        {
+            $sql .= ' sectorId = ?,  ';
+        }
+
+        $sql .= '  sendDate     = TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                   returnDate   = TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                   returnFileId = ? ';
+
+        unset( $args );
+        $args[] = $data->personId;
+        $args[] = $data->accountSchemeId;
+        $args[] = $data->costCenterId;
+        $args[] = $data->parcelNumber;
+        $args[] = $data->emissionDate;
+        $args[] = $data->maturityDate;
+        $args[] = $data->value;
+        $args[] = $data->policyId;
+        $args[] = $data->bankInvoiceId;
+        $args[] = $data->automaticDebit;
+        $args[] = $data->emissionTypeId;
+        $args[] = $data->comments;
+        $args[] = $data->incomeSourceId;
+        $args[] = $data->bankAccountId;
+        $args[] = $data->sagu;
+        $args[] = $data->referenceMaturityDate;
+        $args[] = $data->invoiceIdDependence;
+
+        if ( strlen( $data->sectorId ) > 0 )
+        {
+            $args[] = $data->sectorId;
+        }
+
+        $args[] = $data->sendDate;
+        $args[] = $data->returnDate;
+        $args[] = $data->returnFileId;
+        $args[] = $data->invoiceId;
+
+        $sql .= ' WHERE invoiceId = ? ';
+
+        $sqls = SAGU::prepare( $sql, $args );
+        for ( $i = 0; $i < count( $sqls ); $i ++ )
+        {
+            $retVal = $this->getDatabase()->execute( $sqls[$i] );
+        }
+
+        return $retVal;
+    }
+
+    /**
+     * get cost center for a receivable invoice
+     *
+     * @param $invoiceId (string): Primary key to search
+     *
+     * @return (varchar): Cost center id, otherwise null
+     *
+     */
+    public function getReceivableInvoiceCostCenter($invoiceId)
+    {
+        $sql = 'SELECT costCenterId
+                  FROM finReceivableInvoice
+                 WHERE invoiceId = ?';
+
+        $data = $this->getDatabase()->query( SAGU::prepare( $sql, $invoiceId ) );
+        
+        return $data[0][0];
+    }
+
+    /**
+     * Delete a record
+     *
+     * @param $invoiceId (string): Primary key for deletion
+     *
+     * @return (boolean): True if succeed, otherwise False
+     *
+     */
+    public function deleteReceivableInvoice($invoiceId)
+    {
+
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $MIOLO->getClass( 'accountancy', 'accountancy' );
+
+        $sql = 'SELECT TO_CHAR(max(entryDate), \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')
+                  FROM finEntry
+                 WHERE invoiceid = ?';
+
+        $result = $this->getDatabase()->query( SAGU::prepare( $sql, $invoiceId ) );
+
+        if ( strlen( $result[0][0] ) > 0 )
+        {
+            if ( ACCOUNTANCY::dateAlreadyAccounted( $result[0][0] ) )
+            {
+                $msg = _M('Operação não permitida. Limite de data excedido para essa operação', $module );
+
+                $opts = array( 'function' => 'search', 'invoiceIdS' => $invoiceId );
+                $goto = MIOLO::_request( 'goto' ) ? MIOLO::_request( 'goto' ) : MIOLO::_request( 'goto', 'GET' );
+                $goto = strlen( $goto ) > 0 ? $goto : $MIOLO->getActionURL( $module, $action, null, $opts );
+                $caption = _M('Erro', $module );
+                $MIOLO->error( $msg, $goto, $caption );
+            }
+        }
+        
+        $sql = 'SELECT * FROM finEntry
+                      WHERE invoiceId = ?
+                        AND isAccounted = TRUE';
+
+        $result = $this->getDatabase()->query( SAGU::prepare( $sql, $invoiceId ) );
+
+        if ( is_array( $result[0] ) )
+        {
+            $opts = array( 'function' => 'search', 'invoiceIdS' => $invoiceId );
+
+            $msg = _M('Já existem lançamentos contabilizados para este título', $module );
+            $goto = $MIOLO->getActionURL( $module, $action, null, $opts );
+            $caption = _M('Erro', $module );
+            $MIOLO->error( $msg, $goto, $caption );
+        }
+
+        $this->deleteInvoice( $invoiceId );
+  
+        // Verifica se existem títulos "filhos".
+        $sql = 'SELECT count(*)
+                  FROM finReceivableInvoice
+                 WHERE invoiceiddependence = ?';
+        
+        $count = $this->getDatabase()->query( SAGU::prepare( $sql, $invoiceId ) );
+ 
+        if ( $count[0] > 0 )
+        {
+            // Cancela os títulos "filhos" da tabela finReceivableInvoice.
+            $sql = 'UPDATE finReceivableInvoice 
+                            SET isCanceled = \'t\'
+                          WHERE invoiceiddependence = ?';
+            
+            $this->getDatabase()->execute( SAGU::prepare( $sql, $invoiceId ) );
+
+            // Atualiza o status de calcelamento dos títulos "filhos" para 't' na tabela finInvoice.
+            $sql = 'UPDATE finInvoice
+                       SET isCanceled = \'t\'
+                     WHERE invoiceiddependence = ?';
+            
+            $this->getDatabase()->execute( SAGU::prepare( $sql, $invoiceId ) );
+
+        }
+
+        // Deleta o título.
+        $sql = 'UPDATE finReceivableInvoice SET isCanceled = \'t\'
+                      WHERE invoiceId = ?';
+
+        $retVal = $this->getDatabase()->execute( SAGU::prepare( $sql, $invoiceId ) );
+
+        return $retVal;
+    }
+
+    /**
+     * @author: William Prigol Lopes [william@solis.coop.br]
+     *
+     * @param: $data (object): Object containing data to close invoice
+     *
+     * @return: True if succeed otherwise false
+     *
+     */
+    public function closeInvoiceOld($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'finance'; // Esta finance por extenso devido a
+
+        // FIXME: remover esta função e verificar impacto
+        $MIOLO->error('Deprecated: File ' . __FILE__ . ', ' . __METHOD__  . ', line ' . __LINE__ . '.');
+        
+        $keepGoing = true;
+        // Begin Transaction
+        $this->getDatabase()->execute( 'BEGIN TRANSACTION' );
+
+        // Select values related to this invoice and data to work
+        $sql = ' SELECT costCenterId,
+                        balance(invoiceId),
+                        balanceWithPoliciesDated(invoiceId, now()::date),
+                        abs(balance(invoiceId)-balanceWithPoliciesDated(invoiceId, now()::date)),
+                        CASE WHEN (balance(invoiceId)-balanceWithPoliciesDated(invoiceId, now()::date)) > 0
+                             THEN \'D\'
+                             WHEN (balance(invoiceId)-balanceWithPoliciesDated(invoiceId, now()::date)) < 0
+                             THEN \'I\'
+                             WHEN (balance(invoiceId)-balanceWithPoliciesDated(invoiceId, now()::date)) = 0
+                             THEN \'E\'
+                        END
+                   FROM finReceivableInvoice
+                  WHERE invoiceId = ? ';
+
+        $args = array( $data->invoiceId );
+        $return = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+
+        $dataInvoice->costCenterId        = $return[0][0];
+        $dataInvoice->invoiceId           = $data->invoiceId;
+        $dataInvoice->balance             = $return[0][1];
+        $dataInvoice->balanceWithPolicies = $return[0][2];
+        $dataInvoice->difference          = $return[0][3];
+        $dataInvoice->situation           = $return[0][4];
+
+        // Get all default operations
+        $businessDefaultOperations = new BusinessFinanceBusDefaultOperations();
+        $dataDefaultOperations     = $businessDefaultOperations->getDefaultOperations();
+
+        switch ( $data->closeType )
+        {
+            // Integral payment
+            case 'I' :
+                {
+                    if ( $dataInvoice->situation != 'E' )
+                    {
+                        if ( $dataInvoice->situation == 'D' )
+                        {
+                            $situation = $dataDefaultOperations->discountOperation;
+                        } 
+                        elseif ( $dataInvoice->situation == 'I' )
+                        {
+                            $situation = $dataDefaultOperations->interestOperation;
+                        }
+                        $dataEntry->invoiceId      = $data->invoiceId;
+                        $dataEntry->operationId    = $situation;
+                        $dataEntry->value          = $dataInvoice->difference;
+                        $dataEntry->costCenterId   = $dataInvoice->costCenterId;
+                        $dataEntry->comments       = $data->comments;
+                        $dataEntry->bankReturnCode = NULL;
+                        $dataEntry->isAccounted    = 'F';
+                        $dataEntry->creationType   = 'M';
+                        $sql = ' INSERT INTO finEntry
+                                       ( invoiceId,
+                                         operationId,
+                                         entryDate,
+                                         value,
+                                         costCenterId,
+                                         comments,
+                                         bankReturnCode,
+                                         isAccounted,
+                                         creationType
+                                       )
+                                VALUES (?, ?, now()::date, ?, ?, ?, ?, ?, ?) ';
+
+                        $args = array( $dataEntry->invoiceId, 
+                                       $dataEntry->operationId, 
+                                       $dataEntry->value, 
+                                       $dataEntry->costCenterId, 
+                                       $dataEntry->comments, 
+                                       $dataEntry->bankReturnCode, 
+                                       $dataEntry->isAccounted, 
+                                       $dataEntry->creationType );
+
+                        if ( $this->getDatabase()->execute( SAGU::prepare( $sql, $args ) ) === false )
+                        {
+                            $keepGoing = false;
+                        }
+                    }
+
+                    //
+                    // Insert the entry to close invoice
+                    //
+                    $dataEntry->invoiceId      = $data->invoiceId;
+                    $dataEntry->operationId    = $data->operationId;
+                    $dataEntry->value          = $dataInvoice->balanceWithPolicies;
+                    $dataEntry->costCenterId   = $dataInvoice->costCenterId;
+                    $dataEntry->comments       = $data->comments;
+                    $dataEntry->bankReturnCode = NULL;
+                    $dataEntry->isAccounted    = 'F';
+                    $dataEntry->creationType   = 'M';
+                    // Insert a entry closing the invoice
+                    $sql = ' INSERT INTO finEntry
+                                   ( invoiceId,
+                                     operationId,
+                                     entryDate,
+                                     value,
+                                     costCenterId,
+                                     comments,
+                                     bankReturnCode,
+                                     isAccounted,
+                                     creationType
+                                   )
+                            VALUES (?, ?, now()::date, ?, ?, ?, ?, ?, ?) ';
+
+                    $args = array( $dataEntry->invoiceId, 
+                                   $dataEntry->operationId, 
+                                   $dataEntry->value, 
+                                   $dataEntry->costCenterId, 
+                                   $dataEntry->comments, 
+                                   $dataEntry->bankReturnCode, 
+                                   $dataEntry->isAccounted, 
+                                   $dataEntry->creationType );
+
+                    if ( $this->getDatabase()->execute( SAGU::prepare( $sql, $args ) ) === false )
+                    {
+                        $keepGoing = false;
+                    }
+                    break;
+                }
+
+                // Partial payment
+            case 'P' :
+                {
+                    //
+                    // Insert the entry to close partially the invoice
+                    //
+                    $dataEntry->invoiceId      = $data->invoiceId;
+                    $dataEntry->operationId    = $data->operationId;
+                    $dataEntry->value          = $data->value;
+                    $dataEntry->costCenterId   = $dataInvoice->costCenterId;
+                    $dataEntry->comments       = $data->comments;
+                    $dataEntry->bankReturnCode = NULL;
+                    $dataEntry->isAccounted    = 'F';
+                    $dataEntry->creationType   = 'M';
+
+                    $sql = ' INSERT INTO finEntry
+                                   ( invoiceId,
+                                     operationId,
+                                     entryDate,
+                                     value,
+                                     costCenterId,
+                                     comments,
+                                     bankReturnCode,
+                                     isAccounted,
+                                     creationType
+                                   )
+                            VALUES (?, ?, now()::date, ?, ?, ?, ?, ?, ?) ';
+
+                    $args = array( $dataEntry->invoiceId, 
+                                   $dataEntry->operationId, 
+                                   $dataEntry->value, 
+                                   $dataEntry->costCenterId, 
+                                   $dataEntry->comments, 
+                                   $dataEntry->bankReturnCode, 
+                                   $dataEntry->isAccounted, 
+                                   $dataEntry->creationType );
+
+                    if ( $this->getDatabase()->execute( SAGU::prepare( $sql, $args ) ) === false )
+                    {
+                        $keepGoing = false;
+                    }
+
+                    //
+                    // Now... apply the interests on entry with new value.
+                    // Get the updated values
+                    $sql = ' SELECT costCenterId,
+                                balance(invoiceId),
+                                balanceWithPoliciesDated(invoiceId, now()::date),
+                                abs(balance(invoiceId)-balanceWithPoliciesDated(invoiceId, now()::date)),
+                                CASE WHEN (balance(invoiceId)-balanceWithPoliciesDated(invoiceId, now()::date)) > 0
+                                     THEN \'D\'
+                                     WHEN (balance(invoiceId)-balanceWithPoliciesDated(invoiceId, now()::date)) < 0
+                                     THEN \'I\'
+                                     WHEN (balance(invoiceId)-balanceWithPoliciesDated(invoiceId, now()::date)) = 0
+                                     THEN \'E\'
+                                END
+                           FROM finReceivableInvoice
+                          WHERE invoiceId = ? ';
+
+                    $args = array( $data->invoiceId );
+                    $return = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+
+                    $dataInvoice->costCenterId        = $return[0][0];
+                    $dataInvoice->invoiceId           = $data->invoiceId;
+                    $dataInvoice->balance             = $return[0][1];
+                    $dataInvoice->balanceWithPolicies = $return[0][2];
+                    $dataInvoice->difference          = $return[0][3];
+                    $dataInvoice->situation           = $return[0][4];
+
+                    // Now insert the interests for this invoice
+                    if ( $dataInvoice->situation != 'E' )
+                    {
+                        // Insert the entry data
+                        if ( $dataInvoice->situation == 'D' )
+                        {
+                            $situation = $dataDefaultOperations->discountOperation;
+                        } 
+                        elseif ( $dataInvoice->situation == 'I' )
+                        {
+                            $situation = $dataDefaultOperations->interestOperation;
+                        } 
+                        else
+                        {
+                            return false;
+                        }
+
+                        $dataEntry->invoiceId      = $data->invoiceId;
+                        $dataEntry->operationId    = $situation;
+                        $dataEntry->value          = $dataInvoice->difference;
+                        $dataEntry->costCenterId   = $dataInvoice->costCenterId;
+                        $dataEntry->comments       = $data->comments;
+                        $dataEntry->bankReturnCode = NULL;
+                        $dataEntry->isAccounted    = 'F';
+                        $dataEntry->creationType   = 'M';
+                        $sql = ' INSERT INTO finEntry
+                                       ( invoiceId,
+                                         operationId,
+                                         entryDate,
+                                         value,
+                                         costCenterId,
+                                         comments,
+                                         bankReturnCode,
+                                         isAccounted,
+                                         creationType
+                                       )
+                                VALUES (?, ?, now()::date, ?, ?, ?, ?, ?, ?) ';
+
+                        $args = array( $dataEntry->invoiceId, 
+                                       $dataEntry->operationId, 
+                                       $dataEntry->value, 
+                                       $dataEntry->costCenterId, 
+                                       $dataEntry->comments, 
+                                       $dataEntry->bankReturnCode, 
+                                       $dataEntry->isAccounted, 
+                                       $dataEntry->creationType );
+
+                        if ( $this->getDatabase()->execute( SAGU::prepare( $sql, $args ) ) === false )
+                        {
+                            $keepGoing = false;
+                        }
+                    }
+                    break;
+                }
+            default :
+                {
+                    $keepGoing = false;
+                    break;
+                }
+        }
+
+        if ( $keepGoing == true )
+        {
+            if ( $this->insertCounterMovement( $data ) !== true )
+            {
+                $keepGoing = false;
+            }
+        }
+        // If everything gone right, we may COMMIT the database changes, otherwise, ROLLBACK them
+        if ( $keepGoing == true )
+        {
+            $this->getDatabase()->execute( 'COMMIT' );
+        }
+        else
+        {
+            $this->getDatabase()->execute( 'ROLLBACK' );
+        }
+        return $keepGoing;
+    }
+
+    /**
+     * @author: William Prigol Lopes [william@solis.coop.br]
+     *          Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+     *
+     * @param: $data (object): Object containing data to close invoice
+     *
+     * @return: True if succeed otherwise false
+     *
+     */
+    public function closeInvoiceWithDate($data)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = 'finance'; // Esta finance por extenso devido a
+        // chamadas do módulo processo seletivo
+
+        $keepGoing = true;
+        // Begin Transaction
+        $this->getDatabase()->execute( 'BEGIN TRANSACTION' );
+        // Select values related to this invoice and data to work
+        $sql = ' SELECT costCenterId,
+                        balance(invoiceId),
+                        balanceWithPoliciesDated(invoiceId, TO_DATE (?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\' )),
+                        abs(balance(invoiceId)-balanceWithPoliciesDated(invoiceId, TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\' ))),
+                        CASE WHEN (balance(invoiceId)-balanceWithPoliciesDated(invoiceId, TO_DATE (?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\' ))) > 0
+                             THEN \'D\'
+                             WHEN (balance(invoiceId)-balanceWithPoliciesDated(invoiceId, TO_DATE (?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\' ))) < 0
+                             THEN \'I\'
+                             WHEN (balance(invoiceId)-balanceWithPoliciesDated(invoiceId, TO_DATE (?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'  ))) = 0
+                             THEN \'E\'
+                        END
+                   FROM finReceivableInvoice
+                  WHERE invoiceId = ? ';
+
+        $args = array( $data->datePardon, 
+                       $data->datePardon, 
+                       $data->datePardon, 
+                       $data->datePardon, 
+                       $data->datePardon, 
+                       $data->invoiceId );
+        $return = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+
+        $dataInvoice->costCenterId        = $return[0][0];
+        $dataInvoice->invoiceId           = $data->invoiceId;
+        $dataInvoice->balance             = $return[0][1];
+        $dataInvoice->balanceWithPolicies = $return[0][2];
+        $dataInvoice->difference          = $return[0][3];
+        $dataInvoice->situation           = $return[0][4];
+
+        // Get all default operations
+        $businessDefaultOperations = new BusinessFinanceBusDefaultOperations();
+        $dataDefaultOperations     = $businessDefaultOperations->getDefaultOperations();
+
+        switch ( $data->closeType )
+        {
+            case 'I' :
+                {
+                    if ( $dataInvoice->situation != 'E' )
+                    {
+                        if ( $dataInvoice->situation == 'D' )
+                        {
+                            $situation = $dataDefaultOperations->discountOperation;
+                        } 
+                        elseif ( $dataInvoice->situation == 'I' )
+                        {
+                            $situation = $dataDefaultOperations->interestOperation;
+                        }
+                        $dataEntry->invoiceId      = $data->invoiceId;
+                        $dataEntry->operationId    = $situation;
+                        $dataEntry->value          = $dataInvoice->difference;
+                        $dataEntry->costCenterId   = $dataInvoice->costCenterId;
+                        $dataEntry->comments       = $data->comments;
+                        $dataEntry->bankReturnCode = NULL;
+                        $dataEntry->isAccounted    = 'F';
+                        $dataEntry->creationType   = 'M';
+                        $sql = ' INSERT INTO finEntry
+                                       ( invoiceId,
+                                         operationId,
+                                         entryDate,
+                                         value,
+                                         costCenterId,
+                                         comments,
+                                         bankReturnCode,
+                                         isAccounted,
+                                         creationType
+                                       )
+                                VALUES (?, ?, now()::date, ?, ?, ?, ?, ?, ?) ';
+
+                        $args = array( $dataEntry->invoiceId, 
+                                       $dataEntry->operationId, 
+                                       $dataEntry->value, 
+                                       $dataEntry->costCenterId, 
+                                       $dataEntry->comments, 
+                                       $dataEntry->bankReturnCode, 
+                                       $dataEntry->isAccounted, 
+                                       $dataEntry->creationType );
+                        if ( $this->getDatabase()->execute( SAGU::prepare( $sql, $args ) ) === false )
+                        {
+                            $keepGoing = false;
+                        }
+                    }
+                    //
+                    // Insert the entry to close invoice
+                    //
+                    $dataEntry->invoiceId      = $data->invoiceId;
+                    $dataEntry->operationId    = $data->operationId;
+                    $dataEntry->value          = $dataInvoice->balanceWithPolicies;
+                    $dataEntry->costCenterId   = $dataInvoice->costCenterId;
+                    $dataEntry->comments       = $data->comments;
+                    $dataEntry->bankReturnCode = NULL;
+                    $dataEntry->isAccounted    = 'F';
+                    $dataEntry->creationType   = 'M';
+                    // Insert a entry closing the invoice
+                    $sql = ' INSERT INTO finEntry
+                                   ( invoiceId,
+                                     operationId,
+                                     entryDate,
+                                     value,
+                                     costCenterId,
+                                     comments,
+                                     bankReturnCode,
+                                     isAccounted,
+                                     creationType
+                                   )
+                            VALUES (?, ?, now()::date, ?, ?, ?, ?, ?, ?) ';
+
+                    $args = array( $dataEntry->invoiceId, 
+                                   $dataEntry->operationId, 
+                                   $dataEntry->value, 
+                                   $dataEntry->costCenterId, 
+                                   $dataEntry->comments, 
+                                   $dataEntry->bankReturnCode, 
+                                   $dataEntry->isAccounted, 
+                                   $dataEntry->creationType );
+
+                    if ( $this->getDatabase()->execute( SAGU::prepare( $sql, $args ) ) === false )
+                    {
+                        $keepGoing = false;
+                    }
+                    break;
+                }
+            case 'P' :
+                {
+                    //
+                    // Insert the entry to close partially the invoice
+                    //
+                    $dataEntry->invoiceId      = $data->invoiceId;
+                    $dataEntry->operationId    = $data->operationId;
+                    $dataEntry->value          = $data->value;
+                    $dataEntry->costCenterId   = $dataInvoice->costCenterId;
+                    $dataEntry->comments       = $data->comments;
+                    $dataEntry->bankReturnCode = NULL;
+                    $dataEntry->isAccounted    = 'F';
+                    $dataEntry->creationType   = 'M';
+
+                    $sql = ' INSERT INTO finEntry
+                                   ( invoiceId,
+                                     operationId,
+                                     entryDate,
+                                     value,
+                                     costCenterId,
+                                     comments,
+                                     bankReturnCode,
+                                     isAccounted,
+                                     creationType
+                                   )
+                            VALUES (?, ?, now()::date, ?, ?, ?, ?, ?, ?) ';
+
+                    $args = array( $dataEntry->invoiceId, 
+                                   $dataEntry->operationId, 
+                                   $dataEntry->value, 
+                                   $dataEntry->costCenterId, 
+                                   $dataEntry->comments, 
+                                   $dataEntry->bankReturnCode, 
+                                   $dataEntry->isAccounted, 
+                                   $dataEntry->creationType );
+
+                    if ( $this->getDatabase()->execute( SAGU::prepare( $sql, $args ) ) === false )
+                    {
+                        $keepGoing = false;
+                    }
+
+                    //
+                    // Now... apply the interests on entry with new value.
+                    //
+                    // Get the updated values
+                    $sql = ' SELECT costCenterId,
+                                balance(invoiceId),
+                                balanceWithPoliciesDated(invoiceId, now()::date),
+                                abs(balance(invoiceId)-balanceWithPoliciesDated(invoiceId, now()::date)),
+                                CASE WHEN (balance(invoiceId)-balanceWithPoliciesDated(invoiceId, now()::date)) > 0
+                                     THEN \'D\'
+                                     WHEN (balance(invoiceId)-balanceWithPoliciesDated(invoiceId, now()::date)) < 0
+                                     THEN \'I\'
+                                     WHEN (balance(invoiceId)-balanceWithPoliciesDated(invoiceId, now()::date)) = 0
+                                     THEN \'E\'
+                                END
+                           FROM finReceivableInvoice
+                          WHERE invoiceId = ? ';
+
+                    $args = array( $data->invoiceId );
+                    $return = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+
+                    $dataInvoice->costCenterId        = $return[0][0];
+                    $dataInvoice->invoiceId           = $data->invoiceId;
+                    $dataInvoice->balance             = $return[0][1];
+                    $dataInvoice->balanceWithPolicies = $return[0][2];
+                    $dataInvoice->difference          = $return[0][3];
+                    $dataInvoice->situation           = $return[0][4];
+
+                    // Now insert the interests for this invoice
+                    if ( $dataInvoice->situation != 'E' )
+                    {
+                        // Insert the entry data
+                        if ( $dataInvoice->situation == 'D' )
+                        {
+                            $situation = $dataDefaultOperations->discountOperation;
+                        } 
+                        elseif ( $dataInvoice->situation == 'I' )
+                        {
+                            $situation = $dataDefaultOperations->interestOperation;
+                        } 
+                        else
+                        {
+                            return false;
+                        }
+                        $dataEntry->invoiceId      = $data->invoiceId;
+                        $dataEntry->operationId    = $situation;
+                        $dataEntry->value          = $dataInvoice->difference;
+                        $dataEntry->costCenterId   = $dataInvoice->costCenterId;
+                        $dataEntry->comments       = _M('Desconto ou juros aplicado no título de pagamento', $module );
+                        $dataEntry->bankReturnCode = NULL;
+                        $dataEntry->isAccounted    = 'F';
+                        $dataEntry->creationType   = 'M';
+                        $sql = ' INSERT INTO finEntry
+                                       ( invoiceId,
+                                         operationId,
+                                         entryDate,
+                                         value,
+                                         costCenterId,
+                                         comments,
+                                         bankReturnCode,
+                                         isAccounted,
+                                         creationType
+                                       )
+                                VALUES (?, ?, now()::date, ?, ?, ?, ?, ?, ?) ';
+
+                        $args = array( $dataEntry->invoiceId, 
+                                       $dataEntry->operationId, 
+                                       $dataEntry->value, 
+                                       $dataEntry->costCenterId, 
+                                       $dataEntry->comments, 
+                                       $dataEntry->bankReturnCode, 
+                                       $dataEntry->isAccounted, 
+                                       $dataEntry->creationType );
+
+                        if ( $this->getDatabase()->execute( SAGU::prepare( $sql, $args ) ) === false )
+                        {
+                            $keepGoing = false;
+                        }
+                    }
+                    break;
+                }
+            default :
+                {
+                    $keepGoing = false;
+                    break;
+                }
+        }
+
+        // If everything gone right, we may COMMIT the database changes, otherwise, ROLLBACK them
+        if ( $keepGoing == true )
+        {
+            $this->getDatabase()->execute( 'COMMIT' );
+        } 
+        else
+        {
+            $this->getDatabase()->execute( 'ROLLBACK' );
+        }
+        return $keepGoing;
+    }
+
+    /**
+     * Insert a new record
+     *
+     * @param $data (object): An object of the type handled by the class
+     *
+     * @return True if succed, otherwise False
+     *
+     **/
+    public function insertCounterMovement($data)
+    {
+        $sql = 'INSERT INTO finCounterMovement
+                            (openCounterId,
+                             value,
+                             operation,
+                             speciesId,
+                             observation)
+                     VALUES (?,?,?,?,?)';
+
+        $args = array(   $data->openCounterId,
+                         $data->value,
+                         $data->operation,
+                         $data->speciesId,
+                         $data->comments);
+        
+        $result = $this->getDatabase()->execute(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+
+    /**
+     * Get data information about invoices for long term short term process
+     *
+     * @author: William Prigol Lopes [william@solis.coop.br]
+     *
+     * $data (object): Object containing data to filter information to process
+     *
+     * @return (array) : Array containing data information about process
+     *
+     */
+    public function searchLongTermShortTermInvoice($data)
+    {
+        $sql = ' SELECT invoiceId,
+                        \'limbo\' as limbo,
+                        personId,
+                        personName,
+                        emissionDate,
+                        maturityDate,
+                        value,
+                        balance(invoiceId),
+                        costCenterId,
+                        accountSchemeId,
+                        parcelNumber,
+                        policyId,
+                        incomeSourceId,
+                        bankAccountId
+                   FROM (    SELECT A.invoiceId,
+                                    A.personId,
+                                    getPersonName(A.personId) as personName,
+                                    to_char(A.emissionDate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') as emissionDate,
+                                    to_char(A.maturityDate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') as maturityDate,
+                                    A.value,
+                                    A.costCenterId,
+                                    A.accountSchemeId,
+                                    A.parcelNumber,
+                                    A.policyId,
+                                    A.incomeSourceId,
+                                    A.bankAccountId
+                          FROM ONLY finInvoice A
+                              WHERE A.maturityDate BETWEEN to_date(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')
+                                                       AND to_date(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')
+                                AND A.costCenterId IN (SELECT costCenterId
+                                                         FROM accCourseAccount
+                                                        WHERE courseId = ?)
+                                AND A.policyId = ?
+                           ORDER BY 3, 5) AS A
+                  WHERE balance(invoiceId)>0 ';
+
+        $args = array( $data->initialMaturityDate, 
+                       $data->endMaturityDate, 
+                       $data->searchCourseId, 
+                       $data->searchPolicyId );
+
+        if ( strlen( $data->personId ) > 0 )
+        {
+            $args[] = $data->personId;
+
+            $sql .= ' AND personId = ? ';
+        }
+
+        $return = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+
+        return $return;
+    }
+
+    /**
+     *
+     * @author: William Prigol Lopes [william@solis.coop.br]
+     *
+     * @param: $data (object): Object containing data to begin a process for titles
+     *
+     * @return (boolean): True if succeed, otherwise false
+     *
+     */
+    public function processLongTermShortTermInvoice($dataInvoice, $dataProcess)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'finance';
+
+        if ( is_array( $dataInvoice[0] ) )
+        {
+            $this->getDatabase()->execute( 'BEGIN TRANSACTION' );
+            $keepGoing = true;
+
+            $businessDefaultOperations = new BusinessFinanceBusDefaultOperations();
+            $defaultOperationsData     = $businessDefaultOperations->getDefaultOperations();
+
+            // PHP function to unlimit the time (When a lot of titles is processed a lot of time is needed) ;
+            // TODO - Generate a basConfig parameter to define a global system time_limit
+            set_time_limit( 0 );
+
+            // For each invoice execute the process (obviously)
+            // $keepGoing verify if some transaction fails
+            for( $count = 0; $count < count( $dataInvoice ) && $keepGoing; $count ++ )
+            {
+                $dataEntry = new FinEntry( );
+                // Get information about invoice
+                $dataEntry->invoiceId      = $dataInvoice[$count][0];
+                $dataEntry->operationId    = $dataProcess->closeOperationId;
+                $dataEntry->entryDate      = date( SAGU::getParameter('BASIC', 'MASK_DATE_PHP') );
+                $dataEntry->value          = $dataInvoice[$count][7];
+                $dataEntry->costCenterId   = $dataInvoice[$count][8];
+                $dataEntry->comments       = 'Created by LongTerm->ShortTerm process in ' . date( SAGU::getParameter('BASIC', 'MASK_DATE_PHP') ) . ' to close and get a new title to short term ';
+                $dataEntry->bankReturnCode = null;
+                $dataEntry->isAccounted    = 'F';
+                $dataEntry->creationType   = 'A';
+
+                // Insert a entry closing the invoice
+                $sql = ' INSERT INTO finEntry
+                                   ( invoiceId,
+                                     operationId,
+                                     entryDate,
+                                     value,
+                                     costCenterId,
+                                     comments,
+                                     bankReturnCode,
+                                     isAccounted,
+                                     creationType
+                                   )
+                            VALUES (?, ?, to_date(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'), ?, ?, ?, ?, ?, ?) ';
+
+                $args = array( $dataEntry->invoiceId, 
+                               $dataEntry->operationId, 
+                               $dataEntry->entryDate, 
+                               $dataEntry->value, 
+                               $dataEntry->costCenterId, 
+                               $dataEntry->comments, 
+                               $dataEntry->bankReturnCode, 
+                               $dataEntry->isAccounted, 
+                               $dataEntry->creationType );
+
+                if ( $this->getDatabase()->execute( SAGU::prepare( $sql, $args ) ) === false )
+                {
+                    $keepGoing = false;
+                }
+
+                // Insert a invoice information
+                $dataReceivableInvoice->personId        = $dataInvoice[$count][2];
+                $dataReceivableInvoice->accountSchemeId = $dataInvoice[$count][9];
+                $dataReceivableInvoice->costCenterId    = $dataInvoice[$count][8];
+                $dataReceivableInvoice->parcelNumber    = $dataInvoice[$count][13];
+                $dataReceivableInvoice->emissionDate    = strlen( $data->recordDate ) > 0 ? $data->recordDate : $dataInvoice[$count][4];
+                $dataReceivableInvoice->maturityDate    = $dataInvoice[$count][5];
+                $dataReceivableInvoice->referenceMaturityDate  = $dataInvoice[$count][5]; // same as maturityDate
+                $dataReceivableInvoice->value           = '0';
+                $dataReceivableInvoice->policyId        = strlen( $dataProcess->newPolicyId ) > 0 ? $dataProcess->newPolicyId : $dataProcess->searchPolicyId;
+                $dataReceivableInvoice->bankInvoiceId   = null;
+                $dataReceivableInvoice->automaticDebit  = 'F';
+                $dataReceivableInvoice->comments        = _M('Creado pelo processo de longo prazo para curto prazo em ', $module ) . date( SAGU::getParameter('BASIC', 'MASK_DATE_PHP') ) . _M(' substituindo o título fechado ', $module ) . $dataInvoice[$count][0] . '.';
+                $dataReceivableInvoice->incomeSourceId  = strlen( $dataProcess->incomeSourceId ) > 0 ? $dataProcess->incomeSourceId : $dataInvoice[$count][15];
+                $dataReceivableInvoice->bankAccountId   = strlen( $dataProcess->bankAccountId ) > 0 ? $dataProcess->bankAccountId : $dataInvoice[$count][16];
+                $dataReceivableInvoice->sagu1InvoiceId  = null;
+
+                $newInvoice = $this->insertReceivableInvoice( $dataReceivableInvoice );
+                if ( $newInvoice === false )
+                {
+                    $keepGoing = false;
+                }
+
+                // Adjust the entry data for entry for invoice
+                $dataNewEntry->invoiceId      = $newInvoice;
+                $dataNewEntry->operationId    = $dataProcess->openOperationId;
+                $dataNewEntry->entryDate      = date( SAGU::getParameter('BASIC', 'MASK_DATE_PHP') );
+                $dataNewEntry->value          = $dataInvoice[$count][7];
+                $dataNewEntry->costCenterId   = $dataInvoice[$count][8];
+                $dataNewEntry->comments       = _M( $module, 'CREATED BY longTerm->shortTerm process in ' ) . date( SAGU::getParameter('BASIC', 'MASK_DATE_PHP') ) . _M( $module, ' substituting the closed invoice ' );
+                $dataNewEntry->comments       = _M('CRIADO PELO processo longo prazo->curto prazo em @1, em substituição ao título fechado.', $module, date( SAGU::getParameter('BASIC', 'MASK_DATE_PHP')));
+                $dataNewEntry->bankReturnCode = null;
+                $dataNewEntry->isAccounted    = 'F';
+                $dataNewEntry->creationType   = 'A';
+
+                // Insert a entry closing the invoice
+                $sql = ' INSERT INTO finEntry
+                                   ( invoiceId,
+                                     operationId,
+                                     entryDate,
+                                     value,
+                                     costCenterId,
+                                     comments,
+                                     bankReturnCode,
+                                     isAccounted,
+                                     creationType
+                                   )
+                            VALUES (?, ?, to_date(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'), ?, ?, ?, ?, ?, ?) ';
+
+                $args = array( $dataNewEntry->invoiceId, 
+                               $dataNewEntry->operationId, 
+                               $dataNewEntry->entryDate, 
+                               $dataNewEntry->value, 
+                               $dataNewEntry->costCenterId, 
+                               $dataNewEntry->comments, 
+                               $dataNewEntry->bankReturnCode, 
+                               $dataNewEntry->isAccounted, 
+                               $dataNewEntry->creationType );
+
+                if ( $this->getDatabase()->execute( SAGU::prepare( $sql, $args ) ) === false )
+                {
+                    $keepGoing = false;
+                }
+
+                // Update the invoice value because have a new insert
+                if ( $this->updateInvoiceBalance( $newInvoice ) === false )
+                {
+                    $keepGoing = false;
+                }
+
+                $dataInvoice[$count][1] = $newInvoice;
+            }
+
+            // If everything gone right, we may COMMIT the database changes, otherwise, ROLLBACK them
+            if ( $keepGoing == true )
+            {
+                $this->getDatabase()->execute( 'COMMIT' );
+                return $dataInvoice;
+            } 
+            else
+            {
+                $this->getDatabase()->execute( 'ROLLBACK' );
+                return false;
+            }
+        }
+    }
+
+    /**
+     * @author: William Prigol Lopes [william@solis.coop.br]
+     *
+     * @param: $invoiceId (int): primary key for receivable invoice
+     *
+     * @return (object): Simple object containing the values for invoice
+     *
+     */
+    public function getReceivableInvoiceValues($invoiceId, $entryDate = NULL)
+    {
+        $entryDate = strlen($entryDate) > 0 ? $entryDate : date( SAGU::getParameter('BASIC', 'MASK_DATE_PHP') );
+        $sql = ' SELECT round(value, ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '),
+                        round(balance(invoiceId)::numeric, ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '),
+                        round(balanceWithPoliciesDated(invoiceId, TO_DATE( ?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\' ))::numeric, ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ')
+                   FROM finReceivableInvoice
+                  WHERE invoiceId = ? ';
+
+        $args = array( $entryDate,
+                       $invoiceId );
+
+        $return = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+        $return = $return[0];
+
+        $data->nominalValue = $return[0];
+        $data->balance = $return[1];
+        $data->balanceWithPolicies = $return[2];
+
+        return $data;
+    }
+
+    /**
+     *
+     * @author: William Prigol Lopes [william@solis.coop.br]
+     *
+     * @param: $personId (int): Person id to get her invoices
+     *
+     * @return (array): A tri dimensional array containing invoices information for person
+     *
+     */
+    public function listInvoicesForPersonDefaulter($personId, $datePardon, $totalValue = 0, $totalOpenValue = 0)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'finance';
+        $businessDefaultOperations = new BusinessFinanceBusDefaultOperations();
+        $defaultOperations = $businessDefaultOperations->getDefaultOperations();
+
+        $sql = '  SELECT invoiceId,
+                         periodId,
+                         collectionTypeId,
+                         (SELECT description 
+                            FROM finCollectionType B
+                           WHERE B.collectionTypeId = A.collectionTypeId ) as collectionTypeDescription,
+                         numberDefaultOperationInvoices as hasAgreementEntries,
+                         TO_CHAR(A.emissionDate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') as emissionDate,
+                         TO_CHAR(A.maturityDate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') as maturityDate_,
+                         ROUND(value, ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ') as value,
+                         ROUND(balance(invoiceId), ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ') as balance,
+                         updatedTime(invoiceId),
+                         ROUND((balanceWithPoliciesDated(invoiceId, TO_DATE( ?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\' )))::numeric, ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '),
+                         periodDate
+                    FROM ( SELECT \'limbo\' as periodId,
+                                  A.invoiceId,
+                                  emissionDate,
+                                  maturityDate,
+                                  A.value,
+                                  B.beginDate::date AS periodDate,
+                                   (  SELECT collectionTypeId
+                                        FROM finPolicy B
+                                       WHERE A.policyId = B.policyId ) as collectionTypeId,
+                                   (  SELECT count(*) 
+                                        FROM finEntry B
+                                       WHERE B.invoiceId = A.invoiceId
+                                         AND B.operationId = ? ) as numberDefaultOperationInvoices
+                        FROM ONLY finReceivableInvoice A
+                            WHERE A.personId = ? 
+                              AND balance(A.invoiceId) > 0
+                         ) AS A
+                ORDER BY periodDate DESC,
+                         maturityDate DESC ';
+
+        $args = array( $datePardon, 
+                       $defaultOperations->agreementOperation, 
+                       $personId );
+                       
+        $return = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+        
+        if ( is_array( $return[0] ) )
+        {
+            $rest = $totalValue;
+            for ( $x = count( $return ) - 1; $x >= 0; $x -- )
+            {
+                if ( $finish === true )
+                {
+                    $return[$x][13] = SAGU::formatNumber( 0 );
+                } 
+                else
+                {
+                    if ( SAGU::calcNumber( SAGU::formatNumber( $rest ) . '-' . SAGU::formatNumber( $return[$x][10] ) ) < 0 )
+                    {
+                        $return[$x][13] = SAGU::formatNumber( $rest );
+                        $finish         = true;
+                    } 
+                    else
+                    {
+                        $rest           = SAGU::calcNumber( $rest . '-' . $return[$x][10] );
+                        $return[$x][13] = $return[$x][10];
+                    }
+                }
+            }
+        }
+
+        return $return;
+    }
+
+    /**
+     *
+     * @author: William Prigol Lopes [william@solis.coop.br]
+     *
+     * @param: $personId (int): Person id to get her invoices
+     * @param: $onlyInvoicesInPeriod (boolean): Retorna apenas os títulos com vencimento a partir da data atual somada
+     * dos dias indicados no parâmetro DIAS_ATE_VENCIMENTO.
+     *
+     * @return (array): A bidimensional array containing invoices information for person
+     *
+     */
+    public function listInvoicesForPerson($data, $onlyInvoicesInPeriod = null, $isDiverseConsultation = false)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();        
+
+        $businessDefaultOperations = new BusinessFinanceBusDefaultOperations();
+
+        $defaultOperations = $businessDefaultOperations->getDefaultOperations();
+        $checkAgreements = SAGU::checkParameter( 'AGREEMENT_INCOME_SOURCE_ID');
+
+        $sql = ' SELECT A.invoiceId,
+                        \'\' AS gridCheckbox,
+                        B.collectionTypeId,';
+        
+        if ( $isDiverseConsultation )
+        {
+            $sql .= 'timestamptouser((
+                        SELECT MAX(HR.datageracao)
+                          FROM finhistoricoremessa HR
+                         WHERE HR.invoiceId = A.invoiceId
+                     )) AS dataremessa,';
+        }
+        
+        $sql .= 'getCollectionTypeDescription(B.collectionTypeId) as collectionTypeDescription,';
+        
+        if ( $checkAgreements == true )
+        {
+            $sql .= '
+                        CASE WHEN A.incomeSourceId IN (' . SAGU::getParameter('FINANCE', 'AGREEMENT_INCOME_SOURCE_ID') . ')
+                             THEN 1
+                             ELSE 0 
+                        END,
+                   ';
+        } 
+        else
+        {
+            $sql .= ' 0, ';
+        }
+        
+        $sql .= '       A.parcelNumber,
+                        TO_CHAR(A.emissionDate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') as emissionDate,
+                        TO_CHAR(A.maturityDate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') as maturityDate_,
+                        TRUNC(A.value, ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ') as balance,
+                        TRUNC(balance(A.invoiceId)::numeric, ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '),
+                        ( CASE WHEN ( TRUNC(balance(A.invoiceId)::numeric, 2) ) > 0.00
+                               THEN
+                                    updatedTime(A.invoiceId)
+                               ELSE
+                                    \'(x)\'
+                          END ),
+                        TRUNC((balanceWithPoliciesDated(A.invoiceId, now()::date))::numeric, ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '),
+                        (CASE WHEN TRUNC(BALANCE(A.invoiceId), 2) <> 0 THEN A.maturityDate ELSE NULL END) as order1, -- Utilizado para ordenacao
+                        (CASE WHEN TRUNC(BALANCE(A.invoiceId), 2) = 0 THEN A.maturityDate ELSE NULL END) as order2 -- Utilizado para ordenacao
+                        ';
+        
+        if ( SAGU::getParameter('FINANCE', 'SHOW_CLASS_IN_DIVERSE_CONSULTATION') == 'YES' )
+        {
+            $sql .=  ', ROUND((SELECT sum(X.value)
+                                 FROM finentry X
+                                WHERE X.invoiceid = A.invoiceid
+                                  AND X.operationid = (SELECT paymentoperation
+                                                         FROM findefaultoperations LIMIT 1)), ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '),
+                        TO_CHAR(( SELECT entrydate
+                             FROM finentry AA
+                            WHERE AA.invoiceid = A.invoiceid
+                              AND AA.operationid = ( SELECT paymentoperation
+                                                      FROM findefaultoperations LIMIT 1) LIMIT 1) , \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') AS pagamento,
+                        COALESCE((SELECT AA.classId
+                                    FROM acdClassPupil AA
+                                   WHERE AA.contractId = getinvoicecontract(A.invoiceId)
+                                     AND A.maturityDate BETWEEN AA.beginDate AND CASE WHEN (AA.endDate IS NULL) OR (AA.endDate < A.emissionDate) THEN
+                                                                                    A.maturityDate+1
+                                                                                 ELSE
+                                                                                    AA.endDate
+                                                                                 END
+                                ORDER BY AA.beginDate DESC
+                                 LIMIT 1) , (	(select EE.descricao
+                                 from prctituloinscricao AA
+                                 INNER JOIN acpinscricao BB using(inscricaoid)
+                                 INNER JOIN basphysicalpersonstudent CC using(personid)
+                                 INNER JOIN acpinscricaoturmagrupo DD using(inscricaoid)
+                                 INNER JOIN acpofertaturma EE ON EE.ofertaturmaid=DD.ofertaturmaid
+                                 where AA.invoiceId = A.invoiceId
+                                 ORDER BY EE.datainicialoferta DESC
+                                 LIMIT 1))) AS turma';
+        }
+        
+        $sql .= ' FROM finReceivableInvoice A
+             LEFT JOIN finPolicy B
+                 USING (policyId)';
+        
+        $where = '';
+        if ( strlen($data->incentiveTypeId) > 0 )
+        {   
+            $sql .= ' INNER JOIN finIncentive I
+                              ON I.incentiveTypeId = ?';
+            $args[] = $data->incentiveTypeId;
+            
+            if ( strlen($data->contractId) > 0 )
+            {
+                $sql .= ' AND I.contractId = ?';
+                $args[] = $data->contractId;
+            }
+            else
+            {
+                $sql .= ' AND I.contractId IN ( SELECT contractId
+                                                  FROM acdContract
+                                                 WHERE personId = A.personId )';
+            }
+        }
+        // Filtro por curso e ou unidade
+        if ( strlen($data->courseId) > 0 || strlen($data->unitId) > 0 )
+        {
+            $sql .= " INNER JOIN finEntry E
+                              ON E.entryId = ( SELECT DISTINCT entryId
+                                                          FROM finEntry
+                                                         WHERE invoiceId = A.invoiceId
+                                                           AND ( operationId = getParameter('FINANCE', 'DEFAULT_OPERATIONID_MONTHLY_FEE')::INT OR contractId = ? )
+                                                         LIMIT 1 )
+                       LEFT JOIN acdContract C
+                              ON C.contractId = E.contractId";
+            
+            $args[] = $data->contractId;
+            
+            if ( strlen($data->courseId) > 0 )
+            {
+                $sql .= " LEFT JOIN acdCourse CO
+                                 ON CO.courseId = C.courseId";
+                $where .= " AND C.courseId = ?";
+                $args[] = $data->courseId;
+            }
+            
+            if ( strlen($data->unitId) > 0 )
+            {
+                $where .= " AND C.unitId = ?";
+                $args[] = $data->unitId;
+            }
+        }
+        // Lógica específica para geração de boletos em lote.
+        if ( strlen($data->remittance) > 0 && $data->remittance != DB_ALL )
+        {
+            $not = ($data->remittance != DB_TRUE) ? 'NOT' : '';
+            $where .= " AND {$not} EXISTS ( SELECT invoiceId
+                                              FROM finHistoricoRemessa
+                                             WHERE invoiceId = A.invoiceId )";
+        }
+        if ( strlen($data->personId) > 0 )
+        {
+            $where .= ' AND A.personId = ?';
+            $args[] = $data->personId;
+        }
+        if ( strlen( $data->onlyOpen ) > 0 )
+        {
+            $where .= ' AND balance(A.invoiceId) > 0';
+        }
+        if ( strlen( $data->onlyClose ) > 0 )
+        {
+            $where .= ' AND balance(A.invoiceId) <= 0';
+        }        
+        if( $onlyInvoicesInPeriod && SAGU::getParameter('SERVICES', 'DIAS_ATE_VENCIMENTO') > 0 )
+        {
+            $where .= ' AND A.maturityDate < now()::date + getParameter(\'SERVICES\', \'DIAS_ATE_VENCIMENTO\')::int';
+        }
+        if ( strlen($data->maturityDateBegin) > 0 && strlen($data->maturityDateEnd) > 0 )
+        {
+            // Período de vencimento dos títulos (between).
+            $where .= " AND A.maturityDate BETWEEN TO_DATE(?, getParameter('BASIC', 'MASK_DATE')) AND TO_DATE(?, getParameter('BASIC', 'MASK_DATE'))";
+            $args[] = $data->maturityDateBegin;
+            $args[] = $data->maturityDateEnd;
+        }
+        
+        if ( $data->apenasComValorAtual == DB_TRUE )
+        {
+            $where .= ' AND balanceWithPoliciesDated(A.invoiceId, now()::date) > 0 ';
+        }
+                          
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 4);
+        }  
+                      
+        // Ordenacao dinamica configuravel
+        $orderBy = strtr(SAGU::getParameter('FINANCE', 'INVOICE_LIST_ORDER'), array(
+            'MATURITYDATE' => 'order2 DESC, order1 DESC', // Ordena pela data de vencimento
+            'TOPAYFIRST' => 'order1 ASC, order2 DESC', // Ordena pela data de vencimento ascendente primeiro boletos que ainda nao foram pagos, e decrescente boletos que ja foram pagos
+        ));        
+        
+        $sql .= ' AND A.iscanceled=FALSE
+                  AND A.invoiceIdDependence IS NULL
+             ORDER BY ' . $orderBy;        
+        $return = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+        
+        return $return;
+    }
+
+    /**
+     *
+     * @author: William Prigol Lopes [william@solis.coop.br]
+     *
+     * @param: $personId (int): Person id to get her invoices
+     * @param: $titulosVencidos (boolean) 
+     *
+     * @return (array): A tri dimensional array containing invoices information for person
+     *
+     */
+    public function totalizationInvoicesForPerson($personId, $titulosVencidos = false)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'finance'; // Esta finance por extenso devido a chamadas do módulo processo seletivo
+
+        $sql = 'SELECT C.description AS collectionTypeDescription,
+                       ROUND(sum(A.value), ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ') as value,
+                       ROUND(sum(balance(A.invoiceId)), ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ') as balance,
+                       ROUND(sum((balanceWithPoliciesDated(invoiceId, now()::date))::numeric), ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ')
+                  FROM finReceivableInvoice A
+            INNER JOIN finPolicy B
+                    ON B.policyId = A.policyId
+            INNER JOIN finCollectionType C
+                    ON C.collectionTypeId = B.collectionTypeId
+                 WHERE A.personId = ?
+                   AND A.iscanceled=FALSE
+                   AND A.invoiceIdDependence IS NULL ';
+        
+        if ( $titulosVencidos )
+        {
+            $sql .= ' AND (balance(A.invoiceId) > 0 AND A.maturityDate < NOW()::DATE)';
+        }
+        
+        $sql .= ' GROUP BY C.collectionTypeId, C.description ';
+        
+        $args = array( $personId );
+        $ret  = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+
+        return $ret;
+    }
+    
+    public function obterFormaDePagamentoDoTitulo($invoiceid)
+    {
+        $module = MIOLO::getCurrentModule();
+        
+        $sql = "SELECT 
+                CASE WHEN finentry.bankmovementid IS NOT NULL THEN 
+                    '"._M('Boleto bancario pago em', $module)."'|| ' ' || to_char(bankmovement.occurrencedate, 'dd/mm/yyyy')
+                WHEN finentry.cielotransactionid IS NOT NULL THEN
+                    '"._M('Cartão', $module)."'||' '|| upper(fincielotransaction.bandeira) ||' '||'"._M('pago em', $module)."' ||' '|| TO_CHAR(fincielotransaction.datetransaction, 'dd/mm/yyyy')
+                WHEN fincountermovement.value > 0 THEN
+                   '"._M('Pago no caixa em', $module)."'|| ' ' || TO_CHAR(fincountermovement.movementdate, 'dd/mm/yyyy')
+                ELSE 
+                    ' '
+                END
+            FROM finentry 
+            LEFT JOIN fincountermovement on fincountermovement.invoiceid = finentry.invoiceid
+            LEFT JOIN fincielotransaction on fincielotransaction.cielotransactionid = finentry.cielotransactionid
+            LEFT JOIN fin.bankmovement bankmovement on bankmovement.bankmovementid = finentry.bankmovementid
+            WHERE finentry.invoiceid = ?
+              AND finentry.operationid = (SELECT paymentoperation from findefaultoperations)
+              ORDER BY finentry.datetime DESC LIMIT 1";
+        
+        $args = array( $invoiceid );
+        $ret  = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+        return $ret[0][0];
+    }
+
+    /**
+     * Verify if the receivable invoice id really exists ;)
+     *
+     * @args: $invoiceId (int): Invoice id code
+     *
+     * @param: True if exists otherwise false
+     *
+     */
+    public function verifyReceivableInvoice($invoiceId)
+    {
+        $sql = ' SELECT invoiceId
+                   FROM finReceivableInvoice
+                  WHERE invoiceId = ? ';
+
+        $args   = array( $invoiceId );
+        $return = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+
+        if ( is_array( $return[0] ) )
+        {
+            return true;
+        } 
+        else
+        {
+            return false;
+        }
+    }
+
+    /**
+     * Get all agreements related to a person
+     *
+     * @args: $personId (int): Person id
+     *
+     * @param: An array containing information about agreements
+     *
+     */
+    public function listInvoicesWithIncomeSourcesRelatedToAgreements($personId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $sql = ' SELECT invoiceId,
+                                  incomeSourceId||\' - \'||getIncomeSourceDescription(incomeSourceId),
+                                  TO_CHAR(maturityDate, \' ' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                                  TO_CHAR(entryDate, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\'),
+                                  B.operationId||\' - \'||C.description,
+                                  ROUND( SUM (B.value * CASE WHEN operationTypeId = \'C\' THEN  0 ELSE 1 END), \' ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '\' ),
+                                  ROUND( SUM (B.value * CASE WHEN operationTypeId = \'C\' THEN  1 ELSE 0 END), \' ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '\' ),
+                                  ROUND( SUM (B.value * CASE WHEN operationTypeId = \'C\' THEN -1 ELSE 1 END), \' ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '\' )
+               FROM ONLY finReceivableInvoice A
+                INNER JOIN finEntry B
+                       USING (invoiceId)
+                INNER JOIN finOperation C
+                       USING (operationId)
+                      WHERE A.personId = ?
+                          AND A.incomesourceId IN ('.SAGU::getParameter('FINANCE', 'AGREEMENT_INCOME_SOURCE_ID').') 
+                 GROUP BY 1, 2, 3, 4, 5, maturityDate
+                 ORDER BY maturityDate DESC, 1 ASC ';
+        
+        $args = array( $personId );
+        $return = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+        
+        return $return;
+    }
+    
+    /**
+     *  Get all payments that registered before the payment period
+     */
+    public function getLatePayments($personId)
+    {
+        $sql = ' SELECT A.invoiceId,
+                                  TO_CHAR(A.maturityDate, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\'),
+                                  TO_CHAR(B.entryDate, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\'),
+                                  operationId||\' - \'||C.description,
+                                  ROUND(B.value, '.SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE').')
+               FROM ONLY finReceivableInvoice A
+                INNER JOIN finEntry B
+                       USING (invoiceId)
+                INNER JOIN finOperation C
+                       USING (operationId)
+                      WHERE personId = ?
+                          AND B.entryDate > CASE WHEN TO_CHAR(maturityDate, \'D\') = \'1\'
+                                                                     THEN maturityDate + 1
+                                                                    WHEN TO_CHAR(maturityDate, \'D\') = \'7\'
+                                                                     THEN maturityDate + 2
+                                                                      ELSE maturityDate
+                                                             END
+                          AND C.operationGroupId = ?
+                 GROUP BY 1, 2, 3, 4, 5, maturityDate
+                  ORDER BY maturityDate DESC, 1 ASC ';
+        
+        $args = array($personId, SAGU::getParameter('FINANCE', 'PAYMENT_OPERATION_GROUP_ID'));
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        
+        return $result;
+    }
+
+    /**
+     * FIXME: Delete this function and use sagu.class equivalent. Verify impact.
+     *
+     * Convert a date to the format used by the system, based on the
+     * SAGU::getParameter('BASIC', 'MASK_DATE') define.
+     *
+     * @param $year (integer|string): Year date part
+     * @param $month (integer|string): Month date part
+     * @param $day (integer|string): Day date part
+     *
+     * @return (string): The formatted date
+     *
+     */
+    public function getSystemFormattedDate($year, $month, $day)
+    {
+        $date = str_pad( $year, 4, '0', STR_PAD_LEFT ) . '-' . str_pad( $month, 2, '0', STR_PAD_LEFT ) . '-' . str_pad( $day, 2, '0', STR_PAD_LEFT );
+
+        $sql    = 'SELECT TO_CHAR(TO_DATE(\'' . $date . '\',\'yyyy-mm-dd\'),\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+        $retVal = $this->getDatabase()->query( $sql );
+
+        return $retVal[0][0];
+    }
+
+    /**
+     * Update the nominal value
+     *
+     * @param $invoiceId (int): The invoice primary key to update the nominal value
+     *
+     * @returns (boolean): True if do, otherwise false
+     *
+     */
+    public function updateNominalValue($invoiceId)
+    {
+        $sql = ' UPDATE finReceivableInvoice
+                    SET value = balance(invoiceId)
+                  WHERE invoiceId = ? ';
+        
+        $args = array( $invoiceId );
+        $ret  = $this->getDatabase()->execute( SAGU::prepare( $sql, $args ) );
+
+        return $ret;
+    }
+
+    /**
+     * Get a sum of open values for a person
+     *
+     * @param: $personId: Person code
+     *
+     * @return: Total value for person open values
+     *
+     */
+    public function calculatePersonOpenValue($personId)
+    {
+
+        $sql = '    SELECT ROUND(sum(balance(invoiceId)), ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ')
+                 FROM ONLY finReceivableInvoice
+                     WHERE personId = ?
+                       AND balance(invoiceId)>0 ';
+        
+        $args = array( $personId );
+        $ret  = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+
+        return strlen( $ret[0][0] ) > 0 ? $ret[0][0] : SAGU::formatNumber( 0 );
+    }
+
+    /**
+     * Get a sum of open values for a person with dated balances
+     *
+     * @param: $personId: Person code
+     *
+     * @return: Total value for person open values
+     *
+     */
+    public function calculateTotalPersonOpenValueDated($personId, $balanceDate)
+    {
+        $sql = '    SELECT ROUND(sum(balanceWithPoliciesDated(invoiceId, TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'))), ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ')
+                 FROM ONLY finReceivableInvoice
+                     WHERE personId = ?
+                       AND balance(invoiceId)>0 ';
+        
+        $args = array( $balanceDate, $personId );
+        $ret  = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+
+        return strlen( $ret[0][0] ) > 0 ? $ret[0][0] : SAGU::formatNumber( 0 );
+    }
+
+    /**
+     * Generate a set of individual invoices
+     *
+     * @param: $data (object): Invoices and entries
+     *
+     * @return: True if runs otherwise false
+     *
+     */
+    public function generateIndividualInvoices($data)
+    {
+        $MIOLO  = MIOLO::getInstance();
+
+        $keepGoing = true;
+        $this->getDatabase()->execute( 'BEGIN TRANSACTION' );
+        if ( is_array( $data ) )
+        {
+            foreach ( $data as $invoices )
+            {
+                $invoiceId = $this->insertReceivableInvoice( $invoices->data );
+                if ( is_array( $invoices->entries ) && (strlen( $invoiceId ) > 0) )
+                {
+                    foreach ( $invoices->entries as $entry )
+                    {
+                        $entry->invoiceId = $invoiceId;
+                        $keepGoing = $this->insertEntry( $entry );
+                        if ( $keepGoing !== true )
+                        {
+                            break 4;
+                        }
+                    }
+                } 
+                else
+                {
+                    $keepGoing = false;
+                }
+                $this->updateNominalValue( $invoiceId );
+            }
+        } 
+        else
+        {
+            $keepGoing = false;
+        }
+        $this->getDatabase()->execute( $keepGoing ? 'COMMIT' : 'ROLLBACK' );
+
+        return $keepGoing;
+    }
+
+    /**
+     * Select the open entry by person
+     *
+     * @param: $personId : Person code
+     *
+     * @return: array of elements
+     *
+     */
+    public function selectOpenEntryByPerson($personId, $contractId = null)
+    {
+        $maskDate = SAGU::getParameter('BASIC', 'MASK_DATE');
+        
+        $sql = " SELECT A.invoiceId,
+                        B.operationId,
+                        C.operationTypeId|| ': ' ||C.description|| '<br>' || COALESCE(B.comments, ''),
+                        TO_CHAR(A.maturityDate, '{$maskDate}'),
+                        ROUND(B.value, 2),
+                        balanceWithPoliciesDated(A.invoiceId, now()::date)
+                   FROM finReceivableInvoice A
+             INNER JOIN finEntry B
+                     ON (B.invoiceId = A.invoiceId)
+             INNER JOIN finOperation C
+                     ON (C.operationId = B.operationId)
+                  WHERE A.personId = {$personId}
+                    AND A.iscanceled IS FALSE ";
+                  
+        if ( strlen($contractId) > 0 )
+        {
+            $sql .= " AND B.contractid = {$contractId}";
+        }
+        
+        $sql .= " AND balanceWithPoliciesDated(A.invoiceId, now()::date) > 0
+             ORDER BY A.maturityDate, C.operationId ";
+
+        $return = $this->getDatabase()->query( $sql );
+
+        return $return;
+    }
+    
+    /**
+     * Return the discount value for an invoice
+     *
+     * @param $invoiceId (integer): Invoice id
+     * @param $refDate (string): Reference date in format dd/mm/yyyy
+     * @param $decimals (integer): Decimal precision
+     *
+     * @return (double): Return the discount value
+     *
+     **/
+     public function getInvoiceDiscountValue($invoiceId, $refDate=null, $decimals=null)
+     {
+        if (is_null($refDate))
+        {
+            $refDate = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+        }
+        
+        if (is_null($decimals))
+        {
+            $decimals = SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE');
+        }
+        
+        $sql = 'SELECT ROUND(getInvoiceDiscountValue(?, TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')), ?)';
+        
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, array($invoiceId, $refDate, $decimals)));
+        
+        return $result[0][0];
+     }
+     
+     /**
+     * Return the interest value for an invoice
+     *
+     * @param $invoiceId (integer): Invoice id
+     * @param $refDate (string): Reference date in format dd/mm/yyyy
+     * @param $decimals (integer): Decimal precision
+     *
+     * @return (double): Return the interest value
+     *
+     **/
+     public function getInvoiceInterestValue($invoiceId, $refDate=null, $decimals=null)
+     {
+        if (is_null($refDate))
+        {
+            $refDate = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+        }
+        
+        if (is_null($decimals))
+        {
+            $decimals = SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE');
+        }
+        
+        $sql = 'SELECT ROUND(getInvoiceInterestValue(?, TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')), ?)';
+        
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, array($invoiceId, $refDate, $decimals)));
+        
+        return $result[0][0];
+     }
+     
+     /**
+     * Return the fine value for an invoice
+     *
+     * @param $invoiceId (integer): Invoice id
+     * @param $refDate (string): Reference date in format dd/mm/yyyy
+     * @param $decimals (integer): Decimal precision
+     *
+     * @return (double): Return the fine value
+     *
+     **/
+     public function getInvoiceFineValue($invoiceId, $refDate=null, $decimals=null)
+     {
+        if (is_null($refDate))
+        {
+            $refDate = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+        }
+        
+        if (is_null($decimals))
+        {
+            $decimals = SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE');
+        }
+        
+        $sql = 'SELECT ROUND(getInvoiceFineValue(?, TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')), ?)';
+        
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, array($invoiceId, $refDate, $decimals)));
+        
+        return $result[0][0];
+     } 
+
+    /**
+     * Return the convenant value for an invoice
+     *
+     * @param $invoiceId (integer): Invoice id
+     * @param $refDate (string): Reference date in format dd/mm/yyyy
+     * @param $decimals (integer): Decimal precision
+     *
+     * @return (double): Return the convenant value
+     *
+     **/
+     public function getInvoiceConvenantValue($invoiceId, $refDate=null, $decimals=null)
+     {
+        if (is_null($refDate))
+        {
+            $refDate = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+        }
+
+        if (is_null($decimals))
+        {
+            $decimals = SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE');
+        }
+
+        $sql = 'SELECT ROUND(getInvoiceConvenantValue(?, TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')), ?)';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, array($invoiceId, $refDate, $decimals)));
+
+        return $result[0][0];
+     }
+
+     /**
+     * Return the convenants to be applied for an invoice
+     *
+     * @param $invoiceId (integer): Invoice id
+     * @param $refDate (string): Reference date in format dd/mm/yyyy
+     *
+     * @return (array): Return an array with convenants data
+     *
+     **/
+     public function getInvoiceConvenants($invoiceId, $refDate=null)
+     {
+        if (is_null($refDate))
+        {
+            $refDate = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+        }
+
+        $sql = 'SELECT * FROM getInvoiceConvenants(?, TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')) AS convenant(convenantid integer, description text, value numeric, ispercent boolean, convenantoperation int, acumulativo boolean, todasdisciplinas boolean, contractid integer, learningperiodid integer, operationid integer)';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, array($invoiceId, $refDate)));
+
+        return $result;
+     }
+
+     /**
+      * Close an invoice using multiple payment entries
+      *
+      * @param: $data (object): Object containing data to close invoice
+      *
+      * @return: True if succeed otherwise false
+      *
+      */
+     public function closeInvoice($data)
+     {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'finance';        
+
+        if (count($data->payments) > 0)
+        {
+            $busOperation = new BusinessFinanceBusOperation();
+            $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+            $busEntry = new BusinessFinanceBusEntry();
+            $busCounterMovement = new BusinessFinanceBusCounterMovement();
+            $busPerson = new BusinessBasicBusPerson();
+            $busSpecies = new BusinessFinanceBusSpecies();
+            
+
+            $invoiceData = $this->getReceivableInvoice($data->invoiceId);
+            $personData = $busPerson->getPerson($invoiceData->personId);
+            $defaultOperations = $busDefaultOperations->getDefaultOperations();
+
+            $convenantData = $this->getInvoiceConvenants($data->invoiceId, date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')));
+
+            unset($entryData);
+            $entryData = new StdClass();
+            $entryData->invoiceId = $invoiceData->invoiceId;
+            $entryData->costCenterId = $invoiceData->costCenterId;
+            $entryData->comments = $data->entryComments;
+            $entryData->bankReturnCode = '';
+            $entryData->isAccounted = SAGU::getParameter('BASIC', 'DB_FALSE');
+            $entryData->creationType = 'A';
+            $entryData->entryDate = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+
+            unset($counterData);
+            $counterData = new stdClass();
+            $counterData->openCounterId = $data->openCounterId;
+            $counterData->costCenterId = $invoiceData->costCenterId;
+            $counterData->invoiceId = $invoiceData->invoiceId;
+            
+            $isBank = false;
+            
+            // Verifica se é operação bancária
+            foreach ($data->payments as $paymentData)
+            {
+                if ( $paymentData[1] > 0 )
+                {
+                    if ( $busSpecies->getSpeciesType($paymentData[0]) == SAGU::getParameter('FINANCE', 'BANK_MOVEMENT_SPECIESTYPE_ID') )
+                    {
+                        $isBank = true;
+                    }
+                }
+            }
+            
+            // payments
+            $payTotal = 0;
+
+            foreach ($data->payments as $paymentData)
+            {
+                $lancamentoBancario = false;
+                
+                if ($paymentData[1] > 0)
+                {
+                    $counterData->speciesId = $paymentData[0];
+                    $counterData->value = number_format($paymentData[1], SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'), SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), '');
+                    $counterData->operation = 'C';
+                    $counterData->observation = _M('Parcela @1 - @2', $module, $invoiceData->parcelNumber, $personData->name);
+                    $counterData->operationId = $defaultOperations->paymentOperation;
+                    $counterData->bankAccountId = (count($paymentData) == 3) ? $paymentData[2] : null;
+                    $counterData->voucher = $data->voucher;
+
+                    // Salva dados da movimentação bancária.
+                    if ( $busSpecies->getSpeciesType($counterData->speciesId) == SAGU::getParameter('FINANCE', 'BANK_MOVEMENT_SPECIESTYPE_ID') )
+                    {
+                        if ( class_exists('FrmBankMovementPopup') )
+                        {
+                            $lancamentoBancario = FrmBankMovementPopup::saveBankMovement($invoiceData);
+                         
+                            // obtem ultimo ID da movimentacao bancaria
+                            $bankMovement = new FinBankMovement();
+                            $bankMovementId = $bankMovement->getLastInsertId();
+                            
+                            // obtem as entryIds inseridas na funcao FrmBankMovementPopup::saveBankMovement()
+                            $entryIds = (array) $MIOLO->getConf('temp.entryids');
+
+                            // atualiza o bankMovementId da finEntry
+                            if ( count($entryIds) > 0 )
+                            {
+                                $entries = implode(',', $entryIds);
+                                SDatabase::execute("UPDATE finEntry SET bankMovementId = {$bankMovementId} WHERE entryId IN({$entries})");
+                            }
+                        }
+                    }
+                    else
+                    {
+                        $busCounterMovement->insertCounterMovement($counterData);
+                    }
+                    
+                    $counterMovement = $busCounterMovement->searchCounterMovement($counterData);
+                    $counterMovementId = $counterMovement[0][0];
+                                        
+                    // Caso tenha id de transação de cartão de crédito/débito, registra relação.
+                    if ( strlen($data->tid[$paymentData[0]]) > 0 )
+                    {
+                        $finCieloMovement = new FinCieloMovement();
+                        $finCieloMovement->tid = $data->tid[$paymentData[0]];
+                        $finCieloMovement->counterMovementId = $counterMovement[0][0];
+                        $finCieloMovement->save();
+                    }
+                    
+                    // Caso a especie de pagamento for por cheque, precisa guardar o código da movimentação.
+                    if ( $busSpecies->getSpeciesType($counterData->speciesId) == SAGU::getParameter('FINANCE', 'CHEQUE_SPECIESTYPE_ID') )
+                    {                        
+                        $MIOLO->session->setValue('chequeCounterMovementId', $counterMovement[0][0]);
+                    }
+
+                    $pagamento = !$lancamentoBancario ? $paymentData[1] : 0;
+                    
+                    parent::closeInvoice($data->invoiceId, $pagamento, null, 'A', null, null, $counterMovementId);
+                }
+            }
+
+            if ( $isBank == false )
+            {
+                if ($data->discountValue > 0)
+                {
+                    $entryData->operationId = $defaultOperations->discountOperation;
+                    $entryData->value = SAGU::calcNumber($data->discountValue);
+
+                    $busEntry->insertEntry($entryData);
+                }
+
+                if ($data->fineValue > 0 || $data->interestValue > 0)
+                {
+                    $entryData->operationId = $defaultOperations->interestOperation;
+                    $entryData->value = SAGU::calcNumber($data->fineValue . ' + ' . $data->interestValue);
+
+                    $busEntry->insertEntry($entryData);
+                }
+            }
+
+            if ($data->convenantValue > 0)
+            {
+                if (count($convenantData) > 0)
+                {
+                    foreach ($convenantData as $reg)
+                    {
+                        list ($convenantId,
+                              $convenantDescription,
+                              $convenantValue,
+                              $convenantIsPercent,
+                              $convenantOperationId) = $reg;
+
+                        $convenantValue = number_format($convenantValue, SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'), SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), '');
+
+                        $entryData->operationId = $convenantOperationId;
+                        $entryData->value = SAGU::calcNumber($convenantValue);
+
+                        $busEntry->insertEntry($entryData);
+                    }
+                }
+            }
+            if ( SAGU::getParameter('BASIC', 'MODULE_PROTOCOL_INSTALLED') )
+            {
+                $busRequestPtc = new BusinessProtocolBusRequestPtc();
+                $filter = new stdClass();
+                $filter->invoiceId = $data->invoiceId;
+                $search = $busRequestPtc->searchRequest($filter);
+                $busRequestPtc->updateRequestStatus($search[0][0], PtcRequest::STATUS_RUNNING);
+            }
+        }
+        else
+        {
+            throw new Exception(_M('Dados de pagamento não informados.', $module));
+        }
+        
+        return true;
+    }
+
+     /**
+      * Fecha um título por pagamento com cartão de crédito no portal
+      *
+      * @param: $data (object): StdClass com dados do título
+      *
+      * @return: True Se sucesso caso contrátio false
+      *
+      */
+     public function closeInvoiceByCielo($cielotransactionid, $invoiceId, $value, $datetransaction, $comments)
+     {
+        $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+        $busEntry = new BusinessFinanceBusEntry();
+        $invoiceData = $this->getReceivableInvoice($invoiceId);
+        $defaultOperations = $busDefaultOperations->getDefaultOperations();
+
+        $discount = $this->getInvoiceDiscountValue($invoiceId, $datetransaction);
+        $interest = $this->getInvoiceInterestValue($invoiceId, $datetransaction);
+        $fine = $this->getInvoiceFineValue($invoiceId, $datetransaction);
+        
+        //Insere pagamento
+        $entryData = new StdClass();
+        $entryData->invoiceId = $invoiceData->invoiceId;
+        $entryData->costCenterId = $invoiceData->costCenterId;
+        $entryData->comments = $comments;
+        $entryData->bankReturnCode = '';
+        $entryData->isAccounted = SAGU::getParameter('BASIC', 'DB_FALSE');
+        $entryData->creationType = 'A';
+        $entryData->entryDate = $datetransaction;
+        $entryData->operationId = $defaultOperations->paymentOperation;
+        $entryData->value = number_format($value, SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'), SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), '');
+        $entryData->cieloTransactionId = $cielotransactionid;
+        $busEntry->insertEntry($entryData);
+
+        unset($entryData);
+        $entryData = new StdClass();
+        $entryData->invoiceId = $invoiceData->invoiceId;
+        $entryData->costCenterId = $invoiceData->costCenterId;
+        $entryData->comments = $comments;
+        $entryData->bankReturnCode = '';
+        $entryData->isAccounted = SAGU::getParameter('BASIC', 'DB_FALSE');
+        $entryData->creationType = 'A';
+        $entryData->entryDate = $datetransaction;
+
+        //Insere o valor de desconto na data
+        if ( $discount > 0 )
+        {
+            $entryData->operationId = $defaultOperations->discountOperation;
+            $entryData->value = SAGU::calcNumber($discount);
+            $busEntry->insertEntry($entryData);
+        }
+
+        //Insere o valor de juros/multa na data
+        if ( $interest > 0 || $fine > 0 )
+        {
+            $entryData->operationId = $defaultOperations->interestOperation;
+            $entryData->value = SAGU::calcNumber(SAGU::NVL($interest, '0').'+'.SAGU::NVL($fine, '0'));
+            $busEntry->insertEntry($entryData);
+        }
+        
+        // Busca por titulos dependentes deste invoiceId e remove a dependencia
+        $filters = new stdClass();
+        $filters->invoiceIdDependence = $invoiceId;
+        $rows = $this->searchInvoice($filters);
+        foreach ( (array) $rows as $row )
+        {
+            $invoice = $this->getInvoice( $row[0] );
+            $invoice->invoiceIdDependence = null;
+            $this->updateInvoice($invoice);
+        }
+        
+        // Para a pré-matrícula.
+        $this->primeiraParcelaPreMatricula($invoiceData);
+        
+        return true;
+    }
+
+    /**
+      * Close multiple invoices using multiple payment entries
+      *
+      * @param: $data (object): Object containing data to close the invoices
+      *
+      * @return: True if succeed otherwise false
+      *
+      */
+    public function closeMultipleInvoices($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'finance';
+
+        if (count($data->payments) > 0 && count($data->invoiceIds) > 0)
+        {
+            $busOperation = new BusinessFinanceBusOperation();
+            $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+            $busEntry = new BusinessFinanceBusEntry();
+            $busCounterMovement = new BusinessFinanceBusCounterMovement();
+            $busSpecies = new BusinessFinanceBusSpecies();
+
+            $defaultOperations = $busDefaultOperations->getDefaultOperations();
+
+            unset($entryData);
+            $entryData = new FinEntry();
+            $entryData->comments = '';
+            $entryData->bankReturnCode = '';
+            $entryData->isAccounted = SAGU::getParameter('BASIC', 'DB_FALSE');
+            $entryData->creationType = 'M';
+            $entryData->entryDate = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+            
+            $invoiceBalances = array();
+
+            // gera array com balances
+            foreach ($data->invoiceIds as $invoiceId)
+            {
+                // Ajustado para pegar o valor com as politicas aplicadas, pois na processo de baixa de multiplos títulos
+                // são considerados juros, multas, convênio e descontos, calculados automaticamente pelo sistema
+                $invoiceBalances[$invoiceId] = $this->getInvoiceBalanceWithPolicies($invoiceId, SAGU::getDateNow());
+            }
+            
+            //
+            // processa movimentacoes bancarias
+            //
+            $counterMovementIds = array();
+            $valorPorEspecie = array();
+            $registrouPoliticas = array();
+            
+            foreach ( $data->invoiceIds as $invoiceId )
+            {
+                unset($counterData);     
+                $counterData = new FinCounterMovement();
+                $counterData->openCounterId = $data->openCounterId;
+                $counterData->invoiceId = $invoiceId;
+                
+                $specieId = null;
+                foreach ( $data->payments as $paymentData )
+                {
+                    if ( $paymentData[1] > 0 )
+                    {
+                        $specieId = $paymentData[0];
+                        $valorLancamento = 0;
+                        
+                        // Diminui o valor já utilizado para a espécie
+                        $paymentValue = $paymentData[1] - $valorPorEspecie[$specieId];
+                        
+                        // Se o valor a ser pago é maior do que o valor informado pra espécie, utiliza o valor informado da espécie
+                        if ( $invoiceBalances[$invoiceId] >= $paymentValue )
+                        {
+                            $valorLancamento = $paymentValue;
+                        }
+                        // Se o valor a ser pago é menor do que o valor informado pra espécie, utiliza o valor a ser pago
+                        else
+                        {
+                            $valorLancamento = $invoiceBalances[$invoiceId];
+                        }
+                        
+                        // Realiza as movimentações e lançamentos apenas se existir valor para lançar(tanto do pagamento quanto saldo em aberto)
+                        if ( $valorLancamento > 0 )
+                        {
+                            $invoiceData = $this->getReceivableInvoice($invoiceId);
+                            
+                            // Diminui do valor do título o valor do pagamento que será efetuado
+                            $invoiceBalances[$invoiceId] = $invoiceBalances[$invoiceId] - $valorLancamento;
+                            
+                            // Salva o valor já utilizado da specie
+                            $valorPorEspecie[$specieId] = $valorLancamento;
+                                                        
+                            $counterData->speciesId = $specieId;
+                            $counterData->value = number_format($valorLancamento, SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'), SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), '');
+                            $counterData->operation = 'C';
+                            $counterData->observation = _M('Pagamento do título @1 pelo processo de baixa de multiplos títulos', $module, $invoiceId);
+                            $counterData->operationId = $defaultOperations->paymentOperation;
+                            $counterData->costCenterId = $invoiceData->costCenterId;
+                            
+                            $busCounterMovement->insertCounterMovement($counterData);
+
+                            // Caso a especie de pagamento for por cheque, precisa guardar o código da movimentação.
+                            $counterMovement = $busCounterMovement->searchCounterMovement($counterData);
+                            $counterMovementIds[$invoiceId] = $counterMovement[0][0];
+
+                            // Efetua apenas um vez o lançamento de juros, multa, desconto e convênio.
+                            if ( !$registrouPoliticas[$invoiceId] )
+                            {
+                                $convenantData = $this->getInvoiceConvenants($invoiceId, date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')));
+
+                                $entryData->invoiceId = $invoiceId;
+                                $entryData->costCenterId = $invoiceData->costCenterId;
+
+                                //Lançamento do desconto
+                                $discountValue = $this->getInvoiceDiscountValue($invoiceId);
+
+                                if ($discountValue > 0)
+                                {
+                                    $entryData->operationId = $defaultOperations->discountOperation;
+                                    $entryData->value = SAGU::calcNumber($discountValue);
+
+                                    $busEntry->insertEntry($entryData);
+                                }
+
+                                $interestValue = $this->getInvoiceInterestValue($invoiceId);
+                                $fineValue = $this->getInvoiceFineValue($invoiceId);
+
+                                if ($fineValue > 0 || $interestValue > 0)
+                                {
+                                    $entryData->operationId = $defaultOperations->interestOperation;
+                                    $entryData->value = SAGU::calcNumber($fineValue . ' + ' . $interestValue);
+
+                                    $busEntry->insertEntry($entryData);
+                                }
+
+                                if (count($convenantData) > 0)
+                                {
+                                    foreach ($convenantData as $reg)
+                                    {
+                                        list ($convenantId,
+                                              $convenantDescription,
+                                              $convenantValue,
+                                              $convenantIsPercent,
+                                              $convenantOperationId) = $reg;
+
+                                        $convenantValue = number_format($convenantValue, SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'), SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), '');
+
+                                        $entryData->operationId = $convenantOperationId;
+                                        $entryData->value = SAGU::calcNumber($convenantValue);
+
+                                        $busEntry->insertEntry($entryData);
+                                    }
+                                }
+                                
+                                $registrouPoliticas[$invoiceId] = true;
+                            }
+
+                            parent::closeInvoice($invoiceId, $valorLancamento, null, null, null, null, $counterMovementIds[$invoiceId]);
+                        }
+                    }
+                }
+            }
+           
+            if ( $busSpecies->getSpeciesType($counterData->speciesId) == SAGU::getParameter('FINANCE', 'CHEQUE_SPECIESTYPE_ID') )
+            {
+                $MIOLO->session->setValue('chequeCounterMovementIdS', $counterMovementIds);
+            }
+            else
+            {
+                $MIOLO->session->setValue('chequeCounterMovementIdS', '');
+            }
+        }
+        else
+        {
+            throw new Exception(_M('Dados de pagamento não informados.', $module));
+        }
+
+        return true;
+    }
+
+    
+    /**
+     * Método para buscar número de dias para aplicar juros
+     *
+     * @param $invoiceId (integer): Código do título
+     *
+     * @return (integer) número de dias para aplicar juros
+     */
+    public function getDaysToFines($invoiceId)
+    {
+        $args = array( $invoiceId );
+
+        $sql = 'SELECT getDaysToFines(?)';
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        
+        return $result[0][0];
+    }
+    
+    /**
+     * Método para buscar os dados referentes a descontos, para que o SAB monte as mensagens do boleto
+     *
+     * @param $invoiceId (integer): Código do título
+     *
+     * @return (array) Array contendo o valor dos descontos e as datas para aplicá-los
+     */
+    public function getInvoiceDiscountMessageData($invoiceId)
+    {
+        $maskDate = SAGU::getParameter('BASIC', 'MASK_DATE');
+        $decimals = SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE');
+        
+        $sql = ' SELECT TO_CHAR(discountDate, \'' . $maskDate . '\'), 
+                        ROUND((getInvoiceDiscountValue(invoiceId, discountDate) + getInvoiceConvenantValue(invoiceId, discountDate))::numeric, ' . $decimals . ')
+                   FROM (
+                        (SELECT CASE WHEN B.beforeAfter = \'A\' THEN
+                                    A.referenceMaturityDate + getDaysToDiscount(A.invoiceid, B.discountId)
+                                ELSE
+                                    A.referenceMaturityDate - getDaysToDiscount(A.invoiceid, B.discountId)
+                                END as discountDate,
+                                A.invoiceId
+                           FROM finReceivableInvoice A
+                          INNER JOIN finPolicyDiscount B ON B.policyId = A.policyId
+                          WHERE A.invoiceId = ?
+                        )
+                        UNION
+                        (
+                         SELECT CASE WHEN C.beforeAfter = \'A\' THEN
+                                    A.referenceMaturityDate + getDaysToConvenant(a.invoiceid, c.convenantid)
+                                ELSE
+                                    A.referenceMaturityDate - getDaysToConvenant(a.invoiceid, c.convenantid)
+                                END as discountDate,
+                                A.invoiceId
+                           FROM finReceivableInvoice A
+                          INNER JOIN finConvenantPerson B ON B.personId = A.personId
+                          INNER JOIN finConvenant C ON C.convenantId = B.convenantId
+                           LEFT JOIN prctituloinscricao D ON A.invoiceid = D.invoiceid
+                          WHERE A.invoiceId = ?
+                            AND CASE WHEN B.endDate IS NOT NULL THEN 
+                                    A.referenceMaturityDate BETWEEN B.beginDate AND B.endDate
+                                ELSE
+                                    A.referenceMaturityDate >= B.beginDate
+                                END
+                            AND CASE WHEN D.inscricaoid IS NULL THEN
+                                    TRUE
+                                ELSE
+                                    B.inscricaoid = D.inscricaoid
+                                END
+                        )
+                        UNION
+                        (
+                         SELECT B.endDate as discountDate,
+                                A.invoiceId
+                           FROM finReceivableInvoice A
+                          INNER JOIN finRelease B ON B.invoiceId = A.invoiceId 
+                          WHERE A.invoiceId = ?
+                            AND A.referenceMaturityDate <= B.endDate
+                            AND (B.discountValue > 0 AND B.operationId IS NOT NULL)
+                        )
+                        ) as sel
+                     WHERE discountDate IS NOT NULL
+                  ORDER BY discountDate';
+                  
+        $args = array( $invoiceId,
+                       $invoiceId,
+                       $invoiceId );
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        
+        return $result;
+    }
+
+    /**
+     * Cria as datas de vencimento dos títulos
+     * 
+     * @param  array $result
+     * @return obj $args
+     */
+    public function createMaturityDates($args)
+    {
+        $maskDate = SAGU::getParameter('BASIC', 'MASK_DATE');
+        $decimals = SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE');
+        
+        $sql = "SELECT TO_CHAR(x::date, '$maskDate'),                       
+                       ROUND(REPLACE(?, ',', '.')::numeric, '$decimals')
+                  FROM generate_series( TO_DATE(?, '$maskDate'), 
+                                        TO_DATE(?, '$maskDate') + interval ?, 
+                                        '1 month' ) x;";
+        
+        $params = array(
+            $args->parcelsValue,
+            $args->firstMaturityDate,
+            $args->firstMaturityDate,
+            $args->parcelsNumber
+        );
+        
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $params));
+        
+        return $result;        
+    }
+    
+    /**
+     * Retorna todos os títulos no qual est?o abertos
+     * para exportaç?o em txt.
+     * 
+     * @param string $startDate
+     * @param string $endDate
+     * @return array
+     */
+    public function titulosEmAbertoParaExportacao($startDate, $endDate)
+    { 
+        $maskDate = SAGU::getParameter('BASIC', 'MASK_DATE');
+        
+        // Dados buscados de forma invertida, logo é executado um list onde ficar?o da forma correta.
+        $sql = "SELECT NULL AS maisParcelas,
+                       REPLACE( ROUND((getInvoiceDiscountValue(I.invoiceId, NOW()::date)), 2)::TEXT, '.', '' ) AS descontoParcela,
+                       NULL AS honorariosParcela,
+                       NULL AS taxaParcela,
+                       REPLACE( ROUND((getInvoiceInterestValue(I.invoiceId, NOW()::date)), 2)::TEXT, '.', '' ) AS jurosParcela,
+                       REPLACE( ROUND((getInvoiceFineValue(I.invoiceId, NOW()::date)), 2)::TEXT, '.', '' ) AS multaParcela,
+                       REPLACE( ROUND((balanceWithPoliciesDated(I.invoiceId, NOW()::date))::numeric, 2)::TEXT, '.', '') AS valorCorrigido,
+                       I.parcelnumber AS numeroParcela,
+                       REPLACE(I.emissionDate::TEXT, '-', '') AS dataPrestacao,
+                       NULL AS dataBaixaParcela,
+                       1 AS status,
+                       BII.ourNumber AS nossoNumero,
+                       REPLACE( (ROUND(I.value, 2))::TEXT, '.', '') AS valorParcela,
+                       REPLACE(I.maturityDate::TEXT, '-', '') AS vencimentoParcela,
+                       obterMesExtenso(I.parcelNumber) AS descriParcela,
+                       CO.contractId AS contrato,
+                       ( SELECT ACE.name || ' - TURMA ' || ACP.classid
+			   FROM acdCourse ACE
+		     INNER JOIN acdClassPupil ACP
+			     ON ACP.contractId = CO.contractid
+			    AND ACP.endDate IS NULL
+			  WHERE courseid = CO.courseId
+			  LIMIT 1 ) AS descriDivida,
+                       P.name AS nomeDivida,
+                       P.name AS cliente,
+                       NULL AS foneCorr5, NULL AS foneCorr4, NULL AS foneCorr3, NULL AS foneCorr2, NULL AS foneCorr1,
+                       NULL AS cepCorr, NULL AS estadoCorr, NULL AS cidadeCorr, NULL AS bairroCorr, NULL AS enderecoCorr, --Endereço correspond?ncia
+                       NULL AS foneEmpresa5, NULL AS foneEmpresa4, NULL AS foneEmpresa3, NULL AS foneEmpresa2,
+                       PP.workPhone AS foneEmpresa1,
+                       PP.zipcodework AS cepEmpresa,
+                       SW.name AS estadoEmpresa,
+                       CW.name AS cidadeEmpresa,
+                       PP.neighborhoodWork AS bairroEmpresa,
+                       PP.locationWork AS enderecoComercial,
+                       PP.workFunction AS funcao,
+                       PP.workEmployerName AS empresa,
+                       NULL AS fone5,
+                       PP.messagePhone AS fone4,
+                       PP.cellPhone AS fone3,
+                       PP.workPhone AS fone2,
+                       COALESCE(PP.residentialphone, LP.phone) AS fone1,
+                       P.zipCode AS cep,
+                       S.name AS estado,
+                       C.name AS cidade,
+                       P.neighborhood AS bairro,
+                       P.location AS endereco,
+                       P.email,
+                       REPLACE(PP.dateBirth::TEXT, '-', '') AS dataNascimento,
+                       D1.content AS rg,
+                       LP.cnpj,
+                       D2.content AS cpf,
+                       P.name AS nome
+                       
+             FROM ONLY finReceivableInvoice I
+       INNER JOIN ONLY basPerson P
+                    ON P.personId = I.personId
+        LEFT JOIN ONLY basPhysicalPerson PP
+                    ON P.personId = PP.personId
+        LEFT JOIN ONLY basLegalPerson LP
+                    ON P.personId = LP.personId
+             LEFT JOIN basDocument D2
+                    ON D2.personid = P.personId
+                   AND D2.documentTypeId = 2
+             LEFT JOIN basDocument D1
+                    ON D1.personid = P.personId
+                   AND D1.documentTypeId = 1
+             LEFT JOIN basCity C
+                    ON C.cityId = P.cityId
+             LEFT JOIN basState S
+                    ON S.stateId = C.stateId
+             LEFT JOIN basCity CW
+                    ON CW.cityId = PP.cityidwork
+             LEFT JOIN basState SW
+                    ON SW.stateId = CW.stateId
+        LEFT JOIN ONLY finEntry E
+                    ON E.invoiceId = I.invoiceId
+                   AND E.contractId IS NOT NULL
+             LEFT JOIN acdContract CO
+                    ON CO.contractId = E.contractId                    
+             LEFT JOIN finBankInvoiceInfo BII
+                    ON BII.invoiceId = I.invoiceId
+             LEFT JOIN fin.bankMovement BM
+                    ON BM.invoiceId = I.invoiceId
+             LEFT JOIN finPolicy FP
+                    ON FP.policyId = I.policyId
+
+                 WHERE I.iscanceled = FALSE
+                   AND I.maturityDate BETWEEN to_date( '{$startDate}' , '{$maskDate}') AND to_date( '{$endDate}' , '{$maskDate}')
+                   AND balance(I.invoiceId)::numeric > 0";
+        
+        return $this->getDatabase()->query($sql);
+    }
+    
+    /**
+     * Verifica se a primeira parcela foi paga.
+     * 
+     * @param int $enrollId
+     * @param int $periodId
+     * @return boolean
+     */
+    public function verificaSePrimeiraParcelaFoiPaga($contractId, $learningPeriodId)
+    {
+        $return = true;
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $dataLearningPeriod = $busLearningPeriod->getLearningPeriod($learningPeriodId);
+        
+        /** 
+         * Somente verifica o pagamento da primeira parcela, 
+         * se o período letivo da ocrrência de curso, estiver configurada para geração de financeiro, 
+         * caso contrário, considera primeira parcela como paga.
+         */
+        if ( $dataLearningPeriod->isFinanceGenerate == DB_TRUE )
+        {
+            $sql    = "SELECT verificaseprimeiraparcelarealmentefoipaga(?, ?);";
+            $pagou  = $this->getDatabase()->query(SAGU::prepare($sql, array($contractId, $learningPeriodId)));
+            $return = ($pagou[0][0] == DB_TRUE) ? true : false;
+        }
+        
+        return $return;
+    }   
+    
+     public function listarBoletoEmLoteAcademico($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();        
+
+        $checkAgreements = SAGU::checkParameter( 'AGREEMENT_INCOME_SOURCE_ID');
+
+        $sql = ' SELECT A.invoiceId,
+                        \'\' AS gridCheckbox,
+                        PP.personId,';
+        
+ 
+        
+        $sql .= 'PP.name,';
+        
+        if ( $checkAgreements == true )
+        {
+            $sql .= '
+                        CASE WHEN A.incomeSourceId IN (' . SAGU::getParameter('FINANCE', 'AGREEMENT_INCOME_SOURCE_ID') . ')
+                             THEN 1
+                             ELSE 0 
+                        END,
+                   ';
+        } 
+        else
+        {
+            $sql .= ' 0, ';
+        }
+        
+        $sql .= '       A.parcelNumber,
+                        TO_CHAR(A.emissionDate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') as emissionDate,
+                        TO_CHAR(A.maturityDate, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') as maturityDate_,
+                        TRUNC(A.value, ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . ') as balance,
+                        TRUNC(balance(A.invoiceId)::numeric, ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '),
+                        ( CASE WHEN ( TRUNC(balance(A.invoiceId)::numeric, 2) ) > 0.00
+                               THEN
+                                    updatedTime(A.invoiceId)
+                               ELSE
+                                    \'(x)\'
+                          END ),
+                        TRUNC((balanceWithPoliciesDated(A.invoiceId, now()::date))::numeric, ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '),
+                        (CASE WHEN TRUNC(BALANCE(A.invoiceId), 2) <> 0 THEN A.maturityDate ELSE NULL END) as order1, -- Utilizado para ordenacao
+                        (CASE WHEN TRUNC(BALANCE(A.invoiceId), 2) = 0 THEN A.maturityDate ELSE NULL END) as order2 -- Utilizado para ordenacao
+                        ';
+        
+        if ( SAGU::getParameter('FINANCE', 'SHOW_CLASS_IN_DIVERSE_CONSULTATION') == 'YES' )
+        {
+            $sql .=  ', ROUND((SELECT sum(X.value)
+                                 FROM finentry X
+                                WHERE X.invoiceid = A.invoiceid
+                                  AND X.operationid = (SELECT paymentoperation
+                                                         FROM findefaultoperations LIMIT 1)), ' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '),
+                        TO_CHAR(( SELECT entrydate
+                             FROM finentry AA
+                            WHERE AA.invoiceid = A.invoiceid
+                              AND AA.operationid = ( SELECT paymentoperation
+                                                      FROM findefaultoperations LIMIT 1) LIMIT 1) , \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') AS pagamento,
+                        COALESCE((SELECT AA.classId
+                                    FROM acdClassPupil AA
+                                   WHERE AA.contractId = getinvoicecontract(A.invoiceId)
+                                     AND A.maturityDate BETWEEN AA.beginDate AND CASE WHEN (AA.endDate IS NULL) OR (AA.endDate < A.emissionDate) THEN
+                                                                                    A.maturityDate+1
+                                                                                 ELSE
+                                                                                    AA.endDate
+                                                                                 END
+                                ORDER BY AA.beginDate DESC
+                                 LIMIT 1) , (	(select EE.descricao
+                                 from prctituloinscricao AA
+                                 INNER JOIN acpinscricao BB using(inscricaoid)
+                                 INNER JOIN basphysicalpersonstudent CC using(personid)
+                                 INNER JOIN acpinscricaoturmagrupo DD using(inscricaoid)
+                                 INNER JOIN acpofertaturma EE ON EE.ofertaturmaid=DD.ofertaturmaid
+                                 where AA.invoiceId = A.invoiceId
+                                 ORDER BY EE.datainicialoferta DESC
+                                 LIMIT 1))) AS turma';
+        }
+        
+        $sql .= ' FROM finReceivableInvoice A
+             LEFT JOIN finPolicy B
+                 USING (policyId)
+                INNER JOIN basphysicalperson PP
+                    ON A.personid = PP.personid';
+        $where = '';
+        if ( strlen($data->incentiveTypeId) > 0 )
+        {   
+            $sql .= ' INNER JOIN finIncentive I
+                              ON I.incentiveTypeId = ?';
+            $args[] = $data->incentiveTypeId;
+            
+            if ( strlen($data->contractId) > 0 )
+            {
+                $sql .= ' AND I.contractId = ?';
+                $args[] = $data->contractId;
+            }
+            else
+            {
+                $sql .= ' AND I.contractId IN ( SELECT contractId
+                                                  FROM acdContract
+                                                 WHERE personId = A.personId )';
+            }
+        }
+        // Filtro por curso e ou unidade
+        if ( strlen($data->courseId) > 0 || strlen($data->unitId) > 0 )
+        {
+            $sql .= " INNER JOIN finEntry E
+                              ON E.entryId = ( SELECT DISTINCT entryId
+                                                          FROM finEntry
+                                                         WHERE invoiceId = A.invoiceId
+                                                           AND ( operationId = getParameter('FINANCE', 'DEFAULT_OPERATIONID_MONTHLY_FEE')::INT OR contractId = ? )
+                                                         LIMIT 1 )
+                       LEFT JOIN acdContract C
+                              ON C.contractId = E.contractId";
+            
+            $args[] = $data->contractId;
+            
+            if ( strlen($data->courseId) > 0 )
+            {
+                $sql .= " LEFT JOIN acdCourse CO
+                                 ON CO.courseId = C.courseId";
+                $where .= " AND C.courseId = ?";
+                $args[] = $data->courseId;
+            }
+            
+            if ( strlen($data->unitId) > 0 )
+            {
+                $where .= " AND C.unitId = ?";
+                $args[] = $data->unitId;
+            }
+        }
+        // Lógica específica para geração de boletos em lote.
+        if ( strlen($data->remittance) > 0 && $data->remittance != DB_ALL )
+        {
+            $not = ($data->remittance != DB_TRUE) ? 'NOT' : '';
+            $where .= " AND {$not} EXISTS ( SELECT invoiceId
+                                              FROM finHistoricoRemessa
+                                             WHERE invoiceId = A.invoiceId )";
+        }
+        if ( strlen($data->personId) > 0 )
+        {
+            $where .= ' AND A.personId = ?';
+            $args[] = $data->personId;
+        }
+        if ( strlen( $data->onlyOpen ) > 0 )
+        {
+            $where .= ' AND balance(A.invoiceId) > 0';
+        }
+        if ( strlen( $data->onlyClose ) > 0 )
+        {
+            $where .= ' AND balance(A.invoiceId) <= 0';
+        }        
+        if( $onlyInvoicesInPeriod && SAGU::getParameter('SERVICES', 'DIAS_ATE_VENCIMENTO') > 0 )
+        {
+            $where .= ' AND A.maturityDate < now()::date + getParameter(\'SERVICES\', \'DIAS_ATE_VENCIMENTO\')::int';
+        }
+        if ( strlen($data->maturityDateBegin) > 0 && strlen($data->maturityDateEnd) > 0 )
+        {
+            // Período de vencimento dos títulos (between).
+            $where .= " AND A.maturityDate BETWEEN TO_DATE(?, getParameter('BASIC', 'MASK_DATE')) AND TO_DATE(?, getParameter('BASIC', 'MASK_DATE'))";
+            $args[] = $data->maturityDateBegin;
+            $args[] = $data->maturityDateEnd;
+        }
+        
+        if ( $data->apenasComValorAtual == DB_TRUE )
+        {
+            $where .= ' AND balanceWithPoliciesDated(A.invoiceId, now()::date) > 0 ';
+        }
+                          
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 4);
+        }  
+        
+        $sql .= 'AND EXISTS (SELECT 1 FROM finentry WHERE invoiceid = A.invoiceId AND contractid IS NOT NULL)';
+              
+        // Ordenacao dinamica configuravel
+        $orderBy = strtr(SAGU::getParameter('FINANCE', 'INVOICE_LIST_ORDER'), array(
+            'MATURITYDATE' => 'order2 DESC, order1 DESC', // Ordena pela data de vencimento
+            'TOPAYFIRST' => 'order1 ASC, order2 DESC', // Ordena pela data de vencimento ascendente primeiro boletos que ainda nao foram pagos, e decrescente boletos que ja foram pagos
+        ));        
+        
+        $sql .= ' AND A.iscanceled=FALSE
+                  AND A.invoiceIdDependence IS NULL
+             ORDER BY ' . $orderBy;        
+        $return = $this->getDatabase()->query( SAGU::prepare( $sql, $args ) );
+        
+        return $return;
+    }
+    
+    /**
+     * Função que cancela os títulos vencidos a mais de 5 dias(por padrão) e que sejam oriundos do
+     * processo seletivo, protocolo e inscrição do pedagógico
+     * 
+     * @param type $diasVencimento
+     * @return type
+     */
+    public static function cancelarTitulosVencidos($diasVencimento = '5')
+    {
+        $vencimento = $diasVencimento instanceof BasSystemTask ? '5' : $diasVencimento;
+        
+        $sql = " UPDATE fininvoice fininvoice
+                    SET invoiceId = X.invoiceId,
+                        reasonCancellationId = X.reasonCancellationId,
+                        iscanceled = true
+                   FROM ( SELECT A.invoiceId,
+                                 (CASE WHEN EXISTS(SELECT 1 
+                                                    FROM prctituloinscricao 
+                                                   WHERE invoiceId = A.invoiceId)
+                                      THEN '" . self::REASON_CANCELATION_PEDAGOGICO . "'
+                                      WHEN EXISTS(SELECT 1 
+                                                    FROM spr.subscription 
+                                                   WHERE invoiceId = A.invoiceId)
+                                      THEN '" . self::REASON_CANCELATION_SELECTIVE_PROCESS . "'
+                                      WHEN EXISTS(SELECT 1 
+                                                    FROM ptcrequest 
+                                                   WHERE invoiceId = A.invoiceId)
+                                      THEN '" . self::REASON_CANCELATION_PROTOCOL . "'
+                                 END)::INT AS reasonCancellationId
+                     FROM ONLY finReceivableInvoice A
+                         WHERE (NOW()::DATE - maturitydate) >= ?
+                           AND iscanceled IS FALSE
+                           AND balance > 0
+                           AND ( EXISTS(SELECT 1 
+                                          FROM prctituloinscricao 
+                                         WHERE invoiceId = A.invoiceId) 
+                            OR EXISTS(SELECT 1 
+                                        FROM spr.subscription 
+                                       WHERE invoiceId = A.invoiceId) 
+                            OR EXISTS(SELECT 1 
+                                        FROM ptcrequest 
+                                       WHERE invoiceId = A.invoiceId) ) ) AS X 
+                  WHERE fininvoice.invoiceId = X.invoiceId ";
+        
+        $db = SDatabase::getInstance();
+        $prepare = SAGU::prepare($sql, array($vencimento));
+        $return = $db->execute($prepare[0]);
+        
+        return $return;
+    }
+}
+?>

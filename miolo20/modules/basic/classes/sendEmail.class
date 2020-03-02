@@ -1,0 +1,510 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * This class implements functions to work with email.
+ *
+ * @author Samuel Koch [samuel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Equipe Solis [sagu2@solis.coop.br]
+ *
+ * @since
+ * Class created on 18/02/2010
+ */
+
+$MIOLO  = MIOLO::getInstance();
+$MIOLO->Uses('classes/PHPMailer/class.phpmailer.php', 'basic');
+
+class sendEmail
+{
+    private $server;
+    private $port;
+    private $smtpSecure = false;
+    private $username;
+    private $password;
+    private $smtpAuth = false;
+    private $from;
+    private $fromName;
+    private $recipient;
+    private $subject;
+    private $body;
+    private $bcc;
+    private $attachment;
+    private $errors;
+    private $CharSet;
+
+    /**
+     * Constructor of sendEmail
+     *
+     * @param string  $server
+     * @param integer $port
+     * @param string  $from
+     * @param string  $fromName
+     * @param array   $recipient
+     * @param string  $subject
+     * @param string  $body
+     * @param string  $bcc
+     */
+    public function __construct($from, $fromName, $recipient, $subject, $body, $bcc = array())
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $this->from = $from;
+        $this->fromName = $fromName;
+        $this->recipient = $recipient;
+        $this->subject = $subject;
+        $this->body = $body;
+        $this->bcc = $bcc;
+        $this->CharSet = SAGU::isMiolo2() ? 'iso-8859-1' : 'UTF-8';
+
+        $busMailServer = new BusinessBasicBusMailServer();
+        $dataMail = $busMailServer->getMailServer();
+        $this->server = $dataMail->host;
+        $this->port = $dataMail->port;
+        $this->smtpSecure = $dataMail->secureAuth;
+        $this->smtpAuth = ($dataMail->enableAuth == DB_TRUE);
+        if ($this->smtpAuth)
+        {
+            $this->username = $dataMail->smtpUser;
+            $this->password = $dataMail->smtpPassword;
+        }
+
+        if ( !(is_array($recipient)) )
+        {
+            $recipient = array($recipient);
+        }
+        $this->recipient = $recipient;
+
+        if ( !(is_array($bcc)) )
+        {
+            $recipient = array($bcc);
+        }
+        $this->bcc = $bcc;
+    }
+
+    /**
+     * Method to send a Email
+     */
+    public function sendEmail($enviarAoRemetente = false)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        // Instance of PHPMailer
+        $PHPMailer = new PHPMailer();
+
+        // Sets the SMTP message is
+        if ( $this->smtpAuth )
+        {
+            $PHPMailer->IsSMTP();
+        }
+
+        // SMTP server address
+        $PHPMailer->Host = $this->server;
+        $PHPMailer->Port = $this->port;
+        $PHPMailer->Username = $this->username;
+        $PHPMailer->Password = $this->password;
+        $PHPMailer->SMTPAuth = $this->smtpAuth;
+        $PHPMailer->SMTPSecure = $this->smtpSecure;
+
+        // Sets the sender
+        $PHPMailer->From = $this->from;
+        $PHPMailer->FromName = $this->fromName;
+
+        $testMail = SAGU::getTestMail();
+        // Sets the recipients
+        $recipients = $this->recipient;
+        
+        //Nega os remetentes e os remetentes de cópia, caso enviarAoRemente for true
+        $body = $this->body;
+        if ( !$enviarAoRemetente )
+        {
+            //Manda primeiro e-mail ao destinario - mais detalhes #32145
+            if ( SAGU::getParameter('BASIC', 'ENVIA_RETORNO_DO_EMAIL_AO_REMETENTE') == DB_TRUE )
+            {
+                $sessao = $MIOLO->session->getValue('tempoDoRemetenteComoDestinatario');
+                $parametro = SAGU::getParameter('BASIC', 'TEMPO_DE_ESPERA_DE_ENVIO_DE_EMAILS_ENTRE_LOTES');
+                
+                if ( strlen($sessao) > 0 )
+                {
+                    //Calcular diferenca de tempo
+                    $antes = new DateTime($sessao);
+                    $depois = new DateTime(SAGU::getDateNow(SAGU::getParameter('BASIC', 'MASK_TIME_PHP')));
+                    $diff = $antes->diff($depois);
+                    $total = ( ($diff->i * 60) + $diff->s );
+                   
+                    if ( $total > $parametro )
+                    {
+                        $MIOLO->session->setValue('tempoDoRemetenteComoDestinatario', SAGU::getDateNow(SAGU::getParameter('BASIC', 'MASK_TIME_PHP')));
+                        $this->sendEmail(true);
+                    }
+                    else
+                    {
+                        $MIOLO->session->setValue('tempoDoRemetenteComoDestinatario', SAGU::getDateNow(SAGU::getParameter('BASIC', 'MASK_TIME_PHP')));
+                    }
+                }
+                else
+                {
+                    $MIOLO->session->setValue('tempoDoRemetenteComoDestinatario', SAGU::getDateNow(SAGU::getParameter('BASIC', 'MASK_TIME_PHP')));
+                    $this->sendEmail(true);
+                }
+            }
+            
+            foreach ( (array)$recipients as $key=>$mail )
+            {
+                // Se houver email de testes configurado, sobrescreve para utiliza-lo
+                if ( strlen($testMail) > 0 )
+                {
+                    $mail = $testMail;
+                }
+
+                $PHPMailer->AddAddress($mail, $key);
+            }
+
+            // Set the blind carbon copy recipients
+            $bccs = $this->bcc;
+            foreach ( (array)$bccs as $k=>$b )
+            {
+                $PHPMailer->AddBCC($bccs[$k], $k);
+            }
+        }
+        else
+        {
+            //Sobrescreve e-mails
+            $emails = $this->obtemEmailsDeRetorno();
+            
+            foreach( $emails as $pos => $email )
+            {
+                // Se houver email de testes configurado, sobrescreve para utiliza-lo
+                if ( strlen($testMail) > 0 )
+                {
+                    $email = $testMail;
+                }
+                
+                $PHPMailer->AddAddress($email, $pos);
+            }
+            
+            //Adiciona linha no início do corpo da mensagem
+            $busPerson = new BusinessBasicBusPerson();
+            $pessoa = $busPerson->getCurrentLoginPerson();
+            
+            $msg = '<strong>Este e-mail é uma cópia do assunto enviado por ' . $pessoa->name . '.</strong>';
+            $msg .= $body;
+            $body = $msg;
+        }
+        
+        // Defines the e-mail will be sent as HTML
+        $PHPMailer->IsHTML(true);
+
+        // Charset of the message
+        $PHPMailer->CharSet = $this->CharSet;
+        
+        // Defines the message
+        $PHPMailer->Subject = $this->subject;
+
+        // Message Subject
+        $PHPMailer->Body = $body;
+
+        // Add Attachment
+        if ( is_array($this->attachment) )
+        {
+            foreach($this->attachment as $attach=>$pos)
+            {
+                $PHPMailer->AddAttachment($pos[0], $pos[1], $pos[2], $pos[3]);
+            }
+        }
+
+        // Send the mail
+        $PHPMailer->SetLanguage("br");
+        $enviado = $PHPMailer->Send();
+        
+        //Seta erros vindos da classe PHPMailer
+        $this->setErrors(utf8_decode($PHPMailer->ErrorInfo));
+        
+        return $enviado;
+
+        // Clears the recipients and attachments
+        $PHPMailer->ClearAllRecipients();
+        $PHPMailer->ClearAttachments();
+    }
+
+    /**
+     * Verifica e-mails da pessoa logada e se possui e-mail de setor, caso funcionária
+     * 
+     * @param stdClass usuario - sempre nulo, só é habilitado em funcao de teste unitário
+     * 
+     * @return array
+     */
+    public function obtemEmailsDeRetorno($usuario = NULL)
+    {
+        $emails = array();
+        
+        $busPerson = new BusinessBasicBusPerson();
+        if ( !is_null($usuario) )
+        {
+            $pessoa = $busPerson->getPersonByMioloUserName($usuario);
+        }
+        else
+        {
+            $pessoa = $busPerson->getCurrentLoginPerson();
+        }
+        
+        if ( strlen($pessoa->personId) > 0 )
+        {
+            $busPhysicalEmployee = new BusinessBasicBusPhysicalPersonEmployee();
+            $pessoaFuncionario = $busPhysicalEmployee->getPhysicalPersonEmployee($pessoa->personId);
+
+            //Obtem e-mail do setor
+            if ( !is_null($pessoaFuncionario) )
+            {
+                $busEmployee = new BusinessBasicBusEmployee();
+                $funcionario = $busEmployee->getEmployeeForPersonId($pessoa->personId);
+
+                $busSector = new BusinessBasicBusSector();
+                $setor = $busSector->getSector($funcionario->sectorId);
+
+                if ( strlen($setor->email) > 0 )
+                {
+                    $emails[] = $setor->email;
+                }
+            }
+
+            //Obtem e-mail da pessoa logada
+            if ( strlen($pessoa->email) > 0 )
+            {
+                $emails[] = $pessoa->email;
+            }
+            elseif ( strlen($pessoa->emailAlternative) > 0 )
+            {
+                $emails[] = $pessoa->emailAlternative;
+            }
+        }
+        
+        //Elimina nulos do array
+        foreach ($emails as $pos => $email)
+        {
+            if ( !(strlen($email) > 0) )
+            {
+                unset($emails[$pos]);
+            }
+        }
+        
+        return $emails;
+    }
+    
+    /**
+     * Define the server
+     *
+     * @param $server (String)
+     */
+    public function setServer($server)
+    {
+        $this->server = $server;
+    }
+
+    /**
+     * Return the server
+     *
+     * @return String
+     */
+    public function getServer()
+    {
+        return $this->server;
+    }
+
+    /**
+     * Define the port
+     *
+     * @param $port (Integer)
+     */
+    public function setPort($port)
+    {
+        $this->port = $port;
+    }
+
+    /**
+     * Return the port
+     *
+     * @return Integer
+     */
+    public function getPort()
+    {
+        return $this->port;
+    }
+
+    /**
+     * Defines the sender
+     *
+     * @param $from (String)
+     */
+    public function setFrom($from)
+    {
+        $this->from = $from;
+    }
+
+    /**
+     * Return the sender
+     *
+     * @return String
+     */
+    public function getFrom()
+    {
+        return $this->from;
+    }
+
+    /**
+     * Defines the name of sender
+     *
+     * @param $fromName (String)
+     */
+    public function setFromName($fromName)
+    {
+        $this->fromName = $fromName;
+    }
+
+    /**
+     * Return the name of sender
+     *
+     * @return String
+     */
+    public function getFromName()
+    {
+        return $this->fromName;
+    }
+
+    /**
+     * Defines the recipient
+     *
+     * @param $recipient (String)
+     */
+    public function setRecipient($recipient)
+    {
+        $this->recipient[] = $recipient;
+    }
+
+    /**
+     * Return the recipient
+     *
+     * @return String
+     */
+    public function getRecipient()
+    {
+        return $this->recipient;
+    }
+
+    /**
+     * Defines the subject
+     *
+     * @param $subject (String)
+     */
+    public function setSubject($subject)
+    {
+        $this->subject = $subject;
+    }
+
+    /**
+     * Return the subject
+     *
+     * @return String
+     */
+    public function getSubject()
+    {
+        return $this->subject;
+    }
+
+    /**
+     * Defines the body
+     *
+     * @param $body (String)
+     */
+    public function setBody($body)
+    {
+        $this->body = $body;
+    }
+
+    /**
+     * Return the body
+     *
+     * @return String
+     */
+    public function getBody()
+    {
+        return $this->body;
+    }
+
+    /**
+     * Defines the blind carbon copy
+     *
+     * @param $recipient (String)
+     */
+    public function setBcc($bcc)
+    {
+        $this->bcc[] = $bcc;
+    }
+
+    /**
+     * Return the blind carbon copy
+     *
+     * @return String
+     */
+    public function getBcc()
+    {
+        return $this->bcc;
+    }
+    
+    public function getErrors()
+    {
+        return $this->errors;
+    }
+
+    public function setErrors($errors)
+    {
+        $this->errors = $errors;
+    }
+    
+    public function getCharSet()
+    {
+        return $this->CharSet;
+    }
+
+    public function setCharSet($CharSet)
+    {
+        $this->CharSet = $CharSet;
+    }
+        
+    /**
+     *  Add a Attachment
+     */
+    public function AddAttachment($path, $name = '', $encoding = 'base64', $type = 'application/octet-stream')
+    {
+        $this->attachment[] = array(
+            0 => $path,
+            1 => $name,
+            2 => $encoding,
+            3 => $type
+        );
+
+        return true;
+    }
+}
+?>

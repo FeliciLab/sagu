@@ -1,0 +1,1162 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulário de negociação
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @since
+ * Class created on 22/09/2011
+ *
+ **/
+
+/**
+ * Form to manipulate a Release
+ **/
+class FrmNegotiation extends SStepByStepForm
+{
+    /**
+     * Class constructor
+     **/  
+    public $firstParcelNumber;
+    public $personCode;
+    public $date;
+    
+    public function __construct($steps = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        if (!$steps->disableConstruct)
+        {
+            parent::__construct(null, $steps, __CLASS__);
+            $this->toolbar->disableButton( MToolBar::BUTTON_SAVE );
+        }
+        
+        $session = $MIOLO->getSession();      
+        
+        // Caso for chamada a ação de novo do form limpa a subdetail                
+        if ( ( MIOLO::_REQUEST('event') == 'tbBtnNew:click' ) && (!$MIOLO->page->isPostBack()) && ( MIOLO::_REQUEST('cpaint_function') != 'ajaxCallBack' ) )
+        {
+            $user = $session->getValue('authUser');
+            if( strlen($user) > 0 )
+            {
+                $session->setValue('authUser', null);                
+                $MIOLO->perms->removeUserPerm('FrmNegotiation', A_ADMIN);
+            }
+        }
+    }
+
+    /**
+     * Default method to define fields
+     **/
+    public function createFields()
+    {          
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        $session = $MIOLO->getSession();
+
+        $data = $this->getStepData();
+        
+        //Exibe o botão executar como administrador caso o usuário nao possua a permissão
+        if( !$MIOLO->checkAccess(__CLASS__, A_ADMIN) )
+        {
+            $fields[] = new MButton('btnAdministrator', _M('Acessar como administrador', $module), $this->getAjaxAction('loadPopup', 'divPopup', false));
+        }
+
+        // Div da MPopup
+        $fields[] = new MDiv('divPopup');
+        $fields[] = new MDiv('divNegotiationOptions', $this->loadOptions($data));
+        
+        $fields[] = new SHiddenField('isLastStep', 1);
+
+        $this->setFields($fields);
+        $this->setValidators($validators);
+    }
+        
+    /**
+     * Carrega os campos a serem exibidos na parte inferior da tela
+     */
+    public function loadOptions($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $event = MIOLO::_REQUEST('__EVENTTARGETVALUE');
+        
+        $this->personCode = $data->personId;
+
+        //Configurações da negociação do título
+        $negociationConfig = FinInvoiceNegociationConfig::getInstanceByOperation($data->operationId);
+        
+        $valorNegociacao = SAGU::NVL($this->getFormValue('negotiationValue', $data->negotiationValue), $this->getFormValue('startNegotiationValue', $data->startNegotiationValue));
+        $entryValue = $this->getFormValue('entryValue', $data->entryValue);
+        $percentEntry = $negociationConfig->percentValueEntry;
+        
+        if ( strlen($entryValue) == 0 )
+        {
+            $entryValue = FinNegotiation::calculaValorEntrada($valorNegociacao, $percentEntry);
+        }
+        
+        //Armazena o login do usuário administrador q autorizou
+        $fields[] = new MHiddenField('adminUser', ( strlen($this->getFormValue('adminUser', $data->adminUser)) > 0 ? $this->getFormValue('adminUser', $data->adminUser) : MIOLO::_request('user') ));
+        
+        //Campo política
+        if( strlen($negociationConfig->policyId) > 0 )
+        {  
+            //A política deve vir da configuração de negociação.
+            $busPolicy = new BusinessFinanceBusPolicy();
+            $policy = $busPolicy->getPolicy($negociationConfig->policyId);
+            
+            // Campo valor em negociação
+            $negotiationPolicyLabel = new MText('negotiationValueLabel', _M('Política em uso', $module));
+            $negotiationPolicyLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $negotiationPolicy = new MTextLabel('policyLabel', $policy->policyId. ' - '. $policy->description, null);
+            $negotiationPolicy->setJsHint(_M('Política em uso', $module));
+            $hctNegotiationPolicy = new MHContainer('hctNegotiationPolicy', array($negotiationPolicyLabel, $negotiationPolicy));
+            $fields[] = $hctNegotiationPolicy;
+        }
+
+        // Campo valor em negociação
+        $negotiationValueLabel = new MText('negotiationValueLabel', _M('Valor em negociação', $module));
+        $negotiationValueLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $negotiationValue = new MTextField('negotiationValue', $valorNegociacao, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), '', '', true);
+        $negotiationValue->setJsHint(_M('Valor em negociação', $module));
+        $hctNegotiationValue = new MHContainer('hctNegotiationValue', array($negotiationValueLabel, $negotiationValue));
+        $fields[] = new MDiv('divNegotiationValue', array($hctNegotiationValue));
+        
+        if( $data->operationId == 'n' && $event != 'finalizeButton:click' )
+        {
+            //Liberar taxa de negociação somente se for administrador
+            if ( $MIOLO->checkAccess(__CLASS__, A_ADMIN) )
+            {
+                //Atualizar o campo Valor em negociação calculando ou nao com a opção liberar da taxa de negociação
+                $eventsNegotiation[] = array('atualizarValores', 'divNegotiationOption', true);  
+
+                $this->page->onload(SForm::getMultipleAjaxAction($eventsNegotiation));
+
+                //Permite liberação de juros e multas somente se o total dos titulos for maior ou igual ao definido nas configurações
+                if( SAGU::calcNumber(SAGU::NVL($this->getFormValue('negotiationValue', $data->negotiationValue), $this->getFormValue('startNegotiationValue', $data->startNegotiationValue)).'-'.$negociationConfig->minValueForFinesAndInterestRelease) > 0 )
+                {
+                    // liberar juros
+                    $interestReleaseLabel = new MText('interestReleaseLabel', _M('Liberar juros', $module));
+                    $interestReleaseLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                    $interestRelease = new MSelection('interestRelease', 'f', null, array( DB_FALSE => _M('Não'), DB_TRUE => _M('Sim')));
+                    $interestRelease->setAllowNullValue(false);
+                    $interestRelease->setJsHint(_M('Liberar juros', $module));
+                    $interestRelease->addAttribute('onChange', SForm::getMultipleAjaxAction($eventsNegotiation));
+                    $hctinterestRelease = new MHContainer('hctinterestRelease', array($interestReleaseLabel, $interestRelease));
+                    $fields[] = $hctinterestRelease;
+
+                    // liberar multas
+                    $fineReleaseLabel = new MText('fineReleaseLabel', _M('Liberar multas', $module));
+                    $fineReleaseLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                    $fineRelease = new MSelection('fineRelease', 'f', null, array( DB_FALSE => _M('Não'), DB_TRUE => _M('Sim')));
+                    $fineRelease->setAllowNullValue(false);
+                    $fineRelease->setJsHint(_M('Liberar multas', $module));
+                    $fineRelease->addAttribute('onChange', SForm::getMultipleAjaxAction($eventsNegotiation));
+                    $hctfineRelease = new MHContainer('hctfineRelease', array($fineReleaseLabel, $fineRelease));
+                    $fields[] = $hctfineRelease;
+                }                    
+            
+                // Campo liberar juros e multas
+                $negotiationFeeLabel = new MText('negotiationFeeLabel', _M('Liberar da taxa de negociação', $module));
+                $negotiationFeeLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                $negotiationFee = new MSelection('negotiationFee', 'f', null, array( DB_FALSE => _M('Não'), DB_TRUE => _M('Sim')));
+                $negotiationFee->setAllowNullValue(false);
+                $negotiationFee->setJsHint(_M('Liberar da taxa de negociação', $module));                                                
+                $negotiationFee->addAttribute('onChange', SForm::getMultipleAjaxAction($eventsNegotiation));                                
+                $hctNegotiationFee = new MHContainer('hctNegotiationFee', array($negotiationFeeLabel, $negotiationFee));
+                $fields[] = $hctNegotiationFee;
+            }
+        }
+        
+        if ( $negociationConfig->operation == 'N' )
+        {
+            // Valor de entrada
+            $entryValueLabel = new MText('entryValueLabel', _M('Valor de entrada', $module));
+            $entryValueLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $entryValueCampo = new MTextField('entryValue', $entryValue, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), _M("0.00"));
+            $entryValueCampo->setJsHint(_M('Valor de entrada', $module));
+            $hctentryValue = new MHContainer('hctentryValue', array($entryValueLabel, $entryValueCampo));
+            $fields[] = new MDiv('diventryValue', array($hctentryValue));
+            $validators[] = new MFloatValidator('entryValue', _M('Valor de entrada', $module));
+
+            // Campo taxa de negociação
+            $negotiationFeeValueLabel = new MText('negotiationFeeValueLabel', _M('Taxa de negociação', $module));
+            $negotiationFeeValueLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $negotiationFeeValue = new MTextField('negotiationFeeValue', ( $negociationConfig->negotiationFee > 0 ? $negociationConfig->negotiationFee : '0'), null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE') );
+            $negotiationFeeValue->setJsHint(_M('Taxa de negociação', $module));                
+            $negotiationFeeValue->setReadOnly(true);
+            $hctNegotiationFeeValue = new MHContainer('hctNegotiationFeeValue', array($negotiationFeeValueLabel, $negotiationFeeValue));
+            $fields[] = $hctNegotiationFeeValue;
+        }
+
+        // Liberar conceção de descontos somente se for administrador.
+        if ( $MIOLO->checkAccess(__CLASS__, A_ADMIN) )
+        {
+            $discountvalue = SAGU::NVL($this->getFormValue('discountvalue', $data->discountvalue));
+            $args = new stdClass();
+            $args->discountvalue = (strlen($discountvalue)) ? $discountvalue : DB_TRUE;
+         
+            // Campo desconto
+            $labelDiscount = new MText('labelDiscount', _M('Desconto', $module));
+            $labelDiscount->setClass('m-caption');
+            $labelDiscount->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $discount = new MRadioButton('discountByValue', DB_TRUE, '', ($args->discountvalue == DB_TRUE) ? true : false, "em valor");
+            $discount->addAttribute('onChange', $this->getAjaxAction('obterCampoDesconto', 'divDiscount', false, array('discountvalue' => DB_TRUE)));
+            $percent = new MRadioButton('discountByValue', DB_FALSE, '', ($args->discountvalue == DB_FALSE) ? true : false, "em percentual");
+            $percent->addAttribute('onChange', $this->getAjaxAction('obterCampoDesconto', 'divDiscount', false, array('discountvalue' => DB_FALSE)));
+            $fields[] = new MHContainer('valueDiscount', array($labelDiscount, $discount, $percent));
+            
+            $fields[] = new MDiv('divDiscount', $this->obterCampoDesconto($args));
+            
+            if ( $args->discountvalue == DB_FALSE )
+            {
+                $validators[] = new MFloatValidator('percentValue', _M('Valor de desconto', $module));
+            }
+            else
+            {
+                $validators[] = new MFloatValidator('discount', _M('Valor de desconto', $module));
+            }
+        }
+        
+        // Campo valor do novo titulo
+        $invoiceValueLabel = new MText('invoiceValueLabel', _M('Valor do novo título', $module));
+        $invoiceValueLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));                 
+        $invoiceValue = new MTextField('invoiceValue', SAGU::nvl($this->getFormValue('invoiceValue', $data->invoiceValue), $this->getFormValue('negotiationValue', $data->negotiationValue), $this->getFormValue('startNegotiationValue', $data->startNegotiationValue)), null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), '', '', true);
+        $invoiceValue->setJsHint(_M('Valor do novo título', $module));
+        $hctinvoiceValue = new MHContainer('hctinvoiceValue', array($invoiceValueLabel, $invoiceValue));                
+        $fields[] = $hctinvoiceValue;        
+        
+        // Campo observações
+        $observationLabel = new MText('observationLabel', _M('Observações', $module));
+        $observationLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $observation = new MMultiLineField('observation', ( strlen($this->getFormValue('observation', $data->observation)) > 0 ? $this->getFormValue('observation', $data->observation) : '' ), null, 80, 4, 40);
+        $observation->setJsHint(_M('Data do novo vencimento', $module));
+        $hctobservation = new MHContainer('hctinvoiceMaturity', array($observationLabel, $observation));
+        $fields[] = $hctobservation;
+        
+        //Pessoa
+        $personIdLabel = new MText('personIdLabel', _M('Pessoa',$module).':');
+        $personIdLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $personIdLabel->setClass('m-caption m-caption-required');
+        $personId = new MLookupTextField('personId', $this->getFormValue('personId', $data->personId), '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), null, null, 'personName', 'basic', 'PhysicalPerson', null, null, true);
+        $personId->setJsHint(_M('Informe o código da pessoa',$module));
+        $personId->setReadOnly(true);
+        $personId->showButton = false;
+        $validators[] = new MIntegerValidator('personId', _M('Pessoa', $module), 'required');
+        $personIdName = new MTextField('personIdDescription', $this->getFormValue('personIdDescription', $data->personIdDescription), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'), null, null, true);
+        $personIdName->setJsHint(_M('Nome da pessoa',$module));
+        $fields[] = $personIdCnt = new MHContainer('personIdCnt', array($personIdLabel, $personId,$personIdName));
+        $personIdCnt->setShowLabel(true);
+        
+        // Campo novo vencimento
+        $invoiceMaturityLabel = new MText('invoiceMaturityLabel', _M('Novo vencimento', $module));
+        $invoiceMaturityLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $invoiceMaturityLabel->setClass('m-caption m-caption-required');
+        if( !$MIOLO->checkAccess(__CLASS__, A_ADMIN) )
+        {
+            $invoiceMaturity = new MTextField('invoiceMaturity', SAGU::addIntervalInDate(SAGU::getDateNow(), 'd', $negociationConfig->maturityDays), null, SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'), '', '', true);
+        }
+        else
+        {
+            $invoiceMaturity = new MCalendarField('invoiceMaturity', ( strlen($data->invoiceMaturity) > 0 ? $data->invoiceMaturity : SAGU::addIntervalInDate(SAGU::getDateNow(), 'd', $negociationConfig->maturityDays) ), null, SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+        }
+        $invoiceMaturity->setJsHint(_M('Data do novo vencimento', $module));
+        $hctinvoiceMaturity = new MHContainer('hctinvoiceMaturity', array($invoiceMaturityLabel, $invoiceMaturity));
+        $fields[] = $hctinvoiceMaturity;
+        $validators[] = new MRequiredValidator('invoiceMaturity', _M('Novo vencimento', $module));
+                
+        if( $data->operationId == 'n' ) // Negociação
+        {            
+            $negotiationOption['1'] = _M('Criar um novo título e fechar os demais');
+            $negotiationOption['2'] = _M('Dividir entre as parcelas de mensalidade restantes');
+            $negotiationOption['3'] = _M('Dividir em novas parcelas conforme configuração e fechar as demais');
+        }
+        else // Antecipação
+        {
+            $negotiationOption['1'] = _M('Criar um novo título e fechar os demais');
+        }
+            
+        $fldNegotiationOption = new MSelection('negotiationOption', SAGU::NVL($this->getFormValue('negotiationOption', $data->negotiationOption), '1'), null, $negotiationOption, false);
+        $fldNegotiationOption->setAllowNullValue(false);
+        $fldNegotiationOption->addAttribute('onChange', 'changeDiv(this)');
+
+        $optionNewParcels = SForm::getAjaxAction('changeNegotiationOption', 'optionNewParcels', true);
+        $optionNewParcels = explode('javascript:', $optionNewParcels);
+
+        $divNegotiationOption = SForm::getAjaxAction('changeNegotiationOption', 'divNegotiationOption', true);
+        $divNegotiationOption = explode('javascript:', $divNegotiationOption);
+
+        $MIOLO->page->addJsCode("
+        
+        function changeDiv(obj)
+        {
+            if ( obj.value == '3' )
+            {
+                document.getElementById('optionNewParcels').style.display = 'block';
+                document.getElementById('divNegotiationOption').style.display = 'none';
+                {$optionNewParcels[1]}
+            }
+            else
+            {
+                document.getElementById('optionNewParcels').style.display = 'none';
+                document.getElementById('divNegotiationOption').style.display = 'block';
+                {$divNegotiationOption[1]}                                        
+            }
+        }
+
+        ");
+
+        $divOptionNewParcels = new MDiv('optionNewParcels');
+
+        $fields[] = new MBaseGroup('ctnNegotiationOption', _M('O que deseja fazer com o novo valor?', $module), array($fldNegotiationOption, $divOptionNewParcels));
+            
+        //Carrega campos com informações conforme a opção selecionada
+        $fields[] = new MDiv('divNegotiationOption', $this->changeNegotiationOption($data));
+        
+        $this->setValidators($validators);
+        return $fields;
+    }
+    
+    /**
+     * Retorna o campo de desconto.
+     * 
+     * @param stdClass $args
+     * @return MHContainer
+     */
+    public function obterCampoDesconto($args)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $discountLabel = new MText('discountLabel', 'Valor do desconto');
+        $discountLabel->setClass('m-caption');
+        $discountLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        
+        // Se o valor for em percentual.
+        if ($args->discountvalue == DB_FALSE)
+        {
+            $ajaxAction = SForm::getAjaxAction('atualizarValores', 'divNegotiationOption', true, array('discountByValue' => DB_FALSE));
+            $discount = new MTextField('percentValue', $MIOLO->_REQUEST('percentValue'), null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), _M('%', $module));
+            $discount->addAttribute('onChange', $ajaxAction);
+        }
+        else
+        {
+            $ajaxAction = SForm::getAjaxAction('atualizarValores', 'divNegotiationOption', true, array('discountByValue' => DB_TRUE));
+            $discount = new MTextField('discount', $MIOLO->_REQUEST('discount'), null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), '', '', ( !$MIOLO->checkAccess(__CLASS__, A_ADMIN) ) );
+            $discount->setJsHint(_M('Valor de desconto', $module));
+            $discount->addAttribute('onChange', $ajaxAction);
+        }
+        
+        $hContainer = new MHContainer('hcDicounts', array($discountLabel, $discount));
+        $hContainer->addAttribute('style', 'margin-top:3px');
+        
+        return $hContainer;
+    }
+        
+    /**
+     * Cria a popup com campos para efetuar o login do administrador
+     * @return MPopup 
+     */
+    public function loadPopup($args)
+    {        
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+                
+        // Campo usuário
+        $flds[] = $user = new MTextField('user', null, _M('Usuário', $module), 20);
+        $user->setJsHint(_M('Informe o usuário', $module));        
+
+        // Campo senha
+        $flds[] = $password = new PasswordField('password', null, _M('Senha', $module), 20);
+        $password->setJsHint(_M('Informe a senha', $module));
+        
+        $flds[] = new MButton('btnLogin', _M('Login', $module));        
+        $fields[] = new MPopup('popupAministrator', $flds, _M('Acessar como administrador', $module));
+        
+        return $fields;
+    }
+    
+    /**
+     * Evento ajax acionado sempre que alterado um dos campos que influencie no valor total da negociação.
+     * Atualiza o valor do novo titulo a recalcula a divisão entre as parcelas de mensalidades existentes.
+     */
+    public function atualizarValores($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $stepData = $this->getStepData();
+        $operationId = $stepData->operationId;
+        $isNegotiation = $operationId == FinNegotiation::NEGOCIACAO;
+        $invoiceNegociationConfig = FinInvoiceNegociationConfig::getInstanceByOperation($operationId);
+        $discount = SAGU::NVL($args->discount, '0');
+        $percentValue = $args->percentValue;
+        $discByPercent = false;
+        
+       
+        
+        // Se for marcado desconto por percentual
+        if ( ( $args->discountByValue == DB_FALSE ) && SAGU::allIsFilled($args->percentValue) )
+        {
+            $discByPercent = true;            
+        }
+        
+        $busInvoice = new BusinessFinanceBusReceivableInvoice();            
+        
+        $data = $this->getStepData();
+        
+        //Valor de negociação            
+        $negotiationValue = 0;
+        foreach($data->subInvoices as $cod=>$invoice)
+        {
+            if( !$invoice->removeData )
+            {
+                if ( $args->fineRelease == DB_FALSE && $args->interestRelease == DB_FALSE )
+                {
+                    $negotiationValue = SAGU::calcNumber($negotiationValue.'+'.$busInvoice->getInvoiceBalanceWithPolicies($invoice->invoiceId));
+                }
+                else if ( $args->fineRelease == DB_FALSE )
+                {
+                    $negotiationValue = SAGU::calcNumber($negotiationValue.'+'.$busInvoice->getInvoiceBalanceDatedWithoutInterest($invoice->invoiceId));
+                }
+                else if ( $args->interestRelease == DB_FALSE )
+                {
+                    $negotiationValue = SAGU::calcNumber($negotiationValue.'+'.$busInvoice->getInvoiceBalanceDatedWithoutFine($invoice->invoiceId));
+                }
+                else
+                {
+                    $negotiationValue = SAGU::calcNumber($negotiationValue.'+'.$busInvoice->getInvoiceBalance($invoice->invoiceId));
+                }
+            }
+        }
+        //Atualiza desconto
+        
+        //Calcula o valor com o desconto
+        $negotiationValue = SAGU::NVL($negotiationValue, '0');
+        
+        if ( $discByPercent )
+        {
+            // Calcula desconto sobre percentual
+            if (is_numeric($percentValue) )
+            {
+                $percentValue = SAGU::calcNumber("(100 - {$percentValue}) * 0.01");
+                $invoiceValue = SAGU::calcNumber("{$negotiationValue} * {$percentValue}", true);
+            }
+        }
+        else
+        {
+            // Calcula desconto sobre valor
+            if ( is_numeric($discount) )
+            {
+                $invoiceValue = SAGU::calcNumber("{$negotiationValue} - {$discount}");
+            }
+        }
+        
+        //Adiciona a taxa de negociação
+        if( $args->negotiationFee != 't' && $invoiceNegociationConfig->negotiationFee > 0 )
+        {
+            $invoiceValue = SAGU::calcNumber($invoiceValue.' + '.$invoiceNegociationConfig->negotiationFee);
+        }
+        
+        //Atualiza os valores dos campos Valor em negociação e Valor do novo título
+        $MIOLO->page->setElementValue('negotiationValue', $negotiationValue);
+        $MIOLO->page->setElementValue('invoiceValue', $invoiceValue);    
+        
+        
+        //Atualiza dados caso a opção for 'Dividir entre as parcelas de mensalidades restantes'
+        if( $args->negotiationOption == '2' )
+        {
+            $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+            $busEntry = new BusinessFinanceBusEntry();                
+            $busOperation = new BusinessFinanceBusOperation();                
+
+            $filters = new stdClass();                    
+            $filters->personId = $args->personId;
+            $filters->onlyOpen = DB_TRUE;
+            $filters->isCanceled = DB_FALSE;
+            $filters->isClosed = DB_FALSE;                    
+            $filters->isExpired = DB_FALSE; //Traz os titulos de antecipação  
+            $filters->operationId = $busDefaultOperations->getDefaultOperation('enrolloperation'); //Somente títulos de MENSALIDADE
+            
+            $negotiationInvoices = $busInvoice->searchReceivableInvoice($filters);   
+            
+            if( count($negotiationInvoices) > 0 )
+            {
+                //Calcula o valor de cada lancamento a ser adicionado nos titulos em aberto
+                $entryValue = SAGU::calcNumber($invoiceValue.'/'.count($negotiationInvoices), true);
+
+                //Operação da negociação
+                $agreementoperation = $busDefaultOperations->getDefaultOperation('agreementoperation');
+                $operation = $busOperation->getOperation($agreementoperation);
+                
+                $releaseOk = false;
+                
+                //Percorre e divide o valor da negociação entre os titulos em aberto
+                foreach($negotiationInvoices as $cod=>$invoice)
+                {
+                    $invoiceId = $invoice[0]; //Numero do titulo
+                    $maturityDate = $invoice[9]; //Data do vencimento
+                    $oldValue = $busInvoice->getInvoiceBalance($invoiceId); //Valor antigo                    
+                    $newValue = SAGU::calcNumber($busInvoice->getInvoiceBalance($invoice[0]).($operation->operationTypeId == 'D' ? '-' : '+').$entryValue, true); //Novo valor
+                    if( $args->negotiationFee != DB_TRUE && $invoiceNegociationConfig->negotiationFee > 0 )
+                    {
+                        if( !$releaseOk ) //Somente insere na primeira parcela
+                        {
+                            //Adiciona o valor da taxa de negociação so para a primeira parcela
+                            $newValue = SAGU::calcNumber($newValue.'+'.$invoiceNegociationConfig->negotiationFee);
+                            $releaseOk = true;
+                        }
+                    }
+                    $dataTable[] = array($invoiceId, $maturityDate, $oldValue, $newValue);
+                }
+                $fld[] = new MHContainer('ctnTotalInfo', array(new MTextLabel('totalInfo', $invoiceValue, _M('Valor total'))));
+                $fld[] = new MHContainer('ctnParcelsNumber', array(new MTextLabel('parcelsNumber', count($negotiationInvoices), _M('Número de parcelas'))));
+                $fld[] = new MHContainer('ctnParcelValue', array(new MTextLabel('parcelValue', $entryValue, _M('Valor de cada parcela'))));
+                if( $args->negotiationFee != DB_TRUE )
+                {
+                    $fld[] = new MHContainer('ctnFeeValue', array(new MTextLabel('feeValue', SAGU::NVL($invoiceNegociationConfig->negotiationFee, '0'), _M('Taxa de negociação'))));
+                }
+                
+                $fields[] = new MBaseGroup('bsgInfo', _M('Valores a serem gerados'), $fld);
+                $fields[] = new MSeparator();
+                
+                $columns = array( 
+                          _M('Título',$module),
+                          _M('Data de vencimento', $module),
+                          _M('Valor atual', $module),
+                          _M('Novo valor', $module) );
+
+                $table = new MTableRaw(_M('Simulação da divisão entre parcelas existentes'), $dataTable, $columns);
+                $table->SetAlternate(true);                
+                $table->addStyle('width', '98%');
+                $fields[] = $table;                
+            }
+            else
+            {
+                //Não existem mensalidades em aberto.                
+                echo("<script>alert('" . _M("Não existem mensalidades restantes a serem pagas") . "');</script>");
+            }
+            return $fields;
+        }
+    }
+    
+    /**
+     * Autentica o usuário e senha do administrador e adiciona a permissão de edição na tela
+     */
+    public function btnLogin_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $session = $MIOLO->getSession();
+                
+        //Usuário e senha
+        $user = MIOLO::_request('user');
+        $password = MIOLO::_request('password');
+        
+        $data = $this->getStepData();
+        
+        if( strlen($user) > 0 && strlen($password) > 0 )
+        {
+            try 
+            {            
+                $session->setValue('authUser', $user);
+                $MIOLO->perms->addUserPerm($user, $password, 'FrmNegotiation', A_ADMIN);
+                $this->GetField('divNegotiationOptions')->setInner($this->loadOptions($data));
+            }
+            catch( Exception $e )
+            {
+                $this->addError($e->getMessage());
+            }
+        }
+        else
+        {
+            $this->addError(_M('Informe o usuário e senha', $module));
+        }
+    }
+    
+    /**
+     * Salva a negociação
+     * @param type $sender 
+     */
+    public function finalizeButton_click($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $data = $this->getStepData();
+        $data->percentValue = $this->getRequestValue('percentValue', $data->percentValue);
+        $data->entryValue = $this->getRequestValue('entryValue', $data->entryValue);
+        $data->fineRelease = $this->getRequestValue('fineRelease', $data->fineRelease);
+        $data->interestRelease = $this->getRequestValue('interestRelease', $data->interestRelease);
+        
+        if ( !(strlen($data->invoiceMaturity) > 0) )
+        {
+            $error = $MIOLO->error(_M('O campo "Novo vencimento" deve ser informado.'));
+            return $error;
+        }
+        
+        // Obtém a data de competência do titulo mais antigo sendo negociado
+        $MSubDetail = new MSubDetail(); //subInvoices
+        $dadosTitulo = $MSubDetail->getData('subInvoices');
+        
+        foreach( $dadosTitulo as $titulo )
+        {
+            $vencimento[$titulo->invoiceId] = $titulo->maturityDate; 
+        }
+        
+        arsort($vencimento);
+        
+        foreach($vencimento as $key => $invoice)
+        {
+            $invoiceId = $key;
+            break;
+        }
+                
+        $busInvoice = new BusinessFinanceBusInvoice();
+        $titulo = $busInvoice->getInvoice($invoiceId);
+                
+        $invoiceNegociationConfig = new FinInvoiceNegociationConfig();
+        $filters->operation = $data->operationId;
+        $parcelsNumber = $data->parcelsNumber;
+        
+        if ( ( $parcelsNumber == null ) && ( $data->negotiationOption == '3' ) )
+        {
+            $error = $MIOLO->error(_M('O campo "Número de parcelas" deve ser informado.'));
+            return $error;
+        }
+                
+        $session = $MIOLO->getSession();
+
+        $count = 0;        
+        if( count($data->subInvoices) > 0 )
+        {
+            foreach($data->subInvoices as $cod=>$invoice)
+            {
+                if ( !$invoice->removeData )
+                {
+                    $count ++;
+                    $total = $total + $invoice->value;
+                    
+                    if($invoice->recordType_N == FinNegotiation::NEGOCIACAO)
+                    {
+                        if(SAGU::dateDiff(date('d/m/Y'), $invoice->invoiceMaturity)>0)
+                        {
+                                $errors[] = _M('O título '.$invoice->invoiceId.' ainda não venceu, neste caso deve ser uma antecipação', $module);
+                        }
+                    }
+                    else
+                    {
+                        if(SAGU::dateDiff(date('d/m/Y'), $invoice->invoiceMaturity)<0)
+                        {
+                                $errors[] = _M('O título '.$invoice->invoiceId.' já venceu, neste caso deve ser feito uma negociação', $module);
+                        }
+                    }
+                }
+            }
+        }
+        
+        if( !strlen($data->personId) > 0 )
+        {
+            $errors[] = _M('O campo pessoa deve ser informado', $module);
+        }
+        
+        //Valida se algum título foi adicionado
+        if( ! ( $count > 0 ) )
+        {
+            $errors[] = _M('Nenhum título selecionado para efetuar o desconto', $module);
+        }
+        
+        //Valor de desconto maior que o valor total dos títulos
+        if( $data->discount > $data->negotiationValue )
+        {
+            $errors[] = _M('O valor de desconto exede o valor total dos títulos.', $module);
+        }
+        
+        // Valida percentual
+        $percent = $invoiceNegociationConfig->percentValueEntry;
+        $entryValue = $data->entryValue;
+        
+        if ( $percent > 0 && strlen($entryValue) > 0 )
+        {
+            $minEntryValue = FinNegotiation::calculaValorEntrada($data->negotiationValue, $percent);
+            
+            if ( SAGU::calcNumber(" {$minEntryValue} - {$entryValue} ") > 0 )
+            {
+                $errors[] = _M('O Valor de entrada não pode ser menor que @1', $module, $minEntryValue);
+            }
+        }
+        
+        //Valor da negociação deve ser maior que zero
+        if( ! ($data->invoiceValue > 0 ) )
+        {
+            
+            $errors[] = _M('O valor da negociação deve ser maior que zero', $module);
+        }
+        
+        if ( $data->negotiationOption != 1 )
+        {
+            $formEntryValue = SAGU::NVL($data->entryValue, '0');
+            $data->invoiceValue = SAGU::NVL($data->invoiceValue, '0');
+            $data->invoiceValue = SAGU::calcNumber("{$data->invoiceValue} - {$formEntryValue}");
+        }
+        else
+        {
+            $data->invoiceValue = $data->negotiationValue;
+        }
+        
+        //Valida se não encontrou nenhum erro
+        if ( count($errors) == 0 )
+        {
+            try
+            {
+                SDatabase::beginTransaction();
+                
+                // Desconto.
+                $discount      = SAGU::NVL($data->discount, MIOLO::_REQUEST('discount'), '0');
+                $discountValue = $discount;
+                
+                if ( $data->discountByValue == DB_FALSE && SAGU::allIsFilled($data->percentValue) )
+                {                        
+                    $discount      = $data->percentValue;
+                    if (is_numeric($discount) )
+                    {
+                        $discountValue = SAGU::calcNumber("({$data->negotiationValue} * {$discount}) / 100");
+                    }
+                }
+                
+                // Desconta no valor da negociação o valor de desconto, o valor de entrada, e divide pelo número de parcelas.
+                if ( $data->negotiationOption == '3' )
+                {
+                    if ( is_numeric($discountValue) )
+                    {
+                        $data->invoiceValue = SAGU::calcNumber("{$data->negotiationValue} - {$discountValue}");
+                    }
+                    $data->invoiceValue = SAGU::calcNumber("{$data->invoiceValue} - {$formEntryValue}");   
+                    $data->invoiceValue = ( $data->invoiceValue / $parcelsNumber ) . "";                    
+                    $data->invoiceValue = str_replace(',', '.', $data->invoiceValue);
+                    $discount = 0; // Reseta o desconto para não ser novamente calculado.
+                }
+                
+                //Configurações da negociação do título
+                $negociationCongig = FinInvoiceNegociationConfig::getInstanceByOperation($data->operationId);
+                
+                $cont = ($parcelsNumber) ? $parcelsNumber : 1;
+                $entryV = 1;
+
+                $negotiation = new FinNegotiation();   
+                $user = $session->getValue('authUser');
+                if( strlen($user) > 0 )
+                {
+                    $busUser = new BusinessAdminBusUser();
+                    $dataUser = $busUser->getUserByLogin($user);
+                    $negotiation->adminUser = $dataUser->idUser;
+                }
+                $negotiation->negotiationOption = $data->negotiationOption;
+                $negotiation->policyId = $negociationCongig->policyId;
+                $negotiation->personId = $data->personId;
+                $negotiation->feeRelease = ($data->negotiationFee == DB_TRUE ? DB_TRUE : DB_FALSE);
+                if ( is_numeric($discountValue ) )
+                {
+                    $negotiation->discount = $discountValue;
+                }
+                else
+                {
+                    $negotiation->discount = SAGU::NVL($data->discount, MIOLO::_REQUEST('discount'), '0');
+                }
+                $negotiation->parcelNumber = $entryV;
+                $negotiation->maturityDate = SAGU::addIntervalInDate(SAGU::getDateNow(), 'd', 1);
+                $negotiation->entryValue = $entryValue;
+                $negotiation->recordType = $data->operationId;
+                $negotiation->competencyDate = $titulo->competencyDate;
+                $negotiation->value = $data->invoiceValue;
+                $negotiation->observation = $data->observation;
+                
+                $negotiationId = $negotiation->save(true);
+                $negotiation->negotiationId = $negotiationId;
+                
+                // Caso exista valor de entrada, insere a primeira parcela de entrada.
+                if ( $entryValue > 0 && $data->negotiationOption != 1 )
+                {
+                    //Insere Valor da entrada
+                    $negotiation->insereTituloDeEntrada();
+                    $entryV ++;
+                }
+
+                // Parcelas de negociação.
+                for ( $x = $entryV; $x < ($cont + $entryV); $x++  )
+                {
+                    if ( $data->negotiationOption == '3' )
+                    {
+                        $maturityDate = $this->getFormValue('parcel_' . $x);
+                        $negotiation->parcelNumber = $x;
+                        
+                        $generatedInvoice = new stdClass();
+                        $generatedInvoice->parcelNumber = $x;
+                        $generatedInvoice->maturityDate = $maturityDate;
+                        $generatedInvoice->value = $data->invoiceValue;
+                        
+                        $negotiation->generatedInvoices[$x] = $generatedInvoice;
+                    }
+                    else
+                    {
+                        $maturityDate = $data->invoiceMaturity;
+                        $negotiation->parcelsNumber = $parcelsNumber;
+                    }
+                    
+                    //Popula array de títulos a dar baixa
+                    if ( $x == $entryV )
+                    {
+                        foreach( $data->subInvoices as $cod => $invoice )
+                        {
+                            if ( !$invoice->removeData )
+                            {
+                                $invoices[] = $invoice->invoiceId;
+                            }
+                        }
+                        $negotiation->invoices = $invoices;
+                    }
+                }
+
+                //Insere os títulos da negociacao
+                $negotiation->maturityDate = $maturityDate;
+                
+                $ok = $negotiation->insertInvoicesNegotiation();
+
+                SDatabase::commit();
+                
+                //Remove a permissao adicionada temporariamente
+                if( strlen($user) > 0 )
+                {
+                    $session->setValue('authUser', null);
+                    $MIOLO->perms->removeUserPerm('FrmNegotiation', A_ADMIN);
+                }
+
+                parent::finalizeButton_click($args);
+                
+                $this->tbBtnSave_click($sender, $ok);
+            }
+            catch(Exception $e)
+            {
+                SDatabase::rollback();
+                $MIOLO->error($e->getMessage());
+            }
+        }
+        else
+        {
+            //Exibe os erros em tela
+            $this->addError($errors);
+        }
+        
+        parent::finalizeButton_click($args);
+    }
+    
+    /**
+     * Obtém o $opts para caso de inserção (continuar inserindo)
+     * Adiciona um evento referente a ação de inserir para limpar a subdetail
+     * @return type
+     */
+    public function getInsertOpts()
+    {
+        $opts = array(
+            'function' => SForm::FUNCTION_INSERT,
+            'event' => 'tbBtnNew:click'
+        );
+
+        return $opts;
+    }
+    
+    /**
+     * Alterna as informações do radioButton "O que deseja fazer com o novo valor?"
+     */
+    public function changeNegotiationOption($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $stepData = $this->getStepData();
+        $invoiceNegociationConfig = FinInvoiceNegociationConfig::getInstanceByOperation($stepData->operationId);
+        
+        $busInvoice = new BusinessFinanceBusReceivableInvoice();            
+        $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+        $busEntry = new BusinessFinanceBusEntry();                
+        $busOperation = new BusinessFinanceBusOperation();                
+        
+        // Acho que aqui vou fazer carregar os novos títulos.
+        if( SAGU::NVL($args->negotiationOption, $this->getFormValue('negotiationOption')) == '2' || $_POST['negotiationOption'] == '2' )
+        {            
+            $filters = new stdClass();                    
+            $filters->personId = $args->personId;
+            $filters->onlyOpen = DB_TRUE;
+            $filters->isCanceled = DB_FALSE;
+            $filters->isClosed = DB_FALSE;                    
+            $filters->isExpired = DB_FALSE; //Traz os titulos de antecipação  
+            $filters->isEnrollOperations = DB_TRUE; //Operações de mensalidade
+
+            $negotiationInvoices = $busInvoice->searchReceivableInvoice($filters);
+            if( count($negotiationInvoices) > 0 )
+            {
+                //Calcula o valor de cada lancamento a ser adicionado nos titulos em aberto
+                $entryValue = SAGU::calcNumber(SAGU::NVL($args->invoiceValue, $this->getFormValue('invoiceValue')).'/'.count($negotiationInvoices), true);
+
+                //Operação da negociação
+                $agreementoperation = $busDefaultOperations->getDefaultOperation('agreementoperation');
+                $operation = $busOperation->getOperation($agreementoperation);
+                
+                $releaseOk = false;
+                
+                //Percorre e divide o valor da negociação entre os titulos em aberto
+                foreach($negotiationInvoices as $cod=>$invoice)
+                {
+                    $invoiceId = $invoice[0]; //Numero do titulo
+                    $maturityDate = $invoice[9]; //Data do vencimento
+                    $oldValue = $busInvoice->getInvoiceBalance($invoiceId); //Valor antigo                    
+                    $newValue = SAGU::calcNumber($busInvoice->getInvoiceBalance($invoice[0]).($operation->operationTypeId == 'D' ? '-' : '+').$entryValue, true); //Novo valor
+                    if( $args->negotiationFee != DB_TRUE && $invoiceNegociationConfig->negotiationFee > 0 )
+                    {
+                        if( !$releaseOk ) //Somente insere na primeira parcela
+                        {
+                            //Adiciona o valor da taxa de negociação so para a primeira parcela
+                            $newValue = SAGU::calcNumber($newValue.'+'.$invoiceNegociationConfig->negotiationFee);
+                            $releaseOk = true;
+                        }
+                    }
+                    $dataTable[] = array($invoiceId, $maturityDate, $oldValue, $newValue);
+                }
+                
+                $fld[] = new MHContainer('ctnTotalInfo', array(new MTextLabel('totalInfo', $args->invoiceValue, _M('Valor total'))));
+                $fld[] = new MHContainer('ctnParcelsNumber', array(new MTextLabel('parcelsNumber', count($negotiationInvoices), _M('Número de parcelas'))));
+                $fld[] = new MHContainer('ctnParcelValue', array(new MTextLabel('parcelValue', $entryValue, _M('Valor de cada parcela'))));
+                if( $args->negotiationFee != DB_TRUE )
+                {
+                    $fld[] = new MHContainer('ctnFeeValue', array(new MTextLabel('feeValue', SAGU::NVL($invoiceNegociationConfig->negotiationFee, '0'), _M('Taxa de negociação'))));
+                }
+                
+                $fields[] = new MBaseGroup('bsgInfo', _M('Valores a serem gerados'), $fld);
+                $fields[] = new MSeparator();
+                
+                $columns = array( 
+                          _M('Título',$module),
+                          _M('Data de vencimento', $module),
+                          _M('Valor atual', $module),
+                          _M('Novo valor', $module) );
+
+                $table = new MTableRaw(_M('Simulação da divisão entre parcelas existentes'), $dataTable, $columns);
+                $table->SetAlternate(true);                
+                $table->addStyle('width', '98%');
+                $fields[] = $table;                
+            }
+            else
+            {
+                //Não existem mensalidades em aberto.                
+                echo("<script>alert('" . _M("Não existem mensalidades restantes a serem pagas.") . "');</script>");
+            }
+        }
+        else if ( SAGU::NVL($args->negotiationOption, $this->getFormValue('negotiationOption')) == '3' || $_POST['negotiationOption'] == '3' )
+        {
+            $invoiceNegociationConfig = new FinInvoiceNegociationConfig();
+
+            $stepData = $this->getStepData();
+
+            $filters->operation = $stepData->operationId;
+
+            // Busca as configurações de negociação. maturityDays = dia do vencimento
+            $negotiationConfig   = $invoiceNegociationConfig->searchGrid($filters, true);
+
+            foreach ( $negotiationConfig as $dataConfig )
+            {
+                $maxParcelsNumbers = $dataConfig->parcelsnumber;                
+            }
+            
+            $parcelsNumberLabel = new MLabel(_M('Número de parcelas', $module) . ':');
+            $parcelsNumberLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $parcelsNumberLabel->setClass('m-caption m-caption-required');
+            $parcelsNumber  = new MIntegerField('parcelsNumber', null, null, 10, null, 'required');
+            
+            if ( $args->adminUser == null )
+            {
+                $parcelsNumber->hint = _M("A quantidade máxima de parcelas configurada é " . $maxParcelsNumbers);
+            }            
+            
+            $parcelsNumberContainer = new MHContainer('parcelsNumberContainer', array($parcelsNumberLabel, $parcelsNumber));
+            $fields[] = $parcelsNumberContainer;
+            
+            $button = new MButton('showParcels', _M('Gerar'), "document.getElementById('divNegotiationOption').style.display = 'block';" . SForm::getAjaxAction('createNewParcels', 'divNegotiationOption', true));
+            $button->addAttribute('style', 'margin-top: 15px');
+            $fields[] = $button;
+            
+            $fields[] = new MDiv('divParcels');
+        }
+        
+        return $fields;
+    }
+    
+    /**
+     * Cria as novas parcelas que serão geradas
+     * da negociação
+     * 
+     * @param array $args
+     * @return array $fields
+     */
+    public function createNewParcels($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $data        = $this->getStepData();
+        $personId    = $this->personCode;
+        $personName  = $data->personIdDescription;
+        $this->date  = date("d/m/Y");
+        
+        $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+        $busOperation = new BusinessFinanceBusOperation();        
+
+        $invoiceNegociationConfig = new FinInvoiceNegociationConfig();
+
+        $stepData = $this->getStepData();
+
+        $filters->operation = $stepData->operationId;
+        
+        $formEntryValue = SAGU::NVL($args->entryValue, '0');
+        $invoiceValue = SAGU::NVL($args->invoiceValue, $this->getFormValue('invoiceValue')) - $formEntryValue;
+
+        // Busca as configurações de negociação. maturityDays = dia do vencimento
+        $negotiationConfig   = $invoiceNegociationConfig->searchGrid($filters, true);
+
+        foreach ( $negotiationConfig as $dataConfig )
+        {
+            $maxParcelsNumbers = $dataConfig->parcelsnumber;
+            $maturityDays      = $dataConfig->maturityDays;
+            $negotiationFee    = $dataConfig->negotiationFee;
+        }
+        
+        if ( $args->adminUser == null )
+        {
+            if ( $args->parcelsNumber > $maxParcelsNumbers )
+            {
+                $error = $this->addError(_M('O número de parcelas não pode exceder o limite configurado.'));
+                return $error;
+            }
+        }
+        
+        if ( $args->parcelsNumber <= 0 )
+        {
+            $error = $this->addError(_M('O número de parcelas deve ser maior que zero.'));
+            return $error;
+        }
+        
+        $negotiationInvoices = $args->parcelsNumber;
+
+        //Calcula o valor de cada lancamento a ser adicionado nos titulos em aberto
+        $parcelValue = SAGU::calcNumber($invoiceValue.'/'.$negotiationInvoices, true);
+
+        //Operação da negociação
+        $agreementoperation = $busDefaultOperations->getDefaultOperation('agreementoperation');
+        $operation = $busOperation->getOperation($agreementoperation);
+
+        $releaseOk = false;
+        $incr = 1;
+
+        // Cria primeira parcela, caso necessario
+        if ( $formEntryValue > 0 )
+        {
+            $parcelDate = SAGU::addIntervalInDate(SAGU::getDateNow(), 'd', 1);
+            $fields[]    = new MHiddenField('parcel_' . $incr, $parcelDate);
+            $dataTable[] = array($incr, $personId, $personName, $parcelDate, $formEntryValue);
+            
+            $incr ++;
+        }
+        
+        // Divide o valor da negociação entre os novos títulos gerados conforme configuração.
+        for ( $x = $incr; $x < ($negotiationInvoices + $incr); $x++ )
+        {
+            $parcelDate  = $this->parcelDate($maturityDays, $x);
+            $fields[]    = new MHiddenField('parcel_' . $x, $parcelDate);
+            $dataTable[] = array($x, $personId, $personName, $parcelDate, $parcelValue);
+        }
+
+        $fld[] = new MHContainer('ctnTotalInfo', array(new MTextLabel('totalInfo', SAGU::NVL($args->invoiceValue, $this->getFormValue('invoiceValue')), _M('Valor total'))));
+        $fld[] = new MHContainer('ctnParcelsNumber', array(new MTextLabel('parcelsNumber', $negotiationInvoices, _M('Número de parcelas'))));
+        
+        if ( $formEntryValue > 0 )
+        {
+            $fld[] = new MHContainer('ctnEntryParcelValue', array(new MTextLabel('entryParcelValue', $formEntryValue, _M('Valor de entrada'))));
+        }
+        
+        $fld[] = new MHContainer('ctnParcelValue', array(new MTextLabel('parcelValue', $parcelValue, _M('Valor de cada parcela'))));
+        
+        if( $args->negotiationFee != DB_TRUE )
+        {
+            $fld[] = new MHContainer('ctnFeeValue', array(new MTextLabel('feeValue', SAGU::NVL($negotiationFee, '0'), _M('Taxa de negociação'))));
+        }
+
+        $fields[] = new MBaseGroup('bsgInfo', _M('Valores a serem gerados'), $fld);
+        $fields[] = new MSeparator();
+
+        $columns = array( 
+                  _M('Parcela',$module),
+                  _M('Pessoa',$module),
+                  _M('Nome',$module),
+                  _M('Data de vencimento', $module),                      
+                  _M('Valor', $module) );
+
+        $table = new MTableRaw(_M('Simulação das novas parcelas que serão geradas'), $dataTable, $columns);
+        $table->SetAlternate(true);                
+        $table->addStyle('width', '98%');
+        $fields[] = $table;        
+
+        return $fields;
+    }
+    
+    /**
+     * Crias as datas de vencimento das parcelas.
+     * Passar esta função para sql!
+     */
+    public function parcelDate($maturityDays, $parcelNumber)
+    {   
+        // Se é a primeira parcela.
+        if ( $parcelNumber == 1 )
+        {
+            //Calcula o vencimento da primeira parcela (data atual + dias para vencimento)
+            $this->date = SAGU::addIntervalInDate(SAGU::getDateNow(), 'd', $maturityDays);
+        }
+        else
+        {
+            //Calcula o vencimento do mês seguinte
+            $this->date = SAGU::addIntervalInDate(SAGU::getDateNow(), 'd', $maturityDays);
+            $this->date = SAGU::addIntervalInDate($this->date, 'm', ($parcelNumber-1));            
+        }
+        
+        //Se a data cair num sábado ou domingo pegar proximo dia útil
+        if( SAGU::getDatePart($this->date, 'DOW') == '0' ) //Domingo soma 1 dia
+        {
+            $this->date = SAGU::addIntervalInDate($this->date, 'd', '1');
+        }
+        elseif( SAGU::getDatePart($this->date, 'DOW') == '6' ) //Sabado soma 2 dias
+        {
+            $this->date = SAGU::addIntervalInDate($this->date, 'd', '2');
+        }
+        
+        return $this->date;
+    }
+}
+?>

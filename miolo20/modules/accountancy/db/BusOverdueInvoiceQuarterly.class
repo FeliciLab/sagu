@@ -1,0 +1,206 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ *
+ * @author Armando Taffarel Neto [taffarel@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * 
+ * @since
+ * Class created on 11/07/2006
+ *
+ **/
+
+/**
+ **/
+class BusinessAccountancyBusOverdueInvoiceQuarterly extends sBusiness
+{
+    function BusinessAccountancyBusOverdueInvoiceQuarterly()
+    {
+    }
+
+    /**
+     * Get the Overdue invoices (quarterly) in a specified period
+     *
+     * @param $filters (object): null
+     *
+     * @return (array): null
+     **/
+    public function createTempTable()
+    {
+        $sql = 'CREATE TEMP TABLE 
+                finQuarterlyInvoice ( accountSchemeId varchar(30),
+                                      courseId        varchar(10),
+                                      courseName      varchar(50),
+                                      balance         numeric(14,4),
+                                      description     varchar(100) ) ';
+                                 
+        unset($result);
+        if ( strlen($sql) > 0 )
+        {
+            $db     = $this->getDatabase();
+            $result = $db->execute($sql);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Get the quarterly dates
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): An array containing the search results
+     **/
+    public function getQuarterlyDates($filters)
+    {
+        $sql = 'select TO_CHAR(TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'), \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       TO_CHAR((date(TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')) - \'1 month\'::interval)::date, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       TO_CHAR((date(TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')) - \'2 month\'::interval)::date, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       TO_CHAR((date(TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')) - \'3 month\'::interval)::date, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')' ;
+
+        if ( strlen($filters->limitDate) > 0 )
+        {
+            $args[] = $filters->limitDate;
+            $args[] = $filters->limitDate;
+            $args[] = $filters->limitDate;
+            $args[] = $filters->limitDate;
+        }
+
+        unset($result);
+        if ( strlen($sql) > 0 )
+        {
+            $db     = $this->getDatabase();
+            $result = $db->query(SAGU::prepare($sql, $args));
+        }
+
+        return $result[0];
+    }
+
+    /**
+     * Insert the values in the temporary table
+     *
+     * @param $filters (object): Search filters
+     *
+     * @return (array): null
+     **/
+    public function insertIntoTempTable($filters)
+    {
+        $sql = 'SELECT A.accountSchemeId,
+                       A.courseId,
+                       (SELECT shortname FROM acdCourse WHERE courseId = A.courseId) as courseName,
+                       round(sum(CASE WHEN
+                                      (SELECT operationTypeId FROM finOperation WHERE operationId = B.operationId) = \'C\'
+                                           THEN B.value * -1
+                                           ELSE B.value
+                                       END), 2) as balance, 
+                        \'' . $filters->description . '\'
+               FROM (SELECT invoiceId,
+                            accountSchemeId,
+                            A.courseId
+                  FROM ONLY finInvoice A
+                      WHERE iscanceled = FALSE
+                        AND invoiceIdDependence IS NULL
+                        AND maturityDate <= TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')'; 
+
+        if ( strlen($filters->limitDate) > 0 )
+        {
+            $args[] = $filters->limitDate;
+        }
+
+        if ( strlen($filters->previousDate) > 0 )
+        {
+            $sql .=  ' AND maturityDate >  TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            
+            $args[] = $filters->previousDate;
+        }
+        
+        $sql .= ') as A
+                     INNER JOIN (SELECT invoiceId,
+                                        operationId,
+                                        value
+                                 FROM finEntry
+                                 WHERE entryDate <= TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')) as B
+                         USING(invoiceId)
+                     INNER JOIN finOperation C
+                         USING(operationId)
+                GROUP BY A.accountSchemeId, A.courseId';
+
+        if ( strlen($filters->baseDate) > 0 )
+        {
+            $args[] = $filters->baseDate;
+        }
+      
+        unset($result);
+        if ( strlen($sql) > 0 )
+        {
+            $db     = $this->getDatabase();
+            $sql  = SAGU::prepare($sql, $args);
+            $sql  = 'INSERT INTO finQuarterlyInvoice (accountSchemeId,
+                                                      courseId,
+                                                      courseName,
+                                                      balance,
+                                                      description) ' . $sql;
+            $result = $db->query($sql);
+        }
+
+        return $result;
+    }
+
+    /**
+     * Get data from temporary table
+     *
+     * @param $filters (object): null
+     *
+     * @return (array): an array with data
+     **/
+    public function getData()
+    {
+        $sql = 'SELECT accountSchemeId,
+                       courseId,
+                       courseName,
+                       round(balance,' . SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') . '),
+                       description
+                FROM finQuarterlyInvoice
+                WHERE balance <> 0
+                ORDER BY accountSchemeId, courseId';
+        
+        unset($result);
+        if ( strlen($sql) > 0 )
+        {
+            $db     = $this->getDatabase();
+            $result = $db->query(SAGU::prepare($sql, $args));
+        }
+
+        return $result;
+    }
+}
+
+?>

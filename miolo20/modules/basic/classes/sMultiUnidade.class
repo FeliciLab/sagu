@@ -1,0 +1,467 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Classe que contem funcoes relativas a multiunidade do SAGU.
+ * 
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 16/11/2012
+ *
+ *
+ **/
+class sMultiUnidade
+{
+    /**
+     * Obtem tabelas que utilizam multiunidade
+     * 
+     * @return array
+     */
+    public static function obterTabelas()
+    {
+        return array(
+            
+            // Cadastros
+            'acdCurriculum',
+            'acdClass',
+            'acdSubClass',
+            'acdClassPupil',
+            'acdLearningPeriod',
+            'acdCourseOccurrence',
+            'acdPeriodEnrollDate',
+            //'acdEnrollConfig', ver documentação ticket #33552
+            'acdContractExaminingBoard',
+            //'acdAcademicCalendar',
+            'acdCourseVersionType',
+            'acdCourseVersion',
+            'acdCurricularComponentGroup',
+            'acdEvent',
+            'acdEventParticipation',
+            'acdTimeSheet',
+            'acdCondition',
+            'acdCurriculumLink',
+            'acdCurriculumConcurrence',
+            'acdCourseParent',
+            'acdEvaluation',
+            'acdContract',
+            'acdRestrictedDocuments',
+            
+            // Processos
+            'acdGroup',
+            'acdEnroll',
+            'acdExploitation',
+            'acdTrainingEmphasis',
+            'acdMessageContractRenewal',
+            
+            // Pedagogico
+            'AcpCoordenadores',
+            'AcpCursoDocente',
+            'AcpFrequencia',
+            'AcpInscricao',
+            'AcpInscricaoTurmaGrupo',
+            'AcpMatricula',
+            'AcpMatrizCurricular',
+            'AcpOcorrenciaHorarioOferta',
+            'AcpOfertaComponenteCurricular',
+            'AcpOfertaCurso',
+            'AcpOfertaTurma',
+            'acpOcorrenciaCurso',
+        );
+    }
+    
+    public static function executarSqlsManutencao()
+    {
+        sMultiCentro::executarSqlsManutencao();
+        
+        self::insereColunaUnitId();
+        self::criarTriggers();
+        self::criarViews();
+        self::parametrosGerais();
+    }
+    
+    public static function insereColunaUnitId()
+    {
+        foreach ( self::obterTabelas() as $table )
+        {
+            if ( !SDatabase::existeColunaDaTabela(null, $table, "unitid") )
+            {
+                SDatabase::execute("ALTER TABLE {$table} add unitid int references basunit(unitid);");
+                SDatabase::execute("CREATE INDEX  idx_{$table}_unitid ON {$table}(unitid);");
+            }
+        }
+    }
+    
+    public static function criarTriggers()
+    {
+        foreach ( self::obterTabelas() as $tabela )
+        {
+            SDatabase::execute("DROP TRIGGER IF EXISTS trg_unidade_{$tabela} ON {$tabela};");
+            SDatabase::execute("CREATE TRIGGER trg_unidade_{$tabela} BEFORE INSERT OR UPDATE OR DELETE ON {$tabela} FOR EACH ROW EXECUTE PROCEDURE verificarunidade();");
+        }
+    }
+    
+    public static function criarViews()
+    {
+        $tabMultiUnidade = self::obterTabelas();
+        $tabMultiCentro = sMultiCentro::obterTabelas();
+        
+        $tabelas = array_unique(array_merge($tabMultiUnidade, $tabMultiCentro));
+        
+        foreach ( $tabelas as $tabela )
+        {
+            $sql = "CREATE OR REPLACE VIEW unit_{$tabela} AS SELECT * FROM {$tabela} A WHERE 1=1";
+
+            // Verifica se tabela esta inclusa no multiunidade
+            if ( in_array($tabela, $tabMultiUnidade) )
+            {
+                $sql .= " AND ( obterunidadelogada() = A.unitid OR getparameter('BASIC'::character varying, 'ATIVAR_MULTIUNIDADE'::character varying) = 'f'::text )";
+            }
+            
+            // Verifica se tabela esta inclusa no multiunidade
+            // Quando a pessoa/funcionario nao tem centros associados, deve listar tudo.
+            // Caso o funcionario tenha um ou mais centros associados, deve trazer apenas os registros do mesmo
+            if ( in_array($tabela, $tabMultiCentro) )
+            {
+                $sql .= " AND ( obtercentrospessoalogada() IS NULL OR ( obtercentrospessoalogada() IS NOT NULL AND (A.centerid = ANY (obtercentrospessoalogada()))) ) ";
+            }
+                   
+            SDatabase::execute("DROP VIEW IF EXISTS unit_{$tabela} CASCADE;");
+            SDatabase::execute($sql);
+        }
+    }
+    
+    public static function criarViewsEspecificas()
+    {
+        // Cria a view para os contratos. Não está sendo utilizado
+        SDatabase::execute("CREATE OR REPLACE VIEW unit_acdContract AS 
+                                            SELECT A.*
+                                              FROM acdContract A 
+                                        INNER JOIN unit_acdcourseoccurrence B 
+                                                ON B.courseId = A.courseId 
+                                               AND B.courseVersion = A.courseVersion 
+                                        INNER JOIN ( SELECT obterunidadelogada AS unidadelogada 
+                                                       FROM obterunidadelogada() ) UL 
+                                                         ON (UL.unidadelogada = B.unitid OR GETPARAMETER('BASIC', 'ATIVAR_MULTIUNIDADE') = 'f' );");
+
+    }
+    
+    /**
+     * Adicionar todos os parâmetros no qual devem possuir 
+     * apenas um valor independente ? unidade.
+     */
+    public static function parametrosGerais()
+    {
+        $params = array(
+            "BASIC" => array(
+                "ATIVAR_MULTIUNIDADE",
+                "AUTOMATIC_LOGIN_GENERATION_SOURCE"
+            )
+        );
+        
+        foreach ( $params as $module => $values )
+        {
+            foreach ( $values as $param )
+            {
+                SDatabase::execute("UPDATE basconfig SET isGeneralParameter = TRUE WHERE moduleconfig = '{$module}' AND parameter = '{$param}'");
+            }
+        }
+    }
+    
+    /**
+     * Retorna de usuario passado tem permissao na unidade passada
+     *
+     * @return boolean
+     */
+    public static function usuarioTemPermissao($userId = null, $unitId = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $userId = SAGU::NVL($userId, $MIOLO->getLogin()->idkey);
+        $unitId = SAGU::NVL($unitId, self::obterUnidadeLogada());
+        if(sMultiUnidade::estaHabilitada() && !$unitId)
+        {
+            return false;
+        }        
+        $query = SDatabase::query("SELECT usuarioTemPermissao(?, ?)", array($userId, $unitId));
+                
+        return $query[0][0] == DB_TRUE;
+    }
+    
+    /**
+     * Obtem as unidades em que o usuário possui permisão.
+     * 
+     * @param int $userId - idUser da tabela miolo_user
+     * @return array
+     */
+    public static function obterUnidadesDoUsuario($userId)
+    {
+        $list = self::obterUnidades();
+        
+        foreach ( $list as $unitId => $label )
+        {
+            if ( !self::usuarioTemPermissao($userId, $unitId) )
+            {
+                unset($list[$unitId]);
+            }
+        }
+        
+        return $list;
+    }
+    
+    /**
+     * @return boolean
+     */
+    public static function pessoaTemPermissao($personId, $unitId = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        static $person = array();
+        $userId = $person[$personId];
+        
+        if ( strlen($userId) == 0 )
+        {
+            $busPerson = new BusinessBasicBusPerson();
+            $userId = $busPerson->getPerson($personId)->mioloIdUser;
+            
+            $person[$personId] = $userId;
+        }
+        
+        return self::usuarioTemPermissao($userId, $unitId);
+    }
+    
+    /**
+     * @return boolean
+     */
+    public static function loginTemPermissao($mioloLogin, $unitId = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $busUser = new BusinessAdminBusUser();
+        $userId = $busUser->getUserByLogin($mioloLogin)->idUser;
+        
+        return self::usuarioTemPermissao($userId, $unitId);
+    }
+    
+    /**
+     * @return int 
+     */
+    public static function obterUnidadeLogada()
+    {
+        $MIOLO      = MIOLO::getInstance();
+        $loginUser  = $MIOLO->getLogin();
+        $event      = $MIOLO->_REQUEST('event');
+        $unitId     = $MIOLO->_REQUEST('unitId');
+        $currUnitId = $MIOLO->session->get('unidadelogada');
+        
+        // Para troca de unidades sem necessidade de efetuar ckeckout no sistema.
+        if ( $event == 'trocarUnidade' && strlen($unitId) > 0 && $unitId != $currUnitId )
+        {
+            $query = SDatabase::query("SELECT usuarioTemPermissao(?, ?)", array($loginUser->idkey, $unitId));
+            
+            // Se usuário possui permissão na unidade. (Não utilizado o método 'self::usuarioTemPermissao' pois entra em loop se chamado aqui)
+            if ( $query[0][0] == DB_TRUE )
+            {
+                self::definirUnidadeLogada($unitId);
+                $currUnitId = $unitId;
+            }
+        }
+        
+        return $currUnitId;
+    }
+    
+    /**
+     * @return boolean
+     */
+    public static function temUnidadeLogada()
+    {
+        return strlen(self::obterUnidadeLogada()) > 0;
+    }
+    
+    /**
+     * Define unidade atual logada no sistema
+     *
+     * @param int $unitId 
+     */
+    public static function definirUnidadeLogada($unitId = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->session->set('unidadelogada', $unitId);
+
+        $centros = array();
+        
+        // Nao precisamos inserir basSessao sempre (se nao tem multiunidade nem multi centro nao precisa)
+        if ( strlen($unitId) == 0 )
+        {
+            $centros = sMultiCentro::obterCentrosPessoa();
+            
+            if ( count($centros) == 0 )
+            {
+                if ( strlen($MIOLO->getLogin()->idkey) > 0 )
+                {
+                    SDatabase::execute("DELETE FROM basSessao WHERE iduser = ?", array($MIOLO->getLogin()->idkey));
+                }
+                
+                return;
+            }
+        }
+        
+        if ( !$centros )
+        {
+            if ( strlen($MIOLO->getLogin()->idkey) > 0 )
+            {
+                SDatabase::execute("DELETE FROM basSessao WHERE iduser = ?", array($MIOLO->getLogin()->idkey));
+            }
+            
+            $centros = sMultiCentro::obterCentrosPessoa();
+        }
+        
+        // Salva na sessao da base de dados
+        $sessao = new BasSessao();
+        $sessao->idUser = SAGU::NVL($MIOLO->getLogin()->idkey, $GLOBALS['login']->idkey);
+        $sessao->login = SAGU::NVL($MIOLO->getLogin()->id, $GLOBALS['login']->id);
+        $sessao->unitId = $unitId;
+        $sessao->centerids = $centros;
+        
+        $sessao->save();
+    }
+    
+    public static function limparUnidadeLogada()
+    {
+        self::definirUnidadeLogada('');
+    }
+    
+    /**
+     * @return MHContainer
+     */
+    public static function obterCombo($filtrarUsuarioLogado = false, $withOutlabel=false, $spacer=true, $labelRequired='m-caption-required', $isPortal = false)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $busUnit = new BusinessBasicBusUnit();
+        
+        $lista = $filtrarUsuarioLogado ? self::obterUnidadesPessoaLogada() : self::obterUnidades();
+        
+        if(!$withOutlabel)
+        {
+            $unitLabel = new MText('unitLabel', _M('Unidade', $module) . ':');
+            $unitLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $unitLabel->setClass("m-caption {$labelRequired}");
+            
+            if($isPortal)
+            {
+                $unitLabel->addBoxStyle('margin-left', '4%');
+                $unitLabel->addBoxStyle('width', '76px');
+                $unitLabel->addBoxStyle('font-size', '16px');
+                $unitLabel->setBold();
+            }
+        }
+        else
+        {
+            if($spacer)
+            {
+                $unitLabel = new MText('unitLabel', '');
+                $unitLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            }
+        }
+        
+        $unit = new MSelection('unitId', MIOLO::_REQUEST('unitId'), '', $lista);
+        $hctUnit = new MHContainer('hctCourse', array($unitLabel, $unit));
+        
+        return $hctUnit;
+    }
+    
+    /**
+     * @return array
+     */
+    public static function obterUnidades()
+    {
+        $busUnit = new BusinessBasicBusUnit();
+        return $busUnit->listUnitAssoc();
+    }
+    
+    /**
+     * @return array
+     */
+    public static function obterUnidadesPessoaLogada()
+    {
+        $list = self::obterUnidades();
+        
+        foreach ( $list as $unitId => $label )
+        {
+            if ( !self::usuarioTemPermissao(null, $unitId) )
+            {
+                unset($list[$unitId]);
+            }
+        }
+        
+        return $list;
+    }
+    
+    /**
+     * @return basUnit 
+     */
+    public static function obterObjetoUnidade()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $busUnit = new BusinessBasicBusUnit();
+        $unitId = self::obterUnidadeLogada();
+
+        return strlen($unitId) > 0 ? $busUnit->getUnit($unitId) : false;
+    }
+    
+    /**
+     * @return boolean 
+     */
+    public static function estaHabilitada()
+    {
+        return SAGU::getParameter('BASIC', 'ATIVAR_MULTIUNIDADE') == DB_TRUE;
+    }
+    
+    /**
+     * Insere uma unidade inicial no sistema quando ainda nao possui nenhuma
+     */
+    public static function inserirUnidadePadrao()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $busUnit = new BusinessBasicBusUnit();
+        $busLocation = new BusinessBasicBusLocation();
+        
+        if ( count($busUnit->listUnit()) == 0 )
+        {
+            $locationId = $busLocation->getFirstLocationId();
+
+            if ( strlen($locationId) > 0 )
+            {
+                $data = new BasUnit();
+                $data->locationId = $locationId;
+                $data->description = _M('Unidade padrao', $module);
+
+                $busUnit->insertUnit($data);
+            }
+        }
+    }
+}
+?>

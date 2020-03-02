@@ -1,0 +1,232 @@
+<?php
+
+/*
+ * To change this template, choose Tools | Templates
+ * and open the template in the editor.
+ */
+
+/**
+ * Description of FrmConsultaSolicitacoesDeProcessosSearch
+ *
+ * @author augusto
+ */
+class FrmSolicitacoesDeProcessosSearch extends SSearchForm
+{
+    protected $campoBuscaGenerica = true;
+    
+    /**
+     * Class constructor
+     */
+    public function __construct($data)
+    {
+        parent::__construct(_M('Localizar'), new FinFluxoSolicitacao(), array('fluxosolicitacaoid', 'iduser'));
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+    }
+
+    /**
+     *  Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        $fields[] = new MDiv('divLimbo');
+
+        parent::defineFields($fields, $module, 'GrdSolicitacoesDeProcessos', $validators);
+    }
+    
+    /**
+     * Gera a popup de vizualização do fluxo de aprovação da solicitação.
+     * 
+     * @param stdClass $args
+     */
+    public function popupVizualisarAvaliacoes($args = null)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $finFluxoSolicitacao = new FinFluxoSolicitacao($args->fluxosolicitacaoid);
+        $niveis = $finFluxoSolicitacao->obterNiveisDaSolicitacao(true, true);
+        
+        $fields[] = self::gerarTabelaDeFluxoDeAvaliacoes($args, $niveis);
+        
+        $this->setFields($fields);
+        MPopup::show('popupVisualizarAvaliacoes', $fields, 'Fluxo de aprovações para ' . $finFluxoAprovacaoProcesso->nomedoprocesso . ' - Registro ' . $finFluxoSolicitacao->codigodoregistro);
+    }
+    
+    /**
+     * Gera a tabela com os níveis que devem ser avaliados da solicitação.
+     * 
+     * @param array $niveis
+     * @return \MTableRaw
+     */
+    public static function gerarTabelaDeFluxoDeAvaliacoes($args, $niveis)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $finFluxoSolicitacao = new FinFluxoSolicitacao($args->fluxosolicitacaoid);
+        
+        // Tabela do fluxo.
+        $colunas = array( 
+            _M('Nível', $module),
+            _M('Avaliador', $module),
+            _M('Usuário avaliador', $module),
+            _M('Avaliação', $module),
+            _M('Observação', $module)
+        );
+        
+        foreach ( $niveis as $nivel )
+        {
+            $finFluxoAprovacao = new FinFluxoAprovacao();
+            $fluxoAprovacao    = $finFluxoAprovacao->obterFluxoDeAprovacaoPeloCodigoDoNivelESolicitacao($nivel->fluxoAprovacaoNivelId, $finFluxoSolicitacao->fluxosolicitacaoid, true);
+            $usuarioAvaliador  = (strlen($nivel->login) > 0) ? $nivel->login : 'AINDA NÃO DEFINIDO';
+            
+            $fluxoaprovacaoStatusId  = (count($fluxoAprovacao) > 0) ? $fluxoAprovacao[0]->fluxoaprovacaostatusid : $finFluxoSolicitacao->fluxoAprovacaoStatusId;
+            
+            // Obtém dados do usuário avaliador do nível.
+            if ( count($fluxoAprovacao) > 0 )
+            {
+                $admUser = new AdmUser($fluxoAprovacao[0]->iduser);
+                $usuarioAvaliador = (strlen($admUser->login) > 0) ? $admUser->login : $usuarioAvaliador;
+            }
+            
+            $dadosDaTabela[] = array(
+                $nivel->nivel,
+                $nivel->nome,
+                $usuarioAvaliador,
+                FinFluxoAprovacaoStatus::obtemDescricaoDoStatus($fluxoaprovacaoStatusId),
+                $fluxoAprovacao[0]->observacao
+            );
+        }
+        
+        return new MTableRaw(null, $dadosDaTabela, $colunas);
+    }
+    
+    /**
+     * Gera a popup para avaliação da solicitação.
+     * 
+     * @param stdClass $args
+     */
+    public function popupAvaliar($args = null)
+    {
+        $MIOLO     = MIOLO::getInstance();
+        $module    = $MIOLO->getCurrentModule();
+        $loginUser = $MIOLO->getLogin();
+        
+        $finFluxoSolicitacao       = new FinFluxoSolicitacao($args->fluxosolicitacaoid);
+        $finFluxoAprovacaoProcesso = new FinFluxoAprovacaoProcesso($finFluxoSolicitacao->fluxoAprovacaoProcessoId);
+        $AdmUser                   = new AdmUser($finFluxoSolicitacao->idUser);
+        $finFluxoAprovacaoStatus   = new FinFluxoAprovacaoStatus();
+        
+        $niveis = $finFluxoSolicitacao->obterNiveisDaSolicitacao(true, true);
+        
+        // Obtém o nível que o avaliador deve avaliar.
+        foreach ( $niveis as $dataNivel )
+        {
+            $finFluxoAprovacaoNivel = new FinFluxoAprovacaoNivel($dataNivel->fluxoAprovacaoNivelId);
+            $eNivelDoAvaliadorLogado = $finFluxoAprovacaoNivel->verificaSeENivelDoAvaliadorLogado();
+            
+            if ( $eNivelDoAvaliadorLogado )
+            {
+                $nivel = $dataNivel;
+                break;
+            }
+        }
+        
+        $fields[] = new SHiddenField('fluxoSolicitacaoId', $finFluxoSolicitacao->fluxosolicitacaoid);
+        $fields[] = new SHiddenField('fluxoAprovacaoNivelId', $nivel->fluxoAprovacaoNivelId);
+        $fields[] = new SHiddenField('idUser', $loginUser->idkey);
+        
+        $processoLabel = new MText('processoLabel', _M('Processo:'));
+        $processoLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $processoLabel->setClass('m-caption');
+        $processo = new MText('processo', $finFluxoAprovacaoProcesso->nomedoprocesso);
+        $processo->addAttribute('style', 'font-weight:bold');
+        $fields[] = new MHContainer('processoHc', array($processoLabel, $processo));
+        
+        $solicitanteLabel = new MText('solicitanteLabel', _M('Solicitante:'));
+        $solicitanteLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $solicitanteLabel->setClass('m-caption');
+        $solicitante = new MText('solicitante', $AdmUser->name);
+        $solicitante->addAttribute('style', 'font-weight:bold');
+        $fields[] = new MHContainer('solicitanteHc', array($solicitanteLabel, $solicitante));
+        
+        $descricaoLabel = new MText('descricaoLabel', _M('Descrição:'));
+        $descricaoLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $descricaoLabel->setClass('m-caption');
+        $descricao = new MText('descricao', $finFluxoSolicitacao->observacao);
+        $descricao->addAttribute('style', 'font-weight:bold');
+        $fields[] = new MHContainer('solicitanteHc', array($descricaoLabel, $descricao));
+        
+        $fields[] = new MSeparator("<hr size='1' width='90%'>");
+        $fields[] = FinFluxoAprovacaoProcesso::obterFiltrosOuDiffDoProcesso($finFluxoSolicitacao->fluxoAprovacaoProcessoId, $finFluxoSolicitacao->codigodoregistro, true, $args->fluxosolicitacaoid);
+        $fields[] = new MSeparator("<hr size='1' width='90%'>");
+        
+        $statusList = $finFluxoAprovacaoStatus->findList();
+        unset($statusList[FinFluxoAprovacaoStatus::AGUARDANDO_AVALIACAO]);
+        
+        $avaliarLabel = new MText('avaliarLabel', _M('Avaliação:'));
+        $avaliarLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $avaliarLabel->setClass('m-caption m-caption-required');
+        $avaliar = new MSelection('fluxoAprovacaoStatusId', null, null, $statusList);
+        $fields[] = new MHContainer('avaliarHc', array($avaliarLabel, $avaliar));
+        $validators[] = new MRequiredValidator('fluxoAprovacaoStatusId', _M('Avaliar'));
+        
+        $obsLabel = new MText('obsLabel', _M('Observação:'));
+        $obsLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $obsLabel->setClass('m-caption m-caption-required');
+        $obs = new MMultiLineField('obs', null, null, 20, 10, 40);
+        $fields[] = new MHContainer('obsHc', array($obsLabel, $obs));
+        $validators[] = new MRequiredValidator('obs', _M('Observação'));
+        
+        $limboLabel = new MText('limbo', ' ');
+        $limboLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $limboLabel->setClass('m-caption');
+        $button = new MButton('btnRegistrar', _M('Registrar'));
+        $fields[] = new MHContainer('containerButton', array($limboLabel, $button));
+        
+        $this->setFields($fields);
+        $this->setValidators($validators);
+        
+        MPopup::show('popupAvaliar', $fields, _M('Avaliar solicitação'));
+    }
+    
+    /**
+     * Salva avaliação registrada pelo avaliador.
+     * 
+     * @param sdtClass $args
+     */
+    public function btnRegistrar_click($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        try
+        {
+            SDatabase::beginTransaction();
+            
+            $args = new stdClass();
+            $args->fluxoSolicitacaoId = $this->getFormValue('fluxoSolicitacaoId');
+            $args->fluxoAprovacaoNivelId = $this->getFormValue('fluxoAprovacaoNivelId');
+            $args->fluxoAprovacaoStatusId = $this->getFormValue('fluxoAprovacaoStatusId');
+            $args->idUser = $this->getFormValue('idUser');
+            $args->observacao = $this->getFormValue('observacao');
+            
+            FinFluxoAprovacao::registrarAvaliacao($args);
+                
+            SDatabase::commit();
+            
+            $goto = $MIOLO->getActionURL('finance', 'main:process:solicitacoesDeProcessos');
+            $MIOLO->information("Avaliação registrada com sucesso!", $goto);
+        }
+        catch ( Exception $err )
+        {
+            SDatabase::rollback();
+            $MIOLO->error($err->getMessage());
+        }
+    }
+}
+
+?>

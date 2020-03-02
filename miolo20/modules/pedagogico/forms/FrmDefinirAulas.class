@@ -1,0 +1,893 @@
+<?php
+
+$MIOLO->getClass('basic', 'calendar');
+set_time_limit(0);
+ini_set('memory_limit', '2048M');
+class FrmDefinirAulas extends SForm
+{
+    const COR_PERMITE_ALTERACAO = 'blue';
+    const COR_AULA_CANCELADA = 'gray';
+    const COR_FREQUENCIA_REGISTRADA = 'teal';
+    const COR_CALENDARIO_AULA = 'green';
+    const COR_CALENDARIO_SEMAULA = 'red';
+    
+    private $ofertaturmaid;
+    private $ofertacursoid;
+    private $ocorrenciacursoid;
+    private $diasHorario = array();
+    private $intervalos = array();
+    private $horarioIdSelecionados = array();
+    private $datasCanceladas = array();
+
+    private $cargaHorariaPadraoDaUnidade;
+    private $cargahorariaoferecida;
+
+    
+    protected $removeDivMensagem = true;
+
+    public $grids;
+    
+    public function __construct($title, $object, $pkey)
+    {
+
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->uses('ui/controls/msubdetail.class');
+
+        parent::__construct(_M('Definir aulas'));
+
+        SMainMenu::setOverrideMenuNav('main:process:ofertacurso');
+    }
+
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $ofertacomponentecurricularid = MIOLO::_REQUEST('ofertacomponentecurricularid');
+        $diasemana = MIOLO::_REQUEST('diasemana');
+        $professorid = MIOLO::_REQUEST('professorid');
+        $dataini = MIOLO::_REQUEST('dataini');
+        $datafim = MIOLO::_REQUEST('datafim');
+        $ocorrenciahorarioofertaid = MIOLO::_REQUEST('ocorrenciahorarioofertaid');
+
+        $ofertaCC = new AcpOfertaComponenteCurricular( $ofertacomponentecurricularid );
+        $ofertaTurma = $ofertaCC->ofertaturma;
+        $ofertaDeCurso = new AcpOfertaCurso($ofertaTurma->ofertacursoid);
+        $ocorrenciaDeCurso = new AcpOcorrenciaCurso($ofertaDeCurso->ocorrenciacursoid);
+
+        $this->ofertaturmaid = $ofertaTurma->ofertaturmaid;
+        $this->ofertacursoid = $ofertaTurma->ofertacursoid;
+        $this->ocorrenciacursoid = $ofertaTurma->ofertacurso->ocorrenciacursoid;
+
+        if( !strlen($ofertaTurma->gradehorarioid) > 0 )
+        {
+            $MIOLO->error(_M('Nenhuma grade de horario definida para a turma!'));
+        }
+
+        if ( strlen($ofertaTurma->datainicialoferta) == 0 || strlen($ofertaTurma->datafinaloferta) == 0 )
+        {
+            $MIOLO->error(_M('Não foi definido uma data de inicio e/ou data de fim da oferta de turma!'));
+        }
+
+        // labels etc
+        try
+        {
+            $curso = new AcpCurso($ocorrenciaDeCurso->cursoid);
+            $fields[] = new MTextLabel('labelCurso', $curso->codigo.' - '.$curso->nome,_M('Curso', $module));
+        }
+        catch (Exception $e)
+        {
+        }
+
+
+        $ofertaComponenteCurricular = new AcpOfertaComponenteCurricular($ofertacomponentecurricularid);
+        $componentecurricular = $ofertaComponenteCurricular->componentecurricularmatriz->componentecurricular->obterComponente();
+        $this->cargaHorariaPadraoDaUnidade = $componentecurricular->cargahoraria;
+        $this->cargahorariaoferecida = AcpOcorrenciaHorarioOferta::obterCargaHorariaOferecida($ofertacomponentecurricularid);
+
+        $fields[] = new MTextLabel('labelTurno', $ocorrenciaDeCurso->turn->description,_M('Turno', $module));
+        $fields[] = new MTextLabel('labelUnidade', $ocorrenciaDeCurso->unit->description,_M('Unidade', $module));
+        $fields[] = new MTextLabel('labelDescricao', $ofertaDeCurso->descricao,_M('Descrição', $module));
+        $fields[] = new MTextLabel('labelTurma', $ofertaTurma->codigo.' - '.$ofertaTurma->descricao,_M('Turma', $module));
+        $fields[] = new MTextLabel('labelModulo', $ofertaCC->componentecurricularmatriz->matrizcurriculargrupo->descricao,_M('Módulo', $module));
+        $fields[] = new MTextLabel('labelUnidadeDidatica', $ofertaCC->componentecurricularmatriz->componentecurricular->descricao . ' | (' . $this->cargaHorariaPadraoDaUnidade . ' Horas padrão / ' . $this->cargahorariaoferecida .  ' Horas já oferecida )',_M('Unidade didática', $module));
+        $fields[] = new MSpacer();
+
+        $fields[] = $MIOLO->getConf('sagu.message.div');
+
+        // grade horario - tableraw
+        $diasHorario = $this->diasHorario = $ofertaTurma->gradehorario->obterDiasHorario();
+
+        if ( count($diasHorario) > 0 )
+        {
+            // tratamento especial: editar
+            if ( $this->isUpdateFunction() )
+            {
+                $diasHorario = $this->diasHorario = array($diasemana => $diasHorario[$diasemana]);
+            }
+
+            $colunas = array_values($diasHorario);
+            $horarios = $ofertaTurma->gradehorario->obterHorariosParaTableRaw();
+
+            $table = $bgrFields[] = new MTableRaw(null, $horarios, $colunas);
+        }
+        else
+        {
+            $MIOLO->error(_M('Nenhum dia da semana definido para o horário desta Oferta de turma.'));
+        }
+
+        $fields[] = new sBaseGroup('bgrXXX', _M('Selecione os horários'), $bgrFields);
+
+
+        $bgrFields = array();
+
+        $typeProfessores = new BasProfessor();
+        if ( AcpCursoDocente::possuiProfessoresNoCurso($ofertaTurma->ofertacurso->ocorrenciacurso->cursoid) )
+        {
+            $typeProfessores = new AcpCursoDocente();
+            $typeProfessores->cursoid = $ofertaTurma->ofertacurso->ocorrenciacurso->cursoid;
+        }
+
+
+        $objFacilitadores = new AcpOcorrenciaHorarioOfertaFacilitadores();
+        $facilitadores = $objFacilitadores->obterFacilitadoresNoFormatoStdClass($ocorrenciahorarioofertaid);
+
+
+
+        // inicio docentes subdetails
+        $docentesDoCurso = AcpCursoDocente::retornaDocentesDoCurso($ofertaDeCurso->ocorrenciacurso->cursoid);
+        $tiposDeDocentes = AcpTipoDeDocente::listarTipoDeDocentes();
+
+        $subFields = array();
+        $subFields[] = $docenteidSelection = new MSelection('docenteid', NULL, _M('Docente', $module), $docentesDoCurso);
+        $docenteidSelection->addAttribute('onChange', $this->getAjaxAction('carregaTiposDocentes', 'divCarregaTiposDocentes', false));
+
+        $subFields[] = new MSelection('tipodedocenteid', NULL, _M('Tipo de docente', $module), AcpTipoDeDocente::listarTipoDeDocentes());
+
+        $subValidators[] = new MRequiredValidator('docenteid', _M('Docente'));
+        $subValidators[] = new MRequiredValidator('tipodedocenteid', _M('Tipo de docente'));
+        $subValidators[] = new MSubDetailUniqueValidator('docenteid', _M('Docente', $module));
+
+        $cols[] = new MGridColumn(_M('Docente'), 'left', true, '', true, 'docenteid', false, $docentesDoCurso);
+        $cols[] = new MGridColumn(_M('Tipo de docente'), 'left', true, '', true, 'tipodedocenteid', false, $tiposDeDocentes);
+
+        $sub = $fields[] = new MSubDetail('subDocentes', _M('Docentes'), $cols, $subFields);
+        $sub->setValidators($subValidators);
+
+        if ( $this->isSubDetailEditMode() && ( strlen($ocorrenciahorarioofertaid) > 0 ) )
+        {
+            $ocorrenciahorariooferta = new AcpOcorrenciaHorarioOferta($ocorrenciahorarioofertaid);
+
+            $std = new stdClass();
+            $std->docenteid = $ocorrenciahorariooferta->professorid;
+            $std->tipodedocenteid = $ocorrenciahorariooferta->tipodedocenteid;
+            $dados = array($std);
+
+            foreach ($facilitadores as $facili) {
+                $std = new stdClass();
+                $std->docenteid = $facili->facilitadorid;
+                $std->tipodedocenteid = $facili->tipodedocenteid;
+
+                array_push($dados, $std);
+            }
+
+
+            $lista = SAGU::convertSTypeToSubDetail($cols, $dados);
+            $sub->setData( $lista );
+        } else if (!$this->estaEmUmEvento()) {
+            $sub->clearData('subDocentes');
+        }
+
+        if ( !$this->isUpdateFunction() )
+        {
+            $bgrFields[] = new sEscolha('physicalresourceid', null, _M('Sala'), new InsRecursoFisico());
+        }
+
+        // intervalo de datas
+        
+        // na edicao deve-se simular os valores para preencher combos corretamente
+        // obs: sei que tem formas melhores de resolver isto, mas devido a outras circunstancias tive que fazer assim
+        if ( $this->isUpdateFunction() )
+        {
+            if ( !$_REQUEST['periodoini'] )
+            {
+                list($dia, $mes, $ano) = explode('/', $dataini);
+                $_REQUEST['periodoini'] = $ano . '_' . (int) $mes;
+            }
+
+            if ( !$_REQUEST['periodofim'] )
+            {
+                list($dia, $mes, $ano) = explode('/', $datafim);
+                $_REQUEST['periodofim'] = $ano . '_' . (int) $mes;
+            }
+        }
+        
+        $intervalos = $this->intervalos = $ofertaTurma->obterIntervalosParaCombo();
+        $primeiro = current(array_keys($intervalos));
+        $ultimo = end(array_keys($intervalos));
+        $p1 = new MSelection('periodoini', $this->getRequestValue('periodoini', $primeiro));
+        $p1->options = $intervalos;
+        $p2 = new MSelection('periodofim', $this->getRequestValue('periodofim', $ultimo));
+        $p2->options = $intervalos;
+        $hct = new MHContainer('myhct', array($p1, $p2));
+        $bgrFields[] = new MTextLabel('txtlbl', $hct->generate(), _M('Intervalo de datas a selecionar'));
+        
+        $fields[] = new sBaseGroup('bgrX', _M('Informe dados do horário'), $bgrFields);
+        
+        // botao selecionar datas
+        $btn = new MButton('btnSelecionar', _M('Selecionar datas'));
+        $fields[] = new MSeparator();
+        $fields[] = new MDiv(null, array($btn), null, 'align="center"');
+
+        $btnRemoveEncontrosEmLote = new MButton('btnRemoveEncontrosEmLote', _M('Remover encontros selecionados', $module), null);
+
+
+
+        $fields[] = new MDiv('divCarregaTiposDocentes');
+        $fields[] = new MSeparator();
+        $fields[] = new MDiv(null, array($btnRemoveEncontrosEmLote), null, 'align="left"');
+        
+        parent::defineFields(array('toolbar' => false, 'fields' => $fields, 'validators' => $validators));
+    }
+
+    public function carregaTiposDocentes($args)
+    {
+        $docenteid = $args->docenteid;
+        $MIOLO = MIOLO::getInstance();
+
+
+        $ofertacomponentecurricularid = MIOLO::_REQUEST('ofertacomponentecurricularid');
+        $ofertacomponentecurricular = new AcpOfertaComponenteCurricular($ofertacomponentecurricularid);
+        $cursoid = $ofertacomponentecurricular->ofertaturma->ofertacurso->ocorrenciacurso->cursoid;
+
+        $cursoDocente = new AcpCursoDocente();
+        $tiposDisponiveis = $cursoDocente->retornaTiposDisponiveisProDocenteNoCurso($cursoid, $docenteid);
+
+        $jsCode = " 
+            document.getElementById(\"tipodedocenteid\").options.length = 0;
+                    
+            var tipos = " . json_encode($tiposDisponiveis) . "; 
+            console.log(tipos);
+                                                        
+            var sel = document.getElementById('tipodedocenteid');
+            
+            var opt = document.createElement('option');
+            opt.innerHTML = '-- selecione um tipo de docente --';
+            opt.value = '';
+            sel.appendChild(opt);
+            
+            for(key in tipos) {
+              
+                var opt = document.createElement('option');
+                opt.innerHTML = tipos[key];
+                opt.value = key;
+                
+                sel.appendChild(opt);
+            }
+        ";
+
+        $MIOLO->page->addAJAXJsCode($jsCode);
+
+        return '';
+
+
+    }
+    
+    public function eventHandler()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        // event handler que o MControl faz, chamando eventos necessarios
+        parent::eventHandler();
+        
+        // adiciona a grid so depois de ter adicionado tudo
+        if ( !$this->isUpdateFunction() )
+        {
+            $this->AddField($this->obterGrid());
+            
+            // botao voltar
+            $ofertacomponentecurricularid = MIOLO::_REQUEST('ofertacomponentecurricularid');
+            
+            $goto = $MIOLO->GetActionURL($module, 'main:process:ofertarcomponentescurriculares', null, array('ofertacomponentecurricularid' => $ofertacomponentecurricularid, 'ofertaturmaid' => $this->ofertaturmaid, 'ofertacursoid' => $this->ofertacursoid));
+            $btn = new MButton('btnBack', _M('Sair'), $goto, 'images/button_cancel.png');
+            $this->AddField(new MSeparator());
+            $this->AddField(new MDiv(null, array($btn), null, 'align="center"'));
+        }
+    }
+
+
+    public function btnRemoveEncontrosEmLote_click()
+    {
+        $selecionados = array();
+
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        try
+        {
+
+            if (count($_REQUEST['selectGrdX']) > 0) {
+                $ofertacomponentecurricularid = null;
+                foreach ($_REQUEST['selectGrdX'] as $ocorrenciahorarioofertaid) {
+                    $ocorrenciahorariooferta = new AcpOcorrenciaHorarioOferta($ocorrenciahorarioofertaid);
+                    $ofertacomponentecurricularid = $ocorrenciahorariooferta->ofertacomponentecurricularid;
+
+                    // removendo os facilitadores de uma determinada ocorrencia de horario oferta
+                    $facilitador = new AcpOcorrenciaHorarioOfertaFacilitadores();
+                    $facilitador->removerFacilitadores($ocorrenciahorarioofertaid);
+
+                    $ok = true;
+
+                    if ( $ocorrenciahorariooferta->possuifrequencia == DB_TRUE )
+                    {
+                        $ocorrenciahorariooferta->removerFrequencias($ocorrenciahorarioofertaid);
+                    }
+
+                    $ok &= $ocorrenciahorariooferta->delete();
+
+                }
+                $goto = $MIOLO->GetActionURL($module, MIOLO::getCurrentAction(), null, array('ofertacomponentecurricularid' => $ofertacomponentecurricularid));
+                $this->messageSuccess(_M('Horários excluídos com sucesso'), $goto);
+            } else {
+
+                $ofertacomponentecurricularid = $_REQUEST['ofertacomponentecurricularid'];
+                $goto = $MIOLO->GetActionURL($module, MIOLO::getCurrentAction(), null, array('ofertacomponentecurricularid' => $ofertacomponentecurricularid));
+                $this->messageInfo(_M('Selecione um ou mais horários'), $goto);
+            }
+
+        } catch (Exception $e)
+        {
+            $MIOLO->error($e->getMessage());
+        }
+    }
+
+    /**
+     * @return \SGrid
+     */
+    public function obterGrid()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $ofertacomponentecurricularid = MIOLO::_REQUEST('ofertacomponentecurricularid');
+        
+        $filters = new stdClass();
+        $filters->ofertacomponentecurricularid = $ofertacomponentecurricularid;
+        $dados = AcpOfertaComponenteCurricular::buscarParaTelaDefinirAulas($filters);
+
+        $columns = array();
+        $columns[] = new MGridColumn(_M('Codigo'), 'left', true, NULL, false, NULL, true);
+        $columns[] = new MGridColumn(_M('Professor id'), 'left', true, NULL, false, NULL, true);
+        $columns[] = new MGridColumn(_M('Docentes'), 'left', true, NULL, true, NULL, true);
+        $columns[] = new MGridColumn(_M('Horários'), 'center', true, NULL, true, NULL, true);
+        $columns[] = new MGridColumn(_M('Horario ids'), 'left', true, NULL, false, NULL, true);
+        $columns[] = new MGridColumn(_M('Dia da semana'), 'left', true, NULL, true, SAGU::listarDiasDaSemana(), true);
+        $columns[] = new MGridColumn(_M('Data inicial'), 'center', true, NULL, true, NULL, true);
+        $columns[] = new MGridColumn(_M('Data final'), 'center', true, NULL, true, NULL, true);
+
+        $args = array();
+        $args['ofertacomponentecurricularid'] = '%8%';
+        $args['professorid'] = '%1%';
+        $args['diasemana'] = '%5%';
+        $args['horarioidsedicao'] = '%4%';
+        $args['dataini'] = '%6%';
+        $args['datafim'] = '%7%';
+        $args['ocorrenciahorarioofertaid'] = '%0%';
+        $args['__EVENTTARGETVALUE'] = 'btnSelecionar:click';
+
+        // concatenando os nomes dos professores e facilitadores
+        $professoresArray = array();
+        foreach ($dados as $chave => $valor) {
+            $facilitadoresIdArray = AcpOcorrenciaHorarioOfertaFacilitadores::obterFacilitadores($valor[0]);
+
+            $facilitadoresArray = array();
+            foreach ($facilitadoresIdArray as $id) {
+                $professor = new BasProfessor($id);
+                $facilitadoresArray[] = $professor->name;
+            }
+
+            $facilitadoresString = count($facilitadoresArray) > 0 ? ' / ' . implode(' ,<br/>', $facilitadoresArray) : '';
+            $dados[$chave][2] = '<strong>['.$dados[$chave][2] .']</strong> <br/>' . $facilitadoresString;
+        }
+
+
+
+        $grid = new SGrid($filters, $columns, 'GrdX', $args);
+        $grid->disablePagination();
+        $grid->disableColumnSorting();
+        $grid->addActionSelect();
+        $grid->setData($dados);
+
+        $this->grids[] = $grid;
+
+        return $grid;
+    }
+    
+    public function btnSelecionar_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        try
+        {
+            $ofertacomponentecurricularid = MIOLO::_REQUEST('ofertacomponentecurricularid');
+            $diasemana = MIOLO::_REQUEST('diasemana');
+            $professorid = MIOLO::_REQUEST('professorid');
+            $periodoini = MIOLO::_REQUEST('periodoini');
+            $periodofim = MIOLO::_REQUEST('periodofim');
+            $ocorrenciahorarioofertaid = MIOLO::_REQUEST('ocorrenciahorarioofertaid');
+            
+            $horarios = array();
+            
+            list($anoinicio, $mesinicio) = explode('_', $periodoini);
+            list($anofim, $mesfim) = explode('_', $periodofim);
+            
+            $mesinicio = str_pad($mesinicio, 2, '0', STR_PAD_LEFT);
+            $mesfim = str_pad($mesfim, 2, '0', STR_PAD_LEFT);
+            
+            // valida horarios
+            foreach ( $_REQUEST as $key => $val )
+            {
+                if ( preg_match('/dia_(.*)_(.*)/', $key) )
+                {
+                    list($k, $diaSemana, $horarioid) = explode('_', $key);
+                    
+                    $horarios[$diaSemana][] = $this->horarioIdSelecionados[$diaSemana][] = $horarioid;
+                }
+            }
+
+            if ( count($horarios) == 0 )
+            {
+                throw new Exception(_M('Selecione pelo menos um horário.'));
+            }
+            
+            // valida intervalos
+            if ( (int)($anoinicio . $mesinicio) > (int)($anofim . $mesfim) )
+            {
+                throw new Exception(_M('Período de fim não pode ser maior que o de início.'));
+            }
+            
+            // datas
+            $incluir = false;
+            $hctFields = array();
+            $contador = 0;
+            
+            //
+            // busca dias com eventos/feriados (vermelho)
+            //
+            list($ano, $mes) = explode('_', $periodoini);
+            $dataIni = AcpOfertaTurma::obterDataIni($ano, $mes);
+            
+            list($ano, $mes) = explode('_', $periodofim);
+            $dataFim = AcpOfertaTurma::obterDataFim($ano, $mes);
+
+            $searchEventos = AcpCalendarioAcademicoEvento::listarEventos($dataIni, $dataFim, $this->ocorrenciacursoid);
+            $feriados = array();
+            
+            foreach ( $searchEventos as $obj )
+            {
+                $feriados[] = $obj->eventdate;
+            }
+            
+            foreach ( $this->intervalos as $key => $val )
+            {
+                if ( $periodoini == $key )
+                {
+                    $incluir = true;
+                }
+                
+                if ( $incluir )
+                {
+                    list($ano, $mes) = explode('_', $key);
+                    
+                    if ( strlen($mes) < 2 )
+                    {
+                        $mes = ( '0' . $mes );
+                    }
+                    
+                    $dias = array();
+                    
+                    foreach ( $this->horarioIdSelecionados as $dia => $horarioIds )
+                    {
+                        $dias[$dia] = $dia;
+                    }
+                    
+                    $datasDesativar = AcpOfertaTurma::gerarIntervaloDeDatas($ano, $mes, $dias, true);
+                    $id = "datas_{$key}";
+                    
+                    $datasSelecionadas = array();
+
+                    if ( $this->isUpdateFunction() )
+                    {
+                        $datasSelecionadas = AcpOfertaComponenteCurricular::obterDatasParaEdicao($ofertacomponentecurricularid, $diasemana, $professorid, $ocorrenciahorarioofertaid);
+                    }
+
+                    $calendar = new SCalendar($id, $mes, $ano, array_values($datasSelecionadas), array_values($datasDesativar));
+                    $calendar->setWeeksVisible(true);
+                    $calendar->enable(true);
+                    $calendar->setNavigatorBarVisible(false);
+                    $calendar->disableDateColorGrey = $datasDesativar;
+
+                    foreach ( $feriados as $data )
+                    {
+                        $calendar->setDateColor($data, 'red');
+                        $calendar->disableDatesArray[] = $data;
+                    }
+                    
+                    if ( $this->isUpdateFunction() )
+                    {
+                        // canceladas
+                        $canceladas = $this->datasCanceladas = AcpOfertaComponenteCurricular::obterDatasCanceladas($ofertacomponentecurricularid, $diasemana, $professorid);
+                        foreach ($canceladas as $data)
+                        {
+                            $calendar->setDateColor($data, 'lightgray');
+                        }
+
+                        // frequencia agendada
+                        $comFrequencias = AcpOfertaComponenteCurricular::obterDatasComFrequenciaRegistrada($ofertacomponentecurricularid, $diasemana, $professorid);
+                        foreach ($comFrequencias as $data)
+                        {
+                            $calendar->setDateColor($data, '#669999');
+                            $calendar->disableDatesArray[] = $data;
+                        }
+                    }
+
+                    $hctFields[] = new MDiv('divX', array($calendar));
+
+                    $contador ++;
+                    
+                    if ( ( $contador % 4 ) == 0 )
+                    {
+                        $hctFields[] = new MSpacer;
+                    }
+                }
+                
+                if ( $periodofim == $key )
+                {
+                    $incluir = false;
+                }
+            }
+            
+            $hct = new MHContainer('hctX', $hctFields);
+            $this->AddField( new sBaseGroup('bgrX', _M('Selecione as datas'), array($hct)) );
+            
+            // legendas
+            $text = $this->obterLegendas();
+            $legenda = new MTextLabel('lblLE', $text->Generate(), _M('Legendas'));
+            $this->AddField($legenda);
+            
+            // desmarcar
+            if ( $this->isUpdateFunction() )
+            {
+                $lista = array();
+                $lista['cancelar'] = _M('Cancelar');
+                $lista['remover'] = _M('Remover');
+                $selDesmarcar = new MSelection('acaoDesmarcar', null, _M('O que fazer quando eu desmarcar uma aula?'));
+                $selDesmarcar->options = $lista;
+                $this->AddField( $selDesmarcar );
+            }
+            
+            // save btn
+            $btn = new MButton('btnSalvar', _M('Salvar'), null, 'images/button_finalize.png');
+            
+            $goto = $MIOLO->GetActionURL($module, MIOLO::getCurrentAction(), null, array('ofertacomponentecurricularid' => $ofertacomponentecurricularid));
+            $btnCancel = new MButton('btnCancelar', _M('Cancelar'), $goto, 'images/button_cancel.png');
+            
+            $this->AddField(new MSpacer());
+            $this->AddField(new MDiv(null, array($btn, $btnCancel), null, 'align="center"'));
+        }
+        catch (Exception $e)
+        {
+            $this->AddError($e->getMessage());
+        }
+    }
+
+    private function verificaSeTemHorarioDisponivel($datas = array()) {
+        $contadorHorasSelecionadas = 0;
+
+        foreach ( $datas as $data ) {
+            foreach ($this->horarioIdSelecionados as $dia => $horarioIds) {
+                // Verifica se o dia da semana da data é o mesmo dia do horário
+                if (SAGU::getDowFromDate($data) == $dia) {
+                    foreach ($horarioIds as $horarioId) {
+                        $hor = new AcpHorario($horarioId);
+                        $contadorHorasSelecionadas += $hor->minutosfrequencia / 60;
+                    }
+                }
+            }
+        }
+
+        if (($this->cargahorariaoferecida + $contadorHorasSelecionadas) > $this->cargaHorariaPadraoDaUnidade) {
+            return false;
+        } else {
+            return true;
+        }
+    }
+    
+    public function btnSalvar_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        try
+        {
+            $ofertacomponentecurricularid = MIOLO::_REQUEST('ofertacomponentecurricularid');
+            $diasemana = MIOLO::_REQUEST('diasemana');
+            //$professorid = MIOLO::_REQUEST('professorid');
+            
+            $periodoini = MIOLO::_REQUEST('periodoini');
+            $periodofim = MIOLO::_REQUEST('periodofim');
+            $physicalresourceid = MIOLO::_REQUEST('physicalresourceid');
+            $ocorrenciahorarioofertaid_param = MIOLO::_REQUEST('ocorrenciahorarioofertaid');
+
+            $docentes = array();
+
+            /*for ($i = 1; $i <= 10; $i++) {
+                $facilitadoresArray[] = MIOLO::_REQUEST('facilitadorid_'.$i);
+            }*/
+
+            $i = 0;
+            foreach ( (array)MSubDetail::getData('subDocentes') as $row )
+            {
+                if ( !$row->removeData )
+                {
+                    if ($i == 0) {
+                        $professorid = $row->docenteid;
+                        $professorTipo = $row->tipodedocenteid;
+                    } else {
+                        $docentes[] = $row;
+                    }
+
+                    $i++;
+                }
+            }
+
+            $this->btnSelecionar_click();
+            
+            // obtem datas selecionadas
+            $datas = array();
+            $datasDb = array();
+            
+            foreach ( $_REQUEST as $key => $val )
+            {
+                if ( preg_match('/datas_(.*)_(.*)/', $key) )
+                {
+                    list($ano, $mes) = explode('_', $key);
+
+                    foreach ( $val as $data )
+                    {
+                        // como o componente esta bugado , precisamos corrigir as datas...
+                        $day = explode('/', $data);
+                        $day[0] = (strlen($day[0]) > 1) ? $day[0] : '0' . $day[0];
+                        $day[1] = (strlen($day[1]) > 1) ? $day[1] : '0' . $day[1];
+                        
+                        $data = implode('/', $day);
+                        $datas[] = $data;
+                        $datasDb[] = "TO_DATE('{$data}', 'dd/mm/yyyy')";
+                    }
+                }
+            }
+
+            if ( count($datas) == 0 )
+            {
+                throw new Exception(_M('Selecione pelo menos uma data no calendário ;)'));
+            }
+
+            if ( !$this->isUpdateFunction() ) {
+                $existeHorarioDisponivel = $this->verificaSeTemHorarioDisponivel($datas);
+                if (!$existeHorarioDisponivel) {
+                    throw new Exception(_M('A quantidade de horas selecionada, ultrapassa a quantidade de horas padrão (' . $this->cargaHorariaPadraoDaUnidade . ' hrs) cadastrado pra unidade didática.'));
+                }
+            }
+
+            SDatabase::beginTransaction();
+
+            // tratamento especial editar
+            if ( $this->isUpdateFunction() )
+            {
+                foreach ( $this->horarioIdSelecionados as $dia => $horarios )
+                {
+                    foreach ( $horarios as $horarioId )
+                    {
+                        // apaga datas "desmarcadas" do calendario
+                        $datasAntes = AcpOfertaComponenteCurricular::obterDatasAntes($ofertacomponentecurricularid, $horarioId, $professorid);
+
+                        foreach ( $datasAntes as $ocorrenciahorarioofertaid => $data )
+                        {
+                            if ( !in_array($data, $datas) )
+                            {
+                                try
+                                {
+                                    if ($ocorrenciahorarioofertaid == $ocorrenciahorarioofertaid_param) {
+
+                                        $objeto = new AcpOcorrenciaHorarioOferta( $ocorrenciahorarioofertaid );
+                                        if ( MIOLO::_REQUEST('acaoDesmarcar') == 'cancelar')
+                                        {
+                                            $objeto->cancelada = DB_TRUE;
+                                            $objeto->motivo_cancelamento = _M('Aula cancelada na tela de Definir aulas');
+                                            $objeto->save();
+                                        }
+                                        else
+                                        {
+                                            $facilitador = new AcpOcorrenciaHorarioOfertaFacilitadores();
+                                            $facilitador->removerFacilitadores($ocorrenciahorarioofertaid);
+
+                                            $objeto->delete();
+                                        }
+                                    }
+                                }
+                                catch (Exception $e)
+                                {
+                                    throw new Exception(_M('A data @1 não pode ser desmarcada', null, $data));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+                        
+            // adiciona ocorrencia do horario para datas
+            foreach ( $datas as $data )
+            {
+                foreach ( $this->horarioIdSelecionados as $dia => $horarioIds )
+                {
+                    // Verifica se o dia da semana da data é o mesmo dia do horário
+                    if ( SAGU::getDowFromDate($data) == $dia )
+                    {
+                        foreach ( $horarioIds as $horarioId )
+                        {
+                            if ( !$this->isUpdateFunction() || ( $this->isUpdateFunction() && !AcpOcorrenciaHorarioOferta::verificaOcorrenciaRegistrada($horarioId, $data, $ofertacomponentecurricularid) ) )
+                            {
+                                $oho = new AcpOcorrenciaHorarioOferta();
+                                $oho->ofertacomponentecurricularid = $ofertacomponentecurricularid;
+                                $oho->horarioid = $horarioId;
+                                $oho->professorid = $professorid;
+                                $oho->tipodedocenteid = $professorTipo;
+                                $oho->dataaula = $data;
+
+
+
+                                if ( strlen($physicalresourceid) > 0 )
+                                {
+                                    $oho->physicalresourceid = $physicalresourceid;
+    //                                $oho->physicalresourceversion = 1;
+                                }
+
+                                $oho->save();
+
+                                if ( MIOLO::_REQUEST('acaoDesmarcar') == 'remover')
+                                {
+                                    $objeto = new AcpOcorrenciaHorarioOferta( $oho->getLastInsertId() );
+                                    // Se tiver frequencias, devemos move-las junto
+                                    if ( $objeto->possuifrequencia == DB_TRUE && ( strlen($data) > 0 ) )
+                                    {
+                                        $objeto->atualizaFrequencias($oho->getLastInsertId(), $data);
+                                    }
+                                }
+
+                                // removendo os facilitadores de uma determinada ocorrencia de horario oferta, e logo abaixo adicionando novamente
+                                $facilitador = new AcpOcorrenciaHorarioOfertaFacilitadores();
+                                $facilitador->removerFacilitadores($oho->getLastInsertId());
+
+                                foreach ($docentes as $docente) {
+                                    $facilitadores = new AcpOcorrenciaHorarioOfertaFacilitadores();
+                                    $facilitadores->ocorrenciahorarioofertaid = $oho->getLastInsertId();
+                                    $facilitadores->facilitadorid = $docente->docenteid;
+                                    $facilitadores->tipodedocenteid = $docente->tipodedocenteid;
+                                    $facilitadores->save();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if ( $this->isUpdateFunction() )
+            {
+                // verifica se deve des-cancelar aulas
+                foreach ($this->datasCanceladas as $data)
+                {
+                    if ( in_array($data, $datas) )
+                    {
+                        $ok = AcpOcorrenciaHorarioOferta::removerCancelamento($ofertacomponentecurricularid, $professorid, $data);
+                    }
+                }
+
+
+                // verifica se deve alterar o professor na edicao
+                // atualiza professor em massa
+                $ok = AcpOcorrenciaHorarioOferta::atualizarProfessor($ofertacomponentecurricularid, $professorid, $datasDb, $ocorrenciahorarioofertaid_param, $professorTipo);
+
+
+                // removendo os facilitadores de uma determinada ocorrencia de horario oferta, e logo abaixo adicionando novamente
+                if (MIOLO::_REQUEST('acaoDesmarcar') == 'cancelar') {
+                    $facilitador = new AcpOcorrenciaHorarioOfertaFacilitadores();
+                    $facilitador->removerFacilitadores($ocorrenciahorarioofertaid_param);
+
+                    foreach ($docentes as $docente) {
+                        $facilitadores = new AcpOcorrenciaHorarioOfertaFacilitadores();
+                        $facilitadores->ocorrenciahorarioofertaid = $ocorrenciahorarioofertaid_param;
+                        $facilitadores->facilitadorid = $docente->docenteid;
+                        $facilitadores->tipodedocenteid = $docente->tipodedocenteid;
+                        $facilitadores->save();
+                    }
+                }
+            }
+            
+            SDatabase::commit();
+            
+            $goto = $MIOLO->GetActionURL($module, MIOLO::getCurrentAction(), null, array('ofertacomponentecurricularid' => $ofertacomponentecurricularid));
+            $this->messageSuccess(_M('Aulas definidas com sucesso'), $goto);
+        }
+        catch (Exception $e)
+        {
+            $this->AddError($e->getMessage());
+        }
+    }
+    
+    public function tbBtnDelete_click($sender = NULL, $opts)
+    {
+        $this->pkey = array();
+        $this->pkey[] = 'ofertacomponentecurricularid';
+        $this->pkey[] = 'professorid';
+        $this->pkey[] = 'diasemana';
+        $this->pkey[] = 'ocorrenciahorarioofertaid';
+
+        parent::tbBtnDelete_click($sender, $opts);
+    }
+    
+    public function tbBtnDelete_confirm($sender = NULL, $success, $opts = null)
+    {
+
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $ofertacomponentecurricularid = MIOLO::_REQUEST('ofertacomponentecurricularid');
+        $ocorrenciahorarioofertaid = MIOLO::_REQUEST('ocorrenciahorarioofertaid');
+
+        $ocorrenciahorariooferta = new AcpOcorrenciaHorarioOferta($ocorrenciahorarioofertaid);
+        try
+        {
+            // removendo os facilitadores de uma determinada ocorrencia de horario oferta
+            $facilitador = new AcpOcorrenciaHorarioOfertaFacilitadores();
+            $facilitador->removerFacilitadores($ocorrenciahorarioofertaid);
+
+            $ok = true;
+
+            if ( $ocorrenciahorariooferta->possuifrequencia == DB_TRUE )
+            {
+                $ocorrenciahorariooferta->removerFrequencias($ocorrenciahorarioofertaid);
+            }
+
+            $ok &= $ocorrenciahorariooferta->delete();
+
+            $goto = $MIOLO->GetActionURL($module, MIOLO::getCurrentAction(), null, array('ofertacomponentecurricularid' => $ofertacomponentecurricularid));
+            $this->messageSuccess(_M('Horários excluídos com sucesso'), $goto);
+
+        } catch (Exception $e)
+        {
+            $MIOLO->error($e->getMessage());
+        }
+    }
+    
+    public function obterLegendas()
+    {
+        $legendas = array();
+        
+        $html = "
+            <ul style='list-style: square inside none; margin: 0; padding: 0'>
+                <li style='padding: 0; margin: 0 0 0 10px; display: list-item; float: left; color: " . self::COR_PERMITE_ALTERACAO . "'>Aula agendada</li>
+                <li style='padding: 0; margin: 0 0 0 10px; display: list-item; float: left; color: " . self::COR_FREQUENCIA_REGISTRADA . "'>Aula já com frequência agendada</li>
+                <li style='padding: 0; margin: 0 0 0 10px; display: list-item; float: left; color: " . self::COR_AULA_CANCELADA . "'>Aula cancelada</li>
+                <li style='padding: 0; margin: 0 0 0 10px; display: list-item; float: left; color: " . self::COR_CALENDARIO_SEMAULA . "'>Não é dia letivo</li>
+            </ul>
+
+        ";
+               
+        $div = new MDiv('divLegenda', $html);
+        $div->addBoxStyle("float", "left");
+        
+        return $div;
+    }
+}

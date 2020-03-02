@@ -1,0 +1,165 @@
+<?php
+/**
+ * <--- Copyright 2005-2015 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Classe que torna possível o acesso aos types(tipos) do CAP
+ *
+ * @author Luís Augusto Weber Mercado [luis_augusto@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Luís Augusto Weber Mercado [luis_augusto@solis.com.br]
+ *
+ * @since
+ * Classe criada em 04/05/2015
+ */
+class CompatibilidadeCAP
+{
+    
+    /**
+     * Constante referente ao tipo de operação de crédito
+     * 
+     * @var String
+     */
+    const ID_TIPO_OPERACAO_CREDITO = "C";
+    
+    /**
+     * Constante referente ao tipo de operação de débito
+     * 
+     * @var String
+     */
+    const ID_TIPO_OPERACAO_DEBITO = "D";
+    
+    /**
+     * Dado um tipo referente ao módulo CAP do MIOLO26, cria uma instância deste
+     * e popula ele caso o identificador seja passado
+     * 
+     * @param String $tipoASerImportado Nome do tipo a ser importado
+     * @param Integer $identificadorDaOcorrencia Identificador para popular o type
+     * 
+     * @return Mixed Instância do tipo requisitado
+     */
+    public static function getTipo($tipoASerImportado, $identificadorDaOcorrencia = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $caminhoModuloBase = $MIOLO->GetAbsolutePath("../miolo26/modules/base/");
+        
+        require_once($caminhoModuloBase . "classes/bBaseDeDados.class.php");
+        require_once($caminhoModuloBase . "classes/bCatalogo.class.php");
+        require_once($caminhoModuloBase . "classes/bInfoColuna.class.php");
+        //require_once($caminhoModuloBase . "classes/BString.class.php");
+        require_once($caminhoModuloBase . "classes/bTipo.class.php");
+        
+        $MIOLO->uses("tipos/{$tipoASerImportado}.class.php", "contaspagar");
+        
+        return new $tipoASerImportado($identificadorDaOcorrencia);
+    }
+    
+    /**
+     * Consulta pelas contas que possam ser pagas com um dado saldo no intervalo
+     * especificado
+     *
+     * @param String $datainicial Data inicial
+     * @param String $datafinal Data final
+     * @param String $filtroAdicional Filtrar também por Dados da compra ou Fornecedor
+     * 
+     * @return Array Array com as contas disponíveis para pagamento
+     */
+    public static function getContasDisponiveisEntreIntervalo($datainicial, $datafinal, $filtroAdicional = "")
+    {
+        $parametros = array($datainicial, $datafinal);
+        
+        $sql = self::getSQLListaContasDisponiveis();
+        
+        if( strlen($filtroAdicional) > 0 )
+        {
+            $sql .= "AND (getpersonname(s.fornecedorid) ILIKE ('%'|| ? ||'%') OR s.dadoscompra ILIKE ('%'|| ? ||'%')) ";
+            
+            // Adiciona duas vezes pois é considerado duas vezes
+            $parametros[] = $filtroAdicional;
+            $parametros[] = $filtroAdicional;
+            
+        }
+        
+        $sql .= "ORDER BY t.vencimento";
+        
+        return SDatabase::query($sql, $parametros);
+        
+    }
+    
+    /**
+     * Retorna SQL responsável por trazer os títulos (contas) em aberto
+     * 
+     * @return String SQL
+     */
+    private static function getSQLListaContasDisponiveis()
+    {
+        return "
+            SELECT t.tituloid, 
+                   TO_CHAR(t.vencimento::date, GETPARAMETER('BASIC', 'MASK_DATE')),  
+                   s.dadoscompra,
+                   getpersonname(s.fornecedorid),
+                   s.numerodanotafiscal,
+                   t.valor,
+                   t.valoraberto
+              FROM captitulo t
+        INNER JOIN capsolicitacaoparcela sp ON t.solicitacaoparcelaid = sp.solicitacaoparcelaid
+        INNER JOIN capsolicitacao s ON sp.solicitacaoid = s.solicitacaoid
+             WHERE t.tituloaberto = TRUE
+               AND dataestanointervalo(t.vencimento::date, ?, ?) = TRUE
+        ";
+    }
+    
+    /**
+     * Consulta as informações de um dado título
+     *
+     * @param Integer $tituloid Identificador do titulo
+     * 
+     * @return Array Array com as informações do titulo
+     */
+    public static function getInformacaoContaPorTitulo($tituloid)
+    {
+        $parametros = array($tituloid);
+        
+        $sql = "
+            SELECT
+                t.tituloid, 
+                TO_CHAR(t.vencimento::date, '" . SAGU::getParameter('BASIC', 'MASK_DATE') . "'),  
+                s.dadoscompra,
+                getpersonname(s.fornecedorid),
+                s.numerodanotafiscal,
+                t.valor,
+                t.valoraberto,
+                s.accountschemeid,
+                s.costcenterid
+            FROM captitulo t
+            INNER JOIN capsolicitacaoparcela sp ON t.solicitacaoparcelaid = sp.solicitacaoparcelaid
+            INNER JOIN capsolicitacao s ON sp.solicitacaoid = s.solicitacaoid
+            WHERE t.tituloid = ?";
+        
+        return SDatabase::query($sql, $parametros);
+        
+    }
+    
+}
+
+?>

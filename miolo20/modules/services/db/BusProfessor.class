@@ -1,0 +1,246 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file handles the business layer for the professor services
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Equipe Solis [sagu2@solis.coop.br]
+ * 
+ * @since
+ * Class created on 05/09/2007
+ *
+ **/
+
+/**
+ * Class to handle this business
+ **/
+class BusinessServicesBusProfessor extends sBusiness
+{
+    const TODOS_OS_PROFESSOR_DA_DISCIPLINA = 'T';
+    const APENAS_O_PROFESSOR_INFORMADO = 'P';
+    
+    /**
+     * A list containing all periods the professor has curricular components
+     *
+     * @param $professorId (integer): Primary key for query
+     *
+     * @return (array): An array containing all the periods the professor has ministered curricular components
+     *
+     **/
+    public function listProfessorPeriods($professorId)
+    {
+        $params = array();
+
+        if ( SAGU::isDebugMode() )
+        {
+            $sql = 'SELECT A.periodId,
+                           A.description
+                      FROM acdPeriod A';
+        }
+        else
+        {
+            $sql = 'SELECT A.periodId,
+                           A.description
+                      FROM acdPeriod A
+                     WHERE A.periodId IN (SELECT DD.periodId
+                                          FROM acdSchedule AA
+                                    INNER JOIN acdScheduleProfessor BB
+                                            ON (AA.scheduleId = BB.scheduleId)
+                                    INNER JOIN acdGroup CC
+                                            ON (CC.groupId = AA.groupId)
+                                    INNER JOIN acdLearningPeriod DD
+                                            ON (DD.learningPeriodId = CC.learningPeriodId  
+                                                AND DD.isclosed = false)
+                                        WHERE BB.professorId = ?)
+                  ORDER BY A.periodId desc, A.description';
+            
+            $params[] = $professorId;
+        }
+
+        $db  = $this->getDatabase();
+        $result = $db->query(SAGU::prepare($sql, $params));
+
+        return $result;
+    }
+
+    /**
+     * A list containing all periods the professor has curricular components
+     *
+     * @param $professorId (integer): Primary key for query
+     *
+     * @return (array): An array containing all the periods the professor has ministered curricular components
+     *
+     **/
+    public function listProfessorCurricularComponents($filter)
+    {
+        $where[] = 'E.periodId = ?';
+        $args[] = $filter->periodId;
+        
+        if ( !SAGU::isDebugMode() && strlen($filter->personId) > 0 )
+        {
+            $where[] = 'C.professorId = ?';
+            $args[] = $filter->personId;
+        }
+        
+        if ( strlen($filter->coordinatorId) > 0 )
+        {
+            $where[] = 'F.courseId IN (SELECT courseid FROM acdcoursecoordinator WHERE coordinatorid = ?)';
+            $args[] = $filter->coordinatorId;
+            
+            $where[] = 'F.courseVersion IN (SELECT courseversion FROM acdcoursecoordinator WHERE coordinatorid = ?)';
+            $args[] = $filter->coordinatorId;
+            
+            $where[] = 'F.turnId IN (SELECT turnid FROM acdcoursecoordinator WHERE coordinatorid = ?)';
+            $args[] = $filter->coordinatorId;
+            
+            $where[] = 'F.unitId IN (SELECT unitid FROM acdcoursecoordinator WHERE coordinatorid = ?)';
+            $args[] = $filter->coordinatorId;
+        }
+        
+        if ( strlen($filter->isCancellation) > 0 )
+        {
+            $where[] = 'A.iscancellation = ?';
+            $args[] = $filter->isCancellation;
+        }
+        
+        $sql = 'SELECT DISTINCT A.groupId,
+                                G.curricularComponentId || \'/\' || G.curricularComponentVersion,
+                                G.name,
+                                H.courseId || \'/\' || H.courseVersion,
+                                I.name,
+                                H.turnId,
+                                J.description,
+                                H.unitId,
+                                K.description,
+                                A.classId,
+                                A.isCancellation
+                           FROM acdGroup A
+                     INNER JOIN acdSchedule B
+                             ON (B.groupId = A.groupId)
+                     INNER JOIN acdScheduleProfessor C
+                             ON (C.scheduleId = B.scheduleId)
+                     INNER JOIN acdLearningPeriod E
+                             ON (E.learningPeriodId = A.learningPeriodId)
+                     INNER JOIN unit_acdcurriculum F
+                             ON (F.curriculumId = A.curriculumId)
+                     INNER JOIN acdCurricularComponent G
+                             ON (G.curricularComponentId = F.curricularComponentId
+                                 AND G.curricularComponentVersion = F.curricularComponentVersion)
+                     INNER JOIN acdCourseOccurrence H
+                             ON (H.courseId = F.courseId
+                                 AND H.courseVersion = F.courseVersion
+                                 AND H.turnId = F.turnId
+                                 AND H.unitId = F.unitId)
+                     INNER JOIN acdCourse I
+                             ON (I.courseId = H.courseId)
+                     INNER JOIN basTurn J
+                             ON (J.turnId = F.turnId)
+                     INNER JOIN basUnit K
+                             ON (K.unitId = F.unitId)
+                          WHERE 1=1
+                            AND ' . implode(' AND ', $where);
+        
+        if ( $filter->listTcc )
+        {
+            $sql .= ' OR (A.groupid IN (SELECT groupid 
+                                          FROM acdenroll 
+                                         WHERE enrollid IN (SELECT AA.enrollid 
+                                                              FROM acdfinalexaminationdirectors AA
+                                                        INNER JOIN acdenroll BB
+                                                                ON (AA.enrollId = BB.enrollId)
+                                                        INNER JOIN acdGroup CC
+                                                                ON (CC.groupId = BB.groupId)
+                                                             WHERE personid = ?
+                                                               AND CC.learningPeriodId IN (SELECT learningPeriodId
+                                                                                             FROM acdLearningPeriod
+                                                                                            WHERE periodId = ?)))) ';
+            $args[] = $filter->personId;
+            $args[] = $filter->periodId;
+        }
+        
+        $sql .= ' ORDER BY G.name ';
+
+        $db  = $this->getDatabase();        
+        $result = $db->query(SAGU::prepare($sql, $args));
+
+        return $result;
+    }
+    
+    /**
+     * Updates a group grade book data
+     *
+     * @param $data (object): Object containing the data to be updated
+     *
+     * @return (boolean): TRUE if succeeds, otherwise FALSE
+     *
+     **/
+    public function updateGradeBookData($data)
+    {
+        $sql = ' UPDATE acdGroup
+                    SET objectives = ?,
+                        content = ?,
+                        methodology = ?,
+                        evaluation = ?,
+                        complement = ?,
+                        observation = ?,
+                        basicbibliographydescription = ?,
+                        complementarybibliographydescription = ?
+                  WHERE groupId = ?';
+                  
+        $args = array($data->objectives,
+                      $data->content_,
+                      $data->methodology,
+                      $data->evaluation,
+                      $data->complement,
+                      $data->observation,
+                      $data->basicbibliographydescription,
+                      $data->complementarybibliographydescription,
+                      $data->groupId);
+                      
+        $db  = $this->getDatabase();
+        $result = $db->execute(SAGU::prepare($sql, $args));        
+
+        return $result;
+    }
+    
+    public static function listarTipoDeProfessor($isPortal = false)
+    {
+        if ( $isPortal == true )
+        {
+            $data = array(
+                self::TODOS_OS_PROFESSOR_DA_DISCIPLINA => _M('TODOS OS PROFESSORES DESSA DISCIPLINA', 'basic'),
+                self::APENAS_O_PROFESSOR_INFORMADO => _M('APENAS EU', 'basic') );
+        }
+        else
+        {
+            $data = array(
+                self::TODOS_OS_PROFESSOR_DA_DISCIPLINA => _M('TODOS OS PROFESSORES DESSA DISCIPLINA', 'basic'),
+                self::APENAS_O_PROFESSOR_INFORMADO => _M('APENAS O PROFESSOR INFORMADO', 'basic') );
+        }
+        
+        return $data;
+    }
+}

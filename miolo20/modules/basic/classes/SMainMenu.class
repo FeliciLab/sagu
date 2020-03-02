@@ -1,0 +1,588 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2012 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Componente de menu principal.
+ *
+ * @author Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * \b Maintainers: \n
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * @since
+ * Class created on 12/01/2012
+ */
+
+$MIOLO = MIOLO::getInstance();
+$MIOLO->page->addScript(SAGU::ABSOLUTE_URL_JS_FILES . 'SMainMenu.js');
+$MIOLO->uses('classes/sStickyNote.class', 'basic');
+
+class SMainMenu extends MDiv
+{
+    const ID = 'sMainMenu';
+    const ID_LOGO = 'sMainMenuLogo';
+    const ID_DADOS = 'sMainMenuData';
+    const ID_JS = 'sMainMenuJS';
+    const ID_ACAO = 'sMainMenuNavAction';
+    const ID_ACESSO_RAPIDO = 'sMainMenuQuickAccess';
+
+    private $logo;
+    
+    /**
+     * @var array
+     */
+    private $dados;
+    
+    
+    private $navegacao;
+    
+    /**
+     * Indica se deve utilizar cache para o menu (util para debug)
+     * 
+     * @var boolean
+     */
+    private $useCache = true;
+
+    public function __construct()
+    {
+        parent::__construct(self::ID, '', 'm-main-menu');
+        $MIOLO  = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        $action = $MIOLO->getCurrentAction();
+
+        $ui = $this->manager->getUI();
+	
+        $carregandoDiv = new MDiv('sMainMenuCarregandoDiv', _M('Carregando...', 'basic'));
+        $carregandoDiv->addBoxStyle('display', 'none');
+        $carregandoDiv->addBoxStyle('z-index', '1000');
+        $carregandoDiv->addBoxStyle('position', 'fixed');
+        $carregandoDiv->addBoxStyle('padding', '6px 10px');
+        $carregandoDiv->addBoxStyle('color', 'white');
+        
+        $img = $ui->getImageTheme($this->manager->theme->id, 'logo.png');
+        $this->logo = new MImage(self::ID_LOGO, NULL, $img);
+        $this->logo->addAttribute('onclick', "if (!smainmenu) { loadMenu(true); } else { smainmenu.show(); }");
+        
+        // Se estiver no home, exibe a mensagem do menu.
+        if ( $module == 'sagu2' && ( $action == 'main' || is_null($action) ) && !is_null($MIOLO->GetLogin()) )
+        {
+            $info = $ui->getImageTheme($this->manager->theme->id, 'balao_certo.png');
+            $imgInfo = new MImage('imgInfo', NULL, $info, array('width' => '130', 'height' => '130'));
+            $imgInfo->addAttribute('style', 'width:130px; height:130px; padding:35px 10px;');
+        }
+        
+        if ( !is_null($MIOLO->GetLogin()) )
+        {
+            //if ( $MIOLO->GetLogin()->IsAdmin() || SAGU::getUsuarioLogado() )
+            {
+                $logoDiv = new MDiv(self::ID_LOGO . 'Div', $this->logo, 'logo');
+            }
+        }
+        
+        $this->popular();
+        $this->gerarNavegacao();
+        	
+        $this->setInner(array( $carregandoDiv, $logoDiv, $this->navegacao, $imgInfo ));
+    }
+    
+    /**
+     * Obtem URL de menu, fazendo tratamentos especificos quando necessários.
+     *
+     * @return string
+     */
+    public static function getMenuURL($modulo, $acao, $subPath = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $dispatch = null;        
+        $confURL = $MIOLO->getConf('home.url'); // Ex.: http://meusagu.edu.br/sagu26/
+
+        if ( SAGU::isMiolo2() ) // É versao antiga do miolo (2.0)
+        {
+            // Concatena o subpath na URL, caso exista
+            $dispatch = $confURL . ( $subPath ? '/' . $subPath : null ) . '/index.php';
+        }
+        else // É versao do miolo > 2.0
+        {
+            if ( strlen($subPath) > 0 )
+            {
+                $dispatch = null; // Mantem a URL atual
+            }
+            else
+            {
+                // Corta o subpath da URL
+                $dispatch = dirname($confURL) . '/index.php'; // URL sem o path
+            }
+        }
+
+        $url = $MIOLO->getActionURL($modulo, $acao, null, null, $dispatch);
+
+        return $url;
+    }
+
+    /**
+     * Popula o componente com os dados necessários para a criação do menu.
+     * Armazena os dados na sessão para evitar requisições a base de dados.
+     */
+    public function popular()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $sessao = $this->manager->getSession();
+        $sessionId = $this->id . self::ID_DADOS;
+        $sessionData = $sessao->getValue($sessionId);
+
+        $filters = new stdClass();
+        $filters->onlyWithPerms = true;
+        
+        // Foi removido o cache devido a estar havendo problemas de as vezes nao refazer a consulta
+        $dados = AdmMioloTransaction::listRecords($filters);
+        
+        $mainItems = array();
+        
+        if ( $dados )
+        {
+            $dados[$actLogout] = current($dados);
+            $dados[$actLogout]['modulo'] = 'admin';
+            $dados[$actLogout]['temFilho'] = false;
+
+            // Gera opções do acesso rápido
+            foreach ( $dados as $moduloAcao => $item )
+            {  
+                // Ajuste para não listar relatórios no menu principal. Ticket #26510.
+                if ( substr_count($item['transaction'], 'reports') > 0 && $item['pai'] == NULL )
+                {
+                    unset($dados[$moduloAcao]);
+                    continue;
+                }
+                
+                // Ajuste para não duplicar items no menu inicial. Ticket #26918.
+                if ( $item['pai'] == NULL  )
+                {
+                    if ( in_array($item['transaction'], $mainItems) )
+                    {
+                        unset($dados[$moduloAcao]);
+                        continue;
+                    }
+                    else
+                    {
+                        $mainItems[] = $item['transaction'];
+                    }
+                }
+                
+                // Ações do acesso rápido não são geradas para sub-menus
+                if ( $item['temFilho'] )
+                {
+                    continue;
+                }
+
+                list($modulo, $acao) = explode('|', $moduloAcao);
+                $codigo = $item['codigo'];
+                $pai = $item['pai'];
+                
+                $niveis = array();
+
+                while ( $acao )
+                {
+                    $niveis[] = $acao;
+
+                    $acao = explode(':', $acao);
+                    end($acao);
+                    unset($acao[key($acao)]);
+                    $acao = implode(':', $acao);
+                }
+
+                $niveis = array_reverse($niveis);
+                $descricaoAcessoRapido = array();
+
+                foreach ( $niveis as $nivel )
+                {
+                    $acaoAtual = $dados["$modulo|$nivel"];
+
+                    if ( !$acaoAtual )
+                    {
+                        $acaoAtual = $dados["$modulo|main:$nivel"];
+                    }
+
+                    $descricaoAcessoRapido[] = $acaoAtual['descricao'];
+                }
+
+                $dados[$moduloAcao]['acessoRapido'] = implode(' :: ', $descricaoAcessoRapido);
+            }
+
+            $sessao->setValue($sessionId, $dados);
+        }
+        
+        // Gera botao de logout
+        $actLogout = 'admin|logout';
+        $img = $MIOLO->getActionURL('admin', 'html:images:logout-16x16.png');
+        $dados[$actLogout]['descricao'] = "<img src=\"{$img}\"></img> ". _M('Sair', $module);
+        
+        $this->dados = $dados;
+    }
+
+    /**
+     * Obtém o código JavaScript para a criação dos itens e sub-menus do menu principal.
+     * 
+     * @return string Código JS.
+     */
+    public function gerarItensJS()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $sessao = $this->manager->getSession();
+
+        // Obtém da sessão para evitar processamento repetido
+        //$itensJS = $sessao->getValue($this->id . self::ID_JS);
+
+        if ( !$itensJS )
+        {
+            $itensJS = array();
+
+            $dados = (array)($this->dados);
+
+            //Tratando códigos negativos - #34891
+            $maxValue = 0;
+            foreach ( $dados as $m)
+            {
+               $m['codigo'] > $maxValue ? $maxValue = $m['codigo'] : null;
+            }
+            
+            foreach ( (array)$this->dados as $moduloAcao => $item )
+            {
+                list($modulo, $acao) = explode('|', $moduloAcao);
+                $codigo = $item['codigo'];
+                $descricao = $item['descricao'];
+                $pai = $item['pai'];
+                $acessoRapido = $item['acessoRapido'];
+                $subPath = $item['subpath'];
+
+                //Tratamento de códigos negativos - #34891
+                if ( $codigo < 0 )
+                {
+                    $maxValue++;
+                    $codigo = $maxValue;
+                }
+                
+                if ( $item['temFilho'] )
+                {
+                    $itensJS[] = "smainmenu.addSubMenu('{$codigo}', '$descricao', null, false, '{$pai}');";
+                }
+                else
+                {
+                    $acao = SMainMenu::getMenuURL($modulo, $acao, $subPath);
+                    $itensJS[] = "smainmenu.addItem('{$codigo}', '{$descricao}', '{$acao}', null, false, '{$pai}', '{$acessoRapido}');";
+                    }
+                }
+
+            $itensJS = implode("\n", $itensJS);
+            $sessao->setValue($this->id . self::ID_JS, $itensJS);
+        }
+
+        return $itensJS;
+    }
+
+    /**
+     * @return string Gera navegação via sub-menus.
+     */
+    public function gerarNavegacao()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $acoes = array();
+
+        $modulo = $this->manager->getCurrentModule();
+        $acao = $acaoPrincipal = $this->manager->getCurrentAction();
+        $args = $this->manager->getCurrentURL();
+        
+        $args = explode("&amp;", $args);
+        $arg  = explode("=", $args[2]);
+        $arg1 = explode("=", $args[3]);
+        
+        if ( ( $arg[0] == "reportid" ) || ( $arg[0] == "report" ) || ( $arg[0] == "relatorioid" ) || ( $arg[0] == "type" ) )
+        {
+            $args = "&" . $args[2];  
+            $acaoPrincipal .= $args;
+        }
+        else if ( ( $arg1[0] == "reportid" ) || ( $arg1[0] == "report" ) || ( $arg1[0] == "relatorioid" ) || ( $arg1[0] == "type" ) )
+        {
+            $args = "&" . $args[3];  
+            $acaoPrincipal .= $args;
+        }
+        else
+        {
+            $args = null;
+        }
+        
+        $acao .= $args;
+
+        if ( $acao )
+        {
+            while ( $acao )
+            {
+                $niveis[] = $acao;
+
+                $acao = explode(':', $acao);
+                end($acao);
+                unset($acao[key($acao)]);
+                $acao = implode(':', $acao);
+            }
+
+            $niveis = array_reverse($niveis);
+            
+            foreach ( $niveis as $nivel )
+            {
+                $acaoAtual = $this->dados["$modulo|$nivel"];
+                
+                if ( !$acaoAtual )
+                {
+                    $acaoAtual = $this->dados["$modulo|main:$nivel"];
+                    
+                    // Corrige navegacao - ver sLinkedForm
+                    if ( !$acaoAtual && $MIOLO->getConf('linkedform.fix.action') )
+                    {
+                        $fixAction = $MIOLO->getConf('linkedform.fix.action');
+                        $acaoAtual = $this->dados["$modulo|$fixAction"];
+                    }
+                }
+
+                if ( $acaoPrincipal != $nivel && $acaoPrincipal != "main:$nivel" && isset($acaoAtual['descricao']) )
+                {                    
+                    $id = self::ID_ACAO . $acaoAtual['codigo'];
+                    $acoes[] = $acao = new MDiv($id, $acaoAtual['descricao'], 'm-main-menu-navbar-item m-main-menu-navbar-item-clickable');
+                    $acao->getBox()->addAttribute('onclick', "if (!smainmenu) { loadMenu(true, '$id', '{$acaoAtual['codigo']}'); } else { smainmenu.show('$id', '{$acaoAtual['codigo']}'); }");
+
+                    $url = $this->manager->getActionURL($modulo, $nivel);
+                    $acao->getBox()->addAttribute('ondblclick', "GotoURL('$url');");
+
+                    $acoes[] = new MDiv(NULL, '::', 'm-main-menu-navbar-separator');
+                }
+                elseif ( isset($acaoAtual['descricao']) )
+                {
+                    $acoes[] = new MDiv($id, $acaoAtual['descricao'], 'm-main-menu-navbar-item');
+                }
+            }
+        }
+
+        if ( count($acoes) == 0 )
+        {
+            $acoes = '&nbsp;';
+        }
+
+        $divNavegacao = new MDiv(NULL, $acoes, 'm-main-menu-navbar');
+        
+        // Troca a cor da barra de navegação caso seja uma instalação de teste
+        if( strpos(strtolower($_SERVER["SERVER_NAME"]), "teste") !== false )
+        {
+            $divNavegacao->addBoxStyle("background-color", "#b00");
+            
+        }
+        
+        $this->navegacao = $divNavegacao;
+    }
+
+    /**
+     * @return string Gera recurso de acesso rápido.
+     */
+    public function gerarAcessoRapido()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        $action = $MIOLO->getCurrentAction();
+        $fields = array();
+
+        $url = $this->manager->getActionURL('sagu2', 'main');
+        $imagem = $this->manager->getUI()->getImageTheme($this->manager->theme->id, 'home.png');
+        $home = new MImageLink(NULL, '', "javascript:GotoURL('$url');", $imagem);
+        $home->addAttribute('title', _M('Ir para a página inicial'));
+        
+        // Se estiver no home.
+        if ( $module == 'sagu2' )
+        {
+            if ( $action == 'main' || is_null($action) )
+            {
+                new sStickyNote();
+                
+                $basStickyNote   = new BasStickyNote();
+                $temPendencias = $basStickyNote->verificaSeUsuarioTemPendencias();
+                
+                if ( $temPendencias )
+                {
+                    $imagem = $this->manager->getUI()->getImageTheme($this->manager->theme->id, 'alert.png');
+                    $pendencias = new MImage('pendencias', _M('Existem pendências não resolvidas'), $imagem);
+                    $pendencias->addAttribute('style', 'width:28px; height:23px;');
+                    $fields[] = new MSpan(NULL, $pendencias);
+                }
+                
+                $imagem = $this->manager->getUI()->getImageTheme($this->manager->theme->id, 'notes.png');
+                $lembretes = new MImage('add_note', _M('Adicionar lembrete'), $imagem);
+                $lembretes->addAttribute('style', 'cursor:pointer; width:25px; height:25px;');
+                
+                $fields[] = new MSpan(NULL, $lembretes);
+            }
+        }
+
+        $label = new MLabel(_M('Acesso rápido'));
+
+        $acessoRapido = new MTextField(self::ID_ACESSO_RAPIDO, _M('O que você deseja procurar?'), NULL, 30);
+        $acessoRapido->addAttribute('onkeyup', "if (!smainmenu) { loadMenu(false); setTimeout(function() { smainmenu.quickaccess(event, '" . self::ID_ACESSO_RAPIDO . "'); }, 0); } else { smainmenu.quickaccess(event, '" . self::ID_ACESSO_RAPIDO . "'); }");
+        $acessoRapido->addAttribute('onClick', 'document.getElementById(\'sMainMenuQuickAccess\').value = \'\';this.style.color = \'#222\';');
+        $acessoRapido->addAttribute('onBlur', 'backWhat();');
+        $acessoRapido->addAttribute('onkeypress', 'return handleEnter(this, event);');
+        $acessoRapido->addAttribute('style', 'color: #999'); 
+        
+        $this->page->addJsCode('
+            function backWhat()
+            {
+                var value = document.getElementById(\'sMainMenuQuickAccess\').value;
+                if( value == \'\' )
+                {
+                    document.getElementById(\'sMainMenuQuickAccess\').value = "O que você deseja procurar?";
+                    document.getElementById(\'sMainMenuQuickAccess\').style.color = "#999";
+                }
+            } 
+        ');
+        
+        $this->page->AddJsCode("
+            function handleEnter(field, event) 
+            {
+                var keyCode = event.keyCode ? event.keyCode : event.which ? event.which : event.charCode;
+		if ( keyCode == 13 ) 
+                {                
+                    var i;
+                    for ( i = 0; i < field.form.elements.length; i++ )
+                    {
+                        if ( field == field.form.elements[i] )
+                        {
+                            break;
+                        }
+                    }
+                    i = (i + 1) % field.form.elements.length;
+                    field.form.elements[i-1].focus();
+                    return false;
+		} 
+		else
+                {
+                    return true;
+                }
+            } 
+        ");
+
+        $fields[] = new MSpan(NULL, $home);
+        $fields[] = $label;
+        $fields[] = new MSpan(NULL, $acessoRapido);
+        
+	//$fields = null;
+        $div = new MDiv(NULL, $fields, 'm-main-menu-quickaccess');
+      
+        //Mostra atalho para a home ou consulta rapida apenas se usuário logado
+        if ( !is_null($MIOLO->GetLogin()) )
+        {
+            //if ( $MIOLO->GetLogin()->IsAdmin() || SAGU::getUsuarioLogado() )
+            {
+                return $div->generate();
+            }
+        }
+    }
+    
+    public function generateInner()
+    {
+        // em alguns casos, nao queremos exibir o menu (ex.: inscricao externa)
+        return MIOLO::getInstance()->getConf('smainmenu.esconder') == true ? '' : parent::generateInner();
+    }
+
+    /**
+     * @return string Gera o menu principal e seus recursos.
+     */
+    public function generate()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        // em alguns casos, nao queremos exibir o menu (ex.: inscricao externa)
+        if ( $MIOLO->getConf('smainmenu.esconder') == true )
+        {
+            // precisamos tirar o height, para que nao fique um espaco vazio na tela
+            $MIOLO->page->AddStyleCode("#m-container-top { height: 0px; }");
+            
+            return '';
+        }
+        
+        $itensJS = $this->gerarItensJS();
+
+        $onload = <<<JS
+window.loadMenu = function (show, actionNodeId, id) {
+    if ( !actionNodeId )
+    {
+        dojo.style('sMainMenuLogoDiv', 'visibility', 'hidden');
+        dojo.style('sMainMenuCarregandoDiv', 'display', 'block');
+    }
+    setTimeout(function() {
+        dojo.byId("sMainMenuLogoDiv").setAttribute('onmouseover', '');
+        smainmenu = new SMainMenu();
+        smainmenu.setup('$this->id', '{$this->logo->id}');
+        $itensJS
+        smainmenu.startup();
+        if ( show )
+        {
+            var imgInfo = document.getElementById('imgInfo');    
+            
+            if ( imgInfo !== null )
+            {
+                imgInfo.style.display = 'none';
+            }
+   
+            if ( actionNodeId )
+            {
+                smainmenu.show(actionNodeId, id);
+            }
+            else
+            {
+                smainmenu.show();
+            }
+        }
+        if ( !actionNodeId )
+        {
+            dojo.style('sMainMenuLogoDiv', 'visibility', 'visible');
+            dojo.style('sMainMenuCarregandoDiv', 'display', 'none');
+        }
+    }, 0);
+}
+JS;
+        $this->page->onload($onload);
+
+        return parent::generate() . $this->gerarAcessoRapido();
+    }
+    
+    /**
+     * Sobrescreve item de navegacao do menu
+     */
+    public static function setOverrideMenuNav($action)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->setConf('linkedform.fix.action', $action);
+    }
+    
+    public static function esconderMenu($esconder)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->setConf('smainmenu.esconder', $esconder);
+    }
+}
+?>

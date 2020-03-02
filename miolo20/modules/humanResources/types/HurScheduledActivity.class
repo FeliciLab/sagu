@@ -1,0 +1,517 @@
+<?php
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class definition for database entities
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 13/06/2011
+ */
+class HurscheduledActivity extends SType
+{
+    /**
+     * @AttributeType integer
+     */
+    protected $scheduledActivityId;
+    /**
+     * @AttributeType timestamp without time zone
+     */
+    protected $startDate;
+    /**
+     * @AttributeType timestamp without time zone
+     */
+    protected $endDate;
+    /**
+     * @AttributeType integer
+     */
+    protected $activityTypeId;
+    /**
+     * @AttributeType text
+     */
+    protected $description;
+    /**
+     * @AttributeType boolean
+     */
+    protected $isInternal;
+    /**
+     * @AttributeType text
+     */
+    protected $location;
+    /**
+     * @AttributeType HurscheduledActivityParticipant
+     */
+    protected $participants = array();
+    /**
+     * @AttributeType HurActivityType
+     */
+    protected $activityType;
+    /**
+     * Indica se ha algum registro de atividade realizada para esta atividade programada
+     * @AttributeType boolean
+     */
+    protected $hasRealized;
+
+    /**
+     * Construtor
+     * @param type $realizedActivityId
+     */
+    public function __construct($scheduledActivityId = NULL)
+    {
+        if ( strlen($scheduledActivityId) > 0 )
+        {
+            $this->scheduledActivityId = $scheduledActivityId;
+            $this->populate();
+        }
+    }
+
+    /**
+     * Get mágico
+     */
+    public function __get($name)
+    {
+        if ( ($name == 'participants') && (!$this->participants) && (strlen($this->scheduledActivityId) > 0 ) )
+        {
+            $filters  = new stdClass();
+            $filters->scheduledActivityId = $this->scheduledActivityId;
+            $this->participants = HurscheduledActivityParticipant::search($filters);
+        }
+        if ( ($name == 'activityType') && (!$this->activityType) && (strlen($this->activityTypeId) > 0 ) )
+        {
+            $this->activityType = new HurActivityType($this->activityTypeId);
+            $this->activityType = new HurActivityType($this->activityTypeId);
+        }
+
+        return parent::__get($name);
+    }
+
+    /**
+     * Busca por atividades realizadas. Retorna um array de objetos HurRealizedActivity
+     * @param object $filters
+     * @return HurRealizedActivity
+     */
+    public static function search($filters)
+    {
+        $sql = 'SELECT A.scheduledActivityId
+                  FROM hur.scheduledActivity A';
+
+        $where = '';
+        foreach ($filters as $key=>$value)
+        {
+            if( $key == 'beginDateNow' )
+            {
+                $where .= ' AND A.startDate <= TO_TIMESTAMP(\''.$value.'\', \''.SAGU::getParameter('BASIC', 'MASK_TIMESTAMP').'\')';
+            }
+            elseif( $key == 'hasRealized' )
+            {
+                $where .= " AND (SELECT COUNT(*)
+                                   FROM hur.realizedActivity _RA
+                                  WHERE _RA.scheduledActivityId = A.scheduledActivityId ) > 0";
+            }
+            elseif ((is_scalar($value)) && (strlen($value) > 0 ))
+            {
+                $where .= " AND A.{$key} = '{$value}'";
+            }
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql.=' WHERE '.substr($where, 5);
+        }
+
+        $sql.=' ORDER BY A.scheduledActivityId ';
+        $result = SDatabase::query($sql);
+        $retVal = array();
+
+        for ($i = 0; $i < count($result); $i++ )
+        {
+            $retVal[] = new HurscheduledActivity($result[$i][0]);
+        }
+
+        return $retVal;
+    }
+
+    /**
+     * Busca por atividades realizadas. Retorna um array de array (para Grid)
+     * @param object $filters
+     * @return array
+     */
+    public static function searchGrid($filters = null)
+    {
+        $maskTimestamp = SAGU::getParameter('BASIC', 'MASK_DATE') . ' ' . SAGU::getParameter('BASIC', 'MASK_TIME');
+
+        $sql = 'SELECT A.scheduledActivityId,
+                       TO_CHAR(A.startDate, \''.$maskTimestamp.'\'),
+                       TO_CHAR(A.endDate, \''.$maskTimestamp.'\'),
+                       A.activityTypeId,
+                       B.description as activityTypeDescription,
+                       A.description as activityDescription,
+                       A.isInternal,
+                       A.location,
+                       (SELECT COUNT(*) > 0
+                          FROM hur.realizedActivity _RA
+                         WHERE _RA.scheduledActivityId = A.scheduledActivityId ) AS hasRealized,
+                       A.userName
+                  FROM hur.scheduledActivity A
+            INNER JOIN hur.activitytype B
+                    ON (A.activityTypeId = B.activityTypeId)';
+        $params = array();
+
+        if ( strlen($filters->scheduledActivityId) > 0 )
+        {
+            $where .= ' AND A.scheduledActivityId = ?';
+            $params[] = $filters->scheduledActivityId;
+        }
+
+        if ( strlen($filters->startDate) > 0 )
+        {
+            $where .= ' AND A.startDate = TO_TIMESTAMP(?, \''.SAGU::getParameter('BASIC', 'MASK_TIMESTAMP').'\')';
+            $params[] = $filters->startDate;
+        }
+
+        if ( strlen($filters->endDate) > 0 )
+        {
+            $where .= ' AND A.endDate = TO_TIMESTAMP(?, \''.SAGU::getParameter('BASIC', 'MASK_TIMESTAMP').'\')';
+            $params[] = $filters->endDate;
+        }
+
+        if ( strlen($filters->activityTypeId) > 0 )
+        {
+            $where .= ' AND A.activityTypeId = ?';
+            $params[] = $filters->activityTypeId;
+        }
+
+        if ( strlen($filters->description) > 0 )
+        {
+            $where .= ' AND UNACCENT(A.description) ILIKE UNACCENT(?) ';
+            $params[] = $filters->description. ' %';
+        }
+
+        if ( strlen($filters->isInternal) > 0 )
+        {
+            $where .= ' AND A.isInternal = ?';
+            $params[] = $filters->isInternal;
+        }
+
+        if ( strlen($filters->location) > 0 )
+        {
+            $where .= ' AND UNACCENT(A.location) ILIKE UNACCENT(?) ';
+            $params[] = $filters->location . '%';
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE '.substr($where, 4).'
+                   ORDER BY A.description';
+            $result = SDatabase::query(SAGU::prepare($sql, $params));
+        }
+
+        return $result;
+    }
+
+    /**
+     * Popula a classe
+     */
+    private function populate()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $sql = "SELECT A.username,
+                       TO_CHAR(A.datetime, '".SAGU::getParameter('BASIC', 'MASK_TIMESTAMP')."'),
+                       A.ipaddress,
+                       A.scheduledActivityId,
+                       TO_CHAR(A.startDate, '" . SAGU::getParameter('BASIC', 'MASK_DATE') . " " . SAGU::getParameter('BASIC', 'MASK_TIME') . "'),
+                       TO_CHAR(A.endDate, '" . SAGU::getParameter('BASIC', 'MASK_DATE') . " " . SAGU::getParameter('BASIC', 'MASK_TIME') . "'),
+                       A.activityTypeId,
+                       A.description,
+                       A.isInternal,
+                       A.location,
+                       (SELECT COUNT(*) > 0
+                          FROM hur.realizedActivity _RA
+                         WHERE _RA.scheduledActivityId = A.scheduledActivityId ) AS hasRealized
+                  FROM hur.scheduledActivity A
+                 WHERE A.scheduledActivityId = ?";
+
+        $result = SDatabase::query($sql, array($this->scheduledActivityId));
+
+        if (!strlen($result[0][0]))
+        {
+            throw new Exception(_M('Registro inexistente.', $module));
+        }
+
+        list( $this->userName,
+              $this->dateTime,
+              $this->ipAddress,
+              $this->scheduledActivityId,
+              $this->startDate,
+              $this->endDate,
+              $this->activityTypeId,
+              $this->description,
+              $this->isInternal,
+              $this->location,
+              $this->hasRealized ) = $result[0];
+    }
+
+    /**
+     * Insere ou atualiza uma atividade programada
+     * @return boolean
+     */
+    public function save()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        // Validação
+        if ( SAGU::compareTimestamp($this->startDate, '>', $this->endDate) )
+        {
+            // Data final deve ser maior que data inicial
+            throw new Exception(_M('A data final não pode ser antes da data inicial.', $module));
+        }
+
+        if ( strlen($this->scheduledActivityId) == 0 )
+        {
+            $retVal = $this->insert();
+        }
+        else
+        {
+            $retVal = $this->update();
+        }
+
+        return $retVal;
+    }
+
+    /**
+     * Insere uma atividade programada
+     * @return boolean
+     */
+    private function insert()
+    {
+        $sql = 'INSERT INTO hur.scheduledActivity (
+                             scheduledActivityId,
+                             startDate,
+                             endDate,
+                             activityTypeId,
+                             description,
+                             isInternal,
+                             location
+                            )
+                     VALUES (?,
+                             TO_TIMESTAMP(?, \''.SAGU::getParameter('BASIC', 'MASK_TIMESTAMP').'\'),
+                             TO_TIMESTAMP(?, \''.SAGU::getParameter('BASIC', 'MASK_TIMESTAMP').'\'),
+                             ?,
+                             ?,
+                             ?,
+                             ?)';
+
+        $sqlPK = "SELECT nextval('hur.scheduledActivity_scheduledActivityId_seq'::regclass)";
+
+        $result = SDatabase::query($sqlPK);
+
+        $scheduledActivityId = $result[0][0];
+
+        $params = array();
+        $params[] = $scheduledActivityId;
+        $params[] = $this->startDate;
+        $params[] = $this->endDate;
+        $params[] = $this->activityTypeId;
+        $params[] = $this->description;
+        $params[] = $this->isInternal;
+        $params[] = $this->location;
+
+        $result = SDatabase::execute($sql, $params);
+
+        if ( $result)
+        {
+            $this->scheduledActivityId = $scheduledActivityId;
+
+            // Salva os participantes
+            for ( $i=0; $i<count($this->participants); $i++ )
+            {
+                $scheduleActivityParticipant = $this->participants[$i];
+                $scheduleActivityParticipant->scheduledActivityId = $this->scheduledActivityId;
+                $scheduleActivityParticipant->save();
+            }
+        }
+        return $result;
+    }
+
+    /**
+     * Atualiza uma atividade programada
+     * @return boolean
+     */
+    private function update()
+    {
+        $sql = 'UPDATE hur.scheduledActivity
+                   SET startDate = TO_TIMESTAMP(?, \''.SAGU::getParameter('BASIC', 'MASK_TIMESTAMP').'\'),
+                       endDate = TO_TIMESTAMP(?, \''.SAGU::getParameter('BASIC', 'MASK_TIMESTAMP').'\'),
+                       activityTypeId = ?,
+                       description = ?,
+                       isInternal = ?,
+                       location = ?
+                 WHERE scheduledActivityId = ?';
+
+        $params = array();
+        $params[] = $this->startDate;
+        $params[] = $this->endDate;
+        $params[] = $this->activityTypeId;
+        $params[] = $this->description;
+        $params[] = $this->isInternal;
+        $params[] = $this->location;
+        $params[] = $this->scheduledActivityId;
+
+        $return =  SDatabase::execute($sql, $params);
+        if ( $return )
+        {
+            $filters = new stdClass();
+            $filters->scheduledActivityId = $this->scheduledActivityId;
+            $participants = HurscheduledActivityParticipant::search($filters);
+
+            // Exclui os participantes
+            for ( $i=0; $i<count($participants); $i++ )
+            {
+                $scheduleActivityParticipant = $participants[$i];
+                $scheduleActivityParticipant->delete();
+            }
+
+            // Salva os participantes
+            $sParticipants = $this->participants;
+            for ( $i=0; $i<count($sParticipants); $i++ )
+            {
+                $participant = $sParticipants[$i];
+                $participant->scheduledActivityId = $this->scheduledActivityId;
+                $participant->save();
+            }
+        }
+
+        return $return;
+    }
+
+    /**
+     * Exclui um registro
+     * @return boolean
+     */
+    public function delete()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        try
+        {
+            if ( strlen($this->scheduledActivityId) == 0 )
+            {
+                throw new Exception(_M('Não é possível excluir um registro que ainda não foi salvo.', $module));
+            }
+
+            // Verifica se já não foi realizada
+            if ( $this->verificaSeFoiRealizada() )
+            {
+                throw new Exception(_M('Não foi possível excluir, pois existe uma atividade realizada para esta atividade programada.', $module));
+            }
+
+            $filters = new stdClass();
+            $filters->scheduledActivityId = $this->scheduledActivityId;
+            $participants = HurscheduledActivityParticipant::search($filters);
+
+            // Exclui os participantes
+            for ( $i=0; $i<count($participants); $i++ )
+            {
+                $scheduleActivityParticipant = $participants[$i];
+                $scheduleActivityParticipant->delete();
+            }
+
+            $sql = 'DELETE FROM hur.scheduledActivity
+                          WHERE scheduledActivityId = ?';
+            $params = array($this->scheduledActivityId);
+            $result = SDatabase::execute($sql, $params);
+
+            if ( $result )
+            {
+                $this->scheduledActivityId = null;
+            }
+        }
+        catch ( Exception $e )
+        {
+            $MIOLO->error($e->getMessage());
+        }
+
+        return $result;
+    }
+
+    /**
+     * Notifica sobre todas as atividades programadas cuja data prevista passou e esta mesma
+     * ainda não foi realizada (hur.realizedActivity).
+     * Chamado automaticamente pelo BasSystemTask
+     */
+    public static function notifyUnregistered(BasSystemTask $bst)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $ok = true;
+
+        $filters = new stdClass();
+        $filters->beginDateNow = SAGU::getDateNow(SAGU::getParameter('basic', 'MASK_TIMESTAMP_PHP'));
+        $filters->hasRealized = DB_FALSE;
+        $rows = self::search($filters);
+        if ( count($rows) > 0 )
+        {
+            $body = "As seguintes atividades programadas não foram registradas:\n\n";
+            foreach ( $rows as $row )
+            {
+                $body .= sprintf("Atividade <b>%s</b> - %s (%s)\n",
+                                $row->scheduledActivityId,
+                                $row->description,
+                                $row->activityType->description);
+            }
+            $body .= "\nFim da lista.";
+
+            $ok = $bst->addNotification(array(
+                'title' => _M('Atividades programadas não registradas', $module),
+                'description' => $body,
+            ));
+        }
+
+        return $ok;
+    }
+
+    /**
+     * Verifica se tem dados na atividade realizada
+     * @return boolean
+     */
+    public function verificaSeFoiRealizada()
+    {
+        $filters = new stdClass();
+        $filters->scheduledActivityId = $this->scheduledActivityId;
+        $realizedActivity = HurRealizedActivity::search($filters);
+        $temRealizada = count($realizedActivity) > 0;
+
+        return $temRealizada;
+    }
+}
+?>

@@ -1,0 +1,171 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Remessa
+ *
+ * @author Moises Heberle [moises@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.com.br]
+ *
+ * @since
+ * Class created on 11/08/2013
+ **/
+set_time_limit(0);
+ini_set('memory_limit', '2048M');
+
+class FrmGerarRemessa extends SForm
+{
+    public function __construct()
+    {
+        $module = MIOLO::getCurrentModule();
+        parent::__construct(_M('Gerar arquivo de remessa', $module), null, null);
+        
+        $this->toolbar->disableButton( MToolBar::BUTTON_NEW );
+        $this->toolbar->disableButton( MToolBar::BUTTON_SAVE );
+        $this->toolbar->disableButton( MToolBar::BUTTON_DELETE );
+        $this->toolbar->disableButton( MToolBar::BUTTON_SEARCH );
+        $this->toolbar->disableButton( MToolBar::BUTTON_PRINT );
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $flds[] = new MSeparator();
+        
+        // MRequiredValidator para as datas nao esta funcionando no MIOLO
+        
+        $flds[] = $cob = new MSelection('cobrancabancariaid', null, _M('Cobrança bancária', $module), FinCobrancaBancaria::listarCobrancas());
+        $cob->setIsRequired(true);
+        
+        $flds[] = new SBeginEndPeriod(array(
+            'title' => _M('Período de vencimento', $module),
+//            'required' => true,
+            'begin' => array(
+                'label' => _M('Data inicial', $module),
+                'dateId' => 'startDate',
+            ),
+            'end' => array(
+                'label' => _M('Data final', $module),
+            ),
+        ));
+        
+        // quebrar arquivo
+        $controls[] = new MCheckBox('breakFile', DB_TRUE, _M('Quebrar em arquivos separados'), $checked);
+        $controls[] = new MTextField('limit', $this->getRequestValue('limit', 1000), _M('Limite de títulos', $module), 10);
+        $controls[] = new MTextField('pageNum', $this->getRequestValue('pageNum', 1), _M('Número do arquivo', $module), 10);
+        $valids[] = new MIntegerValidator('limit', _M('Limite de títulos'), 'required');
+        $valids[] = new MIntegerValidator('pageNum', _M('Número do arquivo'), 'required');
+        $flds[] = new sBaseGroup('bgrBrk', _M('Quebrar em diversas partes'), $controls);
+        
+        $flds[] = $btnGenerate = new MButton('btnGenerate', _M("Gerar arquivo"));
+        $btnGenerate->setShowLoading(false);
+        
+        parent::defineFields(array( 'fields' => $flds, 'validators' => $valids ));
+        
+        // Caso gere uma mensagem de erro, a mesma irá sumir após 15s
+        $jsCode = " setInterval(function()
+                    {
+                        var elements = document.getElementsByClassName('m-prompt-box-title m-prompt-box-title-error');
+                        for(var i = 0, length = elements.length; i < length; i++) 
+                        {
+                           if( elements[i].textContent != '')
+                           {
+                              elements[i].style.display = 'none';
+                           }
+                        }
+
+                        var elementsS = document.getElementsByClassName('m-prompt-box-text');
+                        for(var i = 0, length = elementsS.length; i < length; i++) 
+                        {
+                           if( elementsS[i].textContent != '')
+                           {
+                              elementsS[i].style.display = 'none';
+                           }
+                        }
+                    }, 15000);
+                ";
+
+        $MIOLO->page->onload($jsCode);
+    }
+
+    public function btnGenerate_click($sender = null)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $startDate = $this->GetFormValue('startDate');
+        $endDate = $this->GetFormValue('endDate');
+        $cobrancabancariaid = $this->GetFormValue('cobrancabancariaid');
+        $breakFile = $this->GetFormValue('breakFile');
+        $limit = $this->GetFormValue('limit');
+        $pageNum = $this->GetFormValue('pageNum');
+        $gerarbaixa = $this->GetFormValue('gerarbaixa');
+
+        try
+        {
+            if ( ( strlen($startDate) > 0 && strlen($endDate) > 0 ) || ( $gerarbaixa == DB_TRUE ) )
+            {
+                $filtros = new stdClass();
+                $filtros->beginMaturityDate = $startDate;
+                $filtros->endMaturityDate = $endDate;
+                $filtros->gerarBaixa = $gerarbaixa;
+                
+                if ( $breakFile == DB_TRUE )
+                {
+                    $filtros->limit = $limit;
+                    $filtros->offset = ($pageNum - 1) * $limit;
+                }
+                
+                $cobranca = new FinCobrancaBancaria($cobrancabancariaid);
+                $nomeArquivo = $cobranca->obterConfiguracaoRemessa()->nomearquivo;
+                
+                $remessa = new FinRemessa();
+                $txt = $remessa->gerarTXT($cobrancabancariaid, $filtros);
+                
+                if ( strlen($txt) > 0 )
+                {
+                    SAGU::returnAsFile($nomeArquivo, $txt, null, true);
+                }
+                else
+                {
+                    throw new Exception(_M("Nenhum título encontrado."));
+                }
+            }
+            else
+            {
+                throw new Exception(_M("Os campos 'Data inicial' e 'Data final' precisam ser preenchidos."));
+            }
+        }
+        catch (Exception $e)
+        {
+            $this->Error($e->getMessage());
+        }
+    }
+}
+
+?>

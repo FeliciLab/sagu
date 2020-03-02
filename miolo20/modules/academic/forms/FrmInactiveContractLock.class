@@ -1,0 +1,208 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Esse processo serve para inserir uma movimentacao contratual de
+ * trancamento em todos os contratos que nao tiveram movimentacao no
+ * último período corrente e que no período anterior, nao tiveram
+ * uma movimentacao de fechamento.
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Cristian Edson Göhl [cristian@solis.coop.br]
+ *
+ * @since
+ * Class created on 07/12/2010
+ */
+
+/**
+ * Form to close inactive contracts
+ */
+class FrmInactiveContractLock extends SForm
+{
+    private $module;
+
+    /**
+     * Class constructor
+     */
+    public function __construct($data)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $this->module = SAGU::getFileModule(__FILE__);
+
+        parent::__construct(_M('Encerramento de contratos inativos', $this->module), null, null);
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function defineFields()
+    {
+        $MIOLO        = MIOLO::getInstance();
+
+        $this->toolbar->disableButton('tbBtnNew');
+        $this->toolbar->disableButton('tbBtnSave');
+        $this->toolbar->disableButton('tbBtnDelete');
+        $this->toolbar->disableButton('tbBtnSearch');
+
+        $explanationText = new MText('explanationText', _M('Este processo insere uma movimentação contratual, fechando todos os contratos que não estiverem fechados e não tiverem movimentação no período letivo selecionado.', $this->module));
+        $fields[] = $explanationText;
+
+        $businessPeriod = new BusinessAcademicBusPeriod();
+        $periodId       = new MComboBox('periodId', $this->getFormValue('periodId', SAGU::getParameter('BASIC', 'CURRENT_PERIOD_ID')), _M('Período no qual serão procurados contratos', $this->module), $businessPeriod->listPeriod(), true );
+        $validators[]   = new MRequiredValidator('periodId', _M('Período', $this->module), 'required');
+        $fields[]       = $periodId;
+
+        /*
+         * Course occurrence lookup
+         */
+        $lkpValue = array(
+            $this->GetFormValue('courseId', $data->courseId),
+            $this->GetFormValue('courseVersion', $data->courseVersion),
+            $this->GetFormValue('turnId', $data->turnId),
+            $this->GetFormValue('unitId', $data->unitId)
+        );
+        $courseOccurrenceLookup = new SCourseOccurrenceLookup($lkpValue);
+        $fields[] = $courseOccurrenceLookup;
+
+        $fields[] = new MSeparator();
+        $fields[] = new MButton('btnViewContracts', _M('Procurar contratos', $this->module));
+        $fields[] = new MSeparator();
+
+        $this->setFields($fields);
+        $this->setValidators($validators);
+
+        $periodId = $MIOLO->_request('periodId');
+        if ( strlen($periodId) > 0 )
+        {
+            $this->showContracts();
+        }
+
+        parent::defineFields();
+    }
+
+    /**
+     * Look for contracts that may be closed.
+     */
+    public function showContracts()
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $periodId = $MIOLO->_request('periodId');
+        $courseId = $MIOLO->_request('courseId');
+        $courseVersion = $MIOLO->_request('courseVersion');
+
+        $busInactiveContractLock = new BusinessAcademicBusInactiveContractLock();
+        
+        $fields = array();
+        $subFields = array();
+
+        $grid = $MIOLO->getUI()->getGrid($this->module, 'GrdInactiveContractLock', $data);        
+        $subFields[] = $grid;
+        
+        $sql = $busInactiveContractLock->getSQLInactiveContracts($periodId, $courseId, $courseVersion);
+        
+        $grid->setPageLength(200);
+        $grid->href = MIOLO::getCurrentURL();
+        $grid->setQuery($sql, SDatabase::getDefaultDb());
+
+        $subFields = array_merge($subFields, AcdMovimentacaoContratual::gerarCamposEstadoContratual($this, $data));
+        
+        $subFields[] = new MButton('btnLockSelectedContracts', _M('Fechar os contratos selecionados', $this->module));
+        $fields[] = new MDiv('divResult', $subFields);
+
+        $this->setValidators($validators);
+        $this->addFields($fields);
+    }
+
+    /**
+     * Event triggered when user clicks btnLockSelectedContracts button
+     */
+    public function btnLockSelectedContracts_click($args)
+    {
+        $MIOLO  = MIOLO::getInstance();
+
+        try
+        {
+            $busInactiveContractLock = new BusinessAcademicBusInactiveContractLock();
+            $busInactiveContractLock->beginTransaction();
+
+            $contracts = MIOLO::_request('selectgrdInactiveContractLock');
+            $reasonId = MIOLO::_request('reasonId');
+            $periodId = MIOLO::_request('periodId');
+
+            if ( count($contracts) == 0 )
+            {
+                throw new Exception(_M('Não há contratos a fechar.', $this>module));
+            }
+
+            if ( strlen($periodId) <= 0 )
+            {
+                throw new Exception(_M('Um período deve ser informado para fechar os contratos selecionados.', $this->module));
+            }
+
+            $count = 0;
+            foreach ( $contracts as $contractId )
+            {
+                if ( $busInactiveContractLock->lockContract($contractId, $reasonId, $periodId) )
+                {
+                    // insere dados da mov. contratual
+                    $data = new stdClass();
+                    $data->contractId = $contractId;
+                    AcdMovimentacaoContratual::inserirDadosMovimentacao($this, $data);
+
+                    $count++;
+                }
+            }
+            $busInactiveContractLock->endTransaction();
+
+            if ( $count > 1 )
+            {
+                $msg = _M('@1 contratos fechados.', $module, $count);
+            }
+            elseif ( $count == 1 )
+            {
+                $msg = _M('@1 contratos fechados.', $module, $count);
+            }
+            else
+            {
+                $msg = _M('Nenhum contrato foi fechado.', $module);
+            }
+
+            $MIOLO->information($msg);
+        }
+        catch ( Exception $e )
+        {
+            $busInactiveContractLock->rollbackTransaction();
+            $this->addError($e->getMessage());
+        }
+    }
+    
+    public function gerarCamposComplementoMovimentacao($args)
+    {
+        return AcdMovimentacaoContratual::gerarCamposComplementoMovimentacao($this, $args);
+    }
+}
+?>

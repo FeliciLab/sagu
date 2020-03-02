@@ -1,0 +1,227 @@
+<?php
+
+/*
+ * To change this template, choose Tools | Templates
+ * and open the template in the editor.
+ */
+
+/**
+ * Description of sStickyNote
+ *
+ * @author augusto
+ */
+class sStickyNote
+{
+    public function __construct() 
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $function = $_REQUEST['cpaint_function'];
+        
+        $MIOLO->page->addStyle('jquery.stickynotes.css');
+        
+        $MIOLO->page->addScript('jquery-1.3.2.min.js');
+        $MIOLO->page->addScript('jquery-ui-1.7.2.custom.min.js');
+        $MIOLO->page->addScript('jquery.stickynotes.js');
+        $MIOLO->page->addScript('phpSerialize.js');
+        $MIOLO->page->addScript('cpaint/cpaint.inc.js');
+        
+        $MIOLO->page->addJsCode("
+            var stickyNote = 
+            { 
+                response: function (result){ stopShowLoading(); },
+                responseCreate: function (result)
+                {
+                    var res    = result.split('#stickynoteid#');
+                    var idNovo = parseInt(res[1]);
+                            
+                    jQuery.fn.stickyNotes.createNote(idNovo);
+                    stopShowLoading();
+                }
+            }
+
+            var edited = function(note) 
+            {
+                var args = new Array();
+                args.push(new objStickyNote(note.id, note.text, note.pos_x, note.pos_y));
+
+                MIOLO_ajaxCall(document.URL, 'POST', 'atualizarStickyNote', php_serialize(args), stickyNote.response, 'TEXT');
+            }
+			
+	    var deleted = function(note) 
+            {
+                var args = new Array();
+                args.push(new objStickyNote(note.id, note.text, note.pos_x, note.pos_y));
+
+                MIOLO_ajaxCall(document.URL, 'POST', 'excluirStickyNote', php_serialize(args), stickyNote.response, 'TEXT');
+            }
+			
+            var moved = function(note) 
+            {
+                var args = new Array();
+                args.push(new objStickyNote(note.id, note.text, note.pos_x, note.pos_y));
+
+                MIOLO_ajaxCall(document.URL, 'POST', 'atualizarStickyNote', php_serialize(args), stickyNote.response, 'TEXT');
+            }	
+		
+            var created = function(note) {}
+            var resized = function(note) {}
+        ");
+        
+        $this->gerarStickyNotes();        
+        $this->eventHandler();
+    }
+    
+    /**
+     * Geras os stickynotes.
+     */
+    public function gerarStickyNotes()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $basStickyNote   = new BasStickyNote();
+        $stickyNotesUser = $basStickyNote->obterStickyNotesDoUsuarioLogado();
+        $notes           = "";
+                
+        if ( count($stickyNotesUser) > 0 )
+        {
+            $notes = "notes:[";
+            
+            foreach ( $stickyNotesUser as $sn )
+            {
+                $notes .= "{'id': parseInt({$sn->stickyNoteId}), 'text': '{$sn->description}', 'pos_x': {$sn->positionX}, 'pos_y': {$sn->positionY}, 'link': '{$sn->link}', 'type': '{$sn->stickynotetype}'},";
+            }
+            
+            $notes .= "],";
+        }
+        
+        $stickyNotes .= $this->stringDeCriacaoDoStickyNote($notes);
+        $MIOLO->page->addJsCode($stickyNotes);
+    }
+    
+    /**
+     * Retorna a string que cria os stickys.
+     * 
+     * @param String $notes
+     * @return type
+     */
+    public function stringDeCriacaoDoStickyNote($notes)
+    {        
+        $stickyNote = "
+            jQuery(document).ready(function() 
+            {
+                var options = 
+                {
+                    {$notes}
+                    resizable: true,
+                    controls: true, 
+                    editCallback: edited,
+                    createCallback: created,
+                    deleteCallback: deleted,
+                    moveCallback: moved,					
+                    resizeCallback: resized,
+                };
+
+                jQuery('#notes').stickyNotes(options);
+            });
+        ";
+            
+        return $stickyNote;
+    }
+    
+    /**
+     * Rescrito m�todo para os lembretes.
+     */
+    function eventHandler()
+    {        
+        $function = $_REQUEST['cpaint_function'];
+        $args     = $_REQUEST['cpaint_argument'];
+
+        if ( strlen($function) > 0 )
+        {
+            if ( method_exists($this, $function) )
+            {
+                $this->$function($args);
+            }
+        }
+    }
+    
+    /**
+     * Criar um novo stickynote na base.
+     * 
+     * @param array $args
+     */
+    public function criarNovoStickyNote($args)
+    {
+        $MIOLO     = MIOLO::getInstance();
+        $data      = unserialize($args[0]);
+        $loginUser = $MIOLO->GetLogin();
+        
+        try
+        {
+            $basStickyNote = new BasStickyNote();
+            $basStickyNote->isGroup   = DB_FALSE;
+            $basStickyNote->code      = $loginUser->idkey;
+            $basStickyNote->positionX = $data[0]->pos_x;
+            $basStickyNote->positionY = $data[0]->pos_y;
+            $basStickyNote->save();
+            
+            print "#stickynoteid#{$basStickyNote->stickyNoteId}#stickynoteid#";
+        }
+        catch ( Exception $err )
+        {
+            $MIOLO->error($err->getMessage());
+        }
+    }
+    
+    /**
+     * Salva a nova posi��o e descri��o do stickynote.
+     * 
+     * @param type $args
+     */
+    public function atualizarStickyNote($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $data  = preg_replace('!s:(\d+):"(.*?)";!e', "'s:'.strlen('$2').':\"$2\";'", $args[0]);        
+        $data  = unserialize($data);
+        
+        try
+        {
+            $basStickyNote = new BasStickyNote($data[0]->id);
+            $basStickyNote->description = utf8_decode($data[0]->text);
+            $basStickyNote->positionX   = $data[0]->pos_x;
+            $basStickyNote->positionY   = $data[0]->pos_y;            
+            $basStickyNote->save();
+        }
+        catch ( Exception $err )
+        {
+            $MIOLO->error($err->getMessage());
+        }
+    }
+    
+    /**
+     * Excluir stickynote.
+     * 
+     * @param type $args
+     */
+    public function excluirStickyNote($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $data  = preg_replace('!s:(\d+):"(.*?)";!e', "'s:'.strlen('$2').':\"$2\";'", $args[0]);        
+        $data  = unserialize($data);
+        
+        try
+        {
+            $basStickyNote = new BasStickyNote($data[0]->id);
+            if ( $basStickyNote->stickyNoteType != 'P' )
+            {
+                $basStickyNote->delete();
+            }
+        }
+        catch ( Exception $err )
+        {
+            $MIOLO->error($err->getMessage());
+        }
+    }
+}
+
+?>

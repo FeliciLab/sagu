@@ -1,0 +1,435 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Time sheet form
+ *
+ * @author Andre Chagas Dias [andre@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ *
+ * @since
+ * Class created on 13/10/2008
+ */
+
+ini_set('memory_limit','1024M');
+class frmGroup extends SForm
+{
+    private $busTransaction;
+    private $busAccess;
+    private $permissionLabel;
+    private $perms;
+
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        set_time_limit(0);
+
+        // Bussines
+        $this->busTransaction = new BusinessAdminTransaction();
+        $this->busAccess = new BusinessAdminAccess();
+
+        // Permission labels
+        $this->permissionLabel = array();
+        $this->permissionLabel[] = new MTextLabel('access',_M('Acesso', $module));
+        $this->permissionLabel[] = new MTextLabel('insert', _M('Inserir', $module));
+        $this->permissionLabel[] = new MTextLabel('update', _M('Atualizar', $module));
+        $this->permissionLabel[] = new MTextLabel('delete', _M('Excluir', $module));
+        $this->permissionLabel[] = new MTextLabel('execute', _M('Executar', $module));
+        $this->permissionLabel[] = new MTextLabel('admin' ,_M('Administrador', $module));
+
+        // Permissions
+        $this->perms = array();
+        $this->perms['Ac'] = 1;
+        $this->perms['In'] = 3;
+        $this->perms['Up'] = 9;
+        $this->perms['De'] = 5;
+        $this->perms['Ex'] = 17;
+        $this->perms['Ad'] = 31;
+
+        $title = MIOLO::_request('function') == 'insert' ? _M('Inserir', $module) : _M('Atualizar', $module);
+
+        parent::__construct($title, new AdmGroup(), array('idgroup'));
+
+        // Desabilita alguns botões da toolbar
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+        
+    }
+
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $function = MIOLO::_request('function');
+        
+        $busGroup = new BusinessAdminGroup();
+        $busGroupUser = new BusinessAdminGroupUser();
+        $busConfig = new BusinessBasicBusConfig();
+
+        $idgroup = MIOLO::_REQUEST('idgroup');
+        $fields[] = new SHiddenField('idgroup', $idgroup);
+        
+        if (in_array($function, array(SForm::FUNCTION_UPDATE, SForm::FUNCTION_DELETE)))
+        {
+            $data = $busGroup->getGroup($idgroup);
+
+            $fields[] = new SHiddenField('limbo');
+            $fields[] = new MTextLabel('groupId', $idgroup, _M('Código', $module));
+
+            $groupUsers = $busGroup->listGroupUser($data->idgroup, true);
+
+            $fields[] = new MSeparator();
+        }
+
+        // Field group
+        $groupDescription = new MTextField('m_group', $this->getFormValue('m_group', $data->m_group), _M('Nome do grupo', $module), SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $groupDescription->setJsHint(_M('Informe o nome do grupo', $module));
+        $fields[] = $groupDescription;            
+
+        $start = microtime(true);
+        $fields[] = new MBaseGroup('baseGroupAccess', _M('Permissão', $module), array($this->mountChildrens(0)), 'vertical');
+        $fields[] = new MSeparator();
+        $end = microtime(true);
+
+        // Js code
+        $imgAdd = $MIOLO->getActionUrl($module, 'html:images:add.png');
+        $imgSubs = $MIOLO->getActionUrl($module, 'html:images:substract.png');
+        $this->page->addJsCode("
+        function expandRetractTree(transactionId)
+        {
+            expandRetractContainer('divChildren' + transactionId);
+            changeElementImage('imgLkTransaction' + transactionId, '{$imgSubs}', '{$imgAdd}');
+        }
+        ");
+
+        parent::defineFields();
+
+        $this->setFields($fields);
+        $this->setLabelWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+    }
+
+    /**
+     * Monta os filhos (exibe as pastas/formulários que estão dentro de um módulo/pasta)
+     *
+     * @param type $transactionId - Trasação pai
+     */
+    public function mountChildrens($transactionId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $idgroup = MIOLO::_REQUEST('idgroup');
+        $function = MIOLO::_request('function');
+
+        $transactionFather = $this->busTransaction->getTransactionChildren($transactionId);
+
+        if (!(count($transactionFather) > 0))
+        {
+            return null;
+        }
+
+        $flds = array();
+        foreach ($transactionFather as $index => $value)
+        {
+            // $value[0] = Identificador da trasação
+            // $value[1] = Descrição da Transação
+            // $value[2] = Indica a transação pai
+            list($_transactionId, $_description, $_fatherTransaction) = $value;
+
+            // Define o nível de identação
+            $childrenLevel = $this->getChildrenLevel($_transactionId);
+
+            // Exibe labels Acesso  Inserir  Atualizar  Excluir  Executar  Administrador  
+            if ($transactionId === 0)
+            {
+                $flds[] = new MHContainer('hctPermissionLabel', $this->permissionLabel);
+            }
+
+            // Variable to create a space in front of the checkbox
+            $limbo = new Mlabel('limbo'.$_fatherTransaction);
+            $limbo->setvisibility(false);
+            $limbo->setWidth($childrenLevel);
+
+            $thereIsChildren = $this->busTransaction->thereIsChildren($_transactionId);
+
+            $widths = array();
+            $widths['Ac'] = 47;
+            $widths['In'] = 50;
+            $widths['Up'] = 65;
+            $widths['De'] = 50;
+            $widths['Ex'] = 60;
+            $widths['Ad'] = 80;
+
+            $ckPerms = array();
+            foreach ($this->perms as $perm => $id)
+            {
+                // Caso seja inserção, deixa todos desmarcados
+                if ($function != 'insert')
+                {
+                    $hasAccess = $this->busAccess->getAccess($idgroup, $_transactionId, $id);
+                }
+
+                $ckPerms[] = $ck = new MCheckBox("ckPermission{$perm}{$_transactionId}", $id, '', $hasAccess);
+                $ck->setWidth($widths[$perm]);
+
+                if ($hasAccess) // Fix bug on MCheckBox
+                {
+                    $ck->addAttribute('checked', 'checked');
+                }
+            }
+
+            if ($thereIsChildren > 0)
+            {
+                $lkViewSon = new MImage('imgLkTransaction'. $_transactionId, null, $MIOLO->getActionUrl($module, 'html:images:add.png'));
+                $lkViewSon->addAttribute('onClick', "javascript:expandRetractTree('{$_transactionId}')");
+                $imgFolder = new MImage('imgFolderTransaction' . $_transactionId, null, $MIOLO->getActionUrl($module, 'html:images:closed.png'));
+            }
+            else
+            {
+                $lkViewSon = new MImage('imgLkTransaction'. $_transactionId, null, $MIOLO->getActionUrl($module, 'html:images:empty.png'));
+                $imgFolder = new MImage('imgFolderTransaction' . $_transactionId, null, $MIOLO->getActionUrl($module, 'html:images:url.png'));
+            }
+
+            $transaction = new MTextLabel('txTransactionLabel' . $_transactionId, $_description);
+            $hctTransaction = new MHContainer('hctTransaction'.$_transactionId, array($lkViewSon, $imgFolder, $transaction));
+            $hctPermission = new MHContainer('ckPermission'.$_transactionId, array_merge($ckPerms, array($limbo, $hctTransaction)));
+
+            $flds[] = new MVContainer('vctTransaction'.$_transactionId, array($hctPermission));
+
+            if (count($this->busTransaction->getTransactionChildren($_transactionId)) > 0)
+            {
+                $div = new MDiv('divChildren'.$_transactionId, $this->mountChildrens($_transactionId));
+                $div->addBoxStyle('display', 'none');
+                $flds[] = $div;
+            }
+        }
+
+        return new MDiv('divTransaction'.$transactionId, $flds);
+    }
+
+    /**
+     * Retorna o nível do filho
+     *
+     * @param type $children
+     */
+    public function getChildrenLevel($children)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        // Start inicial na variável
+        $multiplicationLevel = 0;
+
+        while ($children != 0)
+        {
+            $children = $this->busTransaction->getTransactionLevel($children);
+
+            $multiplicationLevel += 1;
+        }
+
+        $multiplicationLevel = 20 * $multiplicationLevel;
+
+        return $multiplicationLevel;
+    }
+
+    /**
+     * Verifica se tem filho
+     *
+     * @param type $idgroup
+     * @param type $father
+     */
+    public function hasChildrenSelected($idgroup, $father)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $transactionChildren = $this->busTransaction->getTransactionChildrenWhoAreFather($idgroup, $father);
+
+        if (count($transactionChildren) > 0)
+        {
+            foreach ($transactionChildren as $index => $value)
+            {
+                if ($this->busAccess->hasChildrenSelected($idgroup, $value[0]))
+                {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Pega os filhos da trasação desejada
+     *
+     * @param type $father - trasação pai
+     */
+    public function childrenWhoAreFather($father)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $transactionsChildren = $this->busTransaction->getTransactionChildrenWhoAreFathers($father);
+
+        $result = array();
+        if (count($transactionsChildren) > 0)
+        {
+            foreach ($transactionsChildren as $index => $value)
+            {
+                $thereIsChildren = $this->busTransaction->thereIsChildren($value[0]);
+
+                if ($thereIsChildren > 0)
+                {
+                    $result[$value[0]][] = $value[0];
+                    $childrenWhoAreFather = $this->childrenWhoAreFather($value[0]);
+                    
+                    if (count($childrenWhoAreFather) > 0)
+                    {
+                        foreach ($childrenWhoAreFather as $index1 => $value1)
+                        {
+                            $result[$value1[0]][] = $value1[0];
+                        }
+                    }
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Salva as permissões
+     */
+    public function tbBtnSave_click($sender = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        $busGroup = new BusinessAdminGroup();
+        $busGroupUser = new BusinessAdminGroupUser();
+
+        $data = $this->getTypesData();
+
+        if (MIOLO::_request('function') == 'insert')
+        {
+            $data->idgroup = $busGroup->getNewId();
+            $ok = $busGroup->insertGroup($data);
+        }
+        elseif (MIOLO::_request('function') == 'update')
+        {
+            $ok = $busGroup->updateGroup($data);
+        }
+
+        $transactionFather = $this->busTransaction->getTransactionFather(0);
+
+        $ok = $this->busAccess->deleteAccess($data->idgroup);
+
+        $transaction = $this->busTransaction->getTransaction();
+
+        foreach ($transaction as $index => $value)
+        {
+            $cb = array();
+            $cb['Ac'] = 'ckPermissionAc'.$value[0];
+            $cb['In'] = 'ckPermissionIn'.$value[0];
+            $cb['Up'] = 'ckPermissionUp'.$value[0];
+            $cb['De'] = 'ckPermissionDe'.$value[0];
+            $cb['Ex'] = 'ckPermissionEx'.$value[0];
+            $cb['Ad'] = 'ckPermissionAd'.$value[0];
+
+            foreach ($cb as $perm => $id)
+            {
+                if (isset($data->$id)) // checkbox is checked
+                {
+                    $ok = $this->busAccess->insertAccess($data->idgroup, $value[0], $this->perms[$perm]);
+                }
+            }
+        }
+
+        $opts = array('idgroupS' => $data->idgroup);
+        parent::tbBtnSave_click($sender, $ok, $opts);
+    }
+
+
+    /**
+     * Event triggered when user chooses Yes from the Delete prompt dialog
+     */
+    public function tbBtnDelete_confirm($sender = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $idgroup = MIOLO::_request('idgroup');
+
+        $busGroupUser = new BusinessAdminGroupUser();
+        $ok = $busGroupUser->deleteGroupUser($idgroup);
+
+        $ok = $this->busAccess->deleteAccess($idgroup);
+
+        $busGroup = new BusinessAdminGroup();
+        $ok = $busGroup->deleteGroup($idgroup);
+
+        parent::tbBtnDelete_confirm($sender, $ok);
+    }
+
+    /**
+     * Method to gather all information from the form fields
+     * and put them on a database compatible object
+     */
+    public function getTypesData()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $transaction = $this->busTransaction->getTransaction();
+
+        $data = new stdClass();
+        foreach ($transaction as $index => $value)
+        {
+            $varAc = 'ckPermissionAc'.$value[0];
+            $varIn = 'ckPermissionIn'.$value[0];
+            $varUp = 'ckPermissionUp'.$value[0];
+            $varDe = 'ckPermissionDe'.$value[0];
+            $varEx = 'ckPermissionEx'.$value[0];
+            $varAd = 'ckPermissionAd'.$value[0];
+
+            $data->$varAc = $this->getFormValue($varAc);
+            $data->$varIn = $this->getFormValue($varIn);
+            $data->$varUp = $this->getFormValue($varUp);
+            $data->$varDe = $this->getFormValue($varDe);
+            $data->$varEx = $this->getFormValue($varEx);
+            $data->$varAd = $this->getFormValue($varAd);
+        }
+
+//        $data->groupUser = MSubDetail::getData('groupUser');
+        $data->idgroup = $this->getFormValue('idgroup');
+        $data->m_group = $this->getFormValue('m_group');
+
+        return $data;
+    }
+}
+?>

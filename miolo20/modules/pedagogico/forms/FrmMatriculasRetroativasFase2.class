@@ -1,0 +1,386 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulário do módulo pedagógico
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ * Joao Francisco Padilha Souza [joao@solis.com.br]
+ *
+ * @since
+ * Class Created on 19/09/2014
+ *
+ * */
+$MIOLO->uses('ui/controls/msubdetailvalidators.class');
+$MIOLO->uses('/ui/controls/msubdetail.class');
+
+class FrmMatriculasRetroativasFase2 extends SStepByStepForm
+{
+
+    public $grid;
+    private $business;
+    private $busObject;
+
+    /**
+     * Class constructor
+     * */
+    public function __construct($steps)
+    {
+        parent::__construct(_M('Matrículas retroativas'), $steps, __CLASS__, new AcpMatriculasRetroativas(), array( 'matriculasretroativasid' ));
+//        parent::__construct(_M('Lançamento de matrículas retroativas'), new AcpMatriculasRetroativas(), array('matriculasretroativasid') );
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+    }
+
+    /**
+     * Default method to define fields
+     * */
+    public function createFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+        $event    = MIOLO::_REQUEST('event');
+        
+        //Coletar dados
+        $session = $MIOLO->GetSession();        
+        $alldata = $this->getStepData();
+        
+        //Obtem a InscricaoId e verifica se ela veio, caso contrario criar uma inscricao nova
+        //vai depender do que o usuario preencheu na fase anterior
+        $inscricaoid = $alldata->inscricaoid;
+        $personid = $alldata->personid;
+        if( strlen($inscricaoid) > 0 )
+        {             
+            $inscricao = new AcpInscricao($inscricaoid);
+            $ofertacursoid = $inscricao->ofertacursoid;
+        }
+        else
+        {
+            //Cria inscrição
+            $inscricao = new AcpInscricao();
+            $inscricao->personid = $personid;
+            $inscricao->ofertacursoid = $ofertacursoid;
+            $inscricao->origem = AcpInscricao::ORIGEM_ADMINISTRATIVA;
+            $inscricao->situacao = AcpInscricao::SITUACAO_INSCRITO;
+            $inscricao->datasituacao = date(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP'));
+            $inscricao->save();
+            $inscricaoid = $inscricao->inscricaoid;
+        }
+        
+        //Obtem a OFERTACURSOID se nao veio pegar uma nova
+        $ofertacursoid = $alldata->ofertacursoid;
+        if( $ofertacursoid == null)
+        {
+            $inscricao = new AcpInscricao($inscricaoid);                        
+            $ofertacursoid = $inscricao->ofertacursoid;
+        }
+        
+        $ofertaTurma = new AcpOfertaTurma($alldata->nova_ofertaturmaid);
+        $ofertaTurma->ofertacursoid;
+        $fields[] = new SHiddenField('nova_ofertaturmaid', $alldata->nova_ofertaturmaid);
+
+        
+        $fields[] = new MText('', _M('Selecione as disciplinas desejadas e informe os dados relacionados.'));
+
+        //obter os dados que serao mostrados na grid
+        $dados = AcpMatriculasRetroativas::obterDisciplinasDaMatriz($ofertacursoid, $inscricaoid, $alldata->nova_ofertaturmaid);
+        
+        //criar a grid e setar os dados nela
+        $this->grid = $MIOLO->getUI()->getGrid($module, 'GrdMatriculasRetroativas');
+        $this->grid->setData($dados);
+        $fields[] = $this->grid;
+        
+        //Obter informacoes preenchidas na grid caso esteja voltando da fase 3        
+        $temDados = false;
+        foreach ( $dados as $key) // percorre os dados da grid 
+        {
+            $notafinal = MIOLO::_REQUEST('notafinal_' . $key['acpmatriculasretroativas.componentecurricularmatrizid']);
+            
+            //verificar se existe nota final preenchida
+            if ( $notafinal)
+            {
+                $temDados = TRUE;
+                $session->setValue('infGrd', $_REQUEST);
+            }
+        }
+        
+        //vai entrar aqui SOMENTE SE TIVER VOLTANDO DA FASE 3
+        //SE nao tiverem dados e porque esta voltando da fase 3
+        //então vai entrar aqi e setar os dados que foram preenchidos anteriormente
+         if ( ! $temDados) 
+        {
+        
+            $inf  = $session->getValue('infGrd');
+
+            foreach ( $dados as $key => $item )
+            {
+                $id = $dados[$key]['acpmatriculasretroativas.componentecurricularmatrizid'];
+            
+                $nota = 'notafinal_' . $id;
+                $frequencia = 'frequencia_' . $id;
+                $parecer = 'acpmatriculasretroativas.parecer_' . $id;
+                $estadodematriculaid = 'estadodematriculaid_' . $id;
+                
+                $dados[$key]['acpmatriculasretroativas.notaconceito'] = $inf[$nota];
+                $dados[$key]['acpmatriculasretroativas.frequencia'] = $inf[$frequencia];
+                $dados[$key]['acpmatriculasretroativas.parecer'] = $inf[$parecer];
+                $dados[$key]['acpmatriculasretroativas.situacao'] = $inf[$estadodematriculaid];
+                
+            }
+            $this->grid->setData($dados);
+        }
+        
+        $fields[] = new MSeparator();
+
+        $fields[] = $tableContainer = new MHContainer('', array( new MText('txtInfo', '<b>' . _M('* Para detalhamento de componentes curriculares do tipo TCC, após o lançamento da matrícula retroativa acesse as Consultas diversas do aluno, na aba Componentes curriculares utilize a ação \'Detalhamento de TCC\' no componente curricular desejado.') . '</b>', 'blue') ));
+        $fields[] = new MDiv('divValidacao');
+
+        $session->setValue('matRetroativas_dataStep2Grid', $dados);
+        $this->addFields($fields);
+
+        $this->setStepData($alldata);
+        $fields[] = new MSpacer();
+        $this->setFields($fields);
+        $this->SetValidators($validators);
+
+    }
+
+    
+
+    public function nextStepButton_click($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+        $event    = MIOLO::_REQUEST('event');
+
+        $alldata = $this->getStepData();
+        $session = $MIOLO->GetSession();
+        $session->setValue('matRetroativas_dataStep2', $this->getData());
+        
+        
+        //Obtem a INSCRICAOID e obtem o OFERTACURSOID, se caso contrario criar uma inscricao nova
+        $inscricaoid = $alldata->inscricaoid;
+        $personid = $alldata->personid;
+        if( strlen($inscricaoid) > 0 )
+        {             
+            $inscricao = new AcpInscricao($inscricaoid);
+            $ofertacursoid = $inscricao->ofertacursoid;
+        }
+        else
+        {
+            //Cria inscrição
+            $inscricao = new AcpInscricao();
+            $inscricao->personid = $personid;
+            $inscricao->ofertacursoid = $ofertacursoid;
+            $inscricao->origem = AcpInscricao::ORIGEM_ADMINISTRATIVA;
+            $inscricao->situacao = AcpInscricao::SITUACAO_INSCRITO;
+            $inscricao->datasituacao = date(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP'));
+            $inscricao->save();
+            $inscricaoid = $inscricao->inscricaoid;
+        }
+        
+        //Obtem a OFERTACURSOID se nao veio entao pegar uma nova
+        $ofertacursoid = $alldata->ofertacursoid;
+        if( $ofertacursoid == null)
+        {
+            $inscricao = new AcpInscricao($inscricaoid);                        
+            $ofertacursoid = $inscricao->ofertacursoid;
+        }        
+
+        //obtem mais alguns dados
+        $ofertaTurma = new AcpOfertaTurma($alldata->nova_ofertaturmaid);
+        $ofertaTurma->ofertacursoid;
+        $datasearch = AcpMatriculasRetroativas::obterDisciplinasDaMatriz($ofertacursoid, $inscricaoid);
+        
+        //limpar dados da sessao
+        $session->setValue('matRetroativas_selectedsData', NULL);
+        $session->setValue('componentesSelecionados', NULL);
+        $session->setValue('matRet_infoGrd', null);
+        $session->setValue('componenteSelecionado', null);
+
+        //Obter as disciplinas que foram selecionadas
+        $selectedsData = MIOLO::_REQUEST('selectGrdMatriculasRetroativas');
+
+        foreach($selectedsData as $codSelect => $selectedInfo)
+        {
+            $selecteds[] = $codSelect;
+        }        
+        
+        $ok = FALSE; //ok sera utilizado no processamento que levara para proxima fase
+        
+        //SE o usuario marcou algum componente curricular na grid entao segue com o processamento (se o SELECTEDS tiver dados)
+        //SE nao marcou entao mostrar a mensagem e nao deixar passar
+        if ( $selecteds )
+        {
+            //Pega SOMENTE o NOME do componente curricular que foi selecionado na grid para utilizar na SUBDETAIL da fase 3
+            foreach ( $selecteds as $cod )
+            {                
+                $selecionadoFinal[$cod] = $datasearch[$cod]['acpmatriculasretroativas.nome'];
+            }
+
+        //agora gravar novos dados na sessao para utilizar na fase 3
+        $session->setValue('matRetroativas_selectedsData', $selectedsData);        
+        $session->setValue('componentesSelecionados', $datasearch);
+        $session->setValue('componenteSelecionado', $selecionadoFinal);
+            
+        //FOREACH para percorrer a grid e verificar quais o usuario selecionou
+        //
+            foreach ( $datasearch as $cod => $data )
+            {
+                //pega a linha selecionada e faz algumas validacoes
+                if ( in_array($cod, $selecteds) )
+                {
+                    $codigo_disciplina = $data['acpmatriculasretroativas.codigo'];
+                    $componentecurricularmatrizid = $data['acpmatriculasretroativas.componentecurricularmatrizid'];
+
+                    //obtem os dados de cada campo
+                    $notafinal = MIOLO::_REQUEST('notafinal_' . $componentecurricularmatrizid);
+                    $conceitofinal = MIOLO::_REQUEST('conceitofinal_' . $componentecurricularmatrizid);
+                    $parecerfinal = MIOLO::_REQUEST('parecerfinal_' . $componentecurricularmatrizid);
+                    $frequencia = MIOLO::_REQUEST('frequencia_' . $componentecurricularmatrizid);
+                    $estadomatriculaid = MIOLO::_REQUEST('estadodematriculaid_' . $componentecurricularmatrizid);
+                    
+                    //Obtem os dados que o usuario informou em cada componente curricular e seta na sessao para utilizar na hora de salvar (fase 3)
+                    $linha = array('notafinal'=>$notafinal,'conceitofinal'=>$conceitofinal,'parecerfinal'=>$parecerfinal,'frequencia'=>$frequencia,'estadomatriculaid'=>$estadomatriculaid);                    
+                    $session->setValue('matRet_infoGrd['.$cod.']', $linha);
+                    
+                    //verifica se os campos foram todos preenchidos e de forma correta (conceito/nota, frequencia e estadoDaMatricula)
+                    if ( strlen($notafinal) == 0 && strlen($conceitofinal) == 0 && strlen($parecerfinal) == 0 )
+                    {
+                        $this->AddError(_M('O campo Nota/Conceito/Parecer não pode ficar vazio!'));
+                    }
+                    elseif ( strlen($frequencia) == 0 )
+                    {
+                        $this->AddError(_M('O campo frequencia deve ser preenchido!'));
+                    }
+                    elseif( strlen($estadomatriculaid) == 0 )
+                    {
+                        $this->AddError(_M('O campo estado de matrícula deve ser selecionado para a disciplina!'));
+                    }
+                    else
+                    {
+                        //SETA o ok como TRUE se tiver pelo menos UM componente selecionado e preenchido corretamente
+                        $ok = TRUE;
+                    }
+                }
+            }
+            //Somente vai passar para a proxima fase se tiver OK TRUE
+            //entao juntamente com isso vai setar os dados na step
+            if( $ok )
+            {
+                parent::nextStepButton_click($args);
+                $data = $this->getTypesData();
+            }
+            
+        }
+        else
+        {
+                //SE o usuario nao selecionou nenhum componente curricular na grid e tentou ir para a fase 3
+               $this->addError(_M("Pelo menos um componente curricular deve ser selecionado!", $goto));
+        }
+    }
+
+    /**
+     * Valida o conteúdo do campo frequencia
+     * @param type $args
+     */
+    public function validaFrequencia($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+        $event    = MIOLO::_REQUEST('event');
+        
+        $alldata = $this->getStepData();
+
+        $cod = $args->cod;
+        $codigo = $args->codigo_disciplina;
+        $componentecurricularmatrizid = $args->componentecurricularmatrizid;
+        $id = 'frequencia_' . $componentecurricularmatrizid;
+        $valor = $args->$id;
+
+        if ( strlen($valor) > 0 )
+        {
+            if ( $valor > 100 || $valor < 0 || !is_numeric(trim($valor)) )
+            {
+                $this->page->addAJAXJsCode("document.getElementById('$id').value = '';");
+
+                $this->addError(_M('A frequência para o componente @1 deve estar entre 0 e 100.', $module, $codigo), '');
+            }
+
+            //Seleciona registro na grid
+            $this->page->addAJAXJsCode("var check = this.document.getElementById('selectGrdMatriculasRetroativas[$cod]'); if( check.checked == false ) { check.click(); }");
+        }
+    }
+
+    /**
+     * Valida o conteúdo do campo nota
+     * @param type $args
+     */
+    public function validaNota($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+        $event    = MIOLO::_REQUEST('event');
+        
+        $alldata = $this->getStepData();
+
+        $cod = $args->cod;
+        $codigo = $args->codigo_disciplina;
+        $componentecurricularmatrizid = $args->componentecurricularmatrizid;
+        $id = 'notafinal_' . $componentecurricularmatrizid;
+        $valor = $args->$id;
+
+        $componenteDeAvaliacaoNotaId = $args->componenteDeAvaliacaoNotaId;
+        $componenteDeAvaliacaoNota = new AcpComponenteDeAvaliacaoNota($componenteDeAvaliacaoNotaId);
+
+        $valorMaximo = $componenteDeAvaliacaoNota->valorMaximo;
+        $valorMinimo = $componenteDeAvaliacaoNota->valorMinimo;
+
+        if ( strlen($valor) > 0 )
+        {
+            if ( $valor > $valorMaximo || $valor < $valorMinimo || !is_numeric(trim($valor)) )
+            {
+                $this->page->addAJAXJsCode("document.getElementById('$id').value = '';");
+                $this->addError(_M('A nota para o componente @1 deve estar entre @2 e @3.', $module, $codigo, $valorMinimo, $valorMaximo), '');
+            }
+
+            //Seleciona registro na grid
+            $this->page->addAJAXJsCode("var check = this.document.getElementById('selectGrdMatriculasRetroativas[$cod]'); if( check.checked == false ) { check.click(); }");
+        }
+    }
+
+}
+?>

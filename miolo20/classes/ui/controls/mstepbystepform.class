@@ -1,0 +1,665 @@
+<?php
+
+/**
+ * MStepByStep Class
+ * Form with a step by step logic
+ *
+ * @author Daniel Hartmann [daniel@solis.coop.br]
+ * @author Jonas Guilherme Dahmer [jonas@solis.coop.br]
+ *
+ * @version $id$
+ *
+ * \b Maintainers: \n
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * @since
+ * Creation date 2010/09/23
+ *
+ * \b Organization: \n
+ * SOLIS - Cooperativa de Soluções Livres \n
+ *
+ * \b CopyRight: \n
+ * Copyright (c) 2010 SOLIS - Cooperativa de Soluções Livres \n
+ *
+ * \b License: \n
+ * Licensed under GPLv2 (for further details read the COPYING file or http://www.gnu.org/licenses/gpl.html)
+ *
+ * \b History: \n
+ * See history in CVS repository: http://www.miolo.org.br
+ *
+ */
+
+class MStepByStepForm extends MForm
+{
+    public $steps;
+    public $step;
+    public $nextStep;
+    public $stepName;
+    public $prevStep;
+    public $data;
+    private static $defaultButtons = true;
+    private static $showImageOnButtons = false;
+
+    const BUTTONS_DIV_ID = 'stepButtonsDiv';
+    const BUTTONS_DIV_STYLE = 'm-stepbystep-buttons';
+    const BUTTONS_DIV_IMG_STYLE = 'm-stepbystep-buttons-img';
+
+    /**
+     * MStepByStepForm construct method
+     *
+     * @param string $title Form title
+     * @param array $steps Form steps
+     * @param integer $step Current step
+     * @param integer $nextStep Next step
+     */
+    public function __construct($title, $steps = NULL, $step = NULL, $nextStep = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $this->steps = $steps;
+        $this->stepName = MIOLO::getCurrentAction();
+
+        parent::__construct($title);
+        $this->eventHandler();
+
+        $this->buttons = array();
+        $this->step = $step;
+        $this->nextStep = $nextStep;
+    }
+
+    public function createFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        parent::createFields();
+
+        if ( !self::getCurrentStep() )
+        {
+            $this->cleanStepData();
+        }
+
+        $this->step = $this->step ? $this->step : self::getCurrentStep() ? self::getCurrentStep() : 1;
+        $this->nextStep = $this->nextStep ? $this->nextStep : $this->step+1;
+
+        $stepImageUrl = $MIOLO->getUI()->getImageTheme($MIOLO->getTheme()->getId(), 'button_steps.png');
+
+        foreach ( $this->steps as $k => $stp )
+        {
+            if ( $this->step == $k )
+            {
+                $type = MStep::TYPE_CURRENT;
+            }
+            elseif ( $this->step < $k )
+            {
+                $type = MStep::TYPE_NEXT;
+            }
+            elseif ( $this->step > $k )
+            {
+                $type = MStep::TYPE_PREVIOUS;
+            }
+
+            $stepsDiv[$k] = new MStep($k, $stp, $type);
+        }
+
+        /*
+         * If it has more than five steps shows the first, the previous,
+         * the current, the next and the last one.
+         */
+        if ( count($this->steps) > 5 )
+        {
+            $asteps[] = $stepsDiv[1];
+            if ( $this->step <= 3 )
+            {
+                $asteps[] = $stepsDiv[2];
+                $asteps[] = $stepsDiv[3];
+                $asteps[] = $stepsDiv[4];
+                $asteps[] = new MDiv(NULL, '...', MStep::HIDE_STYLE);
+                $asteps[] = $stepsDiv[count($this->steps)];
+            }
+            elseif ( $this->step >= (count($this->steps) - 2) )
+            {
+                $step = count($this->steps) - 2;
+                $asteps[] = new MDiv(NULL, '...', MStep::HIDE_STYLE);
+                $asteps[] = $stepsDiv[$step - 1];
+                $asteps[] = $stepsDiv[$step];
+                $asteps[] = $stepsDiv[$step + 1];
+                $asteps[] = $stepsDiv[count($this->steps)];
+            }
+            else
+            {
+                $asteps[] = new MDiv(NULL, '...', MStep::HIDE_STYLE);
+                $asteps[] = $stepsDiv[$this->step - 1];
+                $asteps[] = $stepsDiv[$this->step];
+                $asteps[] = $stepsDiv[$this->step + 1];
+                $asteps[] = new MDiv('', '...', MStep::HIDE_STYLE);
+                $asteps[] = $stepsDiv[count($this->steps)];
+            }
+        }
+        else
+        {
+            $asteps = $stepsDiv;
+        }
+
+        $fields[] = new MBaseGroup(NULL, NULL, $asteps);
+
+        $this->addFields($fields);
+    }
+
+    /**
+     * Saves the step data and redirects to the next step
+     *
+     */
+    public function nextStepButton_click()
+    {
+        if ( !$this->nextStep )
+        {
+            $this->nextStep = $this->step ? $this->step + 1 : 2;
+        }
+
+        $this->prepareData($this->getData());
+        self::setCurrentStep($this->nextStep);
+
+        $this->redirect(MIOLO::getCurrentModule(), MIOLO::getCurrentAction(), $_GET);
+    }
+
+    /**
+     * Saves the step data and redirects to the previous step
+     *
+     */
+    public function previousStepButton_click()
+    {
+        if ( !$this->prevStep )
+        {
+            $this->prevStep = $this->step - 1;
+        }
+
+        if ( $this->prevStep < 1 )
+        {
+            $this->prevStep = 1;
+        }
+
+        $this->prepareData($this->getData());
+        self::setCurrentStep($this->prevStep);
+
+        $this->redirect(MIOLO::getCurrentModule(), MIOLO::getCurrentAction(), $_GET);
+    }
+
+    /**
+     * Redirects the user to the given step
+     *
+     * @param integer $step Step number
+     */
+    public function gotoStep($step)
+    {
+        self::setCurrentStep($step);
+        $this->redirect(MIOLO::getCurrentModule(), MIOLO::getCurrentAction(), $_GET);
+    }
+
+    /**
+     * Converts an object to array
+     *
+     * @param object Object
+     * @return array Array
+     */
+    public function objectToArray($object)
+    {
+        if ( count($object) > 1 )
+        {
+            $arr = array( );
+            for ( $i = 0; $i < count($object); $i++ )
+            {
+                $arr[] = get_object_vars($object[$i]);
+            }
+            return $arr;
+        }
+        else
+        {
+            return get_object_vars($object);
+        }
+    }
+
+    /**
+     * @return string Returns the step name
+     */
+    public function getStepName()
+    {
+        return $this->stepName;
+    }
+
+    /**
+     * @param string $stepName Sets the step name
+     */
+    public function setStepName($stepName)
+    {
+        $this->stepName = $stepName;
+    }
+
+    /**
+     * Sets data on the given step
+     *
+     * @param object $data Data object
+     * @param integer $step Step number
+     */
+    public function setStepData($data, $step = null)
+    {
+        $data = (object) array_merge($this->getStepData($step, false), (array) $data);
+        $this->prepareData($data, $step);
+    }
+
+    /**
+     * Returns the given step data, or all steps data, if $step is null
+     *
+     * @param integer $step Step number
+     * @param boolean $returnAsObject Sets the return type
+     * @return unknown Returns an object if $returnAsObject is true and an array if false
+     */
+    public function getStepData($step = null, $returnAsObject = true)
+    {
+        $stepsData = $this->getAllStepData();
+
+        // gets the last step data because it's not on session yet
+        if ( $this->isLastStep() )
+        {
+            $data = self::objectToArray($this->getData());
+            $lastStep = array_pop(array_keys($this->steps));
+            $stepsData[$lastStep] = $data;
+        }
+
+        // if a step is given, returns only the specific step data
+        if ( $step )
+        {
+            $data = $returnAsObject ? (object) $stepsData[$step] : $stepsData[$step];
+        }
+        else
+        {
+            if ( $returnAsObject )
+            {
+                $returnData = array();
+                foreach ( $stepsData as $key => $data )
+                {
+                    $returnData = array_merge($returnData, $data);
+                }
+
+                $data = (object) $returnData;
+            }
+            else
+            {
+                $data = $stepsData;
+            }
+        }
+
+        return $data;
+    }
+
+    /**
+     * Clean the data of one step or of all steps
+     *
+     * @param integer $step Step number
+     */
+    public function cleanStepData($step=null)
+    {
+        if ( $step )
+        {
+            $stepsData = $this->getAllStepData();
+            $stepsData[$step] = NULL;
+
+            $this->setAllStepData($stepsData);
+        }
+        else
+        {
+            $this->setAllStepData(NULL);
+        }
+    }
+
+    /**
+     * Prepares the step data (current step, if none is informed) to put them on session
+     *
+     * @param unknown $data Array or object
+     * @param integer $step Step number
+     */
+    public function prepareData($data = null, $step = null)
+    {
+        if ( !$step )
+        {
+            // the first time on the first step, the step is still undefined
+            $step = $this->step ? $this->step : 1;
+        }
+
+        if ( is_object($data) )
+        {
+            $data = self::objectToArray($data);
+        }
+
+        // verifies if there is already data on session of this step by step
+        $stepData = $this->getStepData(null, false);
+
+        // adds the step data array to be saved on session
+        $stepData[$step] = $data;
+
+        $this->setAllStepData($stepData);
+    }
+
+    /**
+     * Saves data from all steps on session
+     *
+     * @param array $stepData Data from all the steps
+     */
+    public function setAllStepData($stepData)
+    {
+        // serializes the data and saves it
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->getSession()->setValue($this->getStepName(), serialize($stepData));
+    }
+
+    /**
+     * Gets steps data from session and unserialize it
+     *
+     * @return array Unserialized data array
+     */
+    public function getAllStepData()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $data = unserialize($MIOLO->getSession()->getValue($this->getStepName()));
+        return $data;
+    }
+
+    /**
+     * @return integer Returns the current step
+     */
+    public static function getCurrentStep()
+    {
+        return MIOLO::_REQUEST('step');
+    }
+
+    /**
+     * @param integer $step Sets the current step
+     */
+    public static function setCurrentStep($step)
+    {
+        $_GET['step'] = $step;
+    }
+
+    /**
+     * @return boolean Returns if it is set to show image on buttons or not
+     */
+    public static function getShowImageOnButtons()
+    {
+        return self::$showImageOnButtons;
+    }
+
+    /**
+     * @param boolean $showImageOnButtons Sets to show image on buttons or not
+     */
+    public static function setShowImageOnButtons($showImageOnButtons)
+    {
+        self::$showImageOnButtons = $showImageOnButtons;
+    }
+
+    /**
+     * Returns a div with buttons based on the current step
+     *
+     * @return MDiv A div with a MButton array
+     */
+    public function getButtons()
+    {
+        if ( $this->isFirstStep() )
+        {
+            $buttons = $this->firstStepButtons();
+        }
+        elseif ( $this->isLastStep() )
+        {
+            $buttons = $this->lastStepButtons();
+        }
+        else
+        {
+            $buttons = $this->innerStepButtons();
+        }
+
+        return $this->buttonsDiv($buttons);
+    }
+
+    /**
+     * Finalizes the step by step, by changing the buttons with the specified
+     * ones (or with a default close button) and disabling the step buttons
+     *
+     * @param array $buttons Array with buttons (MButton) to be displayed
+     */
+    public function finalizeStepByStep($buttons = NULL)
+    {
+        $label = _M('Finished step');
+
+        $jsCode = "
+            document.getElementById('".self::BUTTONS_DIV_ID."').innerHTML = '';
+            document.getElementById('stepImage_{$this->step}').className = '".MStep::PREVIOUS_ICON_STYLE."';
+            document.getElementById('stepDescription_{$this->step}').innerHTML = '$label'; ";
+
+        foreach ( $this->steps as $step => $stepName )
+        {
+            $jsCode .= "
+                var element = document.getElementById('divStep_$step');
+                if ( element )
+                {
+                   element.className = '".MStep::DISABLED_STYLE."';
+                   element.onclick = '';
+                }";
+        }
+
+        $this->page->onLoad($jsCode);
+
+        if ( $buttons )
+        {
+            $this->addField($this->buttonsDiv($buttons));
+        }
+        else
+        {
+            $div = $this->buttonsDiv(array( new MButton('closeButton', _M('Close')) ));
+            $this->addField($div);
+        }
+    }
+
+    /**
+     * @param boolean $defaultButtons Sets if the default buttons must be shown
+     */
+    public static function setDefaultButtons($defaultButtons)
+    {
+        self::$defaultButtons = $defaultButtons;
+    }
+
+    /**
+     * @return boolean Returns if the default buttons must be shown
+     */
+    public static function getDefaultButtons()
+    {
+        return self::$defaultButtons;
+    }
+
+    /**
+     * Loads the data automatically
+     * It is called after createFields
+     */
+    public function onLoad()
+    {
+        if ( self::$defaultButtons )
+        {
+            $this->addFields(array( $this->getButtons() ));
+        }
+
+        if ( !$this->isFirstAccess($this->step) )
+        {
+            parent::setData($this->getStepData($this->step));
+        }
+    }
+
+    /**
+     * @return boolean Returns true if current step is the first step
+     */
+    public function isFirstStep()
+    {
+        if ( self::getCurrentStep() == 1 || !self::getCurrentStep() )
+        {
+            return true;
+        }
+        else
+        {
+            return false;
+        }
+    }
+
+    /**
+     * @return boolean Returns true if the current step is the last step
+     */
+    public function isLastStep()
+    {
+        $lastStep = array_pop(array_keys($this->steps));
+        return $lastStep == $this->step;
+    }
+
+    /**
+     * Checks on session if the data of the given step was already set
+     *
+     * @param $step The step number. If not informed, it uses the current step
+     * @return boolean True if data was already set
+     */
+    public function isFirstAccess($step = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        if ( !$step )
+        {
+            $step = $this->step;
+        }
+
+        $stepsData = $this->getAllStepData();
+
+        $data = $stepsData[$step];
+
+        // if is set, returns true
+        return !$data;
+    }
+
+    /**
+     * Method called on cancel button action
+     *
+     */
+    public function cancelButton_click($args)
+    {
+        $this->redirect(MIOLO::getCurrentModule(), MIOLO::getCurrentAction());
+    }
+
+    /**
+     * Method called on finalize button action
+     * This is an example method. You must override it to save the form data
+     * 
+     */
+    public function finalizeButton_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $url = $MIOLO->getActionUrl($module, 'main');
+        $buttons[] = new MButton(NULL, _M('Close'), $url);
+        $this->finalizeStepByStep($buttons);
+    }
+
+    /**
+     * Redirects the page to the given action of the given module, with the
+     * given arguments
+     *
+     * @param string $module Module
+     * @param string $action Action
+     * @param array $args Arguments
+     */
+    public function redirect($module, $action, $args = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $url = $MIOLO->getActionURL($module, $action, '', $args);
+        $MIOLO->page->redirect($url);
+    }
+
+    /**
+     * @return MButton Default cancel button
+     */
+    public function cancelButton()
+    {
+        if ( self::$showImageOnButtons )
+        {
+            $image = 'images/button_cancel.png';
+        }
+        return new MButton('cancelButton', '<span>'._M('Cancel').'</span>', NULL, $image);
+    }
+
+    /**
+     * @return MButton Default next step button
+     */
+    public function nextStepButton()
+    {
+        if ( self::$showImageOnButtons )
+        {
+            $image = 'images/button_next.png';
+        }
+        return new MButton('nextStepButton', '<span>'._M('Next step').'</span>', NULL, $image);
+    }
+
+    /**
+     * @return MButton Default previous step button
+     */
+    public function previousStepButton()
+    {
+        if ( self::$showImageOnButtons )
+        {
+            $image = 'images/button_previous.png';
+        }
+        return new MButton('previousStepButton', '<span>'._M('Previous step').'</span>', NULL, $image);
+    }
+
+    /**
+     * @return MButton Default finalize button
+     */
+    public function finalizeButton()
+    {
+        if ( self::$showImageOnButtons )
+        {
+            $image = 'images/button_finalize.png';
+        }
+        return new MButton('finalizeButton', '<span>'._M('Finalize').'</span>', NULL, $image);
+    }
+
+    /**
+     * @return MDiv Default buttons for the first step
+     */
+    public function firstStepButtons()
+    {
+        return $this->buttonsDiv(array( $this->nextStepButton(), $this->cancelButton() ));
+    }
+
+    /**
+     * @return MDiv Default buttons for steps between the first and the last
+     */
+    public function innerStepButtons()
+    {
+        return $this->buttonsDiv(array( $this->nextStepButton(), $this->previousStepButton(), $this->cancelButton() ));
+    }
+
+    /**
+     * @return MDiv Default buttons for the last step
+     */
+    public function lastStepButtons()
+    {
+        return $this->buttonsDiv(array( $this->finalizeButton(), $this->previousStepButton(), $this->cancelButton() ));
+    }
+
+    /**
+     * @param array $buttons MButton array
+     * @return MDiv Default buttons div
+     */
+    public function buttonsDiv($buttons)
+    {
+        $class = self::$showImageOnButtons ? self::BUTTONS_DIV_IMG_STYLE : self::BUTTONS_DIV_STYLE;
+        $div = new MDiv(self::BUTTONS_DIV_ID, $buttons, $class);
+        $div->addBoxStyle('direction', 'rtl');
+        $div->addBoxStyle('width', '100%');
+        return $div;
+    }
+}
+?>

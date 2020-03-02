@@ -1,0 +1,1209 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Form to generate a user-defined report
+ *
+ * @author Leovan Tavares da Silva [leovan@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ * Leovan Tavares da Silva [leovan@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Luís Felipe Wermann [luis_felipe@solis.com.br]
+ *
+ * @since
+ * Class created on 22/07/2008
+ *
+ **/
+
+/**
+ * Form that construct the interface to enter the necessary data to generate a user-defined report
+ **/
+class FrmGenericReportGeneration extends SForm
+{
+    private $business;
+    private $reportData;
+    private $validators;
+    
+    private $queryAtual;
+    
+    // Array containing the list of labels to be used
+    // on the grid columns
+    private $labels;
+    
+    /**
+     * Array contendo valores dos filtros utilizados, que serao exibidos no cabecalho do relatorio PDF.
+     *
+     * @var array
+     */
+    private $reportInfo = array();
+    
+    /**
+     * Class constructor
+     **/
+    public function __construct()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $this->business   = new BusinessBasicBusGenericReports();
+        $this->reportData = $this->business->getReport(MIOLO::_request('reportId'));
+        
+        parent::__construct( "Relatório genérico :: " . $this->reportData->name, null, null );
+        
+        if( $this->reportData->enabled === DB_FALSE )
+        {
+            $MIOLO->error(_M("Este relatório não está habilitado. Habilite-o na tela de edição deste nos Relatórios Genéricos (Básico::Configuração::Relatórios genéricos)."), $MIOLO->GetAbsoluteURL(""));
+            
+        }
+        
+        
+    }
+
+    /**
+     * Default method to define fields
+     **/
+    public function defineFields()
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        
+        // Se há uma descrição no relatório
+        if( strlen($this->reportData->description) > 0 )
+        {
+            $description = SString::construct($this->reportData->description);
+            $fields[] = MMessage::getStaticMessage('reportDescription', $description->getString(), MMessage::TYPE_INFORMATION);
+            $fields[] = new MDiv();
+            
+        }
+                
+        $fields[] = new MHiddenField('reportId', $this->reportData->reportId);
+        
+        $filters->reportId = $this->reportData->reportId;
+        
+        $reportParameters = $this->business->searchReportParameter($filters);
+
+        if (count($reportParameters) > 0)
+        {
+            // This is used to detect the first field instantiated
+            // in order to set focus to it.
+            $first = true;
+            
+            foreach ($reportParameters as $parameter)
+            {
+                list ($reportParameterId,
+                      $parameterNumber,
+                      $label,
+                      $fieldType,
+                      $defaultValue,
+                      $size,
+                      $validator,
+                      $hint,
+                      $fieldColumns,
+                      $fieldRows,
+                      $fixedOptions,
+                      $options,
+                      $help,
+                      $nomecampopersonalizado) = $parameter;
+
+                $label = utf8_decode(utf8_encode($label));
+                $this->labels[$parameterNumber] = $label;
+                      
+                if( strlen($nomecampopersonalizado) > 0 )
+                {
+                    list($campoPersonalizado, $validadorCampoPersonalizado) = $this->obterCampoPersonalizadoConformeRelatorio($nomecampopersonalizado, $parameterNumber, $label);
+                    
+                    $fields[] = $campoPersonalizado;
+                    $this->validators[] = $validadorCampoPersonalizado;
+                }
+                else
+                {
+                    switch ($fieldType)
+                    {
+                        case 'TEXTFIELD':
+                            $fields[] = $this->generateTextField($parameterNumber, $label, $defaultValue, $size, $validator, $hint, $help);
+                        break;
+                        case 'MULTILINE':
+                            $fields[] = $this->generateMultilineField($parameterNumber, $label, $defaultValue, $fieldColumns, $fieldRows, $size, $validator, $hint, $help);
+                        break;
+                        case 'COMBOBOX':
+                            $fields[] = $this->generateComboBox($parameterNumber, $label, $defaultValue, strtoupper($fixedOptions) == strtoupper(DB_TRUE), $options, $help, $validator);
+                        break;
+                        case 'SELECTION':
+                            $fields[] = $this->generateSelection($parameterNumber, $label, $defaultValue, strtoupper($fixedOptions) == strtoupper(DB_TRUE), $options, $help, $validator);
+                        break;
+                        case 'RADIOGROUP':
+                            $fields[] = $this->generateRadioGroup($parameterNumber, $label, $defaultValue, strtoupper($fixedOptions) == strtoupper(DB_TRUE), $options, $help, $validator);
+                        break;
+                        case 'CHECKGROUP':
+                            $fields[] = $this->generateCheckGroup($parameterNumber, $label, $defaultValue, strtoupper($fixedOptions) == strtoupper(DB_TRUE), $options, $help);
+                        break;
+                        case 'CALENDAR':
+                            $fields[] = $this->generateCalendarField($parameterNumber, $label, $defaultValue, $hint, $help, $validator);
+                        break;
+                        case 'HIDDEN':
+                            $fields[] = $this->generateHiddenField($parameterNumber, $defaultValue);
+                        break;
+                    }
+                }
+                // Set focus to first field
+                if ( $first )
+                {
+                    $this->page->onLoad('document.getElementById("' . $fields[count($fields)-1]->id . '").focus()');
+                    $first = false;
+                }
+            }
+            
+            $fields[] = new MSeparator('');
+        }
+        
+        $fields[] = new SHiddenField('sintetico', SAGU::NVL($this->getRequestValue('sintetico'), MIOLO::_REQUEST('sintetico')));
+        
+        if ( $this->reportData->hasGrouping == DB_TRUE )
+        {
+            $fields[] = $this->genericFields()->radioButtonGroup('sintetico', $this->getRequestValue('sintetico', DB_FALSE), _M('Modo sintético (dados resumidos)'), SAGU::listYesNo());
+    //        $fields[] = new MSeparator();
+    //        $fields[] = $this->genericFields()->labelDica(_M('Quando selecionado a opção Modo sintético, o relatório será impresso de uma forma resumida'));
+        }
+        
+        $field = new MTextField('buscaGenerica', "", _M('Filtro',$module), SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'), "Filtre por palavras chaves de qualquer um dos campos");
+        $fields[] = $field;
+        
+        $btnSearch = new MButton('btnSearch',_M('Gerar relatório',$module));
+        $fields[] = $btnSearch;
+        
+//        $btnFields[] = new MButton('btnJasperReport',_M('Gerar PDF',$module));
+        
+//        $fields[] = new MContainer('hctBtns', $btnFields);
+        
+        parent::defineFields( array( 'fields' => $fields, 'validators' => $this->validators ) );
+
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+        
+        // Forca chamada do evento
+        $order = MIOLO::_REQUEST('orderby');
+        
+        // Se for um clique da navegação da grid
+        if ( ( MIOLO::_REQUEST("gridName") || ( strlen($order) > 0 ) ) && ( SAGU::getEventName() != 'btnSearch:click' ) )
+        {
+            $this->btnSearch_click();
+            
+        }
+    }
+    
+    /**
+     * Obtém o campo personalizado do dicionário de campos e modifica-o conforme
+     * as configurações realizadas na criação/edição do relatório genérico
+     * 
+     * @param String $nomecampopersonalizado Nome do campo personalzado
+     * @param Integer $indice Número do parâmetro (entre os demais)
+     * @param String $label Label definida no relatório para o parâmetro
+     * @return Array Lista com o campo personalizado e o seu validador
+     */
+    private function obterCampoPersonalizadoConformeRelatorio($nomecampopersonalizado, $indice, $label)
+    {
+        list($campo, $validador) = $this->obterCampo($nomecampopersonalizado);
+                    
+        // Sobrescreve o id do campo personalizado, para condizer com o comportamento
+        // de um parâmetro do relatório genérico
+        $campo->setName("field[$indice]");
+        $campo->setId("field[$indice]");
+        // Altera também o validador para referenciar corretamente
+        $validador->field = "field[$indice]";
+
+        // Seta a label conforme definida no relatório genérico
+        $campo->setLabel($label);
+
+        $valorParametros = MIOLO::_REQUEST("field");
+        $valor = $campo->getValue();
+
+        if ( isset($valorParametros[$indice]) )
+        {
+            $valor = $valorParametros[$indice]; 
+        }
+
+        $campo->setValue($valor);
+        
+        return array($campo, $valor);
+        
+    }
+    
+    public function generateTextField($parameterNumber, $label, $defaultValue, $size, $validator, $hint, $help)
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        
+        if ( $validator == BusinessBasicBusGenericReports::VALIDATOR_REQUIRED_INTEGER )
+        {
+            $this->validators[] = new MIntegerValidator('field[' . $parameterNumber . ']', $label, 'required');
+        }
+        elseif ( $validator == BusinessBasicBusGenericReports::VALIDATOR_INTEGER )
+        {
+            $this->validators[] = new MIntegerValidator('field[' . $parameterNumber . ']', $label);
+        }
+        elseif ( $validator == BusinessBasicBusGenericReports::VALIDATOR_REQUIRED )
+        {
+            $this->validators[] = new MRequiredValidator('field[' . $parameterNumber . ']', $label);
+        }
+        
+        $fields = $MIOLO->_request('field');
+        if ( isset($fields[$parameterNumber]) )
+        {
+            $defaultValue = $fields[$parameterNumber]; 
+        }
+
+        // adiciona informacoes descritivas dos filtros utilizados
+        if ( strlen($defaultValue) > 0 )
+        {
+            $this->reportInfo[$label] = $defaultValue;
+        }
+        
+        $textField = new MTextField('field[' . $parameterNumber . ']', $defaultValue, $label, $size, $hint);
+        $textField->setJsHint($help);
+        
+        return $textField;
+    }
+    
+    public function generateMultilineField($parameterNumber, $label, $defaultValue, $columns, $rows, $size, $validator, $hint, $help)
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        
+        if ( $validator == BusinessBasicBusGenericReports::VALIDATOR_REQUIRED_INTEGER )
+        {
+            $this->validators[] = new MIntegerValidator('field[' . $parameterNumber . ']', $label, 'required');
+        }
+        elseif ( $validator == BusinessBasicBusGenericReports::VALIDATOR_INTEGER )
+        {
+            $this->validators[] = new MIntegerValidator('field[' . $parameterNumber . ']', $label);
+        }
+        elseif ( $validator == BusinessBasicBusGenericReports::VALIDATOR_REQUIRED )
+        {
+            $this->validators[] = new MRequiredValidator('field[' . $parameterNumber . ']', $label);
+        }
+        
+        $fields = $MIOLO->_request('field');
+        if ( isset($fields[$parameterNumber]) )
+        {
+            $defaultValue = $fields[$parameterNumber]; 
+        }
+        
+        $multiLineField = new MMultiLineField('field[' . $parameterNumber . ']', $defaultValue, $label, $size, $rows, $columns, $hint);
+        $multiLineField->setJsHint($help);
+        
+        return $multiLineField;
+    }
+    
+    public function generateComboBox($parameterNumber, $label, $defaultValue, $fixedOptions, $options, $help, $validator)
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        
+        if ( $validator == BusinessBasicBusGenericReports::VALIDATOR_REQUIRED_INTEGER )
+        {
+            $this->validators[] = new MIntegerValidator('field[' . $parameterNumber . ']', $label, 'required');
+        }
+        elseif ( $validator == BusinessBasicBusGenericReports::VALIDATOR_INTEGER )
+        {
+            $this->validators[] = new MIntegerValidator('field[' . $parameterNumber . ']', $label);
+        }
+        elseif ( $validator == BusinessBasicBusGenericReports::VALIDATOR_REQUIRED )
+        {
+            $this->validators[] = new MRequiredValidator('field[' . $parameterNumber . ']', $label);
+        }
+        
+        $fieldOptions = $this->generateOptions($options, $fixedOptions);
+
+        $fields = $MIOLO->_request('field');
+        if ( isset($fields[$parameterNumber]) )
+        {
+            $defaultValue = $fields[$parameterNumber]; 
+        }
+        
+        // adiciona informacoes descritivas dos filtros utilizados
+        if ( strlen($defaultValue) > 0 )
+        {
+            $this->reportInfo[$label] = $this->getOptionDesc($fieldOptions, $defaultValue);
+        }
+        
+        $comboBox = new MComboBox('field[' . $parameterNumber . ']', $defaultValue, $label, $fieldOptions);
+        $comboBox->setJsHint($help);
+        
+        return $comboBox;
+    }
+    
+    public function generateSelection($parameterNumber, $label, $defaultValue, $fixedOptions, $options, $help, $validator)
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        
+        if ( $validator == BusinessBasicBusGenericReports::VALIDATOR_REQUIRED_INTEGER )
+        {
+            $this->validators[] = new MIntegerValidator('field[' . $parameterNumber . ']', $label, 'required');
+        }
+        elseif ( $validator == BusinessBasicBusGenericReports::VALIDATOR_INTEGER )
+        {
+            $this->validators[] = new MIntegerValidator('field[' . $parameterNumber . ']', $label);
+        }
+        elseif ( $validator == BusinessBasicBusGenericReports::VALIDATOR_REQUIRED )
+        {
+            $this->validators[] = new MRequiredValidator('field[' . $parameterNumber . ']', $label);
+        }
+                
+        $fieldOptions = $this->generateOptions($options, $fixedOptions);
+
+        $fields = $MIOLO->_request('field');
+        if ( isset($fields[$parameterNumber]) )
+        {
+            $defaultValue = $fields[$parameterNumber]; 
+        }
+     
+        // adiciona informacoes descritivas dos filtros utilizados
+        if ( strlen($defaultValue) > 0 )
+        {
+            $this->reportInfo[$label] = $this->getOptionDesc($fieldOptions, $defaultValue);
+        }
+        
+        $selection = new MSelection('field[' . $parameterNumber . ']', $defaultValue, $label, $fieldOptions);
+        $selection->setJsHint($help);
+        
+        return $selection;
+    }
+    
+    public function generateRadioGroup($parameterNumber, $label, $defaultValue, $fixedOptions, $options, $help, $validator)
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        
+        $opts = $this->generateOptions($options, $fixedOptions);
+        
+        $radioLabel = new MText('radioLabel[' . $parameterNumber . ']', $label . ':');
+        $radioLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        
+        $fields = $MIOLO->_request('field');
+        if ( isset($fields[$parameterNumber]) )
+        {
+            $defaultValue = $fields[$parameterNumber]; 
+        }
+        
+        // adiciona informacoes descritivas dos filtros utilizados
+        if ( strlen($defaultValue) > 0 )
+        {
+            $this->reportInfo[$label] = $this->getOptionDesc($opts, $defaultValue);
+        }
+        
+        $radioGroup = new MRadioButtonGroup('field[' . $parameterNumber . ']', '', $opts, $defaultValue, null, 'vertical');
+        $radioGroup->setShowLabel(false);
+        
+        if ( $validator == BusinessBasicBusGenericReports::VALIDATOR_REQUIRED_INTEGER )
+        {
+            $this->validators[] = new MIntegerValidator('field[' . $parameterNumber . ']', $label, 'required');
+        }
+        elseif ( $validator == BusinessBasicBusGenericReports::VALIDATOR_INTEGER )
+        {
+            $this->validators[] = new MIntegerValidator('field[' . $parameterNumber . ']', $label);
+        }
+        elseif ( $validator == BusinessBasicBusGenericReports::VALIDATOR_REQUIRED )
+        {
+            $this->validators[] = new MRequiredValidator('field[' . $parameterNumber . ']', $label);
+        }
+        
+        return new MHContainer('hctRadio[' . $parameterNumber . ']', array($radioLabel, $radioGroup));
+    }
+    
+    public function generateCalendarField($parameterNumber, $label, $defaultValue, $hint, $help, $validator)
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+
+        $required = 'optional';
+        if ( $validator == BusinessBasicBusGenericReports::VALIDATOR_REQUIRED )
+        {
+            $required = 'required';
+        }
+        
+        $this->validators[] = new MDateDMYValidator('field[' . $parameterNumber . ']', $label, $required);
+        
+        $fields = $MIOLO->_request('field');
+        if ( isset($fields[$parameterNumber]) )
+        {
+            $defaultValue = $fields[$parameterNumber]; 
+        }
+        
+        // adiciona informacoes descritivas dos filtros utilizados
+        if ( strlen($defaultValue) > 0 )
+        {
+            $this->reportInfo[$label] = $defaultValue;
+        }
+        
+        $calendarField = new MCalendarField('field[' . $parameterNumber . ']', $defaultValue, $label, SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'), $hint);
+        $calendarField->setJsHint($help);
+        
+        return $calendarField;
+    }
+    
+    public function generateHiddenField($parameterNumber, $defaultValue)
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        
+        $fields = $MIOLO->_request('field');
+        if ( isset($fields[$parameterNumber]) )
+        {
+            $defaultValue = $fields[$parameterNumber]; 
+        }
+        
+        return new SHiddenField('field[' . $parameterNumber . ']', $defaultValue);
+    }
+    
+    /**
+     * Como infelizmente no codigo legado os valores nao retornam um array associativo e os campos do miolo
+     *  nao trabalham muito bem desta forma, feito uma funcao que extrai a descricao de um campo.
+     */
+    public function getOptionDesc($options, $option)
+    {
+        foreach ( (array) $options as $opt )
+        {
+            if ( $opt[0] == $option )
+            {
+                return $opt[1];
+            }
+        }
+        
+        return null;
+    }
+    
+    public function generateOptions($options, $fixedOptions = true)
+    {
+        if ($fixedOptions)
+        {
+            if (strlen($options) > 0)
+            {
+                $options = explode(',', urldecode(str_replace("%0A", "", urlencode($options))));
+                
+                if (count($options) > 0)
+                {
+                    unset($returnOpts);
+                    foreach ($options as $opt)
+                    {
+                        $explOpt = explode('=>', $opt);
+                        
+                        $returnOpts[] = array(trim($explOpt[0]), trim($explOpt[1]));
+                    }
+                    
+                    return $returnOpts;
+                }
+                else
+                {
+                    return null;
+                }
+            }
+            else
+            {
+                return null;
+            }
+        }
+        else
+        {
+            try
+            {
+                return $this->business->getDatabase()->query($options);
+            }
+            catch (Exception $e)
+            {
+                $this->addError($e->getMessage());
+            }
+        }
+    }
+    
+    public function getQueryData()
+    {
+        try
+        {
+            $args = $this->getTypesData();
+            $sql = new MSql();
+
+            $sql->createFrom(SAGU::prepare($this->reportData->sqlFiltered, $args));
+            
+            $sql->where = sRelatorioPDF::retiraValoresNulos($sql->where);
+            
+            $data = $this->business->getDatabase()->getQuery($sql);
+
+            return $data;
+        }
+        catch (Exception $e)
+        {
+            $this->addError($e->getMessage());
+        }
+    }
+    
+    /**
+     * Corrige uma dada data para o formato aaaa-mm-dd
+     * 
+     * @param String $data Data no formato dd/mm/aaaa
+     * 
+     * @return String|Boolean Data formatada se esta for válida ou false caso 
+     * contrário
+     */
+    public function corrigeData($data)
+    {
+        if( SAGU::isDate($data) )
+        {
+            $explode = explode("/", $data);
+        
+            return implode("-", array_reverse($explode));
+            
+        }
+        else
+        {
+            // Se esta no formato correto
+            return ( preg_match("/[0-9]{4}-[0-9]{2}-[0-9]{2}/", $data) ? $data : false );
+            
+        }
+        
+    }
+    
+    /**
+     * Tira a operação LIMIT/OFFSET de uma dada consulta SQL
+     * 
+     * @param String $sql Constulta a ser tratada
+     * 
+     * @return \stdClass Objeto com as seguintes propriedades: 
+     *      $obj->sql: SQL sem a operação LIMIT/OFFSET; 
+     *      $obj->limite: O que foi tirado do SQL (LIMIT/OFFSET)
+     */
+    public function tiraLimit($sql)
+    {
+        // Para pegar o último LIMIT/OFFSET
+        $matches = array();
+        preg_match("/ LIMIT [0-9]+( OFFSET [0-9]+)?[;]?$/i", $sql, $matches);
+        $limite = count($matches) > 0 ? $matches[0] : "";
+
+        // Remove o LIMIT/OFFSET do SQL
+        $consulta = preg_replace("/ LIMIT [0-9]+( OFFSET [0-9]+)?[;]?$/i", "", $sql);
+        
+        $resultado = new stdClass();
+        $resultado->sql = $consulta;
+        $resultado->limite = $limite;
+        
+        return $resultado;
+                
+    }
+    
+    /**
+     * 
+     * 
+     * @param String $tipo Tipo da coluna
+     * @param String $coluna Coluna a ser comparada
+     * @param String $valor Valor a ser comparado
+     * 
+     * @return String|boolean Clausula where se for um valor válido; false se 
+     * contrário
+     */
+    public function getWherePorTipo($tipo, $coluna, $valor)
+    {
+        $where = false;
+         
+        if ( $tipo == "text" || $tipo == "varchar" )
+        {
+            $where = "UNACCENT(\"{$coluna}\") ILIKE UNACCENT(?)";
+        }
+        else if ( $tipo == "bool" || $tipo == "boolean" )
+        {
+            if ( in_array($valor, array('f', 'F', 'false', 'FALSE', 't', 'T', 'true', 'TRUE')) )
+            {
+                $where = "\"{$coluna}\" = ?";
+            }
+        }
+        else 
+        {
+            $data = $this->corrigeData($valor);
+            
+            if( ( $data !== false && $tipo === "date" )
+             || ( is_numeric(str_replace(",", ".", $valor)) && in_array($tipo, array("numeric", "integer", "int4", "int8", "float8")) ) )
+            {
+                $where = "\"{$coluna}\" = ?";
+                
+            }
+            
+        }
+        
+        return $where;
+        
+    }
+    
+    /**
+     * Pega e formata a query que gerou o relatório
+     * 
+     * @return String SQL gerador do relatório
+     */
+    public function getQuery()
+    {
+        try
+        {
+            // Pega os filtros
+            $args = $this->getTypesData();
+            $consulta = SAGU::prepare($this->reportData->sqlFiltered, $args);
+                        
+            // Tira o ';' da consulta
+            $sql = rtrim($consulta, "; ");
+            
+            // Tira o limit do SQL
+            $info = $this->tiraLimit($sql);
+                        
+            // Cria o objeto SQL formatado
+            $msql = $this->getSQLComFiltroGenerico(sRelatorioPDF::retiraValoresNulos($info->sql), $this->GetFieldValue("buscaGenerica"));
+            
+            // Cria a consulta e adiciona o que foi removido antes (LIMIT)
+            $comando = $msql . $info->limite;
+            
+            return $comando;
+            
+        }
+        catch (Exception $e)
+        {
+            $this->addError($e->getMessage());
+            
+        }
+        
+    }
+    
+    /**
+     * A partir do filtro informado, generaliza o valor para comparação em todas
+     * as colunas da consulta SQL
+     * 
+     * @param String $sql Consulta a ser modificada
+     * @param String $filtroGenerico Filtro a ser adicionado
+     * 
+     * @return String SQL
+     */
+    public function getSQLComFiltroGenerico($sql, $filtroGenerico)
+    {
+        $consulta = "SELECT * FROM ({$sql}) as consulta";
+        
+        // Se o filtro for válido
+        if( $filtroGenerico || $filtroGenerico !== "" )
+        {
+            $colunasQuery = SDatabase::getQueryColumns($sql);
+            $tipoColunas = SDatabase::getQueryTypes($sql);
+            
+            $adicionouWhere = false;
+            $arrayWhere = array();
+            $params = array();
+            
+            // Navega pelos tipos de colunas
+            foreach ( $tipoColunas as $i => $tipo )
+            {
+                $where = $this->getWherePorTipo($tipo, $colunasQuery[$i], $filtroGenerico);
+                
+                if ( $where )
+                {
+                    $consulta .= $adicionouWhere ? '' : ' WHERE ';
+            
+                    $arrayWhere[] = $where;
+                    
+                    $adicionouWhere = true;
+                    
+                    $valor = $this->getValorFormatadoPorTipo($filtroGenerico, $tipo);
+                    $params[] = $valor;
+                }
+            }
+            
+            if ( $adicionouWhere )
+            {
+                $consulta .= implode(" OR ", $arrayWhere);
+            }
+        }
+        
+        return SAGU::prepare($consulta, $params);
+    }
+    
+    /**
+     * Conforme o tipo, retorna um valor compativel com este
+     * 
+     * @param Mixed $valor Valor
+     * @param String $tipo Tipo do valor
+     * 
+     * @return Mixed Valor corrigido conforme o tipo
+     */
+    private function getValorFormatadoPorTipo($valor, $tipo)
+    {
+        if( $tipo == "text" || $tipo == "varchar" )
+        {
+            return "%{$valor}%";
+            
+        }
+                
+        $numero = str_replace(",", ".", $valor);
+        
+        if(is_numeric($numero) )
+        {
+            if( $tipo === "float8" )
+            {
+                return floatval($numero);
+
+            }
+            else if( in_array($tipo, array("numeric", "integer", "int4", "int8")) )
+            {
+                return intval($numero);
+                
+            }
+            
+        }
+        
+        return $valor;
+        
+    }
+    
+    /**
+     * Gera o relatorio PDF
+     */
+    public function btnJasperReport2_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $args = $this->getTypesData();
+                
+        $sql = SAGU::prepare($this->reportData->sqlFiltered, $args);
+        $columns = SDatabase::getQueryColumns($sql);
+        $checkboxes = array();
+
+        foreach ( $columns as $position => $col )
+        {
+            $checkboxes[] = new MCheckBox('field_' . $position, DB_TRUE, $col, false);
+        }
+        
+        $fields[] = new sBaseGroup('bgrX', _M('Informe os campos que deseja agrupar'), $checkboxes);
+        $fields[] = new MButton('btnJasperReport2', _M('Gerar PDF'));
+        
+        $popup = new MPopup('popReport', $fields, _M('Exportar relatório ') . $this->title);
+
+        $this->AddField($popup);
+    }
+
+    /**
+     * Gera o relatorio PDF
+     */
+    public function btnJasperReport_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $args = $this->getTypesData();
+
+        $sqlFiltered = SAGU::prepare($this->reportData->sqlFiltered, $args);
+        
+        $sql = SAGU::prepare($this->reportData->sql, $args);
+//        $columns = SDatabase::getQueryColumns($sqlOriginal);
+        $groups = array();
+        
+        $report = new sRelatorioPDF();
+        $report->setGridData($this->getGridDataSession());
+        $report->setSql($sql);
+        $report->setSqlFiltrado($sqlFiltered);
+        $report->setFileId($this->reportData->fileId);
+        $report->setReportInfo($this->reportInfo);
+        
+        if ( MIOLO::_REQUEST('sintetico') == DB_TRUE )
+        {
+            $report->setTipoRelatorio( sRelatorioPDF::TIPO_RELATORIO_SINTETICO );
+        }
+        
+        $report->setPossuiModoAlternativo( $this->reportData->hasGrouping == DB_TRUE );
+        $report->setNomeRelatorio($this->reportData->name);
+        
+        $report->generate();
+    }
+    
+    public function btnSearch_click()
+    {
+        $filtroGenerico = $this->GetFieldValue("buscaGenerica");
+        
+        $module = MIOLO::getCurrentModule();
+        $sql = $this->getQuery();
+        
+        $rowExemplo = $this->getRowExemplo($sql);
+        
+        // Adiciona aos filtros apenas se foi informado algum valor
+        if( $filtroGenerico && $filtroGenerico !== "" )
+        {
+            $this->reportInfo["Filtro"] = $filtroGenerico;
+        }
+        
+        $this->queryAtual = $sql;
+        
+        $colunas = array();
+        $nomeColunas = array();
+        $colunasQuery = SDatabase::getQueryColumns($sql);
+        $tipoColunas = SDatabase::getQueryTypes($sql);
+        
+        foreach( $colunasQuery as $n => $nome )
+        {
+            // Se o tipo da coluna for 'text' ou 'varchar', verifica se o valor da primeira linha é uma data. Se for, troca o tipo da coluna.
+            if ( $tipoColunas[$n] == "text" || $tipoColunas[$n] == "varchar" )
+            {
+                if ( SAGU::isDate($rowExemplo[$n]) )
+                {
+                    $tipoColunas[$n] = "date";
+                }
+                else if ( is_numeric($rowExemplo[$n]) )
+                {
+                    $tipoColunas[$n] = "int4";
+                }
+            }
+            
+            $colunas[] = new MGridColumn($nome, sRelatorioPDF::getColAlign($tipoColunas[$n]), false, null, true, null, true);
+            $nomeColunas[] = $nome;
+        }
+        
+        $grid = new SGrid(null, $colunas, null);
+        
+        /**
+         * Precisa ser sempre as configurações de conexão do módulo basic, 
+         * pois é necessário para a obtenção do usuário atual logado,
+         * para que as visões de multi unidade funcionem corretamente na geração dos relatórios.
+         */
+        $grid->setQuery($sql, 'basic'); 
+        
+        $grid->clearActions();
+        $dadosGrid = $grid->getData();
+        
+        if (count($dadosGrid) == 0)
+        {
+            $this->addError(_M('A busca com os valores selecionados não retornou dados.', $module));
+            
+        }
+        else
+        {
+            // Faz a formatação dos dados
+            // formata valores (caso comecar a ficar muito lento, deve ser feito alternativas,
+            //     como gerar a grid pelo jasperreport ou paginacao (perigoso pois pode quebrar o sql))
+
+            // o if abaixo apesar de deixar o codigo mais duplicado, evita desperdicio de processamento
+            if ( in_array('float8', $tipoColunas) ||
+                 in_array('decimal', $tipoColunas) ||
+                 in_array('numeric', $tipoColunas) ||
+                 in_array('date', $tipoColunas) ||
+                 in_array('timestamp', $tipoColunas) ||
+                 in_array('timestamptz', $tipoColunas) || 
+                 in_array('boolean', $tipoColunas) )
+            {
+                foreach ( (array) $dadosGrid as $k => $row )
+                {
+                    foreach ( $row as $n => $val )
+                    {
+                        if ( in_array($tipoColunas[$n], array('float8', 'decimal', 'numeric')) )
+                        {
+                            $dadosGrid[$k][$n] = number_format($val, 2, ',', '.');
+                        }
+                        else if ( $tipoColunas[$n] == 'date' )
+                        {
+                            //Se nao for data padrao brasileiro tenta formatar por padrao
+                            if ( !SAGU::validaData($val) && strlen($val) > 0 )
+                            {
+                                $dadosGrid[$k][$n] = date('d/m/Y', strtotime($val));
+                            }
+                            else
+                            {
+                                $dadosGrid[$k][$n] = $val;
+                            }
+                        }
+                        else if ( $tipoColunas[$n] == 'timestamptz' || $tipoColunas[$n] == 'timestamp' )
+                        {
+                            $dadosGrid[$k][$n] = date('d/m/Y H:i', strtotime($val));
+                            
+                        }
+                        else if ( $tipoColunas[$n] == 'boolean' )
+                        {
+                            $dadosGrid[$k][$n] == SAGU::getYesNo($val);
+                        }
+                    }
+                }
+            }
+             
+            $grid->data = $dadosGrid;
+            
+            $this->addField($grid);
+            
+        }
+        
+    }
+    
+    private function getRowExemplo( $sql )
+    {
+        if ( stristr($sql, 'limit') === false )
+        {
+            $sql .= " LIMIT 1 ";
+        }
+        
+        $query = SDatabase::query($sql);
+        
+        // Cuidado com o LIMIT 1
+        return $query[0];
+        
+    }
+    
+    /**
+     * Exporta os dados da grid em HTML.
+     */
+    public function exportGridAsHTML_click()
+    {
+        try
+        {
+            $nome = $this->reportData->name;
+            
+            $sql = SExportacaoPDF::filtraSQL($this->queryAtual);
+
+            $exportacao = new SExportacao($nome, SExportacao::TIPO_HTML, $sql);
+            $exportacao->exporta(SExportacao::DISPLAY_BROWSER);
+            
+        }
+        catch(Exception $e)
+        {
+            $this->AddError($e->getMessage());
+            
+        }
+        
+    }
+    
+    /**
+     * Exporta os dados da grid para uma planilha CSV.
+     */
+    public function exportGridAsCSV_click()
+    {
+        try
+        {
+            $nome = $this->reportData->name;
+            
+            $sql = SExportacaoPDF::filtraSQL($this->queryAtual);
+
+            $exportacao = new SExportacao($nome, SExportacao::TIPO_CSV, $sql);
+            $exportacao->exporta();
+            
+        }
+        catch(Exception $e)
+        {
+            $this->AddError($e->getMessage());
+            
+        }
+        
+    }
+    
+    /**
+     * Gera um arquivo PDF com os dados da grid.
+     */
+    public function exportGridAsPDF_click()
+    {
+        try
+        {
+            $nome = $this->reportData->name;
+
+            $sql = $this->queryAtual;
+
+            $dadosRelatorio = new stdClass();
+            $dadosRelatorio->reportData = $this->reportData;
+            $dadosRelatorio->reportInfo = $this->reportInfo;
+            $dadosRelatorio->sintetico = MIOLO::_REQUEST('sintetico') == DB_TRUE;
+
+            $exportacao = new SExportacao($nome, SExportacao::TIPO_PDF, $sql);
+            $exportacao->exporta(SExportacao::DISPLAY_DOWNLOAD, $dadosRelatorio);
+        
+        }
+        catch(Exception $e)
+        {
+            $this->AddError($e->getMessage());
+            
+        }
+        
+    }
+    
+    /**
+     * Gera um arquivo JRXML com os dados da grid.
+     */
+    public function exportGridAsJRXML_click()
+    {
+        try
+        {
+            $nome = $this->reportData->name;
+
+            $sql = $this->queryAtual;
+
+            $dadosRelatorio = new stdClass();
+            $dadosRelatorio->reportData = $this->reportData;
+            $dadosRelatorio->reportInfo = $this->reportInfo;
+            $dadosRelatorio->sintetico = MIOLO::_REQUEST('sintetico') == DB_TRUE;
+
+            $exportacao = new SExportacao($nome, SExportacao::TIPO_JRXML, $sql);
+            $exportacao->exporta(SExportacao::DISPLAY_DOWNLOAD, $dadosRelatorio);
+        
+        }
+        catch(Exception $e)
+        {
+            $this->AddError($e->getMessage());
+            
+        }
+        
+    }
+    
+    /**
+     * Gera um arquivo XLS com os dados da grid.
+     * 
+     */
+    public function exportGridAsXLS_click()
+    {
+        try
+        {
+            $nome = $this->reportData->name;
+
+            $args = $this->getTypesData();
+            $sql = SExportacaoPDF::filtraSQL($this->queryAtual);
+
+            $exportacao = new SExportacao($nome, SExportacao::TIPO_XLS, $sql);
+            $exportacao->exporta(SExportacao::DISPLAY_BROWSER);
+            
+        }
+        catch(Exception $e)
+        {
+            $this->AddError($e->getMessage());
+            
+        }
+       
+    }
+    
+    /**
+     * Ajusta os dados da grid para as exportações.
+     * 
+     * @param obj $grid
+     * @return array
+     */
+    public function getGridData($data, $titles)
+    {        
+        if ( !$data )
+        {
+            return;
+        }
+
+        $titleCount = count($titles);
+        $visibleData = array();
+        foreach ( $data as $line )
+        {            
+            $newLine = array_values(array_slice($line, 0, $titleCount));
+            $visibleData[] = $newLine;
+        }
+
+        $titles = array_values( $titles );
+        return array_merge( array($titles), $visibleData );
+    }
+
+    /**
+     * Method to gather all information from the form fields
+     * and put them on a database compatible object
+     **/
+    public function getTypesData()
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+
+        $fieldValues = $MIOLO->_request('field');
+        
+        if (count($fieldValues) > 0)
+        {
+            foreach ($fieldValues as $argValue)
+            {
+                $args[] = $argValue;
+            }            
+        }
+        
+        //Validar ordem, caso haja
+        if (strlen ($this->reportData->parameterorder) > 0)
+        {
+                $args = $this->validarArgumentosNaOrdem($args);
+        }
+
+        return $args;
+    }
+    
+    /**
+     * Retorna conteudo da grid.
+     *
+     * @return array
+     */
+    public function getGridDataSession()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $gridData = $MIOLO->session->getValue("gridData");
+        $gridColumns = $MIOLO->session->getValue("gridColumns");
+        $data = $this->getGridData($gridData, $gridColumns);
+        
+        return $data;
+    }
+    
+    /*
+     * Faz com que os argumentos trabalhem com a ordem cadastrada.
+     * 
+     * @params array de argumentos
+     * 
+     * @return array dos argumentos com ordem
+     */
+    public function validarArgumentosNaOrdem($params)
+    {
+        $paramOrder = $this->reportData->parameterorder;
+        
+        $order = explode(';', $paramOrder);
+
+        $args = array();
+        
+        foreach ($order as $i => $ord)
+        {
+            foreach ($params as $p => $par)
+            {
+                if ($ord == ($p + 1))
+                {
+                    $args[] = $par;
+                }
+            }
+        }
+        
+        return $args;
+    }
+}
+
+?>

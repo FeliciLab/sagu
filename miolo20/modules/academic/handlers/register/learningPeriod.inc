@@ -1,0 +1,90 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Basic learningPeriod handler.
+ * Contains the menus to access learningPeriod registers
+ *
+ * @author Jamiel Spezia [jamiel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 25/08/2005
+ *
+ **/
+$function = MIOLO::_REQUEST('function');
+$ui = $MIOLO->getUI();
+
+$MIOLO->trace('file:' . $_SERVER['SCRIPT_NAME']);
+$navbar->addOption(_M('Período letivo', $module), $module, $action);
+access::insert('Período letivo', $action, 'default-16x16.png');
+
+if ( (strlen($function) == 0) || ($function == 'search') )
+{
+    $MIOLO->checkAccess('FrmLearningPeriod', A_ACCESS, true, true);
+
+    $content = $ui->getForm($module,'FrmLearningPeriodSearch', $data);
+    $content->setClose($MIOLO->getActionURL($module,substr($home, 0, strrpos($home, ':'))));
+}
+else
+{
+    switch ( $function )
+    {
+        case 'insert':
+            $MIOLO->checkAccess('FrmLearningPeriod', A_INSERT, true, true);
+        break;
+        case 'update':
+            if (strlen(MIOLO::_request('event')) > 0 || $_POST['__EVENTTARGETVALUE'] == 'btnSave:click')
+            {
+                $MIOLO->checkAccess('FrmLearningPeriod', A_UPDATE, true, true);
+            }
+            else
+            {
+                $MIOLO->checkAccess('FrmLearningPeriod', A_ACCESS, true, true);
+            }
+        break;
+        case 'delete':
+            $MIOLO->checkAccess('FrmLearningPeriod', A_DELETE, true, true);
+        break;
+    }
+
+    $i=1;
+    $steps[$i++] = new SStepInfo('FrmLearningPeriodChooser', _M('Escolha do período letivo anterior', $module));
+    $steps[$i++] = new SStepInfo('FrmLearningPeriodGeneralData',  _M('Dados gerais', $module), $module);
+    $steps[$i++] = new SStepInfo('FrmLearningPeriodFrequenceAndNote',  _M('Frequência e notas', $module), $module);
+    $steps[$i++] = new SStepInfo('FrmLearningPeriodLimits',  _M('Limites', $module), $module);
+    $steps[$i++] = new SStepInfo('FrmLearningPeriodFinance',  _M('Financeiro', $module), $module);
+
+    $content = SStepByStepForm::getCurrentForm($steps);
+}
+
+$theme->clearContent();
+$theme->insertContent($content);
+
+?>

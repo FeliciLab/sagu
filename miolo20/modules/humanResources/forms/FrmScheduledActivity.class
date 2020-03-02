@@ -1,0 +1,465 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Jonas Gualberto Diel [jonas_diel@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ *
+ * @since
+ * Class created on 13/06/2011
+ */
+class FrmScheduledActivity extends SManagementForm
+{
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->uses('/ui/controls/msubdetail.class');
+        $module = SAGU::getFileModule(__FILE__);
+
+        parent::__construct(new HurScheduledActivity(), array('scheduledActivityId'), null, _M('Agendar nova atividade', $module));
+    }
+
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+
+        //Habilita a toolbar para o portal
+        if ( SAGU::userIsFromServices() )
+        {
+            //Desabilita botão fechar
+            $this->toolbar->disableButton('tbBtnClose');
+            $this->toolbar->hideButton('tbBtnClose');
+            $this->disableCheckToolbar();
+        }
+        
+        // Permite apenas ao usuário logado alterar dados da atividade
+        $businessPerson = new BusinessBasicBusPhysicalPerson();
+        $user = trim($MIOLO->getLogin()->id);
+        $personData = $businessPerson->getPersonByMioloUserName(trim($MIOLO->getLogin()->id));
+        if ( isset($personData) )
+        {
+            $fields[] = new MTextLabel('user', $personData->personId . ' - ' . $personData->name, _M('Usuário', $module));
+        }
+
+        if ( in_array($function, array( SForm::FUNCTION_UPDATE, SForm::FUNCTION_DELETE )) )
+        {
+            $scheduledActivityId = MIOLO::_REQUEST('scheduledActivityId');
+            $fields[] = new MTextLabel('scheduledActivityId', $scheduledActivityId, _M('Código', $module));
+            $fields[] = new MHiddenField('scheduledActivityId', $scheduledActivityId);
+
+            $data = new HurScheduledActivity($scheduledActivityId);
+
+            // Prepara para popular os campos de data
+            $dateTime = new stdClass();
+            list($dateTime->startDate, $dateTime->startTime) = explode(' ', $data->startDate);
+            list($dateTime->endDate, $dateTime->endTime) = explode(' ', $data->endDate);
+
+            // Limpa subdetail
+            if( MIOLO::_REQUEST('event') != 'tbBtnSave:click' )
+            {
+                MSubdetail::clearData('participants');
+            }
+
+            // Prepara dados para popular a subdetail
+            $arrayParticipants = array();
+            for ( $i = 0; $i < count($data->participants); $i++ )
+            {
+                $dataParticipants = $data->participants[$i];
+                $scheduleActivityParticipant = new stdClass();
+                $scheduleActivityParticipant->personId = $dataParticipants->personId;
+                $subPersonData = $businessPerson->getPhysicalPerson($dataParticipants->personId);
+                $scheduleActivityParticipant->personIdDescription = $subPersonData->name;
+                $arrayParticipants[] = $scheduleActivityParticipant;
+            }
+            $subData = $arrayParticipants;
+
+            // Verifica se a atividade ja foi realizada
+            $filters = new stdClass();
+            $filters->scheduledActivityId = $scheduledActivityId;
+            $realizedActivity = HurRealizedActivity::search($filters);
+
+            if ( strlen($realizedActivity[0]->cancelDate) > 0 )
+            {
+                $this->addAlert(_M('Esta atividade já foi cancelada.', $module));
+                $readOnly = true;
+            }
+            else
+            {
+                if ( count($realizedActivity) > 0 )
+                {
+                    $this->addInfo(_M('Esta atividade já foi realizada.', $module));
+                    $readOnly = true;
+                }
+                else
+                {
+                    if ( SAGU::compareTimestamp($data->startDate, '>', SAGU::getDateNow(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP'))) == false )
+                    {
+                        $this->addInfo(_M('A data inicial prevista para a atividade expirou', $module));
+                        $readOnly = true;
+                    }
+                }
+
+                if ( $data->userName != $user )
+                {
+                    $this->addInfo(_M('Apenas o responsável pela atividade pode efetuar alterações', $module));
+                    $readOnly = true;
+                }
+            }
+
+            // Desabilita os botoes salvar e excluir
+            if( $readOnly )
+            {
+                $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+                $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+            }
+        }
+        // Campo data inicial
+        $fields[] = new SBeginEndPeriod(array(
+                    'data' => $dateTime,
+                    'required' => true,
+                    'baseGroup' => false,
+                    'type' => 'timestamp',
+                    'readOnly' => $readOnly,
+                    'begin' => array(
+                        'dateId' => 'startDate',
+                        'timeId' => 'startTime',
+                        'label' => _M('Data de início', $module),
+                        'dateHint' => _M('Informe a data inicial', $module),
+                        'timeHint' => _M('Informe a hora inicial. Formato: hh:mm', $module) ),
+                    'end' => array(
+                        'dateId' => 'endDate',
+                        'timeId' => 'endTime',
+                        'label' => _M('Data de fim', $module),
+                        'dateHint' => _M('Informe a data de fim', $module),
+                        'timeHint' => _M('Informe a hora de fim. Formato: hh:mm', $module)
+                    ) ));
+        $validators[] = new MDATEDMYValidator('startDate', _M('Data de início', $module), 'required');
+        $validators[] = new MTIMEValidator('startTime', _M('Hora de início', $module), 'required');
+        $validators[] = new MDATEDMYValidator('endDate', _M('Data de fim', $module), 'required');
+        $validators[] = new MTIMEValidator('endTime', _M('Hora de fim', $module), 'required');
+
+        // Seleciona o tipo de atividade
+        $activityType = new MSelection('activityTypeId', $data->activityTypeId, _M('Tipo de atividade', $module), HurActivityType::listActivityType());
+        $activityType->setReadOnly($readOnly);
+        $fields[] = $activityType;
+        $validators[] = new MRequiredValidator('activityTypeId', _M('Tipo', $module));
+
+        $fields[] = $description = new MMultiLineField('description', $data->description, _M('Informe o Curso e/ou Colegiado e/ou Título da Atividade e Pauta', $module), null, SAGU::getParameter('BASIC', 'FIELD_MULTILINE_NUM_ROWS'), SAGU::getParameter('BASIC', 'FIELD_MULTILINE_NUM_COLS'));
+        $description->setReadOnly($readOnly);
+        $validators[] = new MRequiredValidator('description', _M('Informe o Curso e/ou Colegiado e/ou Título da Atividade e Pauta', $module));
+
+        // Campo disponível
+        $isInternalLabel = new MText('isInternalLabel', _M('Ocorre', $module) . ':');
+        $isInternalLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $isInternalLabel->setClass('m-caption m-caption-required');
+
+        if ( $readOnly )
+        {
+            $isInternalOptions[DB_TRUE] = _M('Na instituição', $module);
+            $isInternalOptions[DB_FALSE] = _M('Fora da instituição', $module);
+            $isInternal = new MText('isInternalFieldLabel', $isInternalOptions[$data->isInternal]);
+        }
+        else
+        {
+            $isInternalOptions = array( array( _M('Na instituição', $module), DB_TRUE ), array( _M('Fora da instituição', $module), DB_FALSE ) );
+            $isInternal = new MRadioButtonGroup('isInternal', $data->isInternal, $isInternalOptions, DB_TRUE, null, 'vertical');
+        }
+        $hctIsInternal = new MHContainer('hctIsInternalS', array( $isInternalLabel, $isInternal ));
+        $hctIsInternal->setShowLabel(false);
+        $fields[] = $hctIsInternal;
+
+        // Campo local
+        $fields[] = $location = new MMultiLineField('location', $data->location, _M('Local', $module), null, SAGU::getParameter('BASIC', 'FIELD_MULTILINE_NUM_ROWS'), SAGU::getParameter('BASIC', 'FIELD_MULTILINE_NUM_COLS'));
+        $location->setReadOnly($readOnly);
+        $validators[] = new MRequiredValidator('location', _M('Local', $module));
+
+        $fields[] = new MSeparator();
+
+        // Subdetail/tableRaw
+        if ( $readOnly )
+        {
+            $rows = array();
+            foreach ( (array) $subData as $row )
+            {
+                $rows[] = array(
+                    $row->personId,
+                    $row->personIdDescription);
+            }
+
+            $colTitle = array(
+                _M('Código', $module),
+                _M('Nome', $module));
+
+            $fields[] = $table = new MTableRaw(_M('Inserir participantes convidados', $module), $rows, $colTitle);
+        }
+        else
+        {
+            // Subdetail fields
+            $options = array(
+            'label' => _M('Pessoa', $module).'<font color="C00000">*</font>',
+            'module' => 'basic',
+            'item' => 'Persons',
+            'related' => 'personIdDescription',
+            'hint' => _M('Informe o código da pessoa', $module),
+            'descriptionHint' => _M('Nome da pessoa', $module),            
+            );
+            $subFields[] = $sPessoa = new SLookupContainer('personId', NULL, $options);
+            $subValidators[] = new MIntegerValidator('personId', _M('Pessoa', $module));
+            $subValidators[] = new MSubDetailUniqueValidator('personId', _M('Pessoa', $module), 'required');
+          
+            // Subdetail Columns
+            $subColumns[] = new sSubDetailColumn('personId', array( 'label' => _M('Código', $module) ));
+            $subColumns[] = new sSubDetailColumn('personIdDescription', array( 'label' => _M('Nome', $module) ));
+
+            // Subdetail
+            $fields[] = $sub = new MSubdetail('participants', _M('Definir participantes convidados'), $subColumns, $subFields);
+            $sub->setValidators($subValidators);
+            if ( count($subData) > 0 && MIOLO::_REQUEST('event') != 'tbBtnSave:click' )
+            {
+                $sub->setData($subData);
+            }
+        }
+
+        // Adiciona o usuário logado na subdetail juntamente com seus subordinados caso existam
+        if ( in_array($function, array( SForm::FUNCTION_INSERT )) && MIOLO::_REQUEST('event') != 'tbBtnSave:click' )
+        {
+            // Limpa subdetail
+            MSubdetail::clearData('participants');
+            if ( isset($personData) )
+            {
+                $searchSubordinates = $businessPerson->searchSubordinates($personData->personId);
+
+                $found = false;
+                for ( $i = 0; $i < count($searchSubordinates) && !$found; $i++ )
+                {
+                    if ( $searchSubordinates[$i][0] == $personData->personId )
+                    {
+                        $found = true;
+                    }
+                }
+
+                if ( !$found )
+                {
+                    $searchSubordinates[] = array( $personData->personId, $personData->name );
+                }
+
+                if ( count($searchSubordinates) > 0 )
+                {
+                    foreach ( $searchSubordinates as $cod => $linha )
+                    {
+                        $obj[$cod] = new stdClass();
+                        $obj[$cod]->personId = $linha[0];
+                        $obj[$cod]->personIdDescription = $linha[1];
+                    }
+                }
+
+                $sub->setData($obj);
+            }
+        }
+        
+        if ( SAGU::userIsFromServices() )
+        {
+            $fields[] = new MButton('tbBtnBack', '<< ' . _M('Voltar', $module), $MIOLO->getActionURL('services', 'main:scheduledActivity', null, $opts));
+        }
+
+        parent::defineFields($fields, $validators, $data);
+    }
+
+    public function getTypesData()
+    {
+        $data = $this->getData();
+        $data->scheduledActivityId = $this->getFormValue('scheduledActivityId', MIOLO::_REQUEST('scheduledActivityId'));
+        $data->startDate = $this->getFormValue('startDate', MIOLO::_REQUEST('startDate')) . ' ' . $this->getFormValue('startTime', MIOLO::_REQUEST('startTime'));
+        $data->endDate = $this->getFormValue('endDate', MIOLO::_REQUEST('endDate')) . ' ' . $this->getFormValue('endTime', MIOLO::_REQUEST('endTime'));
+        $data->activityTypeId = $this->getFormValue('activityTypeId', MIOLO::_REQUEST('activityTypeId'));
+        $data->description = $this->getFormValue('description', MIOLO::_REQUEST('description'));
+        $data->isInternal = $this->getFormValue('isInternal', MIOLO::_REQUEST('isInternal'));
+        $data->location = $this->getFormValue('location', MIOLO::_REQUEST('location'));
+
+        return $data;
+    }
+
+    /**
+     * Valida as informações e salva os dados inserindo ou editando
+     * @param type $sender
+     */
+    public function tbBtnSave_click($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        /*
+         * Manter "MIOLO::getCurrentModule()" para nao "estragar" no portal!
+         */
+        $module = MIOLO::getCurrentModule();
+        $function = MIOLO::_REQUEST('function');
+        $data = $this->getTypesData();
+
+        try
+        {
+            if ( !(strlen($data->isInternal) > 0) )
+            {
+                throw (_M('Selecione se a atividade é interna ou externa', $module));
+            }
+            else
+            {
+                $scheduleActivity = new HurScheduledActivity();
+                $scheduleActivity->scheduledActivityId = $data->scheduledActivityId;
+                $scheduleActivity->startDate = $data->startDate;
+                $scheduleActivity->endDate = $data->endDate;
+                $scheduleActivity->activityTypeId = $data->activityTypeId;
+                $scheduleActivity->description = $data->description;
+                $scheduleActivity->isInternal = $data->isInternal;
+                $scheduleActivity->location = $data->location;
+
+                $arrayParticipants = array();
+
+                for ( $i = 0; $i < count($data->participants); $i++ )
+                {
+                    if ( $data->participants[$i]->removeData != true )
+                    {
+                        $scheduleActivityParticipant = new HurScheduledActivityParticipant();
+                        $scheduleActivityParticipant->personId = $data->participants[$i]->personId;
+                        $scheduleActivityParticipant->scheduledActivityId = $data->scheduledActivityId;
+                        $arrayParticipants[] = $scheduleActivityParticipant;
+                    }
+                }
+                $scheduleActivity->participants = $arrayParticipants;
+                $return = $scheduleActivity->save();
+
+                // Enviar e-mail para os participantes informando alterações
+                if ( $return )
+                {
+                    $emailId = SAGU::getParameter('HUMAN_RESOURCES','SCHEDULE_ACTIVITY_EMAIL_ID');
+                    if ( $emailId != 0 )
+                    {
+                        $busPerson = new BusinessBasicBusPhysicalPerson();
+                        $busCourseCoordinator = new BusinessAcademicBusCourseCoordinator();
+
+                        // Cria array com e-mail dos participantes
+                        for ( $i = 0; $i < count($arrayParticipants); $i++ )
+                        {
+                            if ( $busCourseCoordinator->isCourseCoordinator($arrayParticipants[$i]->personId) )
+                            {
+                                $preferencias = $busCourseCoordinator->obterPreferenciasDoCoordenador($arrayParticipants[$i]->personId);
+                                if ( $preferencias[1] == DB_TRUE )
+                                {
+                                    $person = $busPerson->getPhysicalPerson($arrayParticipants[$i]->personId);
+                                    $email[$i]['name'] = $person->name;
+                                    $email[$i]['email'] = $person->email;
+                                }
+                            }
+                            else
+                            {
+                                $person = $busPerson->getPhysicalPerson($arrayParticipants[$i]->personId);
+                                $email[$i]['name'] = $person->name;
+                                $email[$i]['email'] = $person->email;
+                            }
+                        }
+                        foreach ( $this->pkey as $field )
+                        {
+                            $opts[$field . 'S'] = $this->$field->value;
+                        }
+
+                        /**
+                         * Envia email
+                         */
+                        if ( count($email) > 0 )
+                        {
+                            $send = true;
+                            for ( $i = 0; $i < count($email); $i++ )
+                            {
+                                $tags = array( '$TYPE' => $scheduleActivity->activityType->description,
+                                               '$DESCRIPTION' => $scheduleActivity->description,
+                                               '$STARTDATE' => $scheduleActivity->startDate,
+                                               '$ENDDATE' => $scheduleActivity->endDate,
+                                               '$ISINTERNAL' => ( $scheduleActivity->isInternal == DB_TRUE ? _M('Na instituição', $module) : _M('Fora da instituição', $module) ));
+
+                                // Business email and company
+                                $busEmail = new BusinessBasicBusEmail();
+                                $busCompany = new BusinessBasicBusCompany();
+
+                                $dataEmail = $busEmail->getEmail($emailId);
+                                $dataCompany = $busCompany->getCompany(SAGU::getParameter('BASIC', 'DEFAULT_COMPANY_CONF'));
+
+                                // Parameters
+                                $from = strtolower($dataEmail->from);
+                                $fromName = $dataCompany->acronym;
+                                $recipient[$email[$i]['name']] = strtolower($email[$i]['email']);
+                                $prefix = ($function == SForm::FUNCTION_INSERT) ? _M('(Nova)', $module) : _M('(Reagendado)', $module);
+                                $subject = $prefix . ' ' . $dataEmail->subject;
+                                $body = strtr($dataEmail->body, $tags);
+
+                                $mail = new sendEmail($from, $fromName, $recipient, $subject, $body, array());
+
+                                if ( ! $mail->sendEmail() )
+                                {
+                                    $send = false;
+                                }
+                            }
+                            if ( $send )
+                            {
+                                $msg[] = _M('Um e-mail foi enviado aos participantes da atividade', $module);
+                            }
+                            else
+                            {
+                                $msg[] = _M('Erro com o servidor de email. Entre em contato com o responsável pelo sistema para resolver o problema', $module).'.';
+                            }
+                        }
+                        $msg[] = ($function == SForm::FUNCTION_UPDATE) ? SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED') : SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED');
+                        if ( $function == SForm::FUNCTION_UPDATE )
+                        {
+                            $caption = _M('Informação', $module);
+                            SAGU::information($msg, $MIOLO->getActionURL($module, $action, null, $opts));
+                        }
+                        else
+                        {
+                            unset($opts);
+                            $goto = SAGU::getStackBackUrl();
+                            $goto = strlen($goto) > 0 ? $goto : $MIOLO->getActionURL($module, $action, null, $opts);
+                            $opts = array('function' => SForm::FUNCTION_INSERT);
+
+                            $gotoYes = $MIOLO->getActionURL($module, $action, null, $opts);
+                            $caption = _M('Questão', $module);
+                            SAGU::question($msg, $gotoYes, $goto);
+                        }
+                    }
+                    else
+                    {
+                        parent::confirmInsertUpdate($return);
+                    }
+                }
+            }
+        }
+        catch ( Exception $e )
+        {
+            $this->addError($e->getMessage());
+        }
+    }
+}
+?>

@@ -1,0 +1,215 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Gerencia importacao de atividades complementares para o SAGU
+ *
+ * @author Bruno E. Fuhr[bruno@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * @since
+ * Class created on 05/09/2014
+ *
+ **/
+class sCSVAtividadeComplementar extends sCSVFileImporter
+{
+    public function getTitle()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+        return _M('Atividades Complementares', $module);
+    }
+    
+    public function __construct()
+    {
+        $typeDefs = array('name', 'label', 'isRequired', 'type', 'replaceVars' );
+        $defs = array(
+            
+            // Identificação do aluno
+            array( 'cpf', _M('Identificador (CPF)'), true ),
+            array( 'curso', _M('Cod. do curso'), true ),
+            array( 'versao', _M('Versao'), true ),
+            array( 'turno', _M('Turno'), true ),
+            array( 'campus', _M('Campus'), true ),
+            array( 'periodo', _M('Periodo'), true ),
+            array( 'datainicio', _M('Data de início do semestre'), false ),
+            array( 'datafim', _M('Data de término do semestre'), false ),
+            
+            // Dados da disciplina oferecida
+            array( 'codigodisciplina', _M('Cod. disciplina'), true ),
+            array( 'versaodisciplina', _M('Versão da disciplina de atividade complementar que o aluno cursou'), true ),
+            array( 'nometurma', _M('Turma'), true ),
+            
+            // Dados da atividade complementar
+            array( 'descricao', _M('Descrição da atividade complementar'), true ),
+            array( 'totalhoras', _M('Total de horas'), true ),
+            array( 'totalcreditos', _M('Total de créditos'), true ),
+            array( 'nota', _M('Nota'), false ),
+            array( 'conceito', _M('Conceito'), false ),
+            array( 'categoria', _M('Conceito'), true )
+        );
+        
+        $this->setColumnsArray($typeDefs, $defs);
+        
+        parent::__construct();
+    }
+    
+    public function importLine2($data)
+    {
+        $personId = $this->obterPersonId($data->cpf);
+        
+        if ( strlen($personId) == 0 )
+        {
+            throw new Exception(_M("Não foi encontrada nenhuma pessoa com o identificador '{$data->cpf}'."));
+        }
+        else
+        {
+            // Obter learningPeriod
+            $courseId = $data->curso;
+            $courseVersion = $data->versao;
+            $unitId = $this->obterUnidade($data->campus);
+            $turnId = $this->obterTurno($data->turno);
+            $periodId = $this->obterPeriodo($data->periodo);
+            
+            $contractId = $this->obterContratoDaPessoa($personId, $courseId, $courseVersion, $turnId, $unitId);
+            
+            $learningPeriodId = $this->obterPeriodoLetivo($periodId, $courseId, $courseVersion, $turnId, $unitId, $data->datainicio, $data->datafim);            
+            
+            if ( strlen($learningPeriodId) == 0 )
+            {
+                if ( strlen($data->datainicio) == 0 || strlen($data->datafim) == 0 )
+                {
+                    throw new Exception(_M("Não foi encontrado um período letivo. Por favor, inform a data de início e fim do período."));
+                }
+                
+                // Insere período letivo caso não exista
+                $busLP = new BusinessAcademicBusLearningPeriod;
+                $lpData = new stdClass();
+                $lpData->periodId = $periodId;
+                $lpData->courseId = $courseId;
+                $lpData->courseVersion = $courseVersion;
+                $lpData->unitId = $unitId;
+                $lpData->turnId = $turnId;
+                $lpData->description = 'PL ' . $periodId . ' - ' . $courseId . '/' . $courseVersion;
+                $lpData->formationLevelId = 1;
+                $lpData->beginDate = $data->datainicio;
+                $lpData->endDate = $data->fim;
+                $lpData->finalAverage = 0;
+                $lpData->minimumFrequency = 0;
+                $lpData->minimumCredits = 0;
+                $lpData->minimumCreditsFreshman = 0;
+                $lpData->minimumCreditsTurn = 0;
+                $learningPeriodId = $busLP->insertLearningPeriod($lpData);
+            }
+            
+            $learningPeriod = $this->busLearningPeriod->getLearningPeriod($learningPeriodId);
+            $data->datainicio = $learningPeriod->beginDate;
+            $data->datafim = $learningPeriod->endDate;
+
+            //Componente curricular que o aluno cursou
+            $curriculumId = $this->obterMatrizCurricularDeDisciplina($data->codigodisciplina, $data->versaodisciplina, $courseId, $courseVersion, $unitId, $turnId);
+            if ( strlen($curriculumId) == 0 )
+            {
+                throw new Exception(_M("Não foi encontrado nenhum componente curricular com os dados informados (Cód. Disciplina: '{$data->codigodisciplina}', Versão Disciplina: '{$data->versaodisciplina}', Curso: '{$courseId}', Versão: '{$courseVersion}', Turno: '{$turnId}', Unidade: '{$unitId}')."));
+            }
+
+            $groupId = $this->obterDisciplinaOferecida($learningPeriodId, $curriculumId, $data->nometurma, 'a' );
+            if ( strlen($groupId) == 0 )
+            {
+                $busGroup = new BusinessAcademicBusGroup();
+
+                // Insere disciplina oferecida caso não exista
+                $groupData = new stdClass();
+                $groupData->learningPeriodId = $learningPeriodId;
+                $groupData->unitId = $unitId;
+                $groupData->curriculumId = $curriculumId;                    
+                $groupData->classId = $data->nometurma;
+
+                // Valores HARDCODE de acordo com a função obterDisciplinaOferecida.
+                $groupData->regimenId = 1;
+                $groupData->evaluationTypeId = 4;
+                $groupData->financeCredits = 10;
+                $groupData->useConcept = DB_FALSE;
+                $groupData->vacant = 9999;
+
+                $groupId = $busGroup->insertGroup($groupData);
+            }
+
+            $busEnroll = new BusinessAcademicBusEnroll();
+            
+            $enrollData = new stdClass();
+            $enrollData->contractId = $contractId;
+            $enrollData->groupId = $groupId;
+            
+            $enroll = $busEnroll->searchEnroll($enrollData);
+            $enrollId = $enroll[0][0];
+            if ( strlen($enrollId) == 0 )
+            {
+                // Insere matricula caso não exista, se já existir apenas insere a atividade complementar relacionada a matrícula
+                $enrollData->learningPeriodId = $learningPeriodId;
+                $enrollData->forceStatusId = SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPROVED');
+                unset($enrollData->groupId);
+                $enrollData->groupId = array($groupId => $curriculumId);
+                
+                $enrollId = $busEnroll->insertNewEnroll($enrollData, true, false, false, false);                
+                if ( strlen($enrollId) == 0 )
+                {
+                    throw new Exception("Não foi possível efetuar a matrícula.");
+                }
+            }
+            
+            $busComplementaryActivitiesCategory = new BusinessAcademicBusComplementaryActivitiesCategory();
+            
+            // Caso a categoria de atividade complementar informada não exista deve ser inserida.
+            $categoryData = new stdClass();
+            $categoryData->description = $this->fixValue($data->categoria);
+            
+            $category = $busComplementaryActivitiesCategory->searchComplementaryActivitiesCategory($categoryData);
+            $categoryId = $category[0][0];
+            if ( strlen($categoryId) == 0 )
+            {
+                if ( $busComplementaryActivitiesCategory->insertComplementaryActivitiesCategory($categoryData) )
+                {
+                    $category = $busComplementaryActivitiesCategory->searchComplementaryActivitiesCategory($categoryData);
+                    $categoryId = $category[0][0];
+                }
+            }
+            
+            if ( strlen($enrollId) > 0 )
+            {
+                // Inserir a atividade complementar.
+                $activityData = new stdClass();
+                $activityData->enrollId = $enrollId;
+                $activityData->description = $data->descricao;
+                $activityData->totalHours = $data->totalhoras;
+                $activityData->totalCredits = $data->totalcreditos;
+                $activityData->degree = str_replace(',', '.', $data->nota);
+                $activityData->concept = $data->conceito;
+                $activityData->periodId = $periodId;
+                $activityData->complementaryActivitiesCategoryId = $categoryId;
+
+                $busComplementaryActivities = new BusinessAcademicBusComplementaryActivities();
+                $busComplementaryActivities->insertComplementaryActivities($activityData);
+            }
+        }
+        
+    }
+}
+?>

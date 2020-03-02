@@ -1,0 +1,335 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Nataniel I. da Silva [nataniel@solis.com.br]
+ *
+ * @since
+ * Class created on 03/11/2014
+ *
+ **/
+
+class MedTurma extends SType
+{
+    const TCR_POR_NOTA = 'N';
+    const TCR_POR_CONCEITO = 'C';
+
+    protected $_utilizaNovoPadrao = true;
+
+    protected $_tableName = 'med.turma';
+
+    /**
+     * @var type integer
+     */
+    public $turmaId;
+
+    /**
+     * @var type varchar
+     */
+    public $codigoTurma;
+
+    /**
+     * @var type integer
+     */
+    public $enfaseId;
+
+    /**
+     * @var type integer
+     */
+    public $nucleoProfissionalId;
+
+    /**
+     * @var type varchar
+     */
+    public $descricao;
+
+    /**
+     * @var type date
+     */
+    public $dataInicio;
+
+    /**
+     * @var type date
+     */
+    public $dataFim;
+
+    /**
+     * @var type integer
+     */
+    public $quantidadePeriodo;
+
+    /**
+     * @var type integer
+     */
+    public $vagas;
+
+    /**
+     * @var type char(1)
+     */
+    public $tipoAvaliacaoTCR;
+
+    /**
+     * @AssociationType MedTurmaResponsavel
+     */
+    protected $responsaveis = null;
+
+
+    public function  __get($name)
+    {
+        if ( $name == 'responsaveis' )
+        {
+            if ( is_null($this->responsaveis) && (strlen($this->turmaId) > 0) )
+            {
+                $filters = new stdClass();
+                $filters->turmaId = $this->turmaId;
+                $this->responsaveis = MedTurmaResponsavel::search($filters);
+            }
+        }
+
+        return parent::__get($name);
+    }
+
+    /**
+     * Lista o tipo de períodos
+     *
+     * @return type
+     */
+    public static function listPeriods()
+    {
+        $module = MIOLO::getCurrentModule();
+
+        $sql = " SELECT anosDeDuracao
+                   FROM med.Periodo";
+
+        $result = SDatabase::query($sql);
+
+        $periodos = array();
+        foreach ($result as $p)
+        {
+            if ($p[0] == '1' )
+            {
+                $periodos[$p[0]] = _M('1 ano', $module);
+            }
+            else
+            {
+                $periodos[$p[0]] = _M('@1 anos', $module, $p[0]);
+            }
+        }
+
+        return $periodos;
+    }
+
+    /**
+     * Lista o tipo de avaliação para o trabalho de conclusão do resisdente (TCR)
+     *
+     * @return type
+     */
+    public static function listTipoAvaliacao()
+    {
+        $module = MIOLO::getCurrentModule();
+
+        return array(MedTurma::TCR_POR_CONCEITO => _M('Conceito', $module), MedTurma::TCR_POR_NOTA => _M('Nota', $module));
+    }
+
+    public function beforeFind(MSQL $sql)
+    {
+        $sql->setColumns( 'a.descricao as descricaonucleo, (SELECT AA.descricao FROM med.enfase AA WHERE AA.enfaseid = medturma.enfaseid ) as descricaoenfase, COALESCE((SELECT COUNT(*) FROM med.residente aa WHERE aa.turmaid = medturma.turmaid),0) as vagasocupada' );
+        $sql->setColumns( ' medturma.datafim < now()::date as finalizada ');
+        $sql->addLeftJoin('med.nucleoprofissional a', 'medturma.nucleoprofissionalid = a.nucleoprofissionalid');
+
+        $usuario = MedTurma::retornaAdminDaTurmaResidenciaMedica();
+        if ( $usuario )
+        {
+            $sql->addLeftJoin('med.turmaresponsavel C', 'medturma.turmaid = C.turmaid');
+            $sql->addWhereIn('C.responsavel', array($usuario));
+        }
+
+        $sql->setOrderBy('medturma.turmaid');
+    }
+
+    public static function obtemTurma($turmaId)
+    {
+        $resTurma = new MedTurma();
+        $sql = $resTurma->msql();
+        $sql->addEqualCondition('medturma.turmaid', $turmaId);
+
+        return $resTurma->findOne($sql);
+    }
+
+    public function save()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        if ( strlen($this->turmaId)  ==  0 )
+        {
+            $retVal = $this->insert();
+        }
+        else
+        {
+            $retVal = $this->update();
+        }
+
+        foreach ( (array)$this->responsaveis as $responsavel )
+        {
+            $responsavel->turmaId = $this->turmaId;
+            $ok = $responsavel->save();
+
+            if ( !$ok )
+            {
+                $msg = _M('Erro ao salvar os responsáveis', $module);
+                throw new Exception($msg);
+            }
+        }
+
+        return $retVal;
+    }
+
+    private function insert()
+    {
+        $sqlPK = "SELECT nextval('seq_medturma_turmaid'::regclass)";
+        $result = SDatabase::query($sqlPK);
+        $turmaId = $result[0][0];
+
+        $sql = 'INSERT INTO med.turma
+                            (turmaid,
+                             codigoturma,
+                             enfaseid,
+                             nucleoprofissionalid,
+                             descricao,
+                             datainicio,
+                             datafim,
+                             quantidadeperiodo,
+                             vagas,
+                             tipoavaliacaotcr)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)';
+
+        $params = array();
+        $params[] = $turmaId;
+        $params[] = $this->codigoTurma;
+        $params[] = $this->enfaseId;
+        $params[] = $this->nucleoProfissionalId;
+        $params[] = $this->descricao;
+        $params[] = $this->dataInicio;
+        $params[] = $this->dataFim;
+        $params[] = $this->quantidadePeriodo;
+        $params[] = $this->vagas;
+        $params[] = $this->tipoAvaliacaoTCR;
+
+        $result = SDatabase::execute($sql, $params);
+
+        if ( $result )
+        {
+            $this->turmaId = $turmaId;
+        }
+
+        return $result;
+    }
+
+    private function update()
+    {
+        $sql = 'UPDATE med.turma
+                   SET codigoturma = ?,
+                       enfaseid = ?,
+                       nucleoprofissionalid = ?,
+                       descricao = ?,
+                       datainicio = ?,
+                       datafim = ?,
+                       quantidadeperiodo = ?,
+                       vagas = ?,
+                       tipoavaliacaotcr = ?
+                 WHERE turmaid = ?';
+
+        $params = array();
+        $params[] = $this->codigoTurma;
+        $params[] = $this->enfaseId;
+        $params[] = $this->nucleoProfissionalId;
+        $params[] = $this->descricao;
+        $params[] = $this->dataInicio;
+        $params[] = $this->dataFim;
+        $params[] = $this->quantidadePeriodo;
+        $params[] = $this->vagas;
+        $params[] = $this->tipoAvaliacaoTCR;
+        $params[] = $this->turmaId;
+
+        return SDatabase::execute($sql, $params);
+    }
+
+    public function delete()
+    {
+
+        $this->__get('responsaveis');
+
+        if ( strlen($this->turmaId)  ==  0 )
+        {
+            throw new Exception(_M('Não é possível excluir um registro que ainda não foi salvo.'));
+        }
+
+
+        foreach ( (array)$this->responsaveis as $responsavel )
+        {
+            $ok = $responsavel->delete();
+            if ( !$ok )
+            {
+                $msg = _M('Erro ao excluir os responsaveis da turma');
+                throw new Exception($msg);
+            }
+        }
+
+        $sql = 'DELETE FROM med.turma
+                      WHERE turmaid = ?';
+
+        $params = array($this->turmaId);
+        $result = SDatabase::execute($sql, $params);
+
+        if ( $result )
+        {
+            $this->turmaId = null;
+        }
+
+        return $result;
+    }
+
+
+    public static function retornaAdminDaTurmaResidenciaMedica()
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $mioloUserName = trim($MIOLO->getLogin()->id);
+        $busPerson = new BusinessBasicBusPerson();
+        $personData = $busPerson->getPersonByMioloUserName($mioloUserName);
+
+
+        $sql = "SELECT COUNT(A.turmaid) > 0
+                    FROM med.turma A INNER JOIN med.turmaresponsavel B 
+                    ON A.turmaid = B.turmaid
+                   WHERE B.responsavel = ?";
+
+        $result = SDatabase::query($sql, array($personData->personId));
+
+        if ($result[0][0] == DB_TRUE) {
+            return $personData->personId;
+        } else {
+            return 0;
+        }
+    }
+}
+

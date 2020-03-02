@@ -1,0 +1,566 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file handles the connection and actions for finSpecies table
+ *
+ * @author William Prigol Lopes [william@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ *
+ * @since
+ * Class created on 20/12/2005
+ *
+ **/
+
+/**
+ * Class to manipulate the finSpecies table
+ **/
+class BusinessFinanceBusRemittanceInvoice748 extends sBusiness
+{
+   /**
+    * Get the company information needed for invoices
+    *
+    * @param: $companyId (int): Object containing the company identification
+    *
+    * @return: Return an object with information.
+    *
+    */
+    function getCompanyData($companyId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $sql = ' SELECT personId,
+                        name
+                   FROM basCompanyConf
+                  WHERE companyId = ? ';
+
+        $args = array($companyId);
+        $ret  = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        $return->personId = $ret[0][0];
+        $return->name     = $ret[0][1];
+        return $return;
+    }
+
+   /**
+    * Bank account information
+    *
+    * @param $bankAccountId (int): Primary key for bank account information
+    *
+    * @return: Return the bank account information
+    *
+    */
+    public function getBankAccountData($bankAccountId)
+    {
+        $sql = ' SELECT transferorCode
+                   FROM finBankAccountInvoiceInfo
+                  WHERE bankAccountId = ? ';
+
+        $args = array($bankAccountId);
+        $ret  = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        $return->transferorCode = $ret[0][0];
+        return $return;
+    }
+
+   /**
+    *
+    * @author: William Prigol Lopes [william@solis.coop.br]
+    *
+    * @param: $data (object): object containing data to begin a process for titles
+    *
+    * @return (boolean): true if succeed, otherwise false
+    *
+    */
+    public function listReceivableInvoiceToBankRemittance($data)
+    {
+              $sql =' SELECT A.invoiceId,
+                             A.personId,
+                             A.incomeSourceId,
+                             \'limbo_ocorrencia\',
+                             TO_CHAR(A.maturityDate, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\'),
+                             TRIM(TO_CHAR((A.value*100), \'000000000000\')),
+                             \'limbo_aceite\',
+                             B.cityId,
+                             balance(A.invoiceId),
+                             B.square,
+                             TO_CHAR(A.emissionDate, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\'),
+                             A.bankInvoiceId,
+                             D.collectionTypeId,
+                             D.finePercent,
+                             D.monthlyInterestPercent,
+                             D.discountPercent, 
+                             D.daysToFine,
+                             (SELECT description 
+                                FROM finCollectionType
+                               WHERE finCollectionType.collectionTypeId = D.collectionTypeId),
+                             D.daysToProtest,
+                             A.value
+                   FROM ONLY finReceivableInvoice A
+                  INNER JOIN (SELECT personId,
+                                     basPerson.cityId,
+                                     square,
+                                     dateDeath
+                           FROM ONLY basPerson
+                           LEFT JOIN basCitySquare
+                                  ON (basPerson.cityId = basCitySquare.cityId)
+                      LEFT JOIN ONLY basPhysicalPerson
+                               USING (personId)) AS B
+                       USING (personId)
+                  INNER JOIN finPolicy D
+                       USING (policyId)
+                       WHERE A.maturityDate
+                     BETWEEN TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')
+                         AND TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')
+                         AND automaticDebit = \''.DB_FALSE.'\'
+                         AND balance(A.invoiceId) > '.SAGU::getParameter('BASIC', 'MINIMAL_VALUE_TO_PRINT_INVOICE').'
+                         AND bankAccountId = ?
+                         AND B.dateDeath IS NULL  ';
+
+        $db = $this->getDatabase();
+
+        $args = array( $data->initialMaturityDate,
+                       $data->finalMaturityDate,
+                       $data->bankAccountId );
+
+        if ( (strlen($data->initialEmissionDate)>0) && (strlen($data->finalEmissionDate)>0) )
+        {
+            $args[] = $data->initialEmissionDate;
+            $args[] = $data->finalEmissionDate;
+
+            $sql.= '     AND A.emissionDate
+                     BETWEEN to_date(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE') .'\')
+                         AND to_date(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE') .'\') ';
+        }
+
+        if ($data->resendInvoices == 'f')
+        {
+            $sql.= ' AND A.bankInvoiceId IS NULL ';
+        }
+
+        if (is_array($data->incomeSourceId))
+        {
+            $sql.=' AND A.incomeSourceId IN ('.implode(',', $data->incomeSourceId).') ';
+        }
+        if (is_array($data->policyId))
+        {
+            $sql.=' AND A.policyId IN ('.implode(',', $data->policyId).') ';
+        }
+
+        // TEST
+        $sql.= ' limit 600';
+        $return = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        return $return;
+    }
+
+    /**
+     * Return a specific record from the database
+     *
+     * @param $personId (integer): Primary key of the record to be retrieved
+     *
+     * @return (object): Return an object of the type handled by the classlimit 100
+     *
+     */
+    public function getPerson($personId)
+    {
+
+        $sql = 'SELECT A.personId,
+                       A.personDv,
+                       A.personMask,
+                       A.name,
+                       A.shortName,
+                       A.cityId,
+                       B.name,
+                       A.zipCode,
+                       A.location,
+                       A.locationTypeId,
+                       A.complement,
+                       A.neighborhood,
+                       A.email,
+                       A.emailAlternative,
+                       A.url,
+                       TO_CHAR(A.dateIn,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       A.password,
+                       A.isAllowPersonalData,
+                       A.userName,
+                       TO_CHAR(A.dateTime,\'' . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . '\'),
+                       A.ipAddress,
+                       A.number,
+                       B.stateId
+             FROM ONLY basPerson A
+             LEFT JOIN basCity B
+                    ON ( A.cityId = B.cityId )
+                 WHERE A.personId = ?';
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $personId));
+
+        $person = new basPerson();
+        list ( $person->personId,
+               $person->personDv,
+               $person->personMask,
+               $person->name,
+               $person->shortName,
+               $person->cityId,
+               $person->cityName,
+               $person->zipCode,
+               $person->location,
+               $person->locationTypeId,
+               $person->complement,
+               $person->neighborhood,
+               $person->email,
+               $person->emailAlternative,
+               $person->url,
+               $person->dateIn,
+               $person->password,
+               $person->isAllowPersonalData,
+               $person->userName,
+               $person->dateTime,
+               $person->ipAddress,
+               $person->number,
+               $person->stateId ) = $result[0];
+
+        return $person;
+    }
+
+    /**
+     * Return a specific record from the database
+     *
+     * @param $personId (integer): Primary key of the record to be retrieved
+     *
+     * @return (object): Return an object of the type handled by the class
+     *
+     */
+    public function getLegalPerson($personId)
+    {
+        //get the basPerson data
+        $person = $this->getPerson($personId);
+        //get the basLegalPerson data
+        $sql = 'SELECT A.fakeName,
+                       A.name,
+                       A.cnpj,
+                       A.stateRegistration,
+                       A.cityRegistration,
+                       A.legalPersonTypeId,
+                       B.description,
+                       A.phone,
+                       A.fax
+             FROM ONLY basLegalPerson A
+             LEFT JOIN basLegalPersonType B
+                 USING ( legalPersonTypeId )
+                 WHERE A.personId = ?';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $personId));
+
+        if ( count($result) == 0 )
+        {
+            return null;
+        }
+
+        $legalPerson = new basLegalPerson();
+        list ( $legalPerson->fakeName,
+               $legalPerson->name,
+               $legalPerson->cnpj,
+               $legalPerson->stateRegistration,
+               $legalPerson->cityRegistration,
+               $legalPerson->legalPersonTypeId,
+               $legalPerson->description,
+               $legalPerson->phone,
+               $legalPerson->fax ) = $result[0];
+
+        //put into legalPerson attributes all person attributes
+        $array = get_object_vars($person);
+        foreach ( $array as $key => $row )
+        {
+            $legalPerson->$key = $person->$key;
+        }
+
+        return $legalPerson;
+    }
+
+   /**
+    * Return a specific record from the database
+    *
+    * @param $personId (integer): Primary key of the record to be retrieved
+    *
+    * @return (object): Return an object of the type handled by the class
+    *
+    */
+    public function getPhysicalPerson($personId)
+    {
+        //get the basPerson data
+        $person = $this->getPerson($personId);
+
+        //get the basPhysicalPerson data
+        $sql = 'SELECT A.sex,
+                       A.maritalStatusId,
+                       A.residentialPhone,
+                       A.workPhone,
+                       A.cellPhone,
+                       A.messagePhone,
+                       A.messageContact,
+                       TO_CHAR(A.dateBirth,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       A.cityIdBirth,
+                       A.countryIdBirth,
+                       getFatherId(A.personId) AS fatherId,
+                       getMotherId(A.personId) AS motherId,
+                       A.responsableLegalId,
+                       A.carPlate,
+                       A.specialNecessityId,
+                       A.specialNecessityDescription,
+                       A.cityIdWork,
+                       A.zipCodeWork,
+                       A.locationWork,
+                       A.locationTyepIdWork
+                       A.complementWork,
+                       A.neighborhoodWork,
+                       A.ethnicOriginId,
+                       TO_CHAR(A.dateDeath,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       A.number,
+                       C.name as stateName,
+                       D.name as countryName
+             FROM ONLY basPhysicalPerson A
+             LEFT JOIN basCity B
+                    ON ( A.cityId = B.cityId )
+             LEFT JOIN basState C
+                    ON (     B.stateId   = C.stateId
+                         AND B.countryId = C.countryId )
+             LEFT JOIN basCountry D
+                    ON ( C.countryId = D.countryId )
+                 WHERE A.personId = ?';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $personId));
+
+        if ( count($result) == 0 )
+        {
+            return null;
+        }
+
+        $physicalPerson = new basPhysicalPerson();
+        list ( $physicalPerson->sex,
+               $physicalPerson->maritalStatusId,
+               $physicalPerson->residentialPhone,
+               $physicalPerson->workPhone,
+               $physicalPerson->cellPhone,
+               $physicalPerson->messagePhone,
+               $physicalPerson->messageContact,
+               $physicalPerson->dateBirth,
+               $physicalPerson->cityIdBirth,
+               $physicalPerson->countryIdBirth,
+               $physicalPerson->fatherId,
+               $physicalPerson->motherId,
+               $physicalPerson->responsableLegalId,
+               $physicalPerson->carPlate,
+               $physicalPerson->specialNecessityId,
+               $physicalPerson->specialNecessityDescription,
+               $physicalPerson->cityIdWork,
+               $physicalPerson->zipCodeWork,
+               $physicalPerson->locationWork,
+               $physicalPerson->locationTypeIdWork,
+               $physicalPerson->complementWork,
+               $physicalPerson->neighborhoodWork,
+               $physicalPerson->ethnicOriginId,
+               $physicalPerson->dateDeath,
+               $physicalPerson->number,
+               $physicalPerson->stateName,
+               $physicalPerson->countryName ) = $result[0];
+
+        //put into physicalPerson attributes all person attributes
+        $array = get_object_vars($person);
+        foreach ( $array as $key => $row )
+        {
+            $physicalPerson->$key = $person->$key;
+        }
+        return $physicalPerson;
+    }
+
+    /**
+     *
+     * Return a specific record from the database
+     *
+     * @param $cityId (integer): Primary key of the record to be retrieved
+     *
+     * @return (object): Return an object of the type handled by the class
+     *
+     */
+     public function registerRemittanceToInvoice($invoiceId)
+     {
+        $sql = ' UPDATE finReceivableInvoice
+                    SET sendDate = now()
+                  WHERE invoiceId = ? ';
+
+        $args = array($invoiceId);
+        $ret = $this->getDatabase()->execute(SAGU::prepare($sql, $args));
+        return $ret;
+     }
+
+    /**
+     *
+     * Return a specific record from the database
+     *
+     * @param $cityId (integer): Primary key of the record to be retrieved
+     *
+     * @return (object): Return an object of the type handled by the class
+     *
+     */
+    public function getCity($cityId)
+    {
+        $sql = 'SELECT A.cityId,
+                       A.name,
+                       A.zipCode,
+                       A.stateId,
+                       B.name,
+                       A.countryId,
+                       C.name,
+                       A.userName,
+                       TO_CHAR(A.dateTime,\'' . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . '\'),
+                       A.ipAddress
+                  FROM basCity A
+             LEFT JOIN basState B
+                    ON ( A.stateId = B.StateId )
+             LEFT JOIN basCountry C
+                    ON ( A.countryId = C.countryId )
+                 WHERE A.cityId = ?';
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $cityId));
+
+        $city  = new basCity();
+        list ( $city->cityId,
+               $city->name,
+               $city->zipCode,
+               $city->stateId,
+               $city->stateName,
+               $city->countryId,
+               $city->countryName,
+               $city->userName,
+               $city->dateTime,
+               $city->ipAddress ) = $result[0];
+        return $city;
+    } 
+
+    /**
+     *
+     * Return a specific record from the database
+     *
+     * @param $cityId (integer): Primary key of the record to be retrieved
+     *
+     * @return (object): Return an object of the type handled by the class
+     *
+     */    
+    public function returnEntryInformation($invoiceId)
+    {
+        $sql = ' SELECT B.description,
+                        A.value,
+                        A.comments
+                   FROM finEntry A
+             INNER JOIN finOperation B
+                     ON ( A.invoiceId = ?
+                    AND A.operationId = B.operationId) ';
+                      
+        $args = array($invoiceId);
+        $ret = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        return $ret;  
+    }
+    
+   /**
+    * 
+    * Register the date for emission of remittance invoice
+    *
+    * @param $invoiceId (int): Primary key of the record to update the send date
+    *
+    * @return (boolean): True if runs, otherwise false
+    *
+    */
+    public function registerRemittanceInvoice($invoiceId)
+    {
+        $sql = ' UPDATE finReceivableInvoice
+                    SET sendDate = now()
+                  WHERE invoiceId = ? ';
+                  
+        $args = array($invoiceId);
+        $ret  = $this->getDatabase()->execute(SAGU::prepare($sql, $args));
+        return $ret;
+    }
+    
+   /**
+    *
+    * Return the bank invoice id for invoice
+    *
+    * @param @invoiceId (int): Primary key for invoice
+    *
+    * @returns: If exists, the code, otherwise null
+    *
+    */
+    public function returnBankInvoiceId($invoiceId)
+    {
+        $sql = ' SELECT bankInvoiceId
+                   FROM finReceivableInvoice
+                  WHERE invoiceId = ? ';
+        
+        $args = array($invoiceId);
+        $ret  = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        return $ret[0][0];
+    }
+    
+   /**
+    *
+    * List the messages referred to specific invoice
+    *
+    * @param $data (int): Object containing invoice information
+    *
+    * @returns: Array containing the messages
+    *
+    */
+    public function listMessages($data)
+    {
+        $module = MIOLO::getCurrentModule();
+        $sql = ' SELECT messageText
+                   FROM finMessage
+                  WHERE bankId = ?
+                    AND collectionTypeId = ? ';
+                    
+        $args = array( $data->bankId,
+                       $data->collectionTypeId );
+        
+        $ret = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        
+        $arrayParser = array('X_dias', 'X_multa', 'X_mora', 'X_desc');
+        $arrayData   = array($data->daysToFine,
+                             $data->fineValue,
+                             $data->lateFine,
+                             $data->discountValue);
+            
+        if (is_array($ret[0]))
+        {
+            foreach ($ret as $key => $r)
+            {
+                $ret[$key][0] = str_replace($arrayParser, $arrayData, $r[0]);
+            }
+        }
+        return $ret;
+    }
+}
+?>

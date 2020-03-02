@@ -1,0 +1,418 @@
+
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * @author Leovan Tavares da Silva [leovan@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 01/02/2005
+ *
+ **/
+include_once('BusEnroll.class');
+
+
+/**
+ * Class containing necessary methods for the enroll cancelation process
+ **/
+class BusinessAcademicBusEnrollAddition extends BusinessAcademicBusEnroll
+{
+    public function __construct()
+    {
+        parent::__construct();
+    }
+
+    public function getEnrollPossibilities($contractId, $learningPeriodId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $busLearningPeriod  = new BusinessAcademicBusLearningPeriod();
+        $businessSchedule = new BusinessAcademicBusSchedule();
+        $learningPeriodData = $busLearningPeriod->getLearningPeriod($learningPeriodId);
+        
+        $busContract        = new BusinessAcademicBusContract();
+        $contractData       = $busContract->getContract($contractId);
+        
+        $busTurn    = new BusinessBasicBusTurn();
+        $busPerson  = new BusinessBasicBusPerson();
+        
+        $busCurricularComponent = new BusinessAcademicBusCurricularComponent();
+        
+        $data = $this->getCourseCompleteCurriculum($contractData->courseId, $contractData->courseVersion, $contractData->turnId, $contractData->unitId, $learningPeriodId);
+        
+        $return = null;
+        if (count($data) > 0)
+        {
+            $return = new stdClass();
+            // Test each curriculum id of the selected course
+            foreach ($data as $curriculum)
+            {
+                $curriculumData = new stdClass();
+                list($curriculumData->period,
+                     $curriculumData->curricularComponentId,
+                     $curriculumData->curricularComponentVersion,
+                     $curriculumData->curricularComponentName,
+                     $curriculumData->curriculumId,
+                     $curriculumData->curricularComponentGroupDocumentEndCourseId,
+                     $curriculumData->curricularComponentGroupElectiveId,
+                     $curriculumData->curricularComponentTypeId,
+                     $curriculumData->curricularComponentType,
+                     $curriculumData->curriculumTypeId,
+                     $curriculumData->curriculumType,
+                     $curriculumData->groupedPeriod,
+                     $curriculumData->complementar) = $curriculum;
+                       
+                // ignore curriculum entry if already coursed or in course
+                if ($this->isCoursed($curriculumData, $contractId) || $this->isCoursing($curriculumData, $contractId, $learningPeriodId))
+                {
+                    continue;
+                }
+
+                // get substitution data
+                $substitutionData = $this->getSubstitutionData($curriculumData, $contractId, $learningPeriodId);
+                
+                // if this curriculum entry was coursed as another group, get information about that group
+                if (strlen($substitutionData->curricularComponentId) > 0 && strlen($substitutionData->curricularComponentVersion) > 0)
+                {
+                    $curriculumData->curricularComponentId      = $substitutionData->curricularComponentId;
+                    $curriculumData->curricularComponentVersion = $substitutionData->curricularComponentVersion;
+                    $curriculumData->curricularComponentTypeId  = CURRICULAR_COMPONENT_TYPE_NORMAL;
+                    $curriculumData->curricularComponentName   .= ' (' . $substitutionData->curricularComponentId . '/' . $substitutionData->curricularComponentVersion . ' - ' . $substitutionData->curricularComponentName . ')';    
+                }
+
+                // ignore curriculum entry if pupil is enrolled
+                if ($this->isEnrolled($curriculumData, $contractId, $learningPeriodId))
+                {
+                    continue;
+                }
+                
+                // ignore curriculum entry if there is no concurrence curricular component free for enroll
+                if (!$this->isConcurrenceFree($curriculumData, $contractId, $learningPeriodId))
+                {
+                    continue;
+                }
+
+                // ignore curriculum entry if there are no free condition and no condition unblock
+                if (!$this->isPreConditionsFree($curriculumData, $contractId, $learningPeriodId, true) &&
+                    !$this->isConditionUnblocked($curriculumData, $contractId, $learningPeriodId))
+                {
+                    continue;    
+                }
+
+                // if this curriculum entry type is elective and there are groups available for enroll, store curriculum entry as elective
+                if ($curriculumData->curricularComponentTypeId == SAGU::getParameter('ACADEMIC', 'CURRICULAR_COMPONENT_TYPE_ELECTIVE'))
+                {
+                    $groups = $this->getElectiveFreeGroups($curriculumData, $contractId, $learningPeriodId);
+                    if (count($groups) > 0)
+                    {
+                        $return->electives[] = $curriculumData->curriculumId;
+                        continue;
+                    }
+                }
+                // if this curriculum entry type is not elective
+                else
+                {
+                    // get groups available for enroll
+                    $groups = $this->getCurriculumFreeGroups($curriculumData, $learningPeriodId);
+                }
+                
+                // if groups available for enroll were found
+                if (count($groups) > 0)
+                {
+                    // gather information about each group found
+                    foreach ($groups as $groupId => $groupData)
+                    {
+                        $groupScheduleInfo = null;
+                        $groupProfessorInfo = null;
+                        
+                        $groupCurricularComponentId = $groupData->curriculumCurricularComponentId;
+                        $groupCurricularComponentVersion = $groupData->curriculumCurricularComponentVersion;
+                        $groupVacant = $groupData->vacant;
+                        $groupTotalEnrolled = $groupData->totalEnrolled;
+                        $groupComplement = $groupData->complement;
+                        $groupClassId = $groupData->classId;
+
+                        // ignore group if no more vacancies exists
+                        if ($groupTotalEnrolled >= $groupVacant)
+                        {
+                            continue;
+                        }
+                        
+                        strlen($groupComplement) > 0 ? $curriculumData->curricularComponentName = $curriculumData->curricularComponentName . ' - ' . $groupComplement : null;
+                        
+                        //Search and sorts the day of the week
+                        $weekDay = $businessSchedule->getGroupWeekDays($groupId);
+        
+                        if ( count($weekDay) <= 0 )
+                        {
+                            $weekDayDescription = _M('Indef.', $module);
+                        }
+                        else 
+                        {
+                            ksort($weekDay);
+                              
+                            $weekDayDescription =  str_replace(',', '<br>', implode(',', $weekDay));
+                        }
+                        
+                        $turn = $businessSchedule->getGroupTurns($groupId);
+        
+                        if ( count($turn) <= 0 )
+                        {
+                            $turnDescription = _M('Indef.', $module);
+                        }
+                        else 
+                        {
+                            foreach ( $turn AS $val1 )
+                            {
+                                $turnDescription = $busTurn->getTurn($val1);
+                                $arrayTurn[] = $turnDescription->description;
+                            }
+                            
+                            $turnDescription =  str_replace(',', '<br>', implode(',', $arrayTurn));
+                        
+                            unset($arrayTurn);
+                        }
+                        
+                        $professorInfo = $businessSchedule->getGroupProfessors($groupId);
+
+                        if ( count($professorInfo) <= 0 )
+                        {
+                            $professorName = _M('Indef.', $module);
+                        }
+                        else 
+                        {
+                            foreach ( $professorInfo AS  $ind => $val1 )
+                            {
+                                $professorName = $busPerson->getPerson($ind);
+                                $arrayProfessor[] = $professorName->name;
+                            }
+                            
+                            $groupProfessorInfo =  str_replace(',', '<br>', implode(',', $arrayProfessor));
+                        
+                            unset($arrayProfessor);
+                        }
+                                
+                        $return->groups[] = array($curriculumData->curriculumId,
+                                                  $curriculumData->curricularComponentId,
+                                                  $curriculumData->curricularComponentName,
+                                                  $groupId,
+                                                  $weekDayDescription,
+                                                  $turnDescription,
+                                                  $groupProfessorInfo,
+                                                  $groupClassId);
+                    }
+                }
+            }
+        }
+        return $return;
+    }
+
+    /**
+     * Function which returns a list of curricular component that a person is registered through his contract.
+     * 
+     * @param $contractId (integer): Is code of contract
+     * @param $periodId (strind): Is code os period
+     * 
+     * @return $result (array): It is an array containing the curricula component enrolled 
+     */
+    public function listPersonEnrolls($contractId, $periodId)
+    {
+        $sql = 'SELECT A.enrollId,
+                       B.curricularComponentId,
+                       B.curricularComponentVersion,
+                       CASE WHEN C.name = J.name THEN C.name
+                       ELSE C.name || \' (\' || J.name || \')\' END AS curricularComponentName,
+                       A.curriculumId,
+                       D.groupId,
+                       CASE WHEN A.statusId IN (' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_CANCELLED') . ') 
+                            THEN L.description || \'[\' || TO_CHAR(dateCancellation, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') || \']\'
+                            ELSE L.description END,
+                       A.statusId
+                  FROM unit_acdEnroll A
+            INNER JOIN unit_acdcurriculum B
+                    ON (B.curriculumId = A.curriculumId)
+            INNER JOIN acdCurricularComponent C
+                    ON (C.curricularComponentId = B.curricularComponentId
+                        AND C.curricularComponentVersion = B.curricularComponentVersion)
+            INNER JOIN unit_acdGroup D
+                    ON (D.groupId = A.groupId)
+            INNER JOIN acdSchedule E
+                    ON (D.groupId = E.groupId)
+            INNER JOIN unit_acdcurriculum I
+                    ON (D.curriculumId = I.curriculumId)
+            INNER JOIN acdCurricularComponent J
+                    ON (J.curricularComponentId = I.curricularComponentId AND
+                        J.curricularComponentVersion = I.curricularComponentVersion)
+            INNER JOIN acdEnrollStatus L
+                    ON (L.statusId = A.statusId)
+            INNER JOIN unit_acdlearningperiod M
+                    ON (M.learningPeriodId = D.learningPeriodId AND M.periodId = ?)
+                 WHERE A.contractId = ?
+                   AND M.periodId = ?
+                   AND A.statusId IN(' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') . ',' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_CANCELLED') . ') ';
+
+        $args = array (
+                $periodId,
+                $contractId,
+                $periodId
+        );
+
+        $result = $this->getDatabase()->query(SAGU::prepare($sql,$args));
+
+        return $result;
+    }
+
+    /**
+     * Add a new enroll to pupil's current enroll, updating finance, if required.
+     * 
+     * @param $contractId
+     * @param $learningPeriodId
+     * @param $curriculumId
+     * @param $groupId
+     */
+    public function addEnroll($contractId, $learningPeriodId, $curriculumId, $groupId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module   = 'academic';
+        $busGroup = new BusinessAcademicBusGroup();
+        
+        if ( strlen($curriculumId) <= 0 )
+        {
+            throw new Exception(_M('Código do currículo deve ser informado.', $module));
+        }
+        
+        if ( strlen($groupId) <= 0 )
+        {
+            throw new Exception(_M('Disciplina oferecida deve ser informada.', $module));
+        }
+        
+        // Get pupil's current enroll
+        $enroll = $this->getEnrollByLearningPeriod($contractId, $learningPeriodId);
+
+        // create an array where keys are group ids and values are the curriculum ids
+        // associated with each group id.
+        $groups = array();
+        for ( $i=0; $i<count($enroll); $i++ )
+        {
+            $enrollData = new stdClass();
+            
+            list ( $enrollData->enrollId,
+                   $enrollData->curriculumId,
+                   $enrollData->groupId ) = $enroll[$i];
+            
+            $filters = new stdClass();
+            $filters->curriculumId     = $enrollData->curriculumId;
+            $filters->groupId          = $enrollData->groupId;
+            $filters->learningPeriodId = $learningPeriodId;
+            
+            $group = $busGroup->searchGroup($filters);
+            $vagas = explode('/', $group[0][3]);
+            
+            if ( $vagas[0] < $vagas[1] )
+            {   
+                $groups[$enrollData->groupId] = $enrollData->curriculumId;
+            }
+        }
+        
+        // addd the new enroll
+        $groups[$groupId] = $curriculumId;
+        
+        // calling this function is equivalent to editing the pupil's current enroll
+        return $this->enroll($contractId, $learningPeriodId, $groups, null, null, true);
+    }
+    
+    public function checkGroupCondition($contractId, $groupId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $busGroup = new BusinessAcademicBusGroup();
+        $group    = $busGroup->getGroup($groupId);
+        
+        $sql = 'SELECT conditionCurriculumId
+                  FROM unit_acdCondition
+                 WHERE curriculumId = ?
+                   AND conditionCurriculumId NOT IN (SELECT curriculumId
+                                                       FROM unit_acdEnroll
+                                                      WHERE contractId = ?
+                                                        AND statusId IN (' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') . ', ' 
+                                                                           . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPR_OR_EXC') . '))
+                   AND conditionCurriculumId NOT IN (SELECT C.curriculumId
+                                                       FROM unit_acdEnroll A
+                                                 INNER JOIN unit_acdGroup B
+                                                         ON (B.groupId = A.groupId)
+                                                 INNER JOIN unit_acdcurriculum C
+                                                         ON (C.curriculumId = B.curriculumId)
+                                                      WHERE A.contractId = ?
+                                                        AND A.statusId IN (' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') . ', ' 
+                                                                             . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPR_OR_EXC') . '))';
+                   
+        $args   = array($group->curriculumId, $contractId, $contractId);
+        $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        
+        if (count($result) > 0)
+        {
+            return true;
+        }
+        else
+        {
+            $sql = 'SELECT curriculumId
+                      FROM unit_acdCondition
+                     WHERE conditionCurriculumId = ?
+                       AND curriculumId NOT IN (SELECT curriculumId
+                                                  FROM unit_acdEnroll
+                                                 WHERE contractId = ?
+                                                   AND statusId IN (' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') . ', ' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPR_OR_EXC') . '))
+                       AND curriculumId NOT IN (SELECT C.curriculumId
+                                                  FROM unit_acdEnroll A
+                                            INNER JOIN unit_acdGroup B
+                                                    ON (B.groupId = A.groupId)
+                                            INNER JOIN unit_acdcurriculum C
+                                                    ON (C.curriculumId = B.curriculumId)
+                                                 WHERE A.contractId = ?
+                                                       AND A.statusId IN (' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') . ', ' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPR_OR_EXC') . '))';
+                                                    
+            $args   = array($group->curriculumId, $contractId, $contractId);
+            $result = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+            
+            if (count($result) > 0)
+            {
+                return true;
+            }
+            else
+            {
+                return false;
+            }
+        }
+    }
+}
+
+?>

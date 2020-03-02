@@ -1,0 +1,430 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class definition for database entities
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Luís Felipe Wermann [luis_felipe@solis.com.br]
+ *
+ * @since
+ * Class created on 15/12/2010
+ *
+ * */
+
+/**
+ * Armazena as opções de curso de um processo seletivo.
+ */
+class SprOption extends SType {
+
+    /**
+     * @var (integer) Identificador único de cada objeto desta classe.
+     */
+    private $optionId;
+
+    /**
+     * @var (integer) Identificador do processo seletivo ao qual esta opção pertence.
+     */
+    private $selectiveProcessId;
+
+    /**
+     * @var (string) Descreve como a opção será exibida no momento da inscrição. Geralmente (quando a opção referenciar uma única acdoptionCourse, a descrição será o próprio nome do curso, versão, turno e unidade.
+     */
+    private $description;
+
+    /**
+     * @var (integer) Quantidade máxima de pessoas que poderão ser selecionadas nesta opção.
+     */
+    private $vacancies;
+
+    /**
+     * @var (integer) Quantidade máxima de cotistas.
+     */
+    private $quotes;
+
+    /**
+     * @var (integer) Quantidade máxima de suplentes que podem ser selecionados nesta opção. Os restantes serão desclassificados.
+     */
+    private $maximumSubstitutes;
+
+    /**
+     * @var (array) Ocorrências de curso associadas a esta opção
+     */
+    private $optionCourses = array();
+
+    /**
+     * @var (array)
+     */
+    protected $optionNucleoEnfase = array();
+
+    /*
+     * @var (array) Ocorrencias de turmas associadas com esta opç?o.
+     */
+    private $optionOfertaTurma = array();
+
+    /**
+     * Construtor da classe
+     *
+     * @param (integer) $selectiveProcessId Chave primária da tabela
+     */
+    public function __construct($optionId = null)
+    {
+        $this->optionCourses = array();
+
+        if (is_numeric($optionId))
+        {
+            $this->optionId = $optionId;
+            $this->populate();
+        }
+    }
+
+    /**
+     * Data logic
+     */
+    public function __get($name)
+    {
+        if ( $name == 'optionNucleoEnfase' && strlen($this->selectiveProcessId) > 0 )
+        {
+            $filters = new stdClass();
+            $filters->optionId = $this->optionId;
+            $filters->selectiveProcessId = $this->selectiveProcessId;
+            
+            $this->optionNucleoEnfase = SprOptionNucleoEnfase::search($filters);
+        }
+
+        return $this->$name;
+    }
+
+    public function __set($name, $value)
+    {
+        $this->$name = $value;
+    }
+
+    /*
+     * Common methods
+     */
+
+    /**
+     * Detecta se o salvar deve inserir um novo (no caso de chave primária não definida)
+     * ou se deve apenas atualizar um registro já existente (no caso de chave primária já definida)
+     *
+     * @return TRUE no caso de sucesso. Caso contrário, FALSE.
+     */
+    public function save()
+    {
+        $module = SAGU::getFileModule(__FILE__);
+
+        // se chave primária não está definida, assume que deva ser feito insert
+        if (strlen($this->optionId) <= 0)
+        {
+            $retVal = $this->insert($tipo);
+        }
+        // se chave primária definida, assume que deva ser feito update
+        else
+        {
+            $retVal = $this->update();
+        }
+
+        if (strlen($this->optionId) > 0)
+        {
+            foreach ((array) $this->optionOfertaTurma as $optionTurma)
+            {
+                $optionTurma->optionId = $this->optionId;
+                $optionTurma->optionofertaturmaid = $this->obterOptionOfertaTurmaId($optionTurma);
+                $optionTurma->save($optionTurma);
+            }
+
+            foreach ((array) $this->optionCourses as $optionCourse)
+            {
+                $optionCourse->optionId = $this->optionId;
+                $optionCourse->save();
+            }
+
+            // OptionNucleoEnfase
+            $filters = new stdClass();
+            $filters->optionId = $this->optionId;
+            $rows = SprOptionNucleoEnfase::search($filters);
+            foreach ((array) $rows as $row)
+            {
+                $row instanceof SprOptionNucleoEnfase;
+                $row->delete();
+            }
+            foreach ((array) $this->optionNucleoEnfase as $one)
+            {
+                $one->optionId = $this->optionId;
+                $one->save();
+            }
+        }
+
+        return $retVal;
+    }
+
+    /**
+     * Exclui da base de dados o objeto atual
+     *
+     * @return TRUE no caso de sucesso. Caso contrário, FALSE.
+     */
+    public function delete()
+    {
+        if (strlen($this->optionId) == 0)
+        {
+            throw new Exception(_M('Não é possível excluir uma opção que ainda não foi salva.', $module));
+        }
+
+        // excluir ocorrências de curso
+        foreach ($this->optionCourses as $optionCourse)
+        {
+            $optionCourse instanceof SprOptionCourse;
+            $optionCourse->delete();
+        }
+        
+        // excluir nucleos e enfases
+        $this->__get('optionNucleoEnfase');
+        foreach ($this->optionNucleoEnfase as $one)
+        {
+            $one instanceof SprOptionNucleoEnfase;
+            $one->delete();
+        }
+
+        // excluir turmas
+        foreach ($this->optionOfertaTurma as $optTurma)
+        {
+            $optTurma instanceof SprOptionOfertaTurma;
+            $optTurma->delete();
+        }
+        
+        $sql = 'DELETE FROM spr.option
+                      WHERE optionId = ?';
+
+        $args = array($this->optionId);
+
+        $result = SDatabase::execute($sql, $args);
+
+        if ($result)
+        {
+            $this->optionId = null;
+        }
+
+        return $result;
+    }
+
+    /**
+     * Duplica o registro atual.
+     *
+     * @return TRUE no caso de sucesso. Caso contrário, FALSE.
+     */
+    public function duplicate()
+    {
+        $option = clone($this);
+        $option->optionId = null;
+
+        $optionCourses = array();
+        $this->__get('optionCourses');
+        foreach ($this->optionCourses as $o)
+        {
+            $optionCourses[] = $o->duplicate();
+        }
+        $option->optionCourses = $optionCourses;
+
+        $optionNucleoEnfases = array();
+        $this->__get('optionNucleoEnfase');
+        foreach ($this->optionNucleoEnfase as $one)
+        {
+            $optionNucleoEnfases[] = $one->duplicate();
+        }
+        $option->optionNucleoEnfase = $optionNucleoEnfases;
+
+        return $option;
+    }
+
+    /**
+     * Retorna uma lista de objetos do tipo desta classe com os resultados da busca.
+     *
+     * @param (stdClass) $filters Objeto contendo todos os campos pesquisáveis do objeto atual
+     */
+    public static function search($filters)
+    {
+        $sql = 'SELECT optionId
+                  FROM spr.option';
+
+        $where = '';
+        foreach ($filters as $key => $value)
+        {
+            if ($key == 'description')
+            {
+                $where .= " AND UNACCENT({$key}) ILIKE UNACCENT('{$value}')";
+            }
+            else if (is_numeric($value))
+            {
+                $where .= " AND {$key} = '{$value}'";
+            }
+            else
+            {
+                $where .= " AND {$key} ILIKE UNACCENT('{$value}')";
+            }
+        }
+
+        if (strlen($where) > 0)
+        {
+            $sql .= ' WHERE ' . substr($where, 5);
+        }
+
+        $sql .= ' ORDER BY description';
+
+        $result = SDatabase::query($sql);
+
+        $retVal = array();
+        for ($i = 0; $i < count($result); $i++)
+        {
+            $retVal[] = new SprOption($result[$i][0]);
+        }
+
+        return $retVal;
+    }
+
+    /*
+     * Private methods
+     */
+
+    /*
+     * Chamado pelo construtor, quando este recebe os dados de chave primária
+     */
+
+    private function populate()
+    {
+        $sql = 'SELECT optionId,
+                       selectiveProcessId,
+                       description,
+                       vacancies,
+                       quotes,
+                       maximumSubstitutes
+                  FROM spr.option
+                 WHERE optionId = ?';
+
+        $result = SDatabase::query($sql, $this->optionId);
+
+        if (strlen($result[0][0]) <= 0)
+        {
+            $module = SAGU::getFileModule(__FILE__);
+            throw new Exception(_M('Opção numero @1 inexistente.', $module, $this->optionId));
+        }
+
+        list ( $this->optionId,
+                $this->selectiveProcessId,
+                $this->description,
+                $this->vacancies,
+                $this->quotes,
+                $this->maximumSubstitutes ) = $result[0];
+
+        $filters = new stdClass();
+        $filters->optionId = $this->optionId;
+        $this->optionCourses = SprOptionCourse::search($filters);
+
+        $srpOfertaTurma = new SprOptionOfertaTurma();
+        $sql = $srpOfertaTurma->msql();
+        $sql->addEqualCondition('optionId', $filters->optionId);
+        $this->optionOfertaTurma = $srpOfertaTurma->findMany($sql);
+    }
+
+    /*
+     * Insere um novo registro com base nas informações da classe
+     */
+
+    private function insert($tipo)
+    {
+        $sql = 'SELECT nextval(\'spr.option_optionid_seq\')';
+
+        $result = SDatabase::query($sql);
+        $newId = $result[0][0];
+
+        $sql = 'INSERT INTO spr.option
+                            (optionId,
+                             selectiveProcessId,
+                             description,
+                             vacancies,
+                             quotes,
+                             maximumSubstitutes)
+                     VALUES (?, ?, ?, ?, ?, ?)';
+
+        $args = array($newId,
+            $this->selectiveProcessId,
+            $this->description,
+            $this->vacancies,
+            $this->quotes,
+            $this->maximumSubstitutes);
+
+        $result = SDatabase::execute($sql, $args);
+
+        if ($result)
+        {
+            $this->optionId = $newId;
+        }
+
+        return $result;
+//        }
+    }
+
+    /*
+     * Atualiza um registro existente com base nas informações da classe
+     */
+
+    private function update()
+    {
+        $sql = 'UPDATE spr.option
+                   SET selectiveProcessId = ?,
+                       description = ?,
+                       vacancies = ?,
+                       quotes = ?,
+                       maximumSubstitutes = ?
+                 WHERE optionId = ?';
+
+        $args = array($this->selectiveProcessId,
+            $this->description,
+            $this->vacancies,
+            $this->quotes,
+            $this->maximumSubstitutes,
+            $this->optionId);
+
+        return SDatabase::execute($sql, $args);
+    }
+
+    public function obterOptionOfertaTurmaId($optTurma)
+    {
+        $sql = "SELECT optionOfertaTurmaId
+                  FROM sproptionofertaturma
+                 WHERE optionid = ? ";
+        $params[] = $optTurma->optionId;
+        
+        $result = SDatabase::query($sql, $params);
+        
+        $id = end($result);
+        $optionOferta = $id[0];
+        return $optionOferta;
+    }
+
+}
+
+?>

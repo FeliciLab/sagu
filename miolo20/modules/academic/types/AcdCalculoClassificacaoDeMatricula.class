@@ -1,0 +1,261 @@
+<?php
+
+/**
+ * <--- Copyleft 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Nataniel I. da Silva [nataniel@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * @since
+ * Class created on 18/09/2014
+ **/
+
+class AcdCalculoClassificacaoDeMatricula extends SType
+{
+    
+    public function obtemCoeficienteDeClassificacao($data, $returnGridData = false)
+    {
+        $progressBar = SProgressBar::getCurrent();
+        
+        $progressBar->updateProgress("Obtendo alunos...", 20);
+        self::obtemALunosParaCalculoDoCoeficiente($data);
+        
+        $progressBar->updateProgress("Obtendo média das disciplinas encerradas...", 30);
+        self::obtemMediaDeTodasDisciplinasEncerradas();
+        
+        $progressBar->updateProgress("Obtendo pontuação acumulada por semestres...", 45);
+        self::obtemPontuacaoAcumuladaPorSemestralizacao($data);
+        
+        $progressBar->updateProgress("Atualizando coeficientes...", 65);
+        self::atualizaCoeficiente();
+        
+        $progressBar->updateProgress("Obtendo alunos com coeficiente de classificação...", 90);
+        return self::obtemAlunosComCoeficienteDeClassificacao($returnGridData);
+    }
+    
+    /**
+     * Insere os alunos na tabela temporária para obter o restante das infromações para calcular o coeficiente
+     * 
+     * @param type $data
+     */
+    public function obtemALunosParaCalculoDoCoeficiente($data)
+    {
+        $sql = " INSERT INTO acdCalculoClassificacaoTemp
+		             (contractId)
+                      SELECT DISTINCT A.contractId
+                        FROM acdContract A
+                  INNER JOIN acdEnroll B
+                          ON (A.contractId = B.contractId)
+                       WHERE isContractClosed(A.contractId) IS FALSE
+                         AND B.statusId != '" . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_CANCELLED') . "'::INTEGER ";
+                        
+        if ( strlen($data->courseId) > 0 )
+        {
+            $sql .= " AND A.courseId = '{$data->courseId}' ";
+        }
+                        
+        $sDataBase = SDatabase::getInstance();
+        $result = $sDataBase->execute($sql);
+        
+        return $result;
+    }
+    
+    /**
+     * Obtém a media de todas as disciplinas aprovadas ou dispensadas
+     * 
+     * @return type
+     */
+    public function obtemMediaDeTodasDisciplinasEncerradas()
+    {
+        $sql = " UPDATE acdCalculoClassificacaoTemp AA
+                    SET mediaNotas = ROUND(X.media,'" . SAGU::getParameter('BASIC', 'GRADE_ROUND_VALUE') . "'::INTEGER) 
+                   FROM ( SELECT DISTINCT A.contractId, 
+                                 SUM(COALESCE(obternotaouconceitofinal(A.enrollId)::NUMERIC, 0)) / COUNT(A.enrollId) as media
+                            FROM acdEnroll A
+                      INNER JOIN acdCalculoClassificacaoTemp B
+                              ON (A.contractId = B.contractId)
+                       LEFT JOIN acdGroup C
+                              ON (A.groupId = C.groupId)
+                           WHERE A.statusId IN ('" . SAGU::getParameter('ACADEMIC','ENROLL_STATUS_APPROVED') . "'::INTEGER, '" . SAGU::getParameter('ACADEMIC','ENROLL_STATUS_EXCUSED') . "'::INTEGER)
+                             AND C.useconcept IS FALSE
+                        GROUP BY A.contractId
+                        ORDER BY A.contractId ) X 
+                  WHERE AA.contractId = X.contractId";
+        
+        $sDataBase = SDatabase::getInstance();
+        $result = $sDataBase->execute($sql);
+        
+        return $result;
+    }
+    
+    /**
+     * Realiza lógica para obter pontuação acumulada por semestralização Requisito #30981
+     * 
+     * @return type
+     */
+    public function obtemPontuacaoAcumuladaPorSemestralizacao()
+    {
+        $sql = " UPDATE acdCalculoClassificacaoTemp A
+                    SET pontuacaoSemestral = X.pontuacao
+                   FROM ( SELECT contractId,
+                                 obtemPontuacaoAcumuladaPorSemestralizacao(contractId) as pontuacao
+                            FROM acdCalculoClassificacaoTemp ) X
+                  WHERE A.contractId = X.contractId ";
+        
+        $sDataBase = SDatabase::getInstance();
+        $result = $sDataBase->execute($sql);
+        
+        return $result;
+    }
+    
+    /**
+     * Atualiza a soma da media com a pontuação semestral e atualiza o coeficiente de classificação
+     * 
+     * @return type
+     */
+    public function atualizaCoeficiente()
+    {
+        $sql = " UPDATE acdCalculoClassificacaoTemp A 
+                    SET coeficienteDeClassificacao = X.coeficiente
+                   FROM ( SELECT COALESCE( (CASE 
+                                                WHEN mediaNotas >= 9 AND mediaNotas <= 10
+                                                THEN
+                                                    0
+                                                WHEN mediaNotas >= 7 AND mediaNotas <= 8.99
+                                                THEN
+                                                    1
+                                                WHEN mediaNotas >= 5 AND mediaNotas <= 6.99
+                                                THEN
+                                                    2
+                                             END) +
+                                pontuacaoSemestral, 0) as coeficiente,
+                               contractid
+                          FROM acdCalculoClassificacaoTemp ) X
+                   WHERE A.contractId = X.contractId ";
+        
+        $sDataBase = SDatabase::getInstance();
+        $result = $sDataBase->execute($sql);
+        
+        return $result;
+    }
+    
+    /**
+     * Retorna dados para a grid ou se foi o processamento ocorreu corretamente
+     * 
+     * @param type $returnGridData
+     * @return type
+     */
+    public function obtemAlunosComCoeficienteDeClassificacao($returnGridData)
+    {
+        $sql = " SELECT A.contractId,
+                        B.personId,
+                        getPersonName(personid) AS name,
+                        getCourseName(B.courseId) || '-' || B.courseVersion || '/' || getTurnDescription(B.turnid) || '/' || getUnitDescription(B.unitId) AS ocorrencia,
+                        A.coeficienteDeClassificacao
+                   FROM acdCalculoClassificacaoTemp A
+             INNER JOIN acdContract B
+                     ON (A.contractId = B.contractId)
+               ORDER BY 4,3,2,1; ";
+        
+        $sDataBase = SDatabase::getInstance();
+        $result = $sDataBase->query($sql);
+        
+        return ($returnGridData == true) ? $result : count($result) > 0;
+    }
+    
+    /**
+     * Exclui os registros da tabela temporária
+     * 
+     * @return type
+     */
+    public static function cancelarProcessamento()
+    {
+        $sql = " DELETE FROM acdCalculoClassificacaoTemp ";
+    
+        $sDataBase = SDatabase::getInstance();
+        $result = $sDataBase->execute($sql);
+        
+        return $result;
+    }
+    
+    /**
+     * Registra o coeficiente de classificação no contrato do aluno e limpa a tabela temporária
+     * 
+     * @return type
+     */
+    public function registrarCoeficienteNoContratoDoAluno($data)
+    {
+        $sql = " UPDATE acdContract A 
+                    SET coeficientedeclassificacao = X.coeficienteDeClassificacao
+                   FROM ( SELECT contractId,
+                                 coeficienteDeClassificacao
+                            FROM acdCalculoClassificacaoTemp ) X
+                   WHERE A.contractId = X.contractId ";
+        
+        $sDataBase = SDatabase::getInstance();
+        $result = $sDataBase->execute($sql);
+        
+        self::registrarLog($data);
+        
+        self::cancelarProcessamento();
+        
+        return $result;
+    }
+    
+    public function registrarLog($data)
+    {
+        $sDataBase = SDatabase::getInstance();
+        
+        $sqlId = " SELECT nextval('acdlogcalculoclassificacao_logcalculoclassificacaoid_seq') ";
+        $resultId = $sDataBase->query($sqlId);
+        
+        $acdLogCalculoClassificacaoId = $resultId[0][0];
+        
+        $sql = " INSERT INTO acdLogCalculoClassificacao 
+                             (logcalculoClassificacaoId,
+                              courseId)
+                      VALUES (?,
+                              ?) ";
+        
+        $params[] = $acdLogCalculoClassificacaoId;
+        $params[] = $data->courseId;
+                
+        $result = $sDataBase->execute(SAGU::prepare($sql, $params));
+        
+        if ( $result )
+        {
+            $sql = " INSERT INTO acdDetalhamentoCalculoClassificacao
+                                 (logCalculoClassificacaoId,
+                                  contractId,
+                                  coeficienteDeClassificacao)
+                          SELECT $acdLogCalculoClassificacaoId,
+                                 contractId,
+                                 coeficienteDeClassificacao 
+                            FROM acdCalculoClassificacaoTemp ";
+            
+            $resultDetail = $sDataBase->execute($sql);
+        }
+        
+        return (strlen($resultDetail) > 0 ? $resultDetail : false);
+    }
+    
+}
+

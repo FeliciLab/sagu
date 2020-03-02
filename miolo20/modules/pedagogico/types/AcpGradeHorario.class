@@ -1,0 +1,225 @@
+<?php
+/**
+ * <--- Copyright 2005-2013 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Type pedagogico
+ *
+ * @author Moises Heberle [moises@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.com.br]
+ *
+ * @since
+ * Class created on 29/08/2013
+ */
+
+class AcpGradeHorario extends SType
+{
+    protected $_utilizaNovoPadrao = true;
+    
+    protected $_defaultOrder = 'acpgradehorario.descricao';
+    
+    CONST PERIODICIDADE_SEMANAL = 'S';
+    CONST PERIODICIDADE_QUINZENAL = 'Q';
+    
+    public $gradehorarioid;
+    public $descricao;
+    public $detalhes;
+    public $ativo;
+    public $periodicidade;
+    
+    /**
+     * @return array
+     */
+    public function obterHorarios()
+    {
+        $horarios = new AcpHorario();
+        
+        return $horarios->findMany( $this->msql()
+            ->addEqualCondition('acphorario.gradehorarioid', $this->gradehorarioid)
+            ->setOrderBy('acphorario.horainicio, acphorario.horafim')
+        );
+    }
+    
+    public function delete()
+    {       
+        //Verifica a utilização na oferta de curso
+        $ofertadecurso = new AcpOfertaCurso();
+        $sql = $ofertadecurso->msql();
+        $sql->addEqualCondition('AcpOfertaCurso.gradehorarioid', $this->gradehorarioid);
+        if( count($ofertadecurso->findMany()) > 0 )
+        {
+            throw new Exception(_M('Esta grade de horários já está sendo utilizada em uma oferta de curso.'));
+        }
+        
+        foreach ( $this->obterHorarios() as $horario )
+        {
+            $horario instanceof AcpHorario;
+            $horario->delete();
+        }
+        
+        return parent::delete();
+    }
+    
+    public function getChoiceComponentSQL($argument = null, $id = null)
+    {        
+        $sql = parent::getChoiceComponentSQL($argument, $id);                
+        $sql->addEqualCondition('ativo', DB_TRUE);        
+        return $sql;
+    }
+    
+    public function obterMenorHoraInicio()
+    {
+        $horarios = new AcpHorario();
+        
+        return $horarios->findOne( $this->msql()
+            ->addEqualCondition('acphorario.gradehorarioid', $this->gradehorarioid)
+            ->setOrderBy('acphorario.horainicio ASC')
+            ->setLimit('1')
+        );
+    }
+    
+    public function obterMaiorHoraInicio()
+    {
+        $horarios = new AcpHorario();
+        
+        return $horarios->findOne( $this->msql()
+            ->addEqualCondition('acphorario.gradehorarioid', $this->gradehorarioid)
+            ->setOrderBy('acphorario.horainicio DESC')
+            ->setLimit('1')
+        );
+    }
+    
+    public function obterDiasDaSemana($arrayAssociativo = false)
+    {
+        $query = SDatabase::query("SELECT distinct diasemana FROM acphorario WHERE gradehorarioid = ?", array($this->gradehorarioid));
+        
+        if ( $arrayAssociativo )
+        {
+            $dias = array();
+            
+            foreach ( (array) $query as $val )
+            {
+                $dias[] = $val[0];
+            }
+            
+            $query = $dias;
+        }
+        
+        return $query;
+    }
+    
+    /**
+     * @return array
+     */
+    public function obterDiasHorario()
+    {
+        $diasHorario = $this->obterDiasDaSemana(true);
+        $diasSemana = SAGU::listarDiasDaSemana();
+
+        foreach ( $diasSemana as $numero => $dia )
+        {
+            if ( !in_array($numero, $diasHorario))
+            {
+                unset($diasSemana[$numero]);
+            }
+        }
+        
+        return $diasSemana;
+    }
+    
+    /**
+     * @return array
+     */
+    public function obterHorariosParaTableRaw()
+    {
+        $return = array();
+        
+        $horario = new AcpHorario();
+        
+        $sql = $this->msql()
+            ->addEqualCondition('acphorario.gradehorarioid', $this->gradehorarioid)
+            ->setOrderBy('acphorario.diasemana, acphorario.horainicio, acphorario.horafim');
+        
+        // tratamento especial: editar
+        if ( MIOLO::_REQUEST('function') == 'update' )
+        {
+            $sql->addEqualCondition('acphorario.diasemana', MIOLO::_REQUEST('diasemana'));
+        }
+        
+        $horarios = $horario->findMany( $sql );
+        
+        $contaMaiorHorariosDia = 0;
+        
+        foreach ( $horarios as $horario )
+        {
+            $horario instanceof AcpHorario;
+            
+            if ( MIOLO::_REQUEST('function') == 'update' )
+            {
+                $horarioIdsEdicao = MIOLO::_REQUEST('horarioidsedicao');
+                $horarioIdsEdicao = explode(',', $horarioIdsEdicao);
+
+                if ( ! in_array($horario->horarioid, $horarioIdsEdicao) )
+                {
+                    continue;
+                }
+            }
+            
+            $checkId = "dia_{$horario->diasemana}_{$horario->horarioid}";
+            $checked = isset($_REQUEST[$checkId]); // || !MIOLO::getInstance()->page->isPostBack()
+            $checkbox = new MCheckBox($checkId, null, null, $checked);
+            $label = ' ' . $horario->_iniciofim;
+            
+            // simula como se tivesse sido clicado a checkbox, no editar
+            if ( MIOLO::_REQUEST('function') == 'update' )
+            {
+                $_REQUEST[$checkId] = '';
+                $checkbox->setReadOnly(true);
+            }
+            
+            $return[$horario->diasemana][] = new MDiv('divX', array($checkbox, $label));
+            
+            if ( count($return[$horario->diasemana]) > $contaMaiorHorariosDia )
+            {
+                $contaMaiorHorariosDia = count($return[$horario->diasemana]);
+            }
+        }
+        
+        $contaDias = count($return);
+        
+        // normaliza array para tb raw , inverte matriz
+        $return = array_values($return);
+        $normalizado = array();
+
+        for ($i=0; $i < $contaMaiorHorariosDia; $i++)
+        {
+            for($j=0; $j < $contaDias; $j++)
+            {
+                $normalizado[$i][$j] = ( $return[$j][$i] ?: '' );
+            }
+        }
+
+        return $normalizado;
+    }
+}
+?>

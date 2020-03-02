@@ -1,0 +1,245 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Opening account return form
+ *
+ * @author Armando Taffarel Neto [taffarel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ *
+ * @since
+ * Class created on 03/05/2006
+ *
+ **/
+
+/**
+ * Form to opening account return
+ **/
+class FrmOpeningAccountReturn extends SForm
+{
+    private $home;
+    
+    /**
+     * Class constructor
+     **/
+    public function __construct($data)
+    {
+
+        $module = MIOLO::getCurrentModule();
+        $this->home   = $data->home;
+
+        parent::__construct( _M('Retorno de abertura de contas', $module), null, null );
+    }
+
+    /**
+     * Default method to define fields
+     **/
+    public function defineFields()
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        
+        if ( ! $this->page->isPostBack() )
+        {
+            $fields[] = new MFileField('importReturnFile', $this->getFormValue('importReturnFile', $data->importReturnFile), _M('Importar arquivo de retorno', $module));
+
+            $fields[] = new MSeparator('');
+
+            $btn1[]   = new MButton('btnValidate', _M('Atualizar arquivo', $module));
+            $div1     = new MDiv('div1', $btn1, null);
+            $fields[] = $div1;
+        
+            $fields[] = new MSeparator('');
+        }
+        
+        parent::defineFields( array( 'fields' => $fields, 'validators' => $validators ) );
+        
+        $this->toolbar->disableButton(MToolBar::BUTTON_NEW);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_SEARCH);
+    }
+
+    /**
+     * Event triggered when user chooses Validate from the toolbar
+     **/
+    public function btnValidate_click($sender=NULL)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        try
+        {
+            if ($_FILES["importReturnFile"]["error"] === 0)
+            {
+                $data->uploadFileName = $_FILES["importReturnFile"]["name"];
+                $data->contentType    = $_FILES["importReturnFile"]["type"];
+                $data->size           = $_FILES["importReturnFile"]["size"];
+                $tempFile             = $_FILES["importReturnFile"]["tmp_name"];
+
+                $businessFile = new BusinessBasicBusFile();
+                $businessFile->insertFile($data, $tempFile);
+
+                $args = array('event'=>'process_click',
+                              'fileId'=>$dataFile->fileId
+                             );
+
+                $goProcessUrl = $MIOLO->getActionURL($module, $action, '', $args);
+                $MIOLO->Information(_M('Arquivo importado com sucesso. Por favor, clique no botão "OK" para continuar o processamento', $module), $goProcessUrl);
+            }
+            else
+            {
+                throw new Exception(_M('Alguns problemas ocorreram durante a atualização do arquivo. Por favor, tente novamente.', $module));
+            }
+        }
+        catch ( Exception $e )
+        {
+            $MIOLO->information($e->getMessage());
+        }
+    }
+    
+   /**
+     * Event triggered when user set new from the toolbar
+     */
+    public function process_click($sender = null)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        $data->fileId        = MIOLO::_request('fileId');
+
+        $data = $this->getFileContent($data->fileId);
+
+        $MIOLO->getClass('finance', 'ReturnMCIF001');
+        $roa = new ReturnMCIF001();
+
+        if (strlen($data)>0)
+        {
+            $data = explode("\n", $data);
+            $count = count($data);
+            foreach ( $data as $key => $row )
+            {
+                if($key == 0)
+                {
+                    $file->header = $roa->header($row);
+                }
+
+                if( (trim(substr($row, 0, 5))) == 99999)
+                {
+                    $file->trailer = $roa->trailer($row);
+
+                    break;
+                }
+
+                if (  ( $key > 0 ) AND ( $key < $count - 1 ))
+                {
+                    $detail = $roa->detail($row);
+                    $file->details[] = clone($detail);
+
+                    $clientError  = $roa->clientError($detail->clientOccurrence);
+                    $accountError = $roa->accountError($detail->accountOccurrence);
+                    $limitError   = $roa->limitError($detail->limitOccurrence);
+
+                    if ( $detail->clientOccurrence == '000' )
+                    {
+                        $status = _M('Ok', $module);
+                        $forProcess[]->data = clone ($detail);
+                    }
+                    else
+                    {
+                        $status = _M('Não ok', $module);
+                        $errorsTotal++;
+                    }
+                    
+                    $gridData[] = array(
+                                        $detail->sequence,
+                                        $detail->id,
+                                        $detail->name,
+                                        $status,
+                                        $clientError,
+                                        $accountError,
+                                        $limitError
+                                       );
+                    unset($error);
+                    
+                }
+            }
+
+
+            $business = new BusinessHumanResourcesBusOpeningAccountReturn();
+            $ok = $business->processAccountReturn($forProcess);
+
+            if( $ok )
+            {
+                $grdResults = $MIOLO->getUI()->getGrid($module,'GrdOpeningAccountReturn');
+                $grdResults->setData($gridData);
+                $this->setFields($grdResults);
+                
+                $fields[] = new MText('Errors total', _M('Total de erros', $module) . ': ' . $errorsTotal);
+                
+                $fields[] = new MSeparator('');
+                $fields[] = new MButton('btnBack', _M('Voltar para', $module) .' '. _M('Retorno de abertura de contas', $module), $MIOLO->getActionURL($module, $action));
+                $this->addField($fields);
+            }
+            else
+            {
+                $goProcessUrl = $MIOLO->getActionURL($module, $action, '', null);
+                $MIOLO->Error(_M('Problemas ao atualizar as informações de arquivo de retorno de contas', $module), $goProcessUrl);
+            }
+        }
+        else
+        {
+            $goProcessUrl = $MIOLO->getActionURL($module, $action, '', null);
+            $MIOLO->Error(_M('O arquivo está vazio', $module), $goProcessUrl);
+        }
+    }
+    
+    /**
+     * get the file content
+     *
+     * @param: $fileName: string with filename
+     *
+     * @return (string): String containing the file content
+     *
+     */
+    private function getFileContent($fileName)
+    {
+        $MIOLO  = MIOLO::getInstance();
+
+        $path = $MIOLO->GetModulePath('basic', SAGU::getParameter('BASIC', 'UPLOAD_PATH'));
+        return file_get_contents($path.$fileName);
+    }
+
+}
+
+?>

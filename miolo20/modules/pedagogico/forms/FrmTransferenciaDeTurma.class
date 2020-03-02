@@ -1,0 +1,157 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2013 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Frequências e notas
+ *
+ * @author Jonas Gualberto Diel [jonas_diel@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Nataniel I. da Silva [nataniel@solis.com.br]
+ *
+ * @since
+ * Class created on 25/09/2014
+ */
+
+set_time_limit(0);
+ini_set('memory_limit', '2048M');
+
+class FrmTransferenciaDeTurma extends FrmTransferenciaDeTurmaPai
+{
+    
+    public function __construct()
+    {        
+        parent::__construct(null, null, null, _M('Transferência de turma'));
+    }
+   
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $turmaOrigem = MIOLO::_REQUEST('turmaOrigem');
+        $turmaDestino = MIOLO::_REQUEST('turmaDestino');
+        $personId = MIOLO::_REQUEST('personid');
+        
+        $fields[] = new SHiddenField('alunosNaoCancelados', DB_TRUE);
+       
+        // Turma de origem        
+        $fields[] = new MTextLabel('',_M('Turma de origem:'));
+        $fields[] = $ocorrencia = new sEscolha('ocorrenciacursoid', null, _M('Ocorrência de curso'), new AcpOcorrenciaCursoLookup());
+        
+        $fields[] = $ofertaDeCurso = new sEscolha('ofertacursoid', null, _M('Oferta de curso'), new AcpOfertaCurso());
+        
+        $fields[] = $ofertaturma = new sEscolha('ofertaturmaid', $turmaOrigem, _M('Oferta de turma'), new AcpOfertaTurma());
+        $ofertaturma->setIsRequired(true);
+        
+        $fields[] = new MSeparator();
+        
+        $fields[] = $pessoa = new sEscolha('personid', $personId, _M('Aluno', $module), new BasPessoaFisica()); 
+        $pessoa->setIsRequired(true);
+        
+        $fields[] = new MSeparator();
+            
+        // Turma de destino        
+        $fields[] = new MTextLabel('',_M('Turma de destino:'));
+        $fields[] = $ofertaturma = new sEscolha('ofertaturmaidx', $turmaDestino, _M('Oferta de turma'), new AcpOfertaTurma());
+        $ofertaturma->setIsRequired(true);
+        
+        $fields[] = new MSeparator();
+        
+        $fields[] = new MRadioButtonGroup('aproveitarFrequencias', _M('Aproveitar frequências automaticamente', $module), SAGU::listYesNo(), DB_TRUE, NULL, 'horizontal');
+        
+        parent::defineFields($fields, $validators);
+    }
+    
+    public function obterLabelSalvarEContinuar()
+    {
+        return _M('Continuar');
+    }
+    
+    public function btnSaveAndGo_click($sender = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+                
+        $turmaOrigem = new AcpOfertaTurma(MIOLO::_REQUEST('ofertaturmaid'));
+        $turmaDestino = new AcpOfertaTurma(MIOLO::_REQUEST('ofertaturmaidx'));
+        $personId = MIOLO::_REQUEST('personid');
+        $aproveitarFrequencias = MIOLO::_REQUEST('aproveitarFrequencias');
+        
+        // Adicionar validação para verificar se o aluno tem matrícula
+        $acpMatricula = new AcpMatricula();
+        $possuiMatricula = $acpMatricula->possuiMatricula($personId);
+        
+        if ( !$possuiMatricula )
+        {
+            $pessoa = new BasPessoa($personId);
+            
+            $href = $MIOLO->GetActionURL($module, 'main:process:inscricao', '', array('personid' => $personId));
+            $label = new MLink('confirmacaoMatricula', null, $href, 'Clique aqui', '_new');
+            
+            $msg = "A inscrição do aluno {$personId} - {$pessoa->name} ainda não está confirmada na turma " . $turmaOrigem->descricao . ", para realizar a transferência a inscrição na turma deve estar CONFIRMADA." . $label->generate() . " para consultar a inscrição do aluno confirmando ou ajustando conforme desejado. ";
+            $this->AddError($msg);
+            return;
+        }
+        
+        if ( $turmaOrigem->ofertaturmaid == $turmaDestino->ofertaturmaid )
+        {
+            $alert = _M('Para executar o processo de transferência de turma, é necessário selecionar uma oferta de turma de destino diferente da turma de origem.');
+            $this->AddAlert($alert);
+            return;
+        }
+        
+        if ( $turmaOrigem->ofertacursoid != $turmaDestino->ofertacursoid )
+        {
+            $this->AddError(_M('As turmas devem ser da mesma ocorrência de curso.'));
+            return;
+        }
+        
+        $alunoDaTurma = AcpOfertaTurma::verificaAlunoDaTurma($personId, $turmaOrigem->ofertaturmaid);
+                
+        if ( $alunoDaTurma == DB_FALSE )
+        {
+            $this->AddError(_M('O aluno não pertence a turma de origem.'));
+            return;
+        }
+        
+        $alunoDaTurmaNova = AcpOfertaTurma::verificaAlunoDaTurma($personId, $turmaDestino->ofertaturmaid);
+                
+        if ( $alunoDaTurmaNova == DB_TRUE )
+        {
+            $this->AddError(_M('O aluno já tem uma inscrição para a turma de destino.'));
+            return;
+        }
+        
+        $action = 'main:process:transferenciaDeTurmaComponentes';
+        $args['function'] = SForm::FUNCTION_INSERT;
+        $args['turmaOrigem'] = $turmaOrigem->ofertaturmaid;
+        $args['turmaDestino'] = $turmaDestino->ofertaturmaid;
+        $args['personId'] = $personId;
+        $args['aproveitarFrequencias'] = $aproveitarFrequencias == DB_TRUE ? DB_TRUE : DB_FALSE;
+
+        $url = $MIOLO->GetActionURL($module, $action, null, $args);
+        
+        $MIOLO->page->Redirect($url);
+    }
+}

@@ -1,0 +1,94 @@
+<?php
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda. e
+ * Univates - Centro Universitário.
+ * 
+ * Este arquivo é parte do programa Gnuteca.
+ * 
+ * O Gnuteca é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Email devolution form
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers \n
+ * Eduardo Bonfandini [eduardo@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Luiz Gregory Filho [luiz@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 17/11/2008
+ *
+ **/
+class FrmDevolution extends GForm
+{
+    public $MIOLO;
+    public $module;
+    public $busOperationLoan;
+    public $busLibraryUnit;
+
+
+    public function __construct()
+    {
+        $this->MIOLO  = MIOLO::getInstance();
+        $this->module = MIOLO::getCurrentModule();
+        $this->busOperationLoan = $this->MIOLO->getBusiness($this->module, 'BusOperationLoan');
+        $this->busLibraryUnit   = $this->MIOLO->getBusiness($this->module, 'BusLibraryUnit');
+        $this->setTransaction('gtcSendMailReturn');
+        parent::__construct(_M('Comunicar devolução', $this->module));
+        
+    }
+
+
+    public function mainFields()
+    {
+    	$fields[] = new MDiv('divDescription', _M('Comunicar por e-mail, usuários que tem materiais, cuja data de previsão de retorno é no dia X definido pelo usuário', $this->module), 'reportDescription');
+
+        $this->busLibraryUnit->filterOperator = TRUE;
+        $fields[] = new GSelection('libraryUnitId', null, _M('Unidade de biblioteca', $this->module), $this->busLibraryUnit->listLibraryUnit(), NULL, NULL, NULL, TRUE);
+        $fields[] = new MButton('btnOk', _M('Enviar', $this->module), ':doAction');
+        $fields[] = new MDiv('divGrid');
+
+        $this->setFields($fields);
+    }
+
+
+    public function doAction()
+    {
+        $data = $this->getData();
+        $ok     = $this->busOperationLoan->communicateReturn($data->libraryUnitId);
+        $goto   = $this->MIOLO->getActionURL($this->module, $this->_action);
+
+        if (($data = $this->busOperationLoan->getGridData()) && (count($data) > 0))
+        {
+            $grid = $this->MIOLO->getUI()->getGrid($this->module, 'GrdOperationLoan');
+            $grid->setData($data);
+            $this->setResponse($grid, 'divGrid');
+        }
+        else if (count($this->busOperationLoan->getMessages()) > 0)
+        {
+        	$this->injectContent($this->busOperationLoan->getMessagesTableRaw(), true);
+        }
+        else
+        {
+            $this->information(_M('Não há devoluções para serem comunicadas', $this->module), $goto);
+        }
+    }
+}
+?>

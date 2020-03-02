@@ -1,0 +1,571 @@
+<?php
+
+/**
+ * <--- Copyright 2011-2011 de Facimed - Faculdade de Ciências Biométricas de Cacoal.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Close protocol fine form
+ *
+ * @author Leovan Tavares da Silva [leovan@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Equipe SAGU [sagu2@solis.coop.br]
+ *
+ * @since
+ * Class created on 24/03/2011
+ *
+ * */
+
+/**
+ * Form to pay protocol fees
+ * */
+class FrmPayProtocolFee extends SForm
+{
+
+    /**
+     * Class constructor
+     * */
+    public function __construct($data)
+    {
+        $module = MIOLO::getCurrentModule();
+        parent::__construct(_M('Receber taxa', $module), null, null);
+    }
+
+    /**
+     * Método padrão para cração dos campos do formulário
+     * */
+    public function defineFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        $session = $MIOLO->getSession();
+
+        $this->toolbar->disableButton('tbBtnNew');
+        $this->toolbar->disableButton('tbBtnSave');
+        $this->toolbar->disableButton('tbBtnDelete');
+        $this->toolbar->disableButton('tbBtnSearch');
+        $this->toolbar->disableButton('tbBtnPrint');
+
+        $requestId = MIOLO::_request('requestId'); //Código da solicitação
+
+
+        if ( strlen($requestId) == 0 )
+        {
+            $MIOLO->error(_M('Nenhuma solicitação encontrada', $module)); //Verifica se veio o parametro com o codigo da multa
+        }
+
+        $busRequest = new BusinessProtocolBusRequestPtc();
+        $requestData = $busRequest->getRequestComplete($requestId);
+
+        //Busca dados do funcionário
+        $loginUser = $MIOLO->getLogin();
+        $busPhysicalPersonEmployee = new BusinessBasicBusPhysicalPersonEmployee();
+        $personData = $busPhysicalPersonEmployee->getPersonByMioloUserName($loginUser->id);
+
+        if ( is_object($personData) )
+        {
+            $busOpenCounter = new BusinessFinanceBusOpenCounter();
+
+            //Busca dados do caixa
+            $filter = new stdClass();
+
+            $filter->operatorId = $personData->personId;
+            $filter->open = 't';
+
+            $openCounter = $busOpenCounter->searchOpenCounter($filter);
+
+            if ( is_array($openCounter) )
+            {
+                $counterData = $busOpenCounter->getOpenCounter($openCounter[0][0]);
+            }
+            else
+            {
+                //Caso o funcionário nao for operador de caixa
+                $msg = _M('Erro. Você não tem permissão para executar este processo.', $module) . ' ' .
+                        _M('O usuário atual do sistema não é um operador de caixa.', $module);
+                $MIOLO->error($msg);
+            }
+        }
+        else
+        {
+            //Se o usuário nao for funcionario
+            $msg = _M('Erro. Você não tem permissão para executar este processo.', $module) . ' ' .
+                    _M('O usuário atual do sistema não é um funcionário ou não é um operador de caixa.', $module);
+            $MIOLO->error($msg);
+        }
+
+        $fields[] = new MHiddenField('openCounterId', $counterData->openCounterId);
+        $fields[] = new MHiddenField('requestId', $requestData->requestId);
+
+        //Fine Id
+        $fldRequest = new MTextLabel('requestNumber', $requestData->number, _M('Solicitação', $module));
+        $fields[] = $fldRequest;
+
+        //Caixa
+        $fldCounter = new MTextLabel('counter', $counterData->counterId . ' - ' . $counterData->counterDescription, _M('Caixa', $module));
+        $hdfOpenCounter = new MHiddenField('openCounterId', $counterData->openCounterId);
+        $fields[] = $hdfOpenCounter;
+        $fields[] = $fldCounter;
+
+        //Unidade do caixa
+        $fldCounterUnit = new MTextLabel('counterUnit', $counterData->unitDescription, _M('Unidade', $module));
+        $fields[] = $fldCounterUnit;
+
+        //Operador do caixa
+        $fldOperator = new MTextLabel('operator', $counterData->operatorId . ' - ' . $counterData->operatorName, _M('Operador', $module));
+        $fields[] = $fldOperator;
+
+        $busSpecies = new BusinessFinanceBusSpecies();
+        $listSpecies = $busSpecies->listSpecies();
+        //$session->setValue('species', $species);
+
+        $labelTotalFee = new MText('labelTotalFee', _M('Valor da taxa', $module));
+        $labelTotalFee->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $fieldTotalFee = new MTextField('totalFee', SAGU::formatNumber($requestData->taxValue), _M('Valor', $module), SAGU::getParameter('BASIC', 'FIELD_MONETARY_SIZE'), _M('Ex.: 1.00', $module));
+        $fieldTotalFee->setReadOnly(true);
+        $ctnFieldTotalFee = new MHContainer('hctTotalFee', array( $labelTotalFee, $fieldTotalFee ));
+        $ctnFieldTotalFee->setShowLabel(false);
+        $fields[] = $ctnFieldTotalFee;
+
+        if ( count($listSpecies) > 0 )
+        {
+            $paymentValue = $this->getFormValue('paymentValue');
+
+            foreach ( $listSpecies as $species )
+            {
+                $txtSpecies = new MText('txtSpecies_' . $species[0], ucfirst(strtolower($species[1])) . ':');
+                $txtSpecies->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+
+                $fldPaymentValue = new MTextField('paymentValue[' . $species[0] . ']', $paymentValue[$species[0]], '', SAGU::getParameter('BASIC', 'FIELD_MONETARY_SIZE'));
+                $validators[] = new MFloatValidator('paymentValue[' . $species[0] . ']', $species[1], SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'), 'optional');
+
+                $hctValue = new MHContainer('hctValue_' . $species[0], array( $txtSpecies, $fldPaymentValue ));
+                $hctValue->setShowLabel(false);
+                $flds[] = $hctValue;
+            }
+
+            $fields[] = new MBaseGroup('bsgPayments', _M('Pagamentos', $module), $flds, 'vertical');
+            $fields[] = new MButton('btnCloseInvoice', _M('Baixar taxa', $module), 'SUBMIT');
+        }
+        else
+        {
+            $fields[] = new MText('txtSpecies', _M('Não foram encontradas espécies. Registre ao menos uma espécie para continuar.', $module), 'red');
+
+            $varsFinancial = array( 'personId' => $invoiceData->personId, 'event' => 'btnSearch_click' );
+            $gotoFinancial = $MIOLO->getActionURL($module, 'main', null, $varsFinancial);
+            $fields[] = new MButton('btnBack', _M('Voltar', $module), $gotoFinancial);
+        }
+
+        $this->setFields($fields);
+        $this->setValidators($validators);
+
+        parent::defineFields();
+    }
+
+    public function btnCloseInvoice_click($sender = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'finance';
+        $action = MIOLO::getCurrentAction();
+
+        $data = $this->getTypesData();
+
+        $busRequest = new BusinessProtocolBusRequestPtc();
+        $busRequest->getDatabase()->execute('BEGIN');
+
+
+        try
+        {
+            if ( SAGU::calcNumber($data->totalFee . "-" . $data->payTotal) != 0 )
+            {
+                throw new Exception(_M('O valor pago (@1) nao corresponde ao valor da taxa (@2). Verifique os valores informados.', $module, SAGU::formatNumber($data->payTotal), SAGU::formatNumber($data->totalFee)));
+            }
+            else
+            {
+                $closeData = new StdClass();
+                $closeData->openCounterId = $data->openCounterId;
+                $closeData->payments = $data->payments;
+                $closeData->openValue = $data->totalFee;
+                $closeData->paymentValue = $data->payTotal;
+                $closeData->fineValue = 0;
+                $closeData->interestValue = 0;
+                $closeData->discountValue = 0;
+                $closeData->convenantValue = 0;
+                $closeData->requestId = $data->requestId;
+                $closeData->invoiceId = $busRequest->closeRequest($closeData);
+
+                $this->generateVoucher($closeData);
+            }
+        }
+        catch ( Exception $e )
+        {
+            $busRequest->getDatabase()->execute('ROLLBACK');
+
+            $msg = _M('Erro executando a operação solicitada.', $module);
+            $msg .= '<br />' . $e->getMessage();
+            $this->addError($msg);
+        }
+
+        $busRequest->getDatabase()->execute('ROLLBACK');
+    }
+
+    /**
+     * Event triggered when the button close invoice is clicked
+     */
+    public function generateVoucher($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'finance';
+        $action = MIOLO::getCurrentAction();
+
+        try
+        {
+            $businessCompany = new BusinessBasicBusCompany();
+            $businessLegalPerson = new BusinessBasicBusLegalPerson();
+            $businessPerson = new BusinessBasicBusPerson();
+            $businessDocument = new BusinessBasicBusDocument();
+            $businessEntry = new BusinessFinanceBusEntry();
+            $businessInvoice = new BusinessFinanceBusReceivableInvoice();
+            $businessDefaultOperations = new BusinessFinanceBusDefaultOperations();
+            $businessOpenCounter = new BusinessFinanceBusOpenCounter();
+            $businessOperation = new BusinessFinanceBusOperation();
+            $businessSpecies = new BusinessFinanceBusSpecies();
+            $businessRequest = new BusinessProtocolBusRequestPtc();
+            $businessSubjectSector = new BusinessProtocolBusSubjectSector();
+            $businessSubject = new BusinessProtocolBusSubject();
+
+            //Verifica a consistência da configuração da empresa
+            if ( SAGU::checkParameter('DEFAULT_COMPANY_CONF') )
+            {
+                $companyData = $businessCompany->getCompany(SAGU::getParameter('BASIC', 'DEFAULT_COMPANY_CONF'));
+
+                if ( is_null($companyData->companyId) )
+                {
+                    $MIOLO->error(_M('Parâmetro DEFAULT_COMPANY_CONF aponta para a empresa inexistente @1.', $module, SAGU::getParameter('BASIC', 'DEFAULT_COMPANY_CONF')));
+                }
+            }
+            else
+            {
+                $MIOLO->error(_M('Problemas ao procurar as informações da instituição. Por favor, verifique o cadastro da instituição e o parâmetro DEFAULT_COMPANY_CONF'));
+            }
+
+            //Obtem os dados da empresa
+            $personData = $businessLegalPerson->getLegalPerson($companyData->personId);
+
+            //Cria o vetor para substituição das tags
+            $tags1 = array
+                (
+                '$COMPANYNAME' => $personData->name,
+                '$LOCATION1' => SAGU::truncarString(29, $personData->locationType . ' ' . $personData->location . ', ' . $personData->number),
+                '$NEIGHBORHOOD1' => $personData->neighborhood,
+                '$CITY1' => $personData->cityName . '-' . $personData->stateId,
+                '$ZIPCODE1' => $personData->zipCode,
+                '$PHONE1' => $personData->phone,
+                '$CNPJ1' => $personData->cnpj,
+                '$IE1' => $personData->stateRegistration
+            );
+
+            //Obtem dados da solicitação
+            $requestData = $businessRequest->getRequestComplete($data->requestId);
+            $invoiceData = $businessInvoice->getReceivableInvoice($data->invoiceId);
+
+            $subjectId = $requestData->subjectId;
+            $subjectData = $businessSubject->getSubject($subjectId);
+
+            // Obtem os dados do título
+            
+            $tags2 = array
+                (
+                '$REQNUMBER' => $requestData->number,
+                '$DATE' => date(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP')),
+                '$TERM' => $subjectData->term,
+                '$INVOICE' => $data->invoiceId,
+                '$PARCELNUMBER' => $invoiceData->parcelNumber,
+                '$MATURITYDATE' => $invoiceData->maturityDate
+            );
+
+            //Obtem dados do operador
+            $counterData = $businessOpenCounter->getOpenCounter($data->openCounterId);
+
+            $tags3 = array
+                (
+                '$OPERATORID' => $counterData->operatorId,
+                '$OPERATORNAME' => $counterData->operatorName
+            );
+
+            //Obtem dados da pessoa devedora
+            if ( $businessPerson->isPersonLegal($requestData->personId) )
+            {
+                $personData = $businessLegalPerson->getLegalPerson($requestData->personId);
+                $personData->document = $personData->cnpj;
+            }
+            else
+            {
+                $personData = $businessPerson->getPerson($requestData->personId);
+                $personRG = $businessDocument->getDocument($requestData->personId, SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG'));
+                $personCPF = $businessDocument->getDocument($requestData->personId, SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF'));
+                $personData->document = strlen($personCPF->content) > 0 ? $personCPF->content : $personRG->content;
+            }
+
+            $tags4 = array
+                (
+                '$PERSONNAME' => $personData->name,
+                '$LOCATION2' => $personData->locationType . ' ' . $personData->location . ', ' . $personData->number,
+                '$NEIGHBORHOOD2' => $personData->neighborhood,
+                '$CITY2' => $personData->cityName . '-' . $personData->stateId,
+                '$ZIPCODE2' => $personData->zipCode,
+                '$PHONE2' => $personData->phone,
+                '$CNPJRG' => $personData->document
+            );
+
+            /*
+             * Busca lançamentos e substitui a tag $DETAILOP
+             */
+            //Obter os lançamentos do título
+            unset($filters);
+            $filters->invoiceId = $invoiceData->invoiceId;
+            $entryData = $businessEntry->searchEntry($filters);
+
+            $dataDefaultOperations = $businessDefaultOperations->getDefaultOperations();
+
+            $entryArray = array();
+
+            //Adiciona informações dos lançamentos no vetor de dados
+            if ( count($entryData) > 0 )
+            {
+                foreach ( $entryData as $entryRow )
+                {
+                    if ( $entryRow[2] != $dataDefaultOperations->paymentOperation )
+                    {
+                        $entryRow[3] = SAGU::truncarString(29, $entryRow[3]);
+                        $entryArray[] = array( $entryRow[2], $entryRow[3], $entryRow[5] );
+                    }
+                }
+            }
+
+            //Adiciona os pagamentos no vetor de dados
+            if ( count($data->payments) > 0 )
+            {
+                foreach ( $data->payments as $paymentData )
+                {
+                    if ( $paymentData[1] > 0 )
+                    {
+                        $paymentSpecies = $businessSpecies->getSpecies($paymentData[0]);
+                        $paymentSpecies->description = SAGU::truncarString(29, $paymentSpecies->description);
+                        $entryArray[] = array( $dataDefaultOperations->paymentOperation, $paymentSpecies->description, number_format($paymentData[1], SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'), SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), '') );
+                    }
+                }
+            }
+
+            //Obtem o modelo de comprovante
+            $printReceipt = SAGU::getParameter('BASIC', 'PRINT_RECEIPT_PROTOCOL');
+
+            // Código de autenticação
+            $validationString = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')) . ' ' . $invoiceData->invoiceId . ' ' . number_format($data->openValue, SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'), SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), '');
+            $validationString .= ' ' . substr(strtoupper(md5(date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')) . $invoiceData->invoiceId . number_format($data->openValue, SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE'), SAGU::getParameter('BASIC', 'FLOAT_SEPARATOR'), '') . '_s@gut1tul05')), 0, 8);
+            
+            $tags5 = array
+                (
+                '$AUTHCODE' => $validationString
+            );
+            
+            $tags = array_merge($tags1, $tags2, $tags3, $tags4, $tags5);
+            
+            //Chamada à função que interpreta o comprovante, completando-o com os dados
+            $contentReceiptView = SAGU::interpretsReceipt($printReceipt, $tags, $entryArray);
+            $contentReceiptAuth = SAGU::interpretsReceipt($printReceipt, $tags, $entryArray);
+
+            //Mensagem de orientação
+            $msg = _M('Verifique os dados abaixo e clique em \'Confirmar\' para baixar a taxa e gerar o comprovante.', $module);
+
+            $txtInfo = new MText('txtInfo', $msg);
+
+            $fields[] = new MDiv('divTxtInfo', $txtInfo, null, 'align=center');
+            $fields[] = new MSeparator();
+
+            //Exibe o comprovante na tela
+            $vector = explode("\n", $contentReceiptView);
+            $numberLines = count($vector);
+
+            $txtVoucher = new MMultiLineField('txtVoucherView', $contentReceiptView, '', 50, $numberLines, 50);
+            $txtVoucher->setReadOnly(true);
+            $fields[] = new MDiv('divVoucher', $txtVoucher, null, 'align=center');
+
+            //Campos com as informações da baixa
+            $fields[] = new MHiddenField('openCounterId', $data->openCounterId);
+            $fields[] = new MHiddenField('openValue', $data->openValue);
+            $fields[] = new MHiddenField('payTotal', $data->payTotal);
+            $fields[] = new MHiddenField('requestId', $data->requestId);
+            $fields[] = new MHiddenField('txtVoucher', $contentReceiptAuth);
+
+            //Campos dos pagamentos
+            if ( count($data->payments) > 0 )
+            {
+                foreach ( $data->payments as $index => $paymentData )
+                {
+                    $fields[] = new MHiddenField('paymentValue[' . $paymentData[0] . ']', $paymentData[1]);
+                }
+            }
+
+            //Botões voltar e confirmar
+            $gotoClose = $MIOLO->getActionURL($module, SAGU::getParameter('FINANCE', 'CLOSE_INVOICE_HANDLER'));
+            $btnBack = new MButton('btnBack', _M('Voltar', $module), 'SUBMIT');
+
+            $btnConfirm = new MButton('btnConfirm', _M('Confirmar', $module));
+
+            $fldsButtons = array( $btnBack, $btnConfirm );
+
+            $divButtons = new MDiv('divButtons', $fldsButtons, null, 'align=center');
+
+            $fields[] = $divButtons;
+            $fields[] = new MDiv('divResponse');
+
+            $this->setFields($fields);
+        }
+        catch ( Exception $e )
+        {
+            $this->addError($e->getMessage);
+        }
+    }
+
+    public function btnConfirm_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'finance';
+
+        $data = $this->getTypesData();
+
+        $data->voucher = $this->getFormValue('txtVoucher');
+
+        $busRequest = new BusinessProtocolBusRequestPtc();
+        $busRequest->beginTransaction();
+
+        try
+        {
+            $busRequest->closeRequest($data);
+
+            $requestData = $busRequest->getRequestComplete($data->requestId);
+
+            $busRequest->commit();
+
+            $msg = _M('Taxa fechada com sucesso.', $module);
+
+            $msg .= '<ul>' .
+                    ' <li>' . _M('Clique OK para retornar ao módulo financeiro', $module) . '.</li>' .
+                    ' <li>' . _M('Clique IMPRIMIR para imprimir o comprovante fiscal', $module) . '.</li>' .
+                    '</ul>';
+
+            $fields[] = new MHiddenField('voucher', $data->voucher);
+            $fields[] = new MDiv('divPrintResponse');
+
+            $prompt = new MPrompt(_M('Questão', $module), $msg);
+            $prompt->setType('information');
+
+            $varsFinancial = array( 'personId' => $requestData->personId, 'event' => 'btnSearch_click' );
+            $gotoFinancial = $MIOLO->getActionURL($module, 'main', null, $varsFinancial);
+            $prompt->addButton(_M('Ok', $module), $gotoFinancial);
+
+            $gotoPrint = $this->getAjaxAction('printVoucher', 'divPrintResponse', null, array( 'action' => 'print' ));
+            $prompt->addButton(_M('Imprimir comprovante', $module), $gotoPrint);
+
+            $voucher = base64_encode(serialize($data->voucher));
+
+            $gotoDownload = $MIOLO->getActionURL($module, $formAction, null, array( 'voucher' => $voucher, 'invoiceId' => $invoiceData->invoiceId, 'event' => 'downloadVoucher_click' ));
+            $prompt->addButton(_M('Baixar comprovante', $module), 'window.open(\'' . $gotoDownload . '\')');
+
+            $fields[] = $prompt;
+            $fields[] = new MDiv('divResponse');
+
+            $this->setFields($fields);
+        }
+        catch ( Exception $e )
+        {
+            $busRequest->rollback();
+            $this->addError(_M('Sistema não conseguiu baixar o título.', $module) . ' ' . $e->getMessage());
+        }
+    }
+
+    /**
+     * AJAX call to print/download the close voucher
+     *
+     * @param (stdClass) $args: All form data in form of a stdClass object.
+     */
+    public function printVoucher($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = 'finance';
+
+        $voucher = $args->voucher;
+        $action = $args->action;
+
+        SAGU::printFiscalData($voucher);
+
+        return;
+    }
+
+    public function downloadVoucher_click($sender = null)
+    {
+        $voucher = MIOLO::_request('voucher');
+        $voucher = unserialize(base64_decode($voucher));
+        SAGU::returnAsFile('comprovante.txt', $voucher, 'application/txt');
+    }
+
+    /**
+     * Get the types data information
+     */
+    public function getTypesData()
+    {
+        $data->openCounterId = $this->getFormValue('openCounterId');
+        $data->paymentValue = $this->getFormValue('paymentValue');
+        $data->totalFee = $this->getFormValue('totalFee');
+        $data->requestId = $this->getFormValue('requestId');
+        $data->invoiceId = $this->getFormValue('invoiceId');
+
+        $data->fineValue = 0;
+        $data->interestValue = 0;
+        $data->discountValue = 0;
+        $data->convenantValue = 0;
+        $data->comments = '';
+
+        $data->payTotal = 0;
+
+        if ( count($data->paymentValue) > 0 )
+        {
+            $data->payments = array();
+            foreach ( $data->paymentValue as $speciesId => $value )
+            {
+                if ( $value > 0 )
+                {
+                    $data->payTotal = SAGU::calcNumber($data->payTotal . '+' . $value);
+                }
+
+                $data->payments[$speciesId] = array( $speciesId, $value );
+            }
+        }
+
+        return $data;
+    }
+
+}
+
+?>

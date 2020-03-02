@@ -1,0 +1,235 @@
+<?php
+/**
+ * <--- Copyright 2005-2015 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class definition for database entities
+ *
+ * @author Luís Felipe Wermann [luis_felipe@solis.com.br]
+ *
+ * \b Maintainers: \n
+ * Luís Felipe Wermann [luis_felipe@solis.com.br]
+ *
+ * @since
+ * Class created on 13/05/2015
+ *
+ */
+
+class BasWebServiceLogin extends SType
+{
+    /**
+     * Código do usuário. Ex.: sagu2
+     * 
+     * @var string
+     */
+    private $login;
+    
+    /**
+     * Hash utilizado para validar.
+     * 
+     * @var string
+     */
+    private $hash;
+    
+    /**
+     * Validade do hash do usuário.
+     * 
+     * @var string 
+     */
+    private $validade;
+    
+    /**
+     * Inserir registro na base.
+     * Caso o usuário já esteja logado, invalida o último hash.
+     * 
+     * @param string $login
+     * @param string $validade
+     * @param string $hash
+     * @return boolean
+     */
+    public function insert($login, $validade, $hash)
+    {
+        // Invalida hash antigo
+        $this->invalidarHash($login);
+        
+        // Insere o novo hash
+        $sql = "INSERT INTO webServiceLogin
+                            (login,
+                             validade,
+                             hash)
+                     VALUES (?, ?, ?)";
+        
+        $args[] = $login;
+        $args[] = $validade;
+        $args[] = $hash;
+        
+        $ok = SDatabase::execute($sql, $args, false);
+        
+        return $ok;
+    }
+    
+    /**
+     * Busca a chave primária da tabela pelo usuário e onde ele ainda esteja com
+     * um hash válido.
+     * 
+     * @param string $login - Código do usuário
+     * @return int
+     */
+    public function procurarLoginValido($login)
+    {
+        $sql = "SELECT webServiceLoginId
+                  FROM webServiceLogin
+                 WHERE login = ?
+                   AND validade >= NOW()";
+        
+        $args[] = $login;
+        
+        $result = SDatabase::query($sql, $args);
+        
+        return $result[0][0];
+    }
+    
+    /**
+     * Seta validade do hash para agora.
+     * 
+     * @param int $webServiceLoginId
+     * @return boolean
+     */
+    public function setarValidadeParaAgora($webServiceLoginId)
+    {
+        $sql = "UPDATE webServiceLogin
+                   SET validade = NOW()
+                 WHERE webServiceLoginId = ?";
+        
+        $args[] = $webServiceLoginId;
+        
+        $ok = SDatabase::execute($sql, $args);
+        
+        return $ok;
+    }
+    
+    /**
+     * Invalida o hash na base de dados.
+     * 
+     * @return boolean
+     */
+    public function invalidarHash($login)
+    {
+        // Caso o usuário já esteja logado, invalida o último hash para criar o novo
+        $webServiceLoginId = $this->procurarLoginValido($login);
+        if ( strlen($webServiceLoginId) > 0 )
+        {
+            $this->setarValidadeParaAgora($webServiceLoginId);
+        }
+        
+        return true;
+    }
+
+    /**
+     * Verifica se o hash está válido.
+     * 
+     * @return boolean
+     */
+    public static function validarHash()
+    {
+        $hash = SAGU::NVL(MIOLO::_REQUEST('authenticationHash'), $_GET['authenticationHash']);
+        
+        if ( strlen($hash) > 0 )
+        {
+            $sql = "SELECT COUNT(*) > 0
+                      FROM webServiceLogin
+                     WHERE hash = ?
+                       AND validade >= NOW()";
+            $args[] = $hash;
+            
+            $result = SDatabase::query($sql, $args, false);
+        }
+
+        return $result[0][0] == DB_TRUE;
+    }
+
+    /**
+     * A partir do hash enviado pelo webServicesLogin são obtidos o usuário,
+     * a senha e a unidade.
+     * 
+     * @param string $hash
+     * @return \stdClass
+     */
+    public static function obterDadosDeLoginAPartirDoHash()
+    {
+        $hash = SAGU::NVL(MIOLO::_REQUEST('authenticationHash'), $_GET['authenticationHash']);
+        
+        $sql = " SELECT W.login,
+                        M.m_password,
+                        M.idUser
+                   FROM webServiceLogin W
+             INNER JOIN miolo_user M
+                     ON (M.login = W.login)
+                  WHERE hash = ?";
+        $args[] = $hash;
+        
+        $return = SDatabase::query($sql, $args, false);
+        
+        $usuario = new stdClass();
+        $usuario->login = $return[0][0];
+        $usuario->password = $return[0][1];
+
+        // Só busca unidades se estiver habilitado
+        $usuario->unitId = null;
+        if ( sMultiUnidade::estaHabilitada() )
+        {
+            $unidades = sMultiUnidade::obterUnidadesDoUsuario($return[0][2]);
+            $usuario->unitId = current(array_keys($unidades)); // Pega sempre a primeira unidade que o usuário tem permissão
+        }
+        
+        return $usuario;
+    }
+    
+    /**
+     * Setar login
+     * 
+     * @param string $login
+     */
+    public function setLogin($login)
+    {
+        $this->login = $login;
+    }
+
+    /**
+     * Setar hash
+     * 
+     * @param string $hash
+     */
+    public function setHash($hash)
+    {
+        $this->hash = $hash;
+    }
+
+    /**
+     * Setar validade
+     * 
+     * @param string $validade
+     */
+    public function setValidade($validade)
+    {
+        $this->validade = $validade;
+    }
+}
+
+?>

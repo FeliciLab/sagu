@@ -1,0 +1,81 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda. e
+ * Univates - Centro Universitário.
+ * 
+ * Este arquivo é parte do programa Gnuteca.
+ * 
+ * O Gnuteca é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * Library Unit form
+ *
+ * @author Jonas C. Rosa [jonas_rosa@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers \n
+ * Eduardo Bonfandini [eduardo@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Jader Osvino Fiegenbaum [jader@solis.coop.br]
+ *
+ * @since
+ * Class created on 11/07/2012
+ *
+ * */
+class FrmCountry extends GForm
+{
+
+    /** @var BusinessGnuteca3BusBusCountry */
+    public $business;
+
+    public function __construct()
+    {
+        $this->setAllFunctions('Country', null, array('countryId'), array('name'));
+        parent::__construct();
+    }
+
+    public function mainFields()
+    {
+        $validators = array();
+        $fields = array();
+        $countryId = null;
+
+        $fields[] = $countryId = new MTextField('countryId', null, _M('Código', $this->module), FIELD_ID_SIZE, _M('Ex.:BRA',$this->module));
+        $fields[] = new MTextField('_name', null, _M('Nome', $this->module), FIELD_DESCRIPTION_SIZE);
+        $fields[] = new MTextField('nationality', null, _M('Nacionalidade', $this->module), FIELD_DESCRIPTION_SIZE);
+        $fields[] = new MTextField('currency', null, _M('Moeda', $this->module), FIELD_ID_SIZE);
+        $fields[] = new MTextField('pluralCurrency', null, _M('Moeda no plural', $this->module), FIELD_ID_SIZE);
+        $fields[] = new MTextField('decimalDescription', null, _M('Descrição decimal', $this->module), FIELD_ID_SIZE);
+        $fields[] = new MTextField('pluralDecimalDescription', null, _M('Descrição decimal no plural', $this->module), FIELD_ID_SIZE);
+        $fields[] = new MTextField('currencySymbol', null, _M('Símbolo monetário', $this->module), FIELD_ID_SIZE);
+        $validators[] = new MRequiredValidator('countryId', null, 3);
+        $validators[] = new MRequiredValidator('_name');
+        $validators[] = new MRequiredValidator('nationality');
+
+        if ($this->function == 'update')
+        {
+            $countryId->setReadOnly(true);
+        }
+
+        $this->setFields($fields);
+        $this->setValidators($validators);
+    }
+
+}
+
+?>

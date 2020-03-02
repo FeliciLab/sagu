@@ -1,0 +1,1 @@
+ALTER TABLE acpcontroledefrequencia add constraint estadodematricula_modelodeavaliacao_fkey foreign key (modelodeavaliacaoid) references acpmodelodeavaliacao (modelodeavaliacaoid);

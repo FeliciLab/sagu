@@ -1,0 +1,241 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2013 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Frequências e notas
+ *
+ * @author Nataniel I. da Silva [nataniel@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * @since
+ * Class created on 17/11/2014
+ */
+
+set_time_limit(0);
+ini_set('memory_limit', '2048M');
+
+class FrmTransferenciaDeTurmaPai extends sLinkedForm
+{
+    public function getLinkedDefs()
+    {
+        return $this->newDef()
+                ->setChave('perfilcursoid')
+                ->addForm( $this->newFormDef()->setLabel('Dados da transferência')->setModule('pedagogico')->setAction('main:process:transferenciaDeTurma')->setTipo(self::TIPO_UM_PARA_UM) )
+                ->addForm( $this->newFormDef()->setLabel('Componentes curriculares')->setModule('pedagogico')->setAction('main:process:transferenciaDeTurmaComponentes')->setTipo(self::TIPO_UM_PARA_UM) )
+                ->addForm( $this->newFormDef()->setLabel('Financeiro')->setModule('pedagogico')->setAction('main:process:transferenciaDeTurmaFinanceiro')->setTipo(self::TIPO_UM_PARA_UM) )
+                ;
+    }
+    
+    public function matricularNasOfertasDaTurma($personId, $turmaId, $turmaOrigem = NULL)
+    {
+        $aproveitarFrequencias = MIOLO::_REQUEST('aproveitarFrequencias');
+        
+        $matricula = new AcpMatricula();
+        $infoPessoa = $matricula->buscaPorPessoa($personId, true, $turmaOrigem);
+        
+        // Inscrição da pessoa
+        $inscricaoTurmaGrupo = new AcpInscricaoTurmaGrupo($infoPessoa[0]->inscricaoturmagrupoid);
+        
+        $turmaDeOrigem = $inscricaoTurmaGrupo->ofertaturmaid;
+        $inscricao = $inscricaoTurmaGrupo->inscricaoid;
+        
+        $disciplinasTurmaOrigem = AcpOfertaComponenteCurricular::obterOfertaComponenteCurricularDaOfertaTurma($turmaDeOrigem);
+        
+        // Obtém informações das disciplinas de origem
+        foreach ( $disciplinasTurmaOrigem as $diciplinas )
+        {
+            $componenteMatriz = new AcpComponenteCurricularMatriz($diciplinas->componenteCurricularMatrizId);
+            $acpMatricula = new AcpMatricula();
+            
+            // Obtém informações da matrícula da pessoa
+            $filters = new stdClass();
+            $filters->personid = $personId;
+            $filters->ofertacomponentecurricularid = $diciplinas->ofertaComponenteCurricularId;
+            $infoMatricula = $acpMatricula->searchGrid($filters);
+            
+            $matricula = new AcpMatricula($infoMatricula[0]['acpmatricula.matriculaid']);
+
+            $ofertaComponenteOrigem[$componenteMatriz->componentecurricularid]['situacao'] = $matricula->situacao;
+            $ofertaComponenteOrigem[$componenteMatriz->componentecurricularid]['notafinal'] = $matricula->notafinal;
+            $ofertaComponenteOrigem[$componenteMatriz->componentecurricularid]['frequenciaFinal'] = $matricula->frequencia;
+            
+            if ( $aproveitarFrequencias == DB_TRUE )
+            {
+                // Frequências
+                $cargaHoraria = AcpFrequencia::obtemCargaHorariaTotalCursada($matricula->matriculaid);
+                $ofertaComponenteOrigem[$componenteMatriz->componentecurricularid]['frequencia'] = $cargaHoraria;
+            }
+                
+            // Obtém as notas registradas da oferta de origem
+            $modeloAvaliacao = AcpModeloDeAvaliacao::obterModeloDaOfertaDeComponenteCurricular($diciplinas->ofertaComponenteCurricularId);
+            $componentesAvaliacao = AcpComponenteDeAvaliacao::obterComponentesDeAvaliacaoDoModelo($modeloAvaliacao->modelodeavaliacaoid);
+            $avaliacao = array();
+            
+            foreach ( $componentesAvaliacao as $componente )
+            {
+                $avaliacao[] = AcpAvaliacao::obterAvaliacao($matricula->matriculaid, $componente->componentedeavaliacaoid);
+            }
+            
+            $ofertaComponenteOrigem[$componenteMatriz->componentecurricularid]['notas'] = $avaliacao;
+            
+            // Cancela as disciplinas de origem caso o status seja de matriculado
+            if ( $matricula->situacao == AcpMatricula::SITUACAO_MATRICULA )
+            {
+                $acpMatricula = new AcpMatricula();
+                $acpMatricula->matriculaid = $matricula->matriculaid;
+                $acpMatricula->situacao = AcpMatricula::SITUACAO_CANCELAMENTO;
+                $acpMatricula->obs = _M("MATRÍCULA CANCELADA POR TRANSFERÊNCIA DE TURMA.");
+                $acpMatricula->save(); 
+            }
+        }
+        
+        // Cancela a inscrição da turma de origem
+        $acpInscricao = new AcpInscricao($inscricao);
+        $statusInscricao = $acpInscricao->situacao;
+        $acpInscricao->situacao = AcpInscricao::SITUACAO_CANCELADO;
+        $acpInscricao->datasituacao = date(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP'));
+        $acpInscricao->save();
+
+        // Turma de destino
+        $turmaDestino = new AcpOfertaTurma($turmaId);
+        
+        // Insere uma nova inscrição 
+        $acpInscricaoNova = new AcpInscricao();
+        $acpInscricaoNova->ofertacursoid = $turmaDestino->ofertacursoid;
+        $acpInscricaoNova->origem = AcpInscricao::ORIGEM_ADMINISTRATIVA;
+        $acpInscricaoNova->situacao = $statusInscricao;
+        $acpInscricaoNova->datasituacao = date(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP'));
+        $acpInscricaoNova->personid = $personId;
+        $acpInscricaoNova->save();
+        
+        // Registra a inscricao na turma
+        $acpInscricaoTurmaGrupo = new AcpInscricaoTurmaGrupo();
+        $acpInscricaoTurmaGrupo->inscricaoid = $acpInscricaoNova->inscricaoid;
+        $acpInscricaoTurmaGrupo->ofertaturmaid = $turmaId;
+        $acpInscricaoTurmaGrupo->observacoes = _M("INSCRIÇÃO REALIZADA PELO PROCESSO DE TRANSFERÊNCIA DE TURMA.");
+        $acpInscricaoTurmaGrupo->save();
+        
+        // Obtém os novos componentes da turma de destino
+        $disciplinasTurmaDestino = AcpOfertaComponenteCurricular::obterOfertaComponenteCurricularDaOfertaTurma($turmaId);
+        
+        // Matricula nos componentes da nova turma
+        foreach ( $disciplinasTurmaDestino as $diciplinas )
+        {
+            $componenteMatrizDestino = new AcpComponenteCurricularMatriz($diciplinas->componenteCurricularMatrizId);
+            
+            // Efetua matrícula no componente da turma nova
+            $acpMatricula = new AcpMatricula();
+            
+            // Lógica da situação - verificar ticket #37590
+            $situacao = $ofertaComponenteOrigem[$componenteMatrizDestino->componentecurricularid]['situacao'];
+            
+            if ( $situacao == AcpMatricula::SITUACAO_REPROVADO || $situacao == AcpMatricula::SITUACAO_REPROVADO_POR_FALTAS )
+            {
+                $situacao = AcpMatricula::SITUACAO_MATRICULA;
+            }
+            
+            // Estado de matrícula id
+            ( $situacao == AcpMatricula::SITUACAO_APROVADO ) ? $acpMatricula->estadodematriculaid = 1 : null;
+            
+            // Só pode ser retroativa quando não for SITUAÇÃO DE MATRÍCULA - ticket #38418
+            ( $situacao == AcpMatricula::SITUACAO_MATRICULA ) ? $acpMatricula->retroativa = DB_FALSE : $acpMatricula->retroativa = DB_TRUE;
+            
+            $acpMatricula->situacao = SAGU::NVL($situacao, AcpMatricula::SITUACAO_MATRICULA);
+            $acpMatricula->personid = $personId;
+            $acpMatricula->ofertacomponentecurricularid = $diciplinas->ofertaComponenteCurricularId;
+            $acpMatricula->inscricaoturmagrupoid = $acpInscricaoTurmaGrupo->inscricaoturmagrupoid;
+            $acpMatricula->notafinal = ($situacao == AcpMatricula::SITUACAO_MATRICULA) ? null : $ofertaComponenteOrigem[$componenteMatrizDestino->componentecurricularid]['notafinal'];
+            $acpMatricula->frequencia = ($situacao == AcpMatricula::SITUACAO_MATRICULA) ? null : $ofertaComponenteOrigem[$componenteMatrizDestino->componentecurricularid]['frequenciaFinal'];
+            $acpMatricula->save();
+            
+            $frequencia = $ofertaComponenteOrigem[$componenteMatrizDestino->componentecurricularid]['frequencia'];
+            
+            // Verifica se a flag para aproveitar frequências está habilitada
+            // Se for uma matrícula não pode aproveitar as frequências
+            if ( $aproveitarFrequencias == DB_TRUE && 
+                 $situacao != AcpMatricula::SITUACAO_MATRICULA )
+            {
+                // Verifica se existe frequência registrada para o componente curricular
+                if ( strlen($frequencia) > 0 )
+                {
+                    $dataFrequencia = SAGU::getDateNow();
+                    
+                    // Obtém a quantidade de ocorrências de horário ofertadas
+                    $ocorrenciasDaOferta = AcpOcorrenciaHorarioOferta::obterOcorrenciasHorarioOferta($diciplinas->componenteCurricularMatrizId);
+                    $verificaOcorrencia = array();
+                    foreach ( $ocorrenciasDaOferta as $key => $ocorrencias )
+                    {
+                         // Obter a carga horária desta ocorrência de horario 
+                        $horario = new AcpHorario($ocorrencias->horarioid);
+                        
+                        // Registra a frequência e diminui a quantidade registrada da frequência a ser registrada ainda
+                        if ( $horario->minutosfrequencia <= $frequencia )
+                        {
+                            $acpFrequencia = new AcpFrequencia();
+                            $acpFrequencia->frequencia = AcpFrequencia::FREQUENCIA_PRESENTE;
+                            $acpFrequencia->matriculaid = $acpMatricula->matriculaid;
+                            $acpFrequencia->datalancamento = $dataFrequencia;
+                            $acpFrequencia->ocorrenciahorarioofertaid = $ocorrencias->ocorrenciahorarioofertaid;
+                            $acpFrequencia->save();
+
+                            $frequencia = $frequencia - $horario->minutosfrequencia;
+                        }
+                        else if ( ($horario->minutosfrequencia/2) <= $frequencia )
+                        {
+                            $acpFrequencia = new AcpFrequencia();
+                            $acpFrequencia->frequencia = AcpFrequencia::FREQUENCIA_MEIA;
+                            $acpFrequencia->matriculaid = $acpMatricula->matriculaid;
+                            $acpFrequencia->datalancamento = $dataFrequencia;
+                            $acpFrequencia->ocorrenciahorarioofertaid = $ocorrencias->ocorrenciahorarioofertaid;
+                            $acpFrequencia->save();
+
+                            $frequencia = $frequencia - ($horario->minutosfrequencia/2);
+                        }
+                    }
+                }
+            }
+            
+            // Salva as notas na nova matrícula
+            $modeloAvaliacao = AcpModeloDeAvaliacao::obterModeloDaOfertaDeComponenteCurricular($diciplinas->ofertaComponenteCurricularId);
+            $componentesAvaliacao = AcpComponenteDeAvaliacao::obterComponentesDeAvaliacaoDoModelo($modeloAvaliacao->modelodeavaliacaoid);
+            
+            foreach ( $componentesAvaliacao as $componente )
+            {
+                foreach ( $ofertaComponenteOrigem[$componenteMatrizDestino->componentecurricularid]['notas'] as $avaliacao )
+                {
+                    if ( strlen($avaliacao->nota) > 0 && ($componente->componenteDeAvaliacaoId == $avaliacao->componentedeavaliacaoid || $componente->conceitodeavaliacaoid == $avaliacao->conceitodeavaliacaoid) )
+                    {
+                        $acpAvaliacao = new AcpAvaliacao();
+                        $acpAvaliacao->matriculaid = $acpMatricula->matriculaid;
+                        $acpAvaliacao->nota = $avaliacao->nota;
+                        $acpAvaliacao->datalancamento = $avaliacao->datalancamento;
+                        $acpAvaliacao->componentedeavaliacaoid = $avaliacao->componentedeavaliacaoid;
+                        $acpAvaliacao->conceitodeavaliacaoid = $avaliacao->conceitodeavaliacaoid;
+                        $acpAvaliacao->save();
+                    }
+                }
+            }
+            
+        }
+        
+    }
+}

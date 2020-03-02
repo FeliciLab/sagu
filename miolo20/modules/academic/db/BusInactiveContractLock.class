@@ -1,0 +1,188 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file handles the connection and actions for inactive contracts
+ *
+ * @author Daniel Afonso Heisler [daniel@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Cristian Edson Göhl [cristian@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 28/01/2007
+ *
+ **/
+
+
+/**
+ * Class to close inactive contracts
+ **/
+class BusinessAcademicBusInactiveContractLock extends sBusiness
+{
+    public function getSQLInactiveContracts($periodId, $courseId = null, $courseVersion = null)
+    {
+        $sql = 'SELECT A.contractId,
+                       A.personId,
+                       B.name,
+                       isDefaulter(A.personId) AS defaulter
+                  FROM unit_acdContract A
+            INNER JOIN ONLY basPerson B
+                    ON B.personId = A.personId
+                 WHERE contractId NOT IN (SELECT DISTINCT A.contractId
+                                            FROM acdMovementContract A
+                                      INNER JOIN unit_acdlearningperiod B
+                                              ON B.learningPeriodId = A.learningPeriodId
+                                           WHERE B.periodId = ?)
+                   AND getContractDisactivationDate(A.contractId) IS NULL
+                   AND isContractClosed(A.contractId) IS FALSE
+                   AND isAcademicEnrolledInPeriod(A.contractId, ?) IS FALSE ';
+        
+        // exclui os calouros da listagem
+        $sql .= ' AND isFreshmanByPeriod(A.contractId, ?) IS NOT TRUE ';
+        $args = array($periodId, $periodId, $periodId);
+        
+        if ( $courseId != null )
+        {
+            $sql .= '
+                   AND a.courseId = ?';
+            $args[] = $courseId;
+        }
+        if ( $courseVersion != null )
+        {
+            $sql .= '
+                   AND a.courseVersion = ?';
+            $args[] = $courseVersion;
+        }
+        
+        $sql .= '
+              ORDER BY B.name, A.contractId';
+
+        return SAGU::prepare($sql, $args);
+    }
+
+    /**
+     * Search contract with enroll state
+     *
+     * @param $data (object): Data to be filtered
+     *
+     * @return (object): Return an object of the type handled by the class
+     *
+     **/
+    public function lockContract($contractId, $reasonId, $periodId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+        $learningPeriod = $busLearningPeriod->getLearningPeriodByContractAndPeriod($contractId, $periodId);
+
+        if ( is_null($learningPeriod) )
+        {
+            throw new Exception(_M('Não foi possível encontrar um período letivo para o contrato @1 no período @2.', $module, $contractId, $periodId));
+        }
+
+        if ( SAGU::getParameter('BASIC', 'MODULE_FINANCE_INSTALLED') == 'YES' )
+        {
+            $busContract = new BusinessAcademicBusContract();
+
+            $contract = $busContract->getContract($contractId);
+            
+            $busInvoice = new BusinessFinanceBusInvoice();
+            
+            if ( $busInvoice->isDefaulter($contract->personId) )
+            {
+                if ( ! $MIOLO->checkAccess('FrmInactiveContractLock', A_ADMIN, false, true) )
+                {
+                    throw new Exception(_M('Contrato @1 (pertencente à pessoa @2) possui débitos.', $module, $contractId, $contract->personId). ' ' .
+                                        _M('O contrato só pode ser fechado por um usuário que possua as permissões necessárias.', $module));
+                }
+            }
+        }
+
+        $busMovementContract = new BusinessAcademicBusMovementContract();
+
+        $movementContract = new acdMovementContract();
+        $movementContract->contractId = $contractId;
+        $movementContract->learningPeriodId = $learningPeriod->learningPeriodId;
+        $movementContract->reasonId = $reasonId;
+        $movementContract->stateContractId = SAGU::getParameter('ACADEMIC', 'STATE_CONTRACT_ID_LOCKED');
+        $movementContract->stateTime = date(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP'));
+
+        if ( ! $busMovementContract->insertMovementContract($movementContract) )
+        {
+            throw new Exception(_M('Não foi possível inserir uma movimentação contratual para o contrato @1.', $module, $contractId));
+        }
+
+        //Class
+        if( SAGU::getParameter('ACADEMIC', 'EXECUTE_AUTOMATIC_CLASS_CHANGES') == DB_TRUE )
+        {
+            $businessClassPupil = new BusinessAcademicBusClassPupil();
+
+            $closeClass = new stdClass();
+            $closeClass->endDate  = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+
+            $contractInThePeriod = $businessClassPupil->getFreeDateFromChanges($result[$i][0], $closeClass->endDate, ' - ', '');
+
+            if( strlen($contractInThePeriod->date) > 0 )
+            {
+                $closeClass->endDate = $contractInThePeriod->date;
+                // There was a class that has already happened at this time
+            }
+
+            $existsOpenClassContract = $businessClassPupil->getContractCurrentClass($result[$i][0]);
+
+            // Exists open class for contract
+            if( strlen($existsOpenClassContract->classId) > 0 )
+            {
+                if( SAGU::dateDiff($existsOpenClassContract->beginDate,$closeClass->endDate) >= 0 )
+                {
+                    $existsOpenClassContract->endDate = $existsOpenClassContract->beginDate;
+                    //It was found open with a class start date at or higher than today. She ended with the final date "$existsOpenClassContract->endDate".
+                }
+                else
+                {
+                    $freeDate = $businessClassPupil->getFreeDateFromChanges($result[$i][0], date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')), ' - ', $existsOpenClassContract->beginDate );
+
+                    $existsOpenClassContract->endDate = $freeDate->date;
+                }
+
+                $existsOpenClassContract->reasonId = SAGU::getParameter('ACADEMIC', 'STATE_CONTRACT_ID_LOCKED');
+
+                if ( ! $businessClassPupil->updateClassPupil($existsOpenClassContract) )
+                {
+                    throw new Exception(_M('Não foi possível atualizar a turma do contrato @1.', $module, $contractId));
+                }
+            }
+        }
+
+        return true;
+
+    }
+}
+
+?>

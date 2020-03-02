@@ -1,0 +1,734 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2011 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This class generates the remittance invoice file for ITAU, following the rules of FEBRABAN document
+ *
+ * @author: Daniel Hartmann [daniel@solis.coop.br]
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * 
+ * @since
+ * Class created on 22/06/2011
+ *
+ * */
+$MIOLO->getClass('finance', 'DefaultFormat');
+
+/**
+ * Class to generate the bank remittance
+ */
+class remittanceInvoice341
+{
+    public $history;
+    public $fileBody;
+    public $fileData;
+    public $trailerValue;
+    public $counter;
+    public $invoicesWithTooMuchDiscount;
+    
+    const BANK_CODE = '341';
+    
+    /*
+     * generate the header for the remittance invoice
+     * 
+     * @param $data (object): Data information for header information
+     *
+     * @return (string): String containing the header formatted
+     *
+     */
+
+    private function header($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $business = new BusinessFinanceBusRemittanceInvoice341();
+
+        $dataCompany = $business->getCompanyData(SAGU::getParameter('basic', 'DEFAULT_COMPANY_CONF'));
+        
+        $dataBankAccount = $business->getBankAccountData($data->bankAccountId);
+
+        $ta = ((string) $dataBankAccount->branchNumber) . ((string) $dataBankAccount->accountNumber);
+        $dacTA = self::modulo10($ta);
+
+        // 001 - 009 - Constante 01REMESSA
+        $line = '01REMESSA';
+        // 010 - 011 - Constante 01.
+        $line .= '01';
+        // 012 - 026 - Constante COBRANCA.
+        $line .= DefaultFormat::formatField('COBRANCA', 'A', 15);
+        // 027 - 030 - Agência
+        $line .= DefaultFormat::formatField($dataBankAccount->branchNumber, 'N', 4);
+        // 031 - 032 - Constante 00
+        $line .= '00';
+        // 033 - 037 - Conta corrente
+        $line .= DefaultFormat::formatField($dataBankAccount->accountNumber, 'N', 5);
+        // 038 - 038 - DAC de Agência/Conta (Módulo 10)
+        $line .= $dacTA;
+        // 039 - 046 - Em branco
+        $line .= DefaultFormat::formatField(' ', 'A', 8);
+        // 047 - 076 - Nome da Empresa
+        $line .= DefaultFormat::formatField($dataCompany->name, 'A', 30);
+        // 077 - 079 - Número do banco.
+        $line .= DefaultFormat::formatField(self::BANK_CODE, 'N', 3);
+        // 080 - 094 - Nome por extenso do banco cobrador. Constante BANCO ITAU SA
+        $line .= DefaultFormat::formatField('BANCO ITAU SA', 'A', 15);
+        // 095 - 100 - Data Gravação do arquivo
+        $line .= date('dmy');
+        // 101 - 394 - Em branco
+        $line .= DefaultFormat::formatField(' ', 'A', 294);
+        // 395 - 400 - Constante 000001
+        $line .= DefaultFormat::formatField('1', 'N', 6);
+        // Tira acentos, coloca em caixa alta e quebra linha
+        $lineS = strToUpper(SAGU::stringToASCII($line)) . "\n";
+
+        return $lineS;
+    }
+
+    /**
+     * Generate the details remittance data
+     * 
+     * @param object $data Data information for header information
+     *
+     * @return string String containing the header formatted
+     *
+     */
+    private function details($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $business = new BusinessFinanceBusRemittanceInvoice341();
+        $businessCompany = new BusinessBasicBusCompany();
+        $dataDetails = $business->listDetails($data);
+        $dataCompany = $businessCompany->getCompany(SAGU::getParameter('BASIC', 'DEFAULT_COMPANY_CONF'));
+        $dataBankAccount = $business->getBankAccountData($data->bankAccountId);
+        
+        $cnpj = preg_replace('/[^0-9]/', '', $dataCompany->cnpj);
+        $ta = ((string) $dataBankAccount->branchNumber) . ((string) $dataBankAccount->accountNumber);
+        $dacTA = self::modulo10($ta);
+
+        if ( !is_array($dataDetails) )
+        {
+            return false;
+        }
+
+        $zeros = str_pad('', 100, '0');
+        $spaces = str_pad('', 400, ' ');
+
+        // contador de linhas ... começa no 1 por causa do header.
+        $counter = 1;
+        $lineMonthsCounter = 0;
+        $Total_Remessa = 0;
+        
+        $lineS = '';
+        $invoicesWithTooMuchDiscount = array();
+
+        foreach ( $dataDetails as $key => $oneLine )
+        {
+            $newLine = new stdClass();
+            $newLine->invoiceId = $oneLine[0];
+            $newLine->personId = $oneLine[1];
+            $newLine->personType = $oneLine[2];
+            $newLine->personName = $oneLine[3];
+            $newLine->incomeSourceId = $oneLine[4];
+            $newLine->accountNumber = $oneLine[5];
+            $newLine->maturityDate = $oneLine[6];
+            $newLine->balanceValue = $oneLine[7];
+            $newLine->cityId = $oneLine[8];
+            $newLine->square = $oneLine[9];
+            $newLine->emissionDate = $oneLine[10];
+            $newLine->bankInvoiceId = $oneLine[11];
+            $newLine->finePercent = $oneLine[12];
+            $newLine->daysToFine = $oneLine[13];
+            $newLine->monthlyInterestPercent = $oneLine[14];
+            $newLine->wallet = $oneLine[15];
+            $newLine->branchNumber = $oneLine[16];
+            $newLine->ourNumber = $oneLine[17];
+            $newLine->balanceWithPoliciesDated = $oneLine[18];
+            $newLine->delayDate = $oneLine[19];
+            $newLine->daysToProtest = $oneLine[20];            
+            $newLine->isCanceled = $oneLine[21];
+            $newLine->value = $oneLine[22];
+            
+            $policyDiscount = $business->listPolicyDiscount($newLine->invoiceId);
+            $newLine->discountValue = ( strlen($policyDiscount[0][1]) > 0 ? $policyDiscount[0][1] : '0' );
+            
+            $update = true;
+            
+            $filters = new stdClass();
+            $filters->invoiceId = $newLine->invoiceId;
+            $searchFile = FinFileLog::getLast($filters);
+            
+            //Se o titulo ja foi gerado em algum arquivo remessa
+            if ( strlen($searchFile->fileLogId) > 0 )
+            {                
+                //Comparar as diferencas entre o titulo atual e as informações do log
+                if( ( $searchFile->isCanceled == DB_FALSE && $newLine->isCanceled == DB_TRUE ) || ( $searchFile->balanceValue != 0 && $newLine->balanceValue == 0 ) )//Título cancelado
+                {
+                    $data->instruction = '02'; //PEDIDO DE BAIXA
+                }
+                elseif( $searchFile->accountNumber != $newLine->accountNumber || 
+                        $searchFile->balance != $newLine->balanceValue ||
+                        $searchFile->value != $newLine->value ||                         
+                        $searchFile->monthlyInterestPercent != $newLine->monthlyInterestPercent || 
+                        $searchFile->wallet != $newLine->wallet || 
+                        $searchFile->daysToFine != $newLine->daysToFine || 
+                        $searchFile->daysToProtest != $newLine->daysToProtest || 
+                        $searchFile->discountValue != $newLine->discountValue || 
+                        $searchFile->ourNumber != $newLine->ourNumber )
+                {
+                    $data->instruction = '31'; //ALTERAÇÃO DE OUTROS DADOS                    
+                }
+                elseif( $searchFile->maturityDate != $newLine->maturityDate )
+                {
+                    $data->instruction = '06'; //ALTERAÇÃO DO VENCIMENTO
+                }
+                else
+                {
+                    $update = false; //A entrada se mantém igual
+                }
+            }
+            else
+            {
+                //Titulo novo
+                $data->instruction = '01'; //REMESSA
+            }
+            $newLine->instruction = $data->instruction;
+            
+            if( $update ) //Somente cria nova entrada se ainda nao existir ou recebeu alguma alteração
+            {
+                $counter++;
+                
+                // 001 - 001 - constante 1
+                $line = '1';
+                // 002 - 003 - Tipo de inscrição da empresa. 04 - CNPJ do cedente.
+                $line .= '04';
+                // 004 - 017 - CNPJ da empresa
+                $line .= DefaultFormat::formatField($cnpj, 'N', 14);
+                // 018 - 021 - Agência
+                $line .= DefaultFormat::formatField($newLine->branchNumber, 'N', 4);
+                // 022 - 023 - Zeros
+                $line .= DefaultFormat::formatField('0', 'N', 2);
+                // 024 - 028 - Conta corrente
+                $line .= DefaultFormat::formatField($newLine->accountNumber, 'N', 5);
+                // 029 - 029 - DAC de Agência/Conta (módulo 10).
+                $line .= DefaultFormat::formatField($dacTA, 'N', 1);
+                // 030 - 033 - Em branco.
+                $line .= DefaultFormat::formatField(' ', 'A', 4);
+                // 034 - 037 - Código de instrução a ser cancelada.
+                $line .= DefaultFormat::formatField(' ', 'A', 4);
+                // 038 - 062 - Identificação do título na empresa (invoiceId).
+                $line .= DefaultFormat::formatField($newLine->invoiceId, 'A', 25);
+                // 063 - 070 - Identificação do título no banco. Nosso número.
+                $line .= DefaultFormat::formatField($newLine->ourNumber, 'N', 8);
+                // 071 - 083 - Quantidade de moeda variável. Zeros se moeda é Real.
+                $line .= DefaultFormat::formatField('0', 'N', 13);
+                // 084 - 086 - Número da carteira.
+                $line .= DefaultFormat::formatField($newLine->wallet, 'N', 3);
+                // 087 - 107 - Identificação da operação no banco.
+                $line .= DefaultFormat::formatField(' ', 'A', 21);
+                // 108 - 108 - Código da carteira.
+                $line .= DefaultFormat::formatField(self::getWalletCode($newLine->wallet), 'A', 1);
+                // 109 - 110 - Identificação da ocorrência.
+                $line .= DefaultFormat::formatField($data->instruction, 'N', 2); //FIXME Alteracao necessaria, obter a ocorrencia do log de alteracoes do titulo
+                // 111 - 120 - Número do documento de cobrança.
+                $line .= DefaultFormat::formatField($newLine->invoiceId, 'A', 10);
+                // 121 - 126 - Data de vencimento. 'ddmmyy'
+                $line .= DefaultFormat::formatField(SAGU::formatDate($newLine->maturityDate, 'ddmmyy'), 'N', 6);
+
+                // 127 - 139 - Valor do Título.
+                $value = ($newLine->balanceValue * 100);
+                // Soma valores para Triller 
+                $trailerValue = SAGU::calcNumber($trailerValue . ' + ' . $newLine->balanceValue);
+                $line .= DefaultFormat::formatField($value, 'N', 13);
+                // soma de valores para histórico
+                $this->history[$key][3] = $newLine->balanceValue;
+
+                // 140 - 142 - Número do Banco.
+                $line .= DefaultFormat::formatField(self::BANK_CODE, 'N', 3);
+                // 143 - 147 - Agência cobradora. Zeros em arquivos de remessa.
+                $line .= DefaultFormat::formatField('0', 'N', 5);
+                // 148 - 149 - Espécie.
+                $line .= DefaultFormat::formatField($data->invoiceKind, 'A', 2);
+                // 150 - 150 - Código aceite - N - Não aceite | A - Aceite.
+                $line .= DefaultFormat::formatField(SAGU::getParameter('FINANCE', 'FLAG_DEFAULT_REMITTANCE_ACCEPTED_341'), 'A', 1);
+                // 151 - 156 - Data emissão do título.
+                $line .= DefaultFormat::formatField(date(dmy), 'N', 6);
+                // 157 - 158 - Código da primeira instrução.            
+                $line .= DefaultFormat::formatField($dataBankAccount->firstInstruction, 'A', 2);           
+                // 159 - 160 - Código da segunda instrução.
+                $line .= DefaultFormat::formatField($dataBankAccount->secondInstruction, 'A', 2);
+                // 161 - 173 - Valor de mora por dia de atraso.
+                $interestPercent = round(($newLine->monthlyInterestPercent / 30) * 100);
+                $line .= DefaultFormat::formatField($interestPercent ? $interestPercent : '0', 'N', 13);
+
+                if ( count($policyDiscount) != 0 )
+                {
+                    list(
+                        $discountDate,
+                        $discountValue
+                    ) = $policyDiscount[0];
+
+                    $discountValue = SAGU::calcNumber($newLine->balanceValue . ' - ' . $discountValue, true);
+
+                    if ( $discountValue > $newLine->balanceValue )
+                    {
+                        $discountValue = $newLine->balanceValue;
+                    }
+
+                    // Itaú não suporta desconto acima de 90%.
+                    $discountPercent = SAGU::calcNumber("( $discountValue * 100 ) / {$newLine->balanceValue}", true);
+                    if ( $discountPercent > 90 )
+                    {
+                        // Adiciona título à lista de títulos que não podem ser gerados remessas.
+                        $invoicesWithTooMuchDiscount[] = $newLine->invoiceId;
+                        // Não gera linha para esse título.
+                        break;
+                    }
+
+                    // 174 - 179 - Data para concessão do desconto.
+                    $line .= DefaultFormat::formatField(SAGU::formatDate($discountDate, 'ddmmyy'), 'N', 6);
+                    // 180 - 192 - Valor do desconto a ser concedido.
+                    $discountValue = str_replace('.', '', $discountValue);
+                    $line .= DefaultFormat::formatField($discountValue, 'N', 13);
+                }
+                else
+                {
+                    // 174 - 179 - Data para concessão do desconto.
+                    $line .= DefaultFormat::formatField('0', 'N', 6);
+                    // 180 - 192 - Valor do desconto a ser concedido.
+                    $line .= DefaultFormat::formatField('0', 'N', 13);
+                }
+
+                // 193 - 205 - Valor IOF.
+                $line .= DefaultFormat::formatField('0', 'N', 13);
+                // 206 - 218 - Valor abatimento a ser concedido. Não há abatimento no SAGU.
+                $line .= DefaultFormat::formatField('0', 'N', 13);
+                // 219 - 220 - Tipo de inscrição.
+                $businessPersonDocument = new BusinessBasicBusDocument();
+
+                if ( $newLine->personType == 'j' ) // Pessoa jurídica
+                {
+                    // CGC
+                    $line .= '02';
+                    $document = $businessPersonDocument->getDocument($newLine->personId, SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CGC'));
+
+                    $businessLegalPerson = new BusinessBasicBusLegalPerson();
+                    $dataPerson = $businessLegalPerson->getLegalPerson($newLine->personId);
+                }
+                else // Pessoa física
+                {
+                    // CPF
+                    $line .= '01';
+                    $document = $businessPersonDocument->getDocument($newLine->personId, SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF'));
+
+                    $businessPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+                    $dataPerson = $businessPhysicalPerson->getPhysicalPerson($newLine->personId);
+                }
+                // 221 - 234 - Número da inscrição (número do CPF ou CGC).
+                $line .= DefaultFormat::formatField($document->content, 'N', 14);
+                // 235 - 264 - Nome do sacado.
+                $line .= DefaultFormat::formatField($document->personName, 'A', 30);
+                // 265 - 274 - Em branco.
+                $line .= DefaultFormat::formatField(' ', 'A', 10);
+
+                $locationTarget = $business->getPhysicalTargetFromInvoice($newLine->invoiceId);
+
+                if ( $locationTarget == false )
+                {
+                    $personLocation = $dataPerson->location . ' ' . ( $dataPerson->number ? $dataPerson->number . ' ' : '' ) . $dataPerson->complement;
+
+                    if ( strlen($personLocation) > 35 )
+                    {
+                        $personLocation = SAGU::getShortenName($dataPerson->location, '23') . ' ' . ( $dataPerson->number ? $dataPerson->number . ' ' : '') . $dataPerson->complement;
+                    }
+
+                    $zipCode = preg_replace('/[^\d]/', '', $dataPerson->zipCode);
+                    $cityName = $dataPerson->cityName;
+                    $stateId = $dataPerson->stateId;
+                    $neighborhood = $dataPerson->neighborhood;
+                }
+                else
+                {
+                    $personLocation = $locationTarget->location . ' ' . ( $locationTarget->number ? $locationTarget->number . ' ' : '' ) . $locationTarget->complement;
+
+                    if ( strlen($personLocation) > 35 )
+                    {
+                        $personLocation = SAGU::getShortenName($locationTarget->location, '23') . ' ' . ( $locationTarget->number ? $locationTarget->number . ' ' : '') . $locationTarget->complement;
+                    }
+
+                    $zipCode = preg_replace('/[^\d]/', '', $locationTarget->zipCode);
+                    $cityName = $locationTarget->cityName;
+                    $stateId = $locationTarget->stateId;
+                    $neighborhood = $locationTarget->neighborhood;
+                }
+
+                // 275 - 314 - Rua, número e complemento do sacado.
+                $line .= DefaultFormat::formatField($personLocation, 'A', 40);
+                // 315 - 326 - Bairro do sacado.
+                $line .= DefaultFormat::formatField($neighborhood, 'A', 12);
+                // 327 - 334 - CEP do sacado.
+                $line .= DefaultFormat::formatField($zipCode, 'N', 8);
+                // 335 - 349 - Nome da cidade do sacado.
+                $line .= DefaultFormat::formatField($cityName, 'A', 15);
+                // 350 - 351 - UF da cidade do sacado.
+                $line .= DefaultFormat::formatField($stateId, 'A', 2);
+                // 352 - 381 - Nome do sacador ou avalista. 
+                if ( count($policyDiscount) > 1 )
+                {
+                    // 352 - 353 - Brancos
+                    $line .= DefaultFormat::formatField(' ', 'A', 2);
+
+                    list(
+                        $discount2Date,
+                        $discount2Value
+                    ) = $policyDiscount[1];
+
+                    $discount2Value = SAGU::calcNumber($newLine->balanceValue . ' - ' . $discount2Value, true);
+                    if ( $discount2Value > $newLine->balanceValue )
+                    {
+                        $discount2Value = $newLine->balanceValue;
+                    }
+
+                    // Itaú não suporta desconto acima de 90%.
+                    $discount2Percent = SAGU::calcNumber("( $discount2Value * 100 ) / {$newLine->balanceValue}", true);
+                    if ( $discount2Percent > 90 )
+                    {
+                        // Adiciona título à lista de títulos que não podem ser gerados remessas.
+                        $invoicesWithTooMuchDiscount[] = $newLine->invoiceId;
+                        // Não gera linha para esse título.
+                        break;
+                    }
+
+                    $discount2Value = str_replace('.', '', $discount2Value);
+
+                    // 354 - 359 - Data do 2o desconto (DDMMAA)
+                    $line .= DefaultFormat::formatField(SAGU::formatDate($discount2Date, 'ddmmyy'), 'N', 6);
+                    // 360 - 372 - Valor do 2o desconto
+                    $line .= DefaultFormat::formatField($discount2Value, 'N', 13);
+
+                    // ATENÇÃO: Não suporta mais que 3 descontos.
+                    if ( count($policyDiscount) >= 3 )
+                    {
+                        list(
+                            $discount3Date,
+                            $discount3Value
+                        ) = $policyDiscount[2];
+
+                        $discount3Value = SAGU::calcNumber($newLine->balanceValue . ' - ' . $discount3Value, true);
+                        if ( $discount3Value > $newLine->balanceValue )
+                        {
+                            $discount3Value = $newLine->balanceValue;
+                        }
+
+                        // Itaú não suporta desconto acima de 90%.
+                        $discount3Percent = SAGU::calcNumber("( $discount3Value * 100 ) / {$newLine->balanceValue}", true);
+                        if ( $discount3Percent > 90 )
+                        {
+                            // Adiciona título à lista de títulos que não podem ser gerados remessas.
+                            $invoicesWithTooMuchDiscount[] = $newLine->invoiceId;
+                            // Não gera linha para esse título.
+                            break;
+                        }
+
+                        $discount3Value = str_replace('.', '', $discount3Value);
+
+                        // 373 - 378 - Data do 3o desconto (DDMMAA)
+                        $line .= DefaultFormat::formatField(SAGU::formatDate($discount3Date, 'ddmmyy'), 'N', 6);
+                        // 379 - 391 - Valor do 3o desconto
+                        $line .= DefaultFormat::formatField($discount3Value, 'N', 13);
+                        // 392 - 394 - Brancos
+                        $line .= DefaultFormat::formatField(' ', 'A', 3);
+                    }
+                    else
+                    {
+                        // 373 - 381 - Zeros
+                        $line .= DefaultFormat::formatField('0', 'N', 9);
+                        // 382 - 385 - Em branco.
+                        $line .= DefaultFormat::formatField(' ', 'A', 4);
+                        // 386 - 391 - Data de mora.
+                        $line .= DefaultFormat::formatField(SAGU::formatDate($newLine->delayDate, 'ddmmyy'), 'N', 6);
+                        // 392 - 393 - Quantidade de dias.
+                        $instructions = array('9', '34', '35', '42', '81', '82', '91', '92');
+                        if ( in_array($dataBankAccount->firstInstruction, $instructions) ||
+                             in_array($dataBankAccount->secondInstruction, $instructions) )
+                        {
+                            if( strlen($newLine->daysToProtest) == 0 )
+                            {
+                                throw new Exception(_M('Quantidade de dias para protesto não informada.', $module));
+                            }
+                            $line .= DefaultFormat::formatField($newLine->daysToProtest, 'N', 2);
+                        }
+                        else
+                        {
+                            $line .= DefaultFormat::formatField(' ', 'N', 2);
+                        }
+                        // 394 - 394 - Em branco
+                        $line .= DefaultFormat::formatField(' ', 'A', 1);
+                    }
+                }
+                else
+                {
+                    // Se instruções 93 ou 94, transcrever a mensagem desejada
+                    if ( in_array($dataBankAccount->firstInstruction, array('93', '94')) ||
+                         in_array($dataBankAccount->secondInstruction, array('93', '94')) )
+                    {
+                        $line .= DefaultFormat::formatField($data->invoiceMessage, 'A', 30);
+                    }
+                    else
+                    {
+                        // FIXME: Sacador/Avalista ?
+                        $line .= DefaultFormat::formatField(' ', 'A', 30);
+                    }
+
+                    // 382 - 385 - Em branco.
+                    $line .= DefaultFormat::formatField(' ', 'A', 4);
+                    // 386 - 391 - Data de mora.
+                    $line .= DefaultFormat::formatField(SAGU::formatDate($newLine->delayDate, 'ddmmyy'), 'N', 6);
+                    // 392 - 393 - Quantidade de dias.
+                    $instructions = array('9', '34', '35', '42', '81', '82', '91', '92');
+                    if ( in_array($dataBankAccount->firstInstruction, $instructions) ||
+                         in_array($dataBankAccount->secondInstruction, $instructions) )
+                    {
+                        $line .= DefaultFormat::formatField($newLine->daysToProtest, 'N', 2);
+                    }
+                    else
+                    {
+                        $line .= DefaultFormat::formatField(' ', 'N', 2);
+                    }
+                    // 394 - 394 - Em branco
+                    $line .= DefaultFormat::formatField(' ', 'A', 1);
+                }
+
+                // 395 - 400 - Número sequencial dos registros
+                $line .= DefaultFormat::formatField($counter, 'N', 6);
+                // adiciona linha.
+                $lineS .= strToUpper(SAGU::stringToASCII($line)) . "\n";
+
+                // FIXME: verificar pra que isso é usado.
+                $this->history[$key][0] = $newLine->invoiceId;
+                // histórico de geração, código da pessoa
+                $this->history[$key][1] = $dataPerson->personId;
+                // histórico de geração, nome
+                $this->history[$key][2] = $dataPerson->name;
+                        
+                $returnData[] = $newLine;
+            }
+        }
+        
+        $this->trailerValue = $trailerValue;
+        $this->counter = $counter;
+        $this->invoicesWithTooMuchDiscount = $invoicesWithTooMuchDiscount;
+        
+        $return = new stdClass();
+        $return->text = $lineS;
+        $return->data = $returnData;
+
+        return $return;
+    }
+
+    /**
+     * Generate the message remittance data
+     * 
+     * @param object $data Data information for header information
+     * @return string Text containing the header formatted
+     *
+     */
+    public function trailer()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        // 001 - 001 - Constante 9 - Obrigatório
+        $line .= '9';
+        // 002 - 394 - Em branco 
+        $line .= DefaultFormat::formatField('', 'A', 393);
+        // 395 - 400 - Número da sequência do registro.
+        $counter = $this->counter + 1;
+        $line .= DefaultFormat::formatField($counter, 'N', 6);
+
+        $lineS .= strToUpper(SAGU::stringToASCII($line)) . "\n";
+        return $lineS;
+    }
+
+    /**
+     * Generate the message remittance data
+     * 
+     * @param object $data Data information for header information
+     * @return string Text containing the header formatted
+     *
+     */
+    public function remittanceInvoice341($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $header = $this->header($data);
+        $detail = $this->details($data);        
+        $details = $detail->text;
+        $trailer = $this->trailer();
+
+        $fileBody = $header;
+        $fileBody .= $details;
+        $fileBody .= $trailer;
+        
+        // Grava arquivos na base
+        $businessFile = new BusinessFinanceBusFinFile();
+        $fileData->fileName = 'remessaItau' . date(dmy) . '_' . rand() . '.txt';
+        $fileData->uploadFileName = $fileData->fileName;
+        $fileData->file = $fileBody;
+        $fileData->bankAccountId = $data->bankAccountId;
+        $fileData->fileType = 'I';
+        $fileData->inputOrOutput = 'O';
+        $fileData->isProcessed = DB_TRUE;
+        $fileData->contentType = $businessFile->defaultContentType;
+
+        $tmpFile = '/tmp/remittance.txt';
+        $fp = fopen($tmpFile, "w");
+        fwrite($fp, $fileData->file);
+        fclose($fp);
+                
+        $fileData->localPath = $tmpFile;
+        $fileId = $businessFile->insertFinanceFile($fileData);
+        $this->fileData = $fileData;
+        $this->fileData->fileId = $fileId;
+        
+        //Insere cada título na tabela de log
+        $fileLog = new FinFileLog();        
+        $fileLog->fileId = $fileId;
+        
+        if( count($detail->data) > 0 )
+        {
+            foreach( $detail->data as $cod=>$linha )
+            {
+                $fileLog->invoiceId = $linha->invoiceId;
+                $fileLog->accountNumber = $linha->accountNumber;
+                $fileLog->balance = $linha->balanceValue;                
+                $fileLog->discountValue = ( strlen($linha->discountValue) > 0 ? $linha->discountValue : '0' );
+                //Define a operação
+                if( $linha->instruction == '01' )
+                {
+                    $fileLog->operation = 'REMESSA';
+                }
+                elseif( $linha->instruction == '02' )
+                {
+                    $fileLog->operation = 'PEDIDO DE BAIXA';
+                }
+                elseif( $linha->instruction == '06' )
+                {
+                    $fileLog->operation = 'ALTERAÇÃO DO VENCIMENTO';
+                }
+                else
+                {
+                    $fileLog->operation = 'ALTERAÇÃO DE OUTROS DADOS';
+                }
+                
+                $fileLog->isCanceled = $linha->isCanceled;
+                $fileLog->value = $linha->value;
+                $fileLog->maturityDate = $linha->maturityDate;
+                $fileLog->bankAccountId = $data->bankAccountId;
+                $fileLog->monthlyInterestPercent = $linha->monthlyInterestPercent;
+                $fileLog->wallet = $linha->wallet;
+                $fileLog->branchNumber = $linha->branchNumber;
+                $fileLog->ourNumber = $linha->ourNumber;
+                $fileLog->referenceMaturityDate = $linha->maturityDate;
+                $fileLog->daysToFine = $linha->daysToFine;
+                $fileLog->daysToProtest = $linha->daysToProtest;
+                
+                $result = $fileLog->save();
+            }
+        }
+        
+        //SAGUFile::saveDataToLocal($file);
+    }
+    
+    /**
+     * Get the wallet code provided by the bank manual.
+     *
+     * @param string $wallet Wallet number.
+     * @return character Wallet code. 
+     */
+    public static function getWalletCode($wallet)
+    {
+        switch ( $wallet )
+        {
+            case '147':
+                $code = 'E';
+                break;
+            case '150':
+                $code = 'U';
+                break;
+            /* 
+             * 112, 115, 104, 188, 108, 109, 121, 180, 175, 198, 142, 143, 174,
+             * 177, 129, 139, 169, 172, 102, 107, 173, 103, 196
+             */
+            default:
+                $code = 'I';
+                break;
+        }
+
+        return $code;
+    }
+
+   /**
+    * Calculate the modulo10
+    * 
+    * @param integer $num Number to generate the modulo10
+    * @return integer The number for modulo 10
+    */
+    public static function modulo10($num, $factor = 2)
+    {
+        $numTotal10 = 0;
+        for ($i = strlen($num); $i > 0; $i--) 
+        {
+            $numbers[$i] = substr($num,$i-1,1);
+            $partial10[$i] = $numbers[$i] * $factor;
+            $numTotal10 .= $partial10[$i];
+            if ($factor == 2) 
+            {
+                $factor = 1;
+            }
+            else 
+            {
+                $factor = 2; 
+            }
+        }
+        $sum = 0;
+        for ($i = strlen($numTotal10); $i > 0; $i--) 
+        {
+            $numbers[$i] = substr($numTotal10,$i-1,1);
+            $sum += $numbers[$i]; 
+        }
+        $reminder = $sum % 10;
+        if ( ($reminder >= 10) || ($reminder == 0) )
+        {
+            return 0;
+        }
+        else
+        {
+            return 10 - $reminder;
+        }
+    }
+}
+
+?>

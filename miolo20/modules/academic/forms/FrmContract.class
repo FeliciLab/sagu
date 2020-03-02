@@ -1,0 +1,1078 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Contract form
+ *
+ * @author Daniel Afonso Heisler [daniel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Andre Chagas Dias [andre@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 30/08/2005
+ */
+class FrmContract extends FrmPersonSteps
+{
+    public $_contractId;
+
+    /**
+     * Class constructor
+     */
+    public function __construct($steps = null)
+    {
+        $module = MIOLO::getCurrentModule();
+        $function = MIOLO::_REQUEST('function');
+
+        parent::__construct(null, $steps, __CLASS__);
+
+        if (is_object($this->toolbar))
+        {
+            $this->toolbar->disableButton( MToolBar::BUTTON_SAVE );
+        }
+    }
+
+    /**
+     * Default method to define fields
+     */
+    public function createFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+
+        $session = $MIOLO->session;
+
+        $saveAnyway = $MIOLO->_REQUEST('saveAnyway');
+
+        if (strlen($saveAnyway) == 0 && $session->isRegistered('data'))
+        {
+            $session->unregister('data');
+        }
+
+        $data = $session->isRegistered('data') ? $session->getValue('data') : null;
+
+        $fields[] = new MDiv('promptMsg', null);
+
+        $fields[] = new SHiddenField('personId', $this->getRequestValue('personId', $data->personId));
+        
+        //Obtenção de dados para edição
+        if ( in_array($function,array('update','delete')) )
+        {
+            $contractId = strlen($MIOLO->_REQUEST('contractId')) ? $MIOLO->_REQUEST('contractId') : $data->contractId;
+            $fields[] = new MTextLabel('contractId', $contractId, _M('Código', $module));
+            $fields[] = new MHiddenField('contractId', $contractId);
+            $business = new BusinessAcademicBusContract();
+            $data = $business->getContract($contractId);
+
+            $businessTurn = new BusinessBasicBusTurn();
+            $businessUnit = new BusinessBasicBusUnit();
+            $businessClassPupil = new BusinessAcademicBusClassPupil();
+
+            $dataTurn = $businessTurn->getTurn($data->turnId);
+            $dataUnit = $businessUnit->getUnit($data->unitId);
+
+            $data->turnDescription = $dataTurn->description;
+            $data->unitDescription = $dataUnit->description;
+
+            if ( $business->isClosed($contractId) )
+            {
+                $busMovementContract = new BusinessAcademicBusMovementContract();
+                $lastMovement = $busMovementContract->getLastMovementContract($contractId);
+
+                $busReason = new BusinessAcademicBusReason();
+                $reasonData = $busReason->getReason($lastMovement->reasonId);
+
+                if ( strlen($lastMovement->reasonId) > 0 )
+                {
+                    $reasonDescription = $lastMovement->reasonId . ' - ' . $reasonData->description;
+                }
+                else
+                {
+                    $contractState = $business->getContractState($contractId);
+                    $reasonDescription.= $contractState->stateContractId . ' - ' .$contractState->description;
+                }
+                $msg = _M('Este contrato está fechado (motivo @1). Se você pretende alterar alguma informação, preste atenção à situação contratual (veja as movimentações contratuais).', $module, $reasonDescription);
+                $this->addInfo($msg);
+            }
+
+            $filters->contractId = $contractId;
+            $filters->notHaveEndData = DB_TRUE;
+            $classPupilData = $businessClassPupil->searchClassPupil($filters);
+
+            $data->classId = $classPupilData[0][0];
+            $data->className_ = $classPupilData[0][1];
+        }
+
+        $fields[] = new MHiddenField('limbo', '');
+
+        /*
+         * Course occurrence lookup
+         */
+        $lkpValue = array(
+            $this->GetFormValue('courseId', $data->courseId),
+            $this->GetFormValue('courseVersion', $data->courseVersion),
+            $this->GetFormValue('turnId', $data->turnId),
+            $this->GetFormValue('unitId', $data->unitId)
+        );
+        $courseOccurrenceLookup = new SCourseOccurrenceLookup($lkpValue);
+        $courseOccurrenceLookup->showRequiredLabel();
+        $validators[] = new MRequiredValidator('courseId', _M('Curso', $module));
+        $validators[] = new MIntegerValidator('courseVersion', _M('Versão do curso', $module));
+        $validators[] = new MIntegerValidator('turnId', _M('Turno', $module));
+        $validators[] = new MIntegerValidator('unitId', _M('Unidade', $module));
+
+        $fields[] = $courseOccurrenceLookup;
+        unset($flds);
+        
+        //Dados academicos
+        if ( in_array($function,array('update','delete')) )
+        {
+            // Caso esteja definido para o semestre ser equivalente a carga horária cursada.
+            $acdSemesterContractPeriod = new AcdSemesterContractPeriod();
+            $acdSemesterContractPeriod->contractId = $data->contractId;
+            $acdSemesterContractPeriod->periodId = $acdSemesterContractPeriod->obterPeriodoDoContrato($data, true);
+            $semestre = $acdSemesterContractPeriod->obterSemestreDoContrato();
+
+            $flds[] = new SHiddenField('periodId', $acdSemesterContractPeriod->periodId);
+            
+            if ( SAGU::getParameter('ACADEMIC', 'DEFINE_SEMESTRE_POR_CARGA_HORARIA') == DB_TRUE )
+            {
+                $semestreLabel = new MText('semestreLabel', _M('Semestre atual') . ':');
+                $semestreLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+                $hint = _M('Caso haja algum processo que seja executado referente às matrículas deste contrato, o valor do semestre poderá ser alterado automaticamente conforme configurações.');
+                $semestreField = new MTextField('semester', $semestre, null, 10, $hint);
+                $flds[] = new MHContainer('semestreHC', array($semestreLabel, $semestreField));
+            }
+            else
+            {
+                $flds[] = new SHiddenField('semester', $semestre);
+            }
+            
+            $isRequestAcademicDegreeLabel = new MText('isRequestAcademicDegreeLabel', _M('É formando',$module) . '?');
+            $isRequestAcademicDegreeLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+
+            $isRequestAcademicDegree = $this->GetFormValue('isRequestAcademicDegree',$data->isRequestAcademicDegree);
+            $isRequestAcademicDegree = new MRadioButtonGroup('isRequestAcademicDegree', '', SAGU::listTrueFalse(1), $isRequestAcademicDegree, null, 'horizontal');
+            $isRequestAcademicDegree->SetShowLabel(false);
+
+            $hctIsRequestAcademicDegree = new MHContainer('hctIsRequestAcademicDegree', array($isRequestAcademicDegreeLabel, $isRequestAcademicDegree));
+            $flds[] = $hctIsRequestAcademicDegree;
+
+            $formationPeriodLabel = new MText('formationPeriodLabel', _M('Código do período de formatura', $module));
+            $formationPeriodLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+
+            $business = new BusinessAcademicBusContract();
+            $datap = $business->getPeriod();
+            $formationPeriodId = new MComboBox('formationPeriodId', $this->getFormValue('formationPeriodId', $data->formationPeriodId), '', $datap );
+            $flds[] = new MHContainer('hctFormationPeriod', array($formationPeriodLabel, $formationPeriodId));
+
+            $formationLabel = new MText('formationLabel', _M('Data de formatura', $module) . ':');
+            $formationLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+
+            $formationDate = new MCalendarField('formationDate', $this->getFormValue('formationDate', $data->formationDate), '', SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+            $validators[] = new MDATEDMYValidator('formationDate', '');
+            $flds[] = new MHContainer('hctFormationDate', array($formationLabel, $formationDate));
+
+            $conclusionLabel = new MText('conclusionLabel', _M('Data de conclusão',$module));
+            $conclusionLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+
+            $conclusionDate = new MCalendarField('conclusionDate', $this->getFormValue('conclusionDate', $data->conclusionDate), '', SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+            $validators[] = new MDATEDMYValidator('conclusionDate', '', 'optional');
+            $flds[] = new MHContainer('hctConclusion', array($conclusionLabel, $conclusionDate));
+
+            $emendsLabel = new MText('emendsLabel', _M('Data da apostila',$module));
+            $emendsLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+
+            $emendsDate = new MCalendarField('emendsDate', $this->getFormValue('emendsDate', $data->emendsDate), '', SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+            $validators[] = new MDATEDMYValidator('emendsDate', '', 'optional');
+            $flds[] = new MHContainer('hctEmends', array($emendsLabel, $emendsDate));
+
+            $diplomaLabel = new MText('diplomaLabel', _M('Data do diploma',$module));
+            $diplomaLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+
+            $diplomaDate = new MCalendarField('diplomaDate', $this->getFormValue('diplomaDate', $data->diplomaDate), '', SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+            $validators[] = new MDATEDMYValidator('diplomaDate', '');
+            $flds[] = new MHContainer('hctDiploma', array($diplomaLabel, $diplomaDate));
+
+            $globalAverageLabel = new MText('globalAverageLabel', _M('Média global', $module) . ':');
+            $globalAverageLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+
+            $globalAverage = new MTextField('globalAverage', $this->getFormValue('globalAverage', $data->globalAverage), '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+            $flds[] = new MHContainer('hctGlobalAverage', array($globalAverageLabel, $globalAverage));
+
+            $enadeStatusLabel = new MText('enadeStatusLabel', _M('Código do status do ENADE', $module) . ':');
+            $enadeStatusLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+
+            $businessEnadeStatus = new BusinessAcademicBusEnadeStatus();
+            $enadeStatusId = new MComboBox('enadeStatusId', $this->getFormValue('enadeStatusId', $data->enadeStatusId), '', $businessEnadeStatus->listEnadeStatus());
+            $flds[] = new MHContainer('hctEnadeStatus', array($enadeStatusLabel, $enadeStatusId));
+        }
+
+        $messagesType =  SAGU::listYesNo('1');
+
+        $isListenerLabel = new MText('isListenerLabel', _M('É ouvinte',$module) . '?');
+        $isListenerLabel->setClass('m-caption m-caption-required');
+        $isListenerLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+
+        $isListener = $this->GetFormValue('isListener',$data->isListener) ? $this->GetFormValue('isListener',$data->isListener) : DB_FALSE;
+        $isListener = new MRadioButtonGroup('isListener', '', $messagesType , $isListener, null, 'horizontal');
+        $isListener->SetShowLabel(false);
+
+        $hctIsListener = new MHContainer('hctIsListener', array($isListenerLabel, $isListener));
+        $flds[] = $hctIsListener;
+
+        $obsLabel = new MText('obsLabel', _M('Observação',$module) . ':');
+        $obsLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $obs = new MMultiLineField('obs', $this->getFormValue('obs', $data->obs), '', 100, 3, 30);
+        $obs->setJsHint(_M('Informe a observação do contrato',$module));
+        $flds[] = new MHContainer('hctObs', array($obsLabel, $obs));
+        
+        $required = SAGU::getParameter('ACADEMIC', 'TURMA_REQUERIDA_NO_CONTRATO') == 't' ? '-required' : '';
+        
+        $classLabel = new MText('classLabel', _M('Turma',$module) . ':');
+        $classLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $classLabel->setClass("m-caption m-caption{$required}");
+        
+        $classId = new MLookupTextField('classId', $this->getFormValue('classId', $data->classId), '', SAGU::getParameter('BASIC', 'FIELD_LOOKUPFIELD_SIZE'), null, null, 'className_', $module, 'Class', null, array( 'courseId' => 'courseId', 'courseVersion' => 'courseVersion' ), true);
+        $classId->setJsHint(_M('Informe o código da turma',$module));
+
+        if ( $function == 'update' )
+        {
+            $classId->setReadOnly(true);
+        }
+
+        $className_ = new MTextField('className_', $this->getFormValue('className_', $data->className_), '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $className_->setReadOnly(true);
+        $className_->setJsHint(_M('Nome da turma',$module));
+
+        $hctClass = new MHContainer('hctClass', array($classLabel, $classId, $className_));
+        $hctClass->setShowLabel(true);
+        $flds[] = $hctClass;
+       
+        if( $required == '-required' )
+        {
+            $validators[] = new MRequiredValidator('classId',  _M('Turma', $module));
+        }
+
+        if ( $function == 'insert' )
+        {
+            $beginDateLabel = new MText('beginDateLabel', _M('Data inicial', $module) . ':');
+            $beginDateLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+
+            $beginDate = new MCalendarField('classBeginDate', strlen($this->getFormValue('classBeginDate', $data->classBeginDate))>0 ? $this->getFormValue('classBeginDate', $data->classBeginDate) : date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')), '', SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+            $beginDate->setJsHint(_M('Informe a data inicial', $module));
+            $beginDate->setValidator(new MDATEDMYValidator('classBeginDate', _M('Data inicial',$module), 'optional'));
+
+            $flds[] = new MHContainer('hctBeginDate', array($beginDateLabel, $beginDate));
+        }
+
+        $bsgAcademic = new MBaseGroup('bsgAcademic', _M('Dados acadêmicos', $module), $flds, 'vertical', 'css');
+        $fields[] = $bsgAcademic;
+        unset($flds);
+
+        //Dados de forma de ingresso
+        $inscriptionSelectiveProcLabel = new MText('inscriptionSelectiveProcLabel ', _M('Inscrição do processo seletivo',$module) . ':');
+        $inscriptionSelectiveProcLabel ->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));        
+        $inscriptionSelectiveProcId = new MLookupTextField('subscriptionId', $this->getFormValue('subscriptionId', $data->subscriptionId), '', SAGU::getParameter('BASIC', 'FIELD_LOOKUPFIELD_SIZE'), null, null, 'limbo,limbo,limbo, inscriptionSelectiveProcName', 'selectiveProcess', 'Subscription', null, array('personId' => 'personId'), true);
+        $inscriptionSelectiveProcId->setJsHint(_M('Código da inscrição do processo seletivo',$module));
+        $validators[] = new MIntegerValidator('inscriptionSelectiveProcId', '', 'optional');
+
+        $inscriptionSelectiveProcName = new MTextField('inscriptionSelectiveProcName', $this->inscriptionSelectiveProcName->value, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $inscriptionSelectiveProcName->setReadOnly(true);
+        $inscriptionSelectiveProcName->setJsHint(_M('Nome da pessoa da inscrição do processo seletivo',$module));
+
+        $hctinscriptionSelectiveProc = new MHContainer('hctinscriptionSelectiveProc', array($inscriptionSelectiveProcLabel, $inscriptionSelectiveProcId, $inscriptionSelectiveProcName));
+        $hctinscriptionSelectiveProc->setShowLabel(true);
+        $flds[] = $hctinscriptionSelectiveProc;
+
+        //Informações movimentações contratuais. Quando inserimos um contrato temos que inserir uma movimentação
+        if ( $function == 'insert' )
+        {
+            $stateContractLabel = new MText('stateContractLabel', _M('Estado contratual de entrada', $module) . ':');
+            $stateContractLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $stateContractLabel->setClass('m-caption m-caption-required');
+
+            $businessStateContract = new BusinessAcademicBusStatesContract();
+            $stateContractId = new MSelection('stateContractId', $this->getFormValue('stateContractId', $data->stateContractId), '', $businessStateContract->listStatesContractIn(true));
+            $stateContractId->setJsHint(_M('Selecione o estado contratual de entrada', $module));
+            $stateContractId->addAttribute('onchange', $this->getAjaxAction('stateContractInfo', 'divStateContract', false));
+
+            $validators[] = new MRequiredValidator('stateContractId', _M('Estado contratual de entrada', $module));
+            $flds[] = new MHContainer('hctStateContract', array($stateContractLabel, $stateContractId));
+
+            //Field date time
+            $dateTimeLabel = new MText('dateTimeLabel', _M('Data',$module));
+            $dateTimeLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $dateTimeLabel->setClass('m-caption m-caption-required');
+            $dateTime = new MCalendarField('dateTime', strlen($this->getFormValue('dateTime', $data->dateTime)) ? $this->getFormValue('dateTime', $data->dateTime) : date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')), '', SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+            $dateTime->setJsHint(_M('Informe a data', $module));
+            $validators[] = new MDATEDMYValidator('dateTime', _M('Data', $module), 'required');
+            $flds[] = new MHContainer('hctDateTime', array($dateTimeLabel, $dateTime));
+
+            $flds[] = new MDiv('divStateContract', $this->stateContractInfo($data));
+        }
+
+        $bsgIngression = new MBaseGroup('bsgIngression', _M('Dados sobre forma de ingresso', $module), $flds, 'vertical', 'css');
+        $fields[] = $bsgIngression;
+        unset($flds);
+
+        //Dados financeiros
+        if ( SAGU::getParameter('BASIC', 'MODULE_FINANCE_INSTALLED') == 'YES' )
+        {
+            // Obtain the preferred banks
+            $busBank = new BusinessFinanceBusBankAccount();
+            $bankOptions = $busBank->getBankAccountWithInvoiceInfo();
+            $bankInfoLabel = new MText('bankAccountIdLabel', _M('Banco preferencial', $module).':');
+            $bankInfoLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $bankInfo = new MSelection('bankAccountId', $this->getFormValue('bankAccountId', $data->bankAccountId), null, $bankOptions);
+            $bankInfo->setJsHint(_M('Selecione o banco de preferência', $module));
+            $flds[] = new MHContainer('hctBankInfo', array($bankInfoLabel, $bankInfo));
+
+            //Field parcels number
+            $parcelsNumberLabel = new MText('parcelsNumberLabel', _M('Número de parcelas',$module) . ':');
+            $parcelsNumberLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $parcelsNumber = new MTextField('parcelsNumber', $this->getFormValue('parcelsNumber', $data->parcelsNumber), '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+            $parcelsNumber->setJsHint(_M('Informe o número de parcelas', $module));
+            $validators[] = new MRegExpValidator('parcelsNumber', '', SAGU::getParameter('BASIC', 'POSSIBLE_PARCELS_NUMBER'));
+            $flds[] = new MHContainer('hctParcelsNumber', array($parcelsNumberLabel, $parcelsNumber));
+
+            //Field maturity day
+            $maturityDayLabel = new MText('maturityDayLabel', _M('Dia de vencimento',$module) . ':');
+            $maturityDayLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+            $maturityDay = new MTextField('maturityDay', $this->getFormValue('maturityDay', $data->maturityDay), '', SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+            $maturityDay->setJsHint(_M('Informe o dia de vencimento', $module));
+            $validators[] = new MIntegerValidator('maturityDay','','optional');
+            $flds[] = new MHContainer('hctMaturityDay', array($maturityDayLabel, $maturityDay));
+
+            // Desconto na folha de um funcionário
+            $data->isPayrollDiscount = $this->GetFormValue('isPayrollDiscount',$data->isPayrollDiscount);
+            $data->isPayrollDiscount = (is_null($data->isPayrollDiscount)) ? DB_FALSE : $data->isPayrollDiscount;
+            $isPayrollDiscountLabel = new MText('isPayrollDiscountLabel', _M('Tem desconto em folha',$module) . '?');
+            $isPayrollDiscountLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+            $payrollDiscountY = new MRadioButton('isPayrollDiscount', DB_TRUE, '', ($data->isPayrollDiscount == DB_TRUE) ? true : false, "Sim");
+            $payrollDiscountY->addAttribute('onChange', $this->getAjaxAction('payrollDiscountInfo', 'divPayrollDiscount', false, array('radioIsPayrollDiscount' => DB_TRUE)));
+            $payrollDiscountN = new MRadioButton('isPayrollDiscount', DB_FALSE, '', ($data->isPayrollDiscount == DB_FALSE) ? true : false, "Não");
+            $payrollDiscountN->addAttribute('onChange', $this->getAjaxAction('payrollDiscountInfo', 'divPayrollDiscount', false, array('radioIsPayrollDiscount' => DB_FALSE)));
+            $hctIsPayrollDiscount = new MHContainer('hctIsPayrollDiscount', array($isPayrollDiscountLabel, $payrollDiscountY, $payrollDiscountN));
+            $flds[] = $hctIsPayrollDiscount;
+
+            $flds[] = new MDiv('divPayrollDiscount', $this->payrollDiscountInfo($data));
+
+            $bsgFinancial = new MBaseGroup('bsgFinancial', _M('Dados financeiros', $module), $flds, 'vertical', 'css');
+            
+            if ( SAGU::getParameter('FINANCE', 'BLOCKS_EDITINNG_OFFINANCIAL_DATA') == DB_TRUE )
+            {
+                $parcelsNumber->setReadOnly(true);
+                $parcelsNumber->setValue(SAGU::getParameter('BASIC', 'DEFAULT_PARCELS_NUMBER'));
+                $maturityDay->setReadOnly(true);
+                $maturityDay->setValue(SAGU::getParameter('BASIC', 'MATURITY_DAY'));
+            }
+
+            $fields[] = $bsgFinancial;
+            unset($flds);
+        }
+
+        $this->page->onLoad('document.' . $this->name . '.courseId.focus();');
+
+        $fields[] = new Separator('');
+
+        $this->setFields($fields);
+        $this->setValidators($validators);
+        $this->setLabelWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $this->setShowPostButton(false);
+        $this->setClose($MIOLO->getActionURL($module,substr($action,0,strrpos($action,':'))));
+        $this->page->addScript('m_lookup_ajax.js');
+    }
+
+    /*****************************************************
+     *
+     * PHP Functions used in AJAX implementation (cpaint)
+     *
+     ****************************************************/
+
+    /**
+     * Function to get and show information about the selected state contract
+     */
+    public function stateContractInfo($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+
+        if (!(strlen($args->stateContractId) > 0))
+        {
+            return ' ';
+        }
+
+        $data->scfValue = $args->scfValue;
+        $data->reasonId = $args->reasonId;
+
+        $stateContractId = $args->stateContractId;
+
+        $busStateContractField = new BusinessAcademicBusStateContractField();
+        $busReason = new BusinessAcademicBusReason();
+        
+        $filters->stateContractId = $stateContractId;
+        $stateContractFields = $busStateContractField->searchStateContractField($filters);
+                
+        if ( (count($stateContractFields) > 0) && ($stateContractId != 14))
+        {
+            unset($flds);
+            foreach ( $stateContractFields as $stateContractField )
+            {
+                list($stateContractFieldId,
+                     $stateContractId_,
+                     $stateContractDescription,
+                     $description,
+                     $rows,
+                     $columns,
+                     $isLookup,
+                     $lookupName,
+                     $lookupModule,
+                     $fieldValidator,
+                     $isRequired) = $stateContractField;
+
+                $scfString = $description[0] . substr(strtolower($description), 1, strlen($description)) . ':';
+                $scfLabel = new MText('scfLabel' . $stateContractFieldId, $scfString);
+                $scfLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+
+                if ( $rows > 1 ) //Campo do tipo textArea
+                {
+                    $scfValue = new MMultiLineField('scfValue[' . $stateContractFieldId . ']', $data->scfValue[$stateContractFieldId], '', $columns, $rows, $columns);
+                }
+                else //Campo do tipo textField
+                {
+                    $scfValue = new MTextField('scfValue[' . $stateContractFieldId . ']', $data->scfValue[$stateContractFieldId], '', strlen($columns) > 0 ? $columns : SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+                }
+
+                if ( strtoupper($isRequired) == strtoupper(DB_TRUE) )
+                {
+                    $scfLabel->setClass('m-caption m-caption-required');
+                }
+
+                $cntFlds[] = $scfLabel;
+
+                if ( strtoupper($isLookup) == strtoupper(DB_TRUE) && $function == 'insert' ) //Campo do tipo lookup
+                {
+                    $scfId = new MLookupField('scfId_' . $stateContractFieldId, $this->getFormValue('scfId_' . $stateContractFieldId), null, null, 'scfValue[' . $stateContractFieldId . ']', $lookupModule, $lookupName, null, null);
+                    $cntFlds[] = $scfId;
+                    $scfValue->setReadOnly(true);
+                }
+
+                $cntFlds[] = $scfValue;
+
+                $flds[] = new MHContainer('cnt_' . $stateContractFieldId, $cntFlds);
+                unset($cntFlds);
+            }
+        }
+
+        $reasonLabel = new MText('reasonLabel', _M('Motivo',$module) . ':');
+        $reasonLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+
+        $reasonId = new MComboBox('reasonId', $this->getFormValue('reasonId', $data->reasonId), '', $busReason->listReasonByStateContract($stateContractId));
+        $flds[] = new MHContainer('hctReason', array($reasonLabel, $reasonId));
+
+        $cntStateContractField = new MVContainer('cntStateContractField', $flds);
+
+        return $cntStateContractField;
+    }
+
+    /**
+     * Function to show information about payroll discount
+     */
+    public function payrollDiscountInfo($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        
+        if ($args->radioIsPayrollDiscount != DB_TRUE && $args->isPayrollDiscount != DB_TRUE)
+        {   
+            return ' ';
+        }
+
+        if ( $args->employeeId  )
+        {
+            $employeeId = $args->employeeId;
+            $busPerson = new BusinessBasicBusPerson();
+            $personData = $busPerson->getPerson($employeeId);
+        }
+
+        $employeeLabel = new MText('employeeLabel', _M('Responsável financeiro',$module).':');
+        $employeeLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $employeeLabel->setClass('m-caption m-caption-required');
+
+        $employeeId = new MLookupTextField('employeeId', $this->getFormValue('employeeId',$employeeId), '', SAGU::getParameter('BASIC', 'FIELD_LOOKUPFIELD_SIZE'), null, null,'employeeName', 'basic', 'PhysicalPersonEmployee', null, null, true);
+        $employeeId->setJsHint(_M('Informe o código do responsável financeiro',$module));
+
+        $employeeName = new MTextField('employeeName', $personData->name, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $employeeName->setJsHint(_M('Nome do funcionário do desconto em folha de pagamento',$module));
+        $employeeName->setReadOnly(true);
+
+        $hctPayrollDiscountEmployee = new MHContainer('hctPayrollDiscountEmployee', array($employeeLabel, $employeeId, $employeeName));
+        $hctPayrollDiscountEmployee->setShowLabel(true);
+
+        $bgPayrollDiscount = new MBaseGroup('mbgPayrollDiscount2', _M('Informe um código de funcionário se existe um desconto em folha para este contrato', $module), array($hctPayrollDiscountEmployee), null, 'none');
+
+        return $bgPayrollDiscount;
+    }
+
+    /**
+     * Event triggered when user chooses New from the toolbar
+     */
+    public function tbBtnNew_click($sender=NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+    }
+
+    /**
+     * Event triggered when user chooses Delete from the toolbar
+     */
+    public function tbBtnDelete_click($sender=NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $data = $this->getTypesData();
+        $opts = array(
+            'event' => 'tbBtnDelete_confirm',
+            'function' => 'delete',
+            'contractId' => MIOLO::_REQUEST('contractId')
+        );
+
+        $gotoYes = $MIOLO->getActionURL( $module, $action, null, $opts );
+
+        // This return the primary key to the search form so that user
+        // can see the record he would delete
+        $opts = array('contractIdS' => MIOLO::_REQUEST('contractId'));
+        $goto = SAGU::getStackBackUrl();
+        $gotoNo = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+
+        $caption = _M('Questão',$module);
+        $MIOLO->question(SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE'), $gotoYes, $gotoNo);
+    }
+
+    /**
+     * Event triggered when user chooses Yes from the Delete prompt dialog
+     */
+    public function tbBtnDelete_confirm($sender=NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        try
+        {
+            $businessPayroll = new BusinessFinanceBusPayrollDiscountTarget();
+            $busInvoiceTarget = new BusinessFinanceBusInvoiceTarget();
+            //apaga o desconto em folha
+            $busInvoiceTarget->deleteInvoiceTarget($this->contractId->value);
+            $businessPayroll->deletePayrollDiscountTarget($this->contractId->value);
+            $ok = true;
+        }
+        catch( Exception $e )
+        {
+            $msg = _M('Erro ao excluir desconto em folha', $module) . ' ' . $e->getMessage();
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Erro',$module);
+            $MIOLO->error( $msg, $goto, $caption );
+            $ok = false;
+        }
+
+        if ( $ok )
+        {
+            $business = new BusinessAcademicBusContract();
+            $busMovementContract = new BusinessAcademicBusMovementContract();
+            $busMovementContractCompl = new BusinessAcademicBusMovementContractComplement();
+
+            //inicio da transacao
+            $business->beginTransaction();
+            try
+            {
+                //apaga as movimentacoes contratuais
+                $mov = $busMovementContractCompl->getFirstMovementContractComplement($this->contractId->value);
+                $busMovementContractCompl->deleteMovementContractComplement($mov->contractId, $mov->stateContractId, $mov->stateContractFieldId, $mov->stateTime);
+                $busMovementContract->deleteMovementContract($mov->contractId, $mov->stateContractId);
+
+                //apaga o contrato
+                $business->deleteContract($this->contractId->value);
+
+                $business->commit();
+                //fim da transacao
+
+                $goto = SAGU::getStackBackUrl();
+                $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+                $caption = _M('Informação',$module);
+                $MIOLO->information(SAGU::getParameter('BASIC', 'MSG_RECORD_DELETED'), $goto);
+            }
+            catch( Exception $e )
+            {
+                $business->rollback();
+                $msg = _M('Erro ao excluir contrato e movimentações contratuais.', $module) . $e->getMessage();
+                $goto = SAGU::getStackBackUrl();
+                $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+                $caption = _M('Erro',$module);
+                $MIOLO->error( $msg, $goto, $caption );   
+            }
+        }
+
+    }
+
+    /**
+     * Event triggered when user chooses Save from the toolbar
+     */
+    public function finalizeButton_click($sender=NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();        
+        $action = MIOLO::getCurrentAction();
+        $busCourse = new BusinessAcademicBusCourse();
+        $function = MIOLO::_REQUEST('function');
+        $args = $this->getData();
+        
+        $course = $busCourse->getCourse($args->courseId);
+        if ( strlen($course->courseId) == 0 )
+        {
+            $this->AddJsCode("alert('O curso \"{$args->courseId}\" não existe.');");
+            return false;
+        }
+       
+        //Salvar todos os dados
+        $ok = parent::finalizeButton_click($args);
+
+        if ( $ok )
+        {
+            $args = array();
+            try
+            {
+                $msg = ($function == 'update') ? SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED') : SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED_INFO');
+
+                //Make inscription url
+                $args['contractId'] = $this->_contractId;
+                $args['personId'] = $this->_personId;
+                $gotoInscription = $MIOLO->getActionURL($module, 'main:process:enrollContract', null, $args);
+
+                //Make close url
+                $args = null;
+                $args['contractIdS'] = $this->_contractId;
+                $gotoClose = $MIOLO->getActionURL($module, $action, null, $args);
+
+                $prompt = MPrompt::Information($msg, 'NONE');
+                $prompt->AddButton(_M('Efetuar matrícula', $module), $gotoInscription);
+                $prompt->AddButton(_M('Sair', $module), $gotoClose);
+
+                $MIOLO->prompt($prompt, true);
+            }
+            catch (Exception $e)
+            {
+                $this->addError(_M('Erro ao executar operação solicitada.', $module) . $e->getMessage());
+            }
+        }
+        else
+        {
+            $this->addError(_M('Erro ao executar operação solicitada.', $module) );
+        }
+    }
+
+    public function saveData($data = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+
+        $business = new BusinessAcademicBusContract();
+        $busPayrollDiscountTarget = new BusinessFinanceBusPayrollDiscountTarget();
+        $busInvoiceTarget = new BusinessFinanceBusInvoiceTarget();
+        $busStateContractField = new BusinessAcademicBusStateContractField();
+        $busMovementContract = new BusinessAcademicBusMovementContract();
+        $busMovementContractCompl = new BusinessAcademicBusMovementContractComplement();
+        $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+        $busClassPupil = new BusinessAcademicBusClassPupil();
+        $personId = $data->personId;
+        
+        //Verificar se o número de parcelas foi salvo, caso contrário buscar do parâmetro DEFAULT_PARCELS_NUMBER
+        if (strlen ($data->parcelsNumber <= 0))
+        {
+            $data->parcelsNumber = SAGU::getParameter('BASIC', 'DEFAULT_PARCELS_NUMBER');
+        }
+        
+        
+        /*
+         * Caso exista o parâmetro de fluxo do passo a passo, verifica se 
+         * o form de aluno existe no parâmetro, caso contrário, faz a inserção
+         * ou atualização dos dados do aluno.
+         */
+        
+        // Salvando log da inserção do contato - ticket #39140
+        // Apenas temporário, não conseguimos reproduzir erro de não inserir a
+        // primeira movimentação contratual, por isso estamos salvando log 
+        $pathLog = $MIOLO->getConf('home.miolo') . '/var/log/problemaMovimentacaoContratualContrato.txt';
+        $logProblema = file_get_contents($pathLog);
+        
+        $logProblema .= PHP_EOL . PHP_EOL . PHP_EOL;
+        $logProblema .= date(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_WITH_SECONDS_PHP'));
+        $logProblema .= PHP_EOL . "INICIANDO SALVAMENTO DE CONTRATO DA PESSOA {$personId}";
+        
+        //Controle de transacao e erros modificado, #33570
+        try
+        {
+            $path = str_replace(':', '_', strtoupper(MIOLO::getCurrentAction()));
+
+            if (sagu::checkValidParameter('BASIC', 'FLUXO_PASSO_A_PASSO_'.$path))
+            {   
+                if ( !stristr(SAGU::getParameter('BASIC', 'FLUXO_PASSO_A_PASSO_'.$path), 'FrmPhysicalPersonStudent') )
+                {
+                    $businessStudent = new BusinessBasicBusPhysicalPersonStudent();
+                    $needUpdate = (strlen($personId) > 0) && (strlen( $businessStudent->getPhysicalPersonStudent($personId)->personId ) > 0);
+
+                    if ( $function == SForm::FUNCTION_UPDATE || $needUpdate )
+                    {
+                        $logProblema .= PHP_EOL . "ATUALIZANDO DADOS DE PESSOA ALUNO {$personId}";
+                        $businessStudent->updatePhysicalPersonStudent($data);
+                    }
+                    else //INSERT function
+                    {
+                        $logProblema .= PHP_EOL . "INSERINDO PESSOA COMO ALUNO {$personId}";
+                        $personId = $businessStudent->insertPhysicalPersonStudent($data);
+                    }
+                }              
+            }
+
+            $lastData = $this->getData();
+            $data->obs = SAGU::NVL($data->obs, $lastData->obs);
+
+            if ( !$data )
+            {
+                $logProblema .= PHP_EOL . "OBTEVE DADOS PARA A VARIÁVEL \$data ATRAVÉS DO getTypesData";
+                $data = $this->getTypesData($action);
+            }
+            else
+            {
+                $logProblema .= PHP_EOL . "OBTEVE DADOS PARA A VARIÁVEL \$data ATRAVÉS DO parseData";
+                $data = $this->parseData($data);
+                $data->saveAnyway = DB_TRUE;
+            }
+
+            if ( strlen($personId) > 0 )
+            {
+                $data->personId = $personId;
+            }
+
+            if ( $data->saveAnyway == DB_TRUE )
+            {
+                try
+                {
+                    if ( $function == 'update' )
+                    {
+                        $logProblema .= PHP_EOL . "ATUALIZOU CONTRATO {$data->contractId}";
+                        $ok = $business->updateContract($data);
+                    }
+                    else
+                    {
+                        $data->contractId = $ok = $business->insertContract($data);                    
+                        $logProblema .= PHP_EOL . "INSERIU NOVO CONTRATO {$data->contractId}";
+                    }
+                    
+                    $this->insereOuEditaSemestreDoContrato($data);
+
+                    $this->_contractId = $data->contractId;
+                }
+                catch (Exception $e)
+                {
+                    if ( $function == 'insert' )
+                    {
+                        $msg = _M('Erro ao inserir contrato. ', $module);
+                    }
+                    elseif ( $function == 'update' )
+                    {
+                        $msg = _M('Erro ao atualizar contrato. ', $module);
+                    }
+
+                    $logProblema .= PHP_EOL . "TRHOW DO CÓDIGO, PROBLEMAS AO ATUALIZAR/INSERIR CONTRATO";
+                    
+                    $ok = false;
+                    throw new Exception($msg . $e->getMessage());
+                }
+
+                if ( $ok )
+                {
+                    $filters->personId = $data->personId;
+
+                    $logProblema .= PHP_EOL . "INSERINDO/ATUALIZANDO REGISTRO DE DESCONTO EM FOLHA";
+                    
+                    /**
+                     * Inserção/Atualização/Exclusão dos dados de desconto em folha
+                     */
+                    $payrollDiscountTargetData = $busPayrollDiscountTarget->getPayrollDiscountTarget($data->contractId);
+
+                    if ( strtoupper($data->isPayrollDiscount) == strtoupper(DB_TRUE) ) //Deseja desconto em folha
+                    {
+                        $logProblema .= PHP_EOL . "POSSUI DESCONTO EM FOLHA";
+                        if ( strlen($data->employeeId) > 0 )
+                        {
+                            $logProblema .= PHP_EOL . "É FUNCIONÁRIO";
+                            if (strlen($payrollDiscountTargetData->employeeId) > 0) //Já possui um desconto cadastrado
+                            {
+                                try
+                                {
+                                    $logProblema .= PHP_EOL . "ATUALIZOU DESCONTO EM FOLHA PARA employeeId {$payrollDiscountTargetData->employeeId}"; 
+                                    $busPayrollDiscountTarget->updatePayrollDiscountTarget($data);
+                                }
+                                catch (Exception $e)
+                                {
+                                    $logProblema .= PHP_EOL . "THROW DO CÓDIGO, ERRO AO ATUALIZAR DESCONTO EM FOLHA";
+                                    throw new Exception(_M('Erro ao atualizar dados de desconto em folha. ', $module) . $e->getMessage());
+                                }
+                            }
+                            else //Novo desconto em folha
+                            {
+                                try
+                                {
+                                    $data->isPayrollDiscount = DB_TRUE;
+                                    $data->isActive = DB_TRUE;
+
+                                    $busPayrollDiscountTarget->insertPayrollDiscountTarget($data);
+                                    $busInvoiceTarget->insertInvoiceTarget($data);
+                                    
+                                    $logProblema .= PHP_EOL . "INSERIU NOVO DESCONTO EM FOLHA PARA employeeId {$data->employeeId}";
+                                }
+                                catch (Exception $e)
+                                {
+                                    $logProblema .= PHP_EOL . "THROW DO CÓDIGO, ERRO AO INSERIR DESCONTO EM FOLHA";
+                                    throw new Exception(_M('Erro ao inserir dados de desconto em folha. ', $module) . $e->getMessage());
+                                }
+                            }
+                        }
+                        else //Não selecionou um funcionário
+                        {
+                            $logProblema .= PHP_EOL . "TRHOW DO CÓDIGO, SEM FUNCIONÁRIO PARA REGISTRO DESCONTO EM FOLHA";
+                            throw new Exception(_M('Você deve informar um código de funcionário para registrar um desconto em folha.', $module));
+                        }
+                    }
+                    elseif ( strlen($payrollDiscountTargetData->employeeId) > 0 ) //Não deseja mais o desconto em folha
+                    {
+                        try
+                        {
+                            $busPayrollDiscountTarget->deletePayrollDiscountTarget($data->contractId);
+                            $busInvoiceTarget->deleteInvoiceTarget($data->contractId);
+                            $logProblema .= PHP_EOL . "DELETOU DESCONTO EM FOLHA DO CONTRATO {$data->contractId}";
+                        }
+                        catch (Exception $e)
+                        {
+                            $logProblema .= PHP_EOL . "THROW DO CÓDGIO, ERRO AO EXCLUIR DESCONTO EM FOLHA";
+                            throw new Exception(_M('Erro ao excluir dados de desconto em folha. ', $module) . $e->getMessage());
+                        }
+                    }
+
+                    //Turma
+                    if ( strlen($data->classId) > 0 )
+                    {
+                        $classData = new stdClass();
+                        $classData->contractId = $data->contractId;
+                        $classData->classId = $data->classId;
+                        $classData->beginDate = strlen($data->classBeginDate) > 0 ? $data->classBeginDate : date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+
+                        if ( strtoupper($busClassPupil->checkCourse($classData)) == strtoupper(DB_TRUE) )
+                        {
+                            try
+                            {
+                                $logProblema .= PHP_EOL . "INSERINDO CONTRATO {$classData->contractId} NA TURMA {$classData->classId}";
+                                $busClassPupil->insertOrUpdateClassPupil($classData);
+                            }
+                            catch (Exception $e)
+                            {
+                                $logProblema .= PHP_EOL . "THROW DO CÓDIGO, ERRO AO INSERIR ALUNO NA TURMA";
+                                throw new Exception(_M('Erro ao inserir dados da turma do aluno. ', $module) . $e->getMessage());
+                            }
+                        }
+                        else
+                        {
+                            $logProblema .= PHP_EOL . "THROW DO CÓDIGO, TURMA E CONTRATO INCOMPATÍVEIS";
+                            throw new Exception(_M('A turma e o contrato selecionados são incompatíveis. Selecione uma turma que pertença ao mesmo curso do contrato.', $module));
+                        }
+                    }
+
+                    if ( $function == SForm::FUNCTION_INSERT )
+                    {
+                        $logProblema .= PHP_EOL . "IDENTIFICOU QUE FUNÇÃO É INSERT";
+                        //Movimentações contratuais
+                        if ( strlen($data->stateContractId) > 0 )
+                        {
+                            $logProblema .= PHP_EOL . "ENCONTROU ESTADO CONTRATUAL ID";
+                            $stateContractData->contractId = $data->contractId;
+                            $stateContractData->stateContractId = $data->stateContractId;
+                            $stateContractData->reasonId = $data->reasonId;
+                            $stateContractData->stateTime = strlen($data->dateTime) > 0 ? $data->dateTime : date(SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_WITH_SECONDS_PHP'));
+                            
+                            //Obter perído letivo atual da ocorrência de curso
+                            $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+                            $learningPeriod = $busLearningPeriod->getLearningPeriodByDate($data->courseId, $data->courseVersion, $data->turnId, $data->unitId, $stateContractData->stateTime, true);
+                            $stateContractData->learningPeriodId = $learningPeriod->learningPeriodId;
+                            
+                            $okMovContract = $busMovementContract->insertMovementContract($stateContractData);
+
+                            if ( $okMovContract )
+                            {
+                                $logProblema .= PHP_EOL . "INSERIU MOVIMENTAÇÃO CONTRATUAL PARA O CONTRATO {$data->contractId}";
+                                if ( count($data->scfValue) > 0 )
+                                {
+                                    $okStateContractField = true;
+
+                                    try
+                                    {
+                                        foreach ( $data->scfValue as $stateContractFieldId => $scfValue )
+                                        {
+                                            $logProblema .= PHP_EOL . "INSERIDO COMPLEMENTO DE MOVIMENTAÇÃO {$stateContractFieldId} PARA A MOVIMENTAÇÃO {$stateContractData->stateContractId} {$stateContractData->reasonId}";
+                                            if ( strlen($scfValue) > 0 )
+                                            {
+                                                $stateContractData->stateContractFieldId = $stateContractFieldId;
+                                                $stateContractData->value = $scfValue;
+
+                                                $busMovementContractCompl->insertMovementContractComplement(clone($stateContractData));
+                                            }
+                                        }
+                                    }
+                                    catch (Exception $e)
+                                    {
+                                        $logProblema .= PHP_EOL . "THROW DO CÓDIGO, ERRO AO INSERIR COMPLEMENTO DE MOVIMENTAÇÃO";
+                                        throw new Exception(_M('Erro ao inserir dados de complemento de movimentação contratual. ', $module) . $e->getMessage());
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                $logProblema .= PHP_EOL . "THROW DO CÓDIGO, ERRO AO INSERIR MOVIMENTAÇÃO CONTRATUAL";
+                                throw new Exception(_M('Erro ao inserir dados de movimentação contratual.'));
+                            }
+                        }
+                        else
+                        {
+                            $logProblema .= PHP_EOL . "THROW DO CÓDIGO, NÃO ENCONTROU O stateContractId NA VARIÁVEL \$data";
+                            throw new Exception(_M('Erro ao inserir dados de movimentação contratual, por favor, tente novamente.'));
+                        }
+                    }
+                }
+            }
+
+            // Salva campos personalizados
+            $contractId = $function == SForm::FUNCTION_UPDATE ? $this->getPkeyValue() : $business->getLastInsertId();
+            if ( is_numeric($contractId) )
+            {
+                $logProblema .= PHP_EOL . "SALVOU CAMPOS CUSTOMIZADOS CONTRATO {$contractId}";
+                $this->saveCustomFields($contractId, $data, $this->getTransaction());
+            }
+            
+            file_put_contents($pathLog, $logProblema);
+        } 
+        catch (Exception $err) 
+        {
+            throw new Exception($err->getMessage());
+            $ok = false;
+        }
+        
+        return $ok;
+    }
+
+    /**
+     * Method to gather all information from the form fields
+     * and put them on a database compatible object
+     */
+    public function getTypesData()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $session = $MIOLO->session;
+        $data = $this->getData();
+
+        $rdata = parent::getTypesData();
+        $rdata->courseId = $data->courseId;
+        $rdata->courseVersion = $data->courseVersion;
+        $rdata->courseName = $data->courseName;
+        $rdata->turnId = $data->turnId;
+        $rdata->turnDescription = $data->turnDescription;
+        $rdata->unitId = $data->unitId;
+        $rdata->unitDescription = $data->unitDescription;
+        //$rdata = $this->parseData($rdata);
+        
+        $rdata->saveAnyway = DB_TRUE;
+        $rdata->employeeId = MIOLO::_REQUEST('employeeId');
+        $rdata->scfValue = MIOLO::_REQUEST('scfValue');
+        $rdata->reasonId = MIOLO::_REQUEST('reasonId');
+        $rdata->bankAccountId = MIOLO::_REQUEST('bankAccountId');
+
+        $contract = new AcdContract();
+        $vars = get_object_vars($contract);
+        foreach ( $vars as $key => $value )
+        {
+            if (!$rdata->$key)
+            {
+                $rdata->$key = $value;
+            }
+        }
+
+        return $rdata;
+    }
+    
+    /**
+     * @return int
+     */
+    public function getPkeyValue()
+    {
+        return MIOLO::_REQUEST('contractId');
+    }
+    
+    /**
+     * Edita ou insere o semestre em que o contrato se encontra no período.
+     * 
+     * @param sdtClass $data
+     */
+    public function insereOuEditaSemestreDoContrato($data)
+    {
+        $acdSemesterContractPeriod = new AcdSemesterContractPeriod();
+        $function = MIOLO::_REQUEST('function');
+
+        if ( $function == 'update' )
+        {
+            $acdSemesterContractPeriod->editaSemestreDoContrato($data);
+        }
+        else
+        {
+            // Como é o primeiro contrato do aluno o semestre será harcode 1.
+            $data->semester = 1;
+            $acdSemesterContractPeriod->insereSemestreDoContrato($data);
+        }
+    }
+}
+?>

@@ -1,0 +1,1814 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Intermediate form that inherits MForm
+ * and implements basic functions
+ *
+ * @author taffarel [taffarel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Equipe Solis [sagu2@solis.coop.br]
+ *
+ * @since
+ * Class created on 10/09/2008
+ */
+
+MIOLO::Import('extensions::cpaint.inc.php','cpaint');
+
+// Define a div de mensagem logo no inicio para funcionar corretamente mensagens de sessao (SESSION).
+$MIOLO = MIOLO::getInstance();
+$MIOLO->setConf('sagu.message.div', MMessage::getMessageContainer());
+
+/**
+ * extends MForm
+ */
+class SForm extends MForm
+{
+    /**
+     *
+     * @var MToolBar
+     */
+    protected $toolbar;
+    
+    /**
+     *
+     * @var SType
+     */
+    protected $object;
+    
+    protected $pkey;
+    
+    /**
+     * MIOLO::getInstance()
+     *
+     * @var MIOLO
+     */
+    protected $_MIOLO;
+    
+    /**
+     * MIOLO::getCurrentModule()
+     *
+     * @var string
+     */
+    protected $_module;
+    
+    
+    /**
+     * MIOLO::_REQUEST('function')
+     *
+     * @var string
+     */
+    protected $_function;
+    
+    /**
+     * Transação que é aplicada ao formulário 
+     * @var string
+     */
+    protected $transaction;
+    
+    
+    /**
+     * Habilita o checkdisabletoolbar
+     * @var string
+     */
+    private $checkDisableToolbar = true;
+    
+    /**
+     * Desabilita/habilita toolbar
+     *
+     * @var boolean
+     */
+    private $enableToolbar = true;
+    
+    /**
+     *
+     * @var SType
+     */
+    private $typeObjectPopulated;
+    
+    /**
+     *
+     * @var sGenericFields
+     */
+    private $genericFields;
+    
+    /**
+     * Forca o type a limpar valores de campos que estiverem no form, ao salvar, quando eles forem vazios.
+     */
+    private $limparCamposVazios;
+
+    /*
+     * Constants of the functions of insert, update, delete and search
+     */
+    const FUNCTION_INSERT = 'insert';
+    const FUNCTION_UPDATE = 'update';
+    const FUNCTION_DELETE = 'delete';
+    const FUNCTION_SEARCH = 'search';
+
+    /**
+     * Caso true não exibe a div padrão com as mensagens de sucesso, erro.
+     */
+    protected $removeDivMensagem = false;
+    
+    /**
+     * Construtor do form com características comuns ao SAGU.
+     * See this example of how to call this constructor from your form:
+     *
+     * parent::__construct(_M('Localizar', 'basic'), new BasCountry(), array('countryid'), 'BusCountry');
+     *
+     * @param (string) $title Form's title.
+     * @param (object) $object Instance of the class this form handles.
+     * @param (array) $pkey List of the fields representing the form's primary key.
+     */
+    public function __construct($title, $object, $pkey)
+    {
+        $MIOLO = $this->_MIOLO = MIOLO::getInstance();
+        $action = MIOLO::getCurrentAction();
+        $module = $this->_module = MIOLO::getCurrentModule();
+        $this->_function = MIOLO::_REQUEST('function');
+
+        parent::__construct($title, $action);
+
+        $this->toolbar = $this->getToolbar();
+
+        if ( SAGU::userIsFromServices() ) //precisa rever
+        {
+            // Seta o foco da página do portal para o topo.
+            $this->page->addJsCode("
+                try
+                {
+                    parent.window.scrollTo(0,0);
+                }
+                catch ( err )
+                {
+                    // Não faça nada.
+                }
+            ");
+        }
+
+        if ( $this instanceof SStepByStepForm ) // If is stepbystep
+        {
+            $this->toolbar->setButtonUrl(MToolBar::BUTTON_SAVE, $MIOLO->getCurrentURL());
+        }
+
+        $this->toolbar->setIsPost(MToolBar::BUTTON_DELETE, false);        
+        $this->setPkey($pkey);
+        $this->setObject($object);
+
+        // Enable printing of current form
+        $this->toolbar->setIsPost(MToolBar::BUTTON_PRINT, false);
+        $this->toolbar->setButtonUrl(MToolBar::BUTTON_PRINT, 'javascript:printEntireForm()');
+        
+        // Remove botoes voltar e sair da toolbar
+        $this->toolbar->hideButton(MToolBar::BUTTON_BACK);
+        $this->toolbar->hideButton(MToolBar::BUTTON_EXIT);
+        $this->toolbar->hideButton(MToolBar::BUTTON_RESET);
+
+        $this->toolbar->addButton('tbBtnClose', _M('Fechar'), $MIOLO->getActionURL('sagu2', 'main'), _M('Fechar'), true, $MIOLO->getUI()->GetImageTheme($MIOLO->theme->id, 'exit-20x20.png'), $MIOLO->getUI()->GetImageTheme($MIOLO->theme->id, 'exit-20x20.png'), 'post');
+        
+        //alternativa encontrada para obter a transação do handler durante a construção
+        $transaction = SAGU::NVL($MIOLO->getConf('temp.setTransaction'), get_class($this));
+
+        if ( $transaction )
+        {
+            $this->setTransaction( $transaction );
+        }
+        
+        //limpa a configuração 
+        $MIOLO->setConf('temp.setTransaction','');
+
+        if ( ($f = $this->page->request('cpaint_function')) != "" )
+        {
+            $this->page->generateMethod = 'generateAJAX';
+            // exit printing the return value of the $f function
+            exit($this->$f($this->page->request('cpaint_argument')));
+        }
+        else
+        {
+            $MIOLO->getRequiredJS4Ajax();
+
+            // Include JS only once, at first time the form is loaded (avoid include by AJAX calls)
+            $MIOLO->page->addScript('ajax.js', 'basic');
+            $MIOLO->page->addScript(SAGU::ABSOLUTE_URL_JS_FILES . 'sagu.js');
+
+            // if there are validators defined, validatorsVector will point to
+            // the existing ones.
+            if ( count($this->validations) > 0 )
+            {
+                $this->addJsCode("var validatorsVector = {$this->name}_validations;");
+            }
+            else
+            // if no validators were define when form is loaded the first time,
+            // validatorsVector will be a fresh new array of validators.
+            {
+                // m_validate.js is not loaded automatically if no validators exists
+                // the first time the form is loaded.
+                $this->page->AddScript('m_validate.js');
+                $this->addJsCode("var validatorsVector = [];");
+                $this->OnSubmit("MIOLO_Validate_Input(validatorsVector)");
+            }
+
+            $this->defineFields();
+        }
+        
+        // hide the 'Submit' button
+        $this->setShowPostButton(false);
+
+        $this->setLabelWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        $this->setClose($MIOLO->getActionURL($module, substr($action, 0, strrpos($action, ':'))));
+        $this->setHelp(get_class($this), MIOLO::getCurrentModule(), MIOLO::getCurrentAction());
+
+        $this->eventHandler();
+        $this->executaAcaoEmMassaSeExistir();
+        
+        if( strlen(MIOLO::_REQUEST('orderby'))>0 && !MIOLO::_REQUEST('btnGenerate') )
+        {
+            try 
+            {
+                if ( method_exists($this, 'btnGenerate_click') )
+                {
+                    $this->btnGenerate_click();
+                }
+            } 
+            catch (Exception $e)
+            {
+                //flog($e->getMessage());
+            }
+        }
+                
+    }
+    
+    public function isAjax()
+    {
+        if(strlen($this->page->request('cpaint_function'))>0)
+        {
+            return true;
+        }
+        
+        return false;
+    }
+
+    /**
+     * @param $options array Opcoes
+     * <br><b>toolbar</b> (boolean) TRUE/FALSE para exibir ou nao toolbar (padrao: TRUE)
+     * <br><b>fields</b> (array) Campos do form
+     * <br><b>validators</b> (array) Validadores do form
+     */
+    public function defineFields($options = array())
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        // Define opcoes padrao
+        $options = array_merge(array(
+            'toolbar' => true, // ativa ou desativa toolbar
+            'fields' => array(),
+            'validators' => array(),
+        ), $options);
+
+        if ( count($options['fields']) > 0 )
+        {
+            parent::setFields($options['fields']);
+        }
+        
+        switch($MIOLO->getCurrentAction())
+        {
+            case "main:report:construtorRelatorios":
+            case "main:report:generateReport":
+            case "main:report:genericReports":
+                foreach( $this->fields as $field )
+                {
+                    if( $field instanceof MGrid )
+                    {
+                        $field->showExportAsJRXML = true;
+                        
+                    }
+                }
+                
+                break;
+
+
+
+        }
+        
+        if ( count($options['validators']) > 0 )
+        {
+            $this->setValidators($options['validators']);
+        }
+
+        // favoritos
+        global $navbar;
+        $navOptions = $navbar->getOptions();
+        $label = $navOptions[count($navOptions)-1]->control->label;
+        
+        $actions = explode(':', $this->action);
+        if ( MIOLO::_request('event') == 'bookmark' )
+        {
+            $busAccess = new BusinessBasicBusAccess();
+            $login = $MIOLO->getLogin()->id;
+            
+            $filters = new stdClass();
+            $filters->login = $login;
+            $filters->handler = SAGU::adjustBookmarkAction($this->action);
+            $filters->isBookmark = DB_TRUE;
+
+            $bookmarks = $busAccess->searchAccess($filters);
+
+            if ( count($bookmarks) > 0 )
+            {
+                $busAccess->deleteAccess($login, $module, true, SAGU::adjustBookmarkAction($this->action));
+            }
+            else
+            {
+                SAGU::addAccess($label, SAGU::adjustBookmarkAction($this->action), $actions[count($actions)-1] . '-16x16.png', true);
+            }
+        }
+        // fim favoritos
+
+        $this->setLabelWidth(SAGU::getParameter('BASIC', 'FIELD_LABEL_SIZE'));
+        
+        if ( $options['toolbar'] && $this->enableToolbar )
+        {
+            $MIOLO->getTheme()->setElement('toolbar', $this->toolbar);
+        }
+
+        //if($_REQUEST['iframe'])
+        {
+            /*$jsIframe = ' alert(Math.max(
+        Math.max(document.body.scrollHeight, document.documentElement.scrollHeight),
+        Math.max(document.body.offsetHeight, document.documentElement.offsetHeight),
+        Math.max(document.body.clientHeight, document.documentElement.clientHeight)
+    ));';*/
+            
+            /*$jsIframe = ' alert(document.body.scrollHeight);
+                            alert(document.documentElement.scrollHeight);
+                            alert(document.body.offsetHeight);
+                            alert(document.documentElement.offsetHeight);
+                            alert(document.body.clientHeight);
+                            alert(document.documentElement.clientHeight);
+                        ';*/
+            //$jsIframe = 'getFormHeight();';
+        }
+            
+        
+        // Make the cursor focus at the first field (sagu.js)
+        $this->page->onLoad('setInitialFocus(document.' . $this->name . ');'.$jsIframe);
+        
+        // Adiciona div de mensagens
+        if ( !$this->removeDivMensagem )
+        {
+            $this->AddField( $MIOLO->getConf('sagu.message.div') );
+        }
+        
+        // Adiciona div MPopup
+        $this->AddField( MPopup::getPopupContainer() );
+                
+        $this->checkDisableToolBar();        
+        
+        // Aplica padroes de campos
+        foreach ( $this->getFormControlFields() as $field )
+        {
+            $field instanceof MFormControl;
+            $this->setFieldDefaults($field);
+        }        
+    }
+    
+    /**
+     * Event triggered when user chooses New from the toolbar
+     */
+    public function tbBtnNew_click($sender=NULL)
+    {
+
+    }
+
+    /**
+     *
+     * @return MToolBar
+     */
+    public function getToolbar()
+    {
+        if ( !$this->toolbar )
+        {
+            $MIOLO = MIOLO::getInstance();;
+            $module = MIOLO::getCurrentModule();
+            $action = MIOLO::getCurrentAction();
+
+            $this->toolbar = new MToolBar('toolBar', $MIOLO->getActionURL($module, $action));
+            $this->toolbar->width = '100%';
+        }
+        
+        return $this->toolbar;
+    }
+
+    /**
+     * Desativa exibicao de toolbar
+     * Obs: Uma vez chamado, nao é mais possível re-ativar a toolbar
+     */
+    public function disableToolbar()
+    {
+        $this->manager->getTheme()->clearElement('toolbar');
+    }
+
+    protected function disableCheckToolbar()
+    {
+        $this->checkDisableToolbar = false;
+    }
+
+    /**
+     * Verifica se deve ser desabilitada toolbar 
+     */
+    private function checkDisableToolBar()
+    {
+        if( $this->checkDisableToolbar )
+        {
+            if ( SAGU::userIsFromServices() )
+            {
+                $this->disableToolbar();
+            }
+        }
+    }
+
+    /**
+     * Event triggered when user chooses Delete from the toolbar
+     */
+    public function tbBtnDelete_click($sender=NULL, $opts)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        $opts = array_merge(array(
+            'event' => 'tbBtnDelete_confirm',
+            'function' => 'delete'), (array) $opts);
+
+        foreach ( (array)$this->pkey as $field )
+        {
+            $opts[$field] = MIOLO::_REQUEST($field);
+        }
+
+        $gotoYes = $MIOLO->getActionURL( $module, $action, null, $opts );
+        $goto = SAGU::getStackBackUrl();
+        $gotoNo = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+        $msg = SAGU::getParameter('BASIC', 'MSG_CONFIRM_RECORD_DELETE');
+        $caption = _M('Questão',$module);
+        SAGU::question($msg, $gotoYes, $gotoNo);
+    }
+
+    /**
+     * Event triggered when user chooses Yes from the Delete prompt dialog
+     */
+    public function tbBtnDelete_confirm($sender=NULL, $success, $opts = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $opts = (array) $opts;
+                
+        $this->defaultDisabledButtonsToolbar();
+        
+        if ( $success )
+        {
+            $msg = SAGU::getParameter('BASIC', 'MSG_RECORD_DELETED');
+            
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action, null, $opts);
+            
+            $this->messageSuccess($msg, $goto);
+        }
+        else
+        {
+            $msg = _M('Erro executando a operação solicitada.',$module);
+            
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action, null, $opts);
+
+            $this->messageError( $msg, $goto );
+        }
+    }
+
+    public function defaultDisabledButtonsToolbar()
+    {        
+        $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_DELETE);
+        $this->toolbar->disableButton(MToolBar::BUTTON_PRINT);
+    }
+    
+    /**
+     * Event triggered when user chooses Save from the toolbar
+     */
+    public function tbBtnSave_click($sender=NULL, $success=NULL, $opts=NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+
+        if ( $success )
+        {
+            if ( $function == 'update' )
+            {
+                $msg = SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED');
+                $caption = _M('Informação', $module);
+                $this->messageSuccess($msg, $MIOLO->getActionURL( $module, $action, null, $opts));
+            }
+            else
+            {
+                $msg = SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED_INFO');
+                
+                $goto = SAGU::getStackBackUrl();
+                $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL( $module, $action, null, $opts);
+
+                $this->messageSuccess($msg, $goto);
+            }
+        }
+        else
+        {
+            $msg = _M('Erro executando a operação solicitada.',$module);
+            
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL($module, $action);
+
+            $this->messageError( $msg, $goto );
+        }
+    }
+
+    /**
+     * Method to gather all information from the form fields
+     * and put them on a database compatible object
+     * 
+     * @return SType
+     */
+    public function getTypesData()
+    {
+        $type = clone($this->object);
+        $type instanceof SType;
+        
+        $vars = $this->object instanceof SType ? $this->object->getObjectVars() : get_object_vars($type);
+        
+        foreach ( $vars as $var => $value )
+        {
+            $fieldName = $var;
+            $fieldValue = MIOLO::_REQUEST($fieldName . 'S');
+
+            if ( $fieldName == 'login' )
+            {
+                continue;
+            }
+
+            // The suffix 'S' is standard for search forms, so we have to check
+            // for fields with that suffix to make the same method work for both
+            // search and non-search forms.
+            if ( !($fieldValue instanceof stdClass) && strlen($fieldValue) == 0 )
+            {
+                $fieldValue = MIOLO::_REQUEST($fieldName);
+            }
+
+            $type->$var = $fieldValue;
+        }
+
+        return $type;
+    }
+    
+    /**
+     * Obtem dados do formulario utilizando o novo formato padrao ( typeAlias_campo )
+     * 
+     * @return array 
+     */
+    public function getRequestValues()
+    {
+        $out = array();
+        
+        // Novo padrao
+        if ( $this->object->utilizaNovoPadrao() )
+        {
+            $vars = $_REQUEST;
+            
+            foreach ( $vars as $key => $val )
+            {
+                if ( substr($key, 0, 1) == '_' || in_array($key, array('module', 'action', 'item', 'name', 'event')) )
+                {
+                    continue;
+                }
+                
+                $key = preg_replace('/_/', '.', $key, 1);
+                
+                // Padrao com S no final do campo
+                if ( substr($key, -1) == 'S' )
+                {                    
+                    $out[ substr($key, 0, -1) ] = $val;
+                }
+                
+                // Forca limpar campos vazios..
+                if ( strlen($val) == 0 && $this->limparCamposVazios )
+                {
+                    $val = SType::NULL_VALUE;
+                }
+                
+                $out[$key] = $val;
+            }
+        }
+
+        return $out;
+    }
+
+   /**
+    * Get fields from javascript function
+    * You cannot use # ou | in your string
+    */
+    public function getAjaxFields($args)
+    {
+        $args = explode('#', urldecode($args[0]) ); // converts from the "escape" javascript function
+        foreach ( $args as $line => $info )
+        {
+            $temp = explode('|', $info);
+            if ( ($temp[1] && $temp[1] != 'undefined') || $temp[1] === 0 || $temp[1] == '0')
+            {
+                $data[$temp[0]] = $temp[1];
+            }
+        }
+        $data = (object) $data;
+        return $data;
+    }
+
+    /**
+     * Generates a JS action that will call the $event method of the current form and store the instantiated
+     * fields inside $responseElement HTML element (generally a div).
+     *
+     * @param (string) $event Nome do metodo do formulario a chamar (suporta tambem método estático de outra classe, ex.: TraCommonFields::changeUnitId())
+     * @param (string) $responseElement Name of the element where the fields instantiated by the called method will be put.
+     * @param (boolean) $validate Wether the AJAX call must validate or not the form data before being executed.
+     * @param (array) $args Additional arguments to be passed to the AJAX call in form of array(key1 => value1, ..., $keyN => $valueN).
+     * @return (string) The JS AJAX call.
+     */
+    public static function getAjaxAction($event, $responseElement, $validate = true, $args = null, $encodeValues = true, $returnFalse = true, $chamadaJS = true)
+    {
+        if($chamadaJS)
+        {
+            $js = 'javascript:';
+        }
+        
+        $js .= 'saguDoAjax(\'' . $event . '\',\'' . $responseElement . '\',' . ($validate ? 'true' : 'false') . ',';
+
+        $otherArgs = '';
+        if ( count($args) > 0 )
+        {
+            foreach ( $args as $key => $val )
+            {
+                $value = "";
+                $value .= $val;
+                $otherArgs .= '&' . $key . '=' . ($encodeValues ? urlencode($value) : $value);                
+            }
+        }
+
+        $js .= '\'' . $otherArgs . '\');';
+        
+        if($returnFalse)
+        {
+            $js.= 'return false;';
+        }
+
+        return $js;
+    }
+    
+    /**
+     * Generates a JS action that will call the $event method of the current form and store the instantiated
+     * fields inside $responseElement HTML element (generally a div).
+     *
+     * @param (array) $args ajax calls.
+     * @return (string) The JS AJAX call.
+     */
+    public static function getMultipleAjaxAction($events)
+    {
+        foreach ( $events as $e )
+        {
+            $js .= self::getAjaxAction($e[0], $e[1], $e[2], $e[3], $e[4], false, false);
+        }
+
+        $js .= ' return false;';
+
+        return $js;
+    }
+
+    /**
+     * Function called automatically after a call to mioloDoAjax. It parses all the input to pass it on to
+     * the desired form method, in the form of an object, instead of a JS string.
+     *
+     * @param (string) $args String in the form of a URI (& separates fields and = separates values)
+     * @param MForm $formInstance Instancia do form a ser utilizada (utilizado para forms legados)
+     * @return (string) The string returned by the painter. Generally HTML code to be put inside the div specified
+     * at the AJAX call.
+     */
+    public function ajaxCallBack($args, $formInstance = null)
+    {
+        $module = 'basic';
+        
+        // Instancia passada manualmente
+        $objectThis = $formInstance ? $formInstance : $this;
+
+        // Converte variaveis da URL para PHP e joga no array
+        parse_str($args[0], $array);
+        $retVal = (object)$array;
+
+        // get the name of the method to be called
+        $method = $retVal->phpFunction;
+        // call the method, which should return an array of fields to be generated
+        if ( strlen($method) == 0 )
+        {
+            // when method is blank, clear out the div
+            $fields[] = '&nbsp;';
+        }
+        else
+        {
+            // Metodos estaticos de classes definidas (permite que seja chamado classes externas ao form)
+            if ( strpos($method, '::') )
+            {
+                list($class, $method) = explode('::', $method);
+            }
+            else // Metodo do proprio form
+            {
+                $class = $objectThis;
+            }
+            
+            if ( ! method_exists($class, $method) )
+            {
+                $objectThis->addError(_M('Método @1 não existe na classe @2.', $module, $method, get_class($class)));
+            }
+            else
+            {
+                // Chama de forma normal ou estatica quando deve
+                $fields = is_object($class) ? $class->$method($retVal) : call_user_func($retVal->phpFunction, $retVal);
+            }
+        }
+
+        
+        // Corrige problemas com MPopup (hints de requerido..)
+        // Um caso comum é instanciar uma popup passando os fields, e esta rotina trata de fazer a correcao para os hints serem exibidos adequadamente.
+        foreach ( $fields as $field )
+        {
+            if ( ( $field instanceof MPopup ) && is_array($field->content) )
+            {
+                $this->SetFields($field->content);
+
+                $hidden = null;
+                $this->GenerateLayoutFields($hidden);
+            }
+        }
+        
+        // add all defined validators to the MIOLO default validators vector
+        $objectThis->generateAJAXValidators();
+
+        // if the form has some errors, show them
+        $messages = '';
+        if ( $objectThis->hasErrors() )
+        {
+            $errors = $objectThis->generateErrors();
+            $errors->addButton(_M('Ok', $module), 'javascript:SAGUHideMessagesDiv()');
+            $messages .= $objectThis->painter->generateToString($errors);
+        }
+        if ( $objectThis->HasInfos() )
+        {
+            $infos = $objectThis->generateInfos();
+            $infos->addButton(_M('Ok', $module), 'javascript:SAGUHideMessagesDiv()');
+            $messages .= $objectThis->painter->generateToString($infos);
+        }
+        if ( $objectThis->HasAlerts() )
+        {
+            $alerts = $objectThis->generateAlerts();
+            $alerts->addButton(_M('Ok', $module), 'javascript:SAGUHideMessagesDiv()');
+            $messages .= $objectThis->painter->generateToString($alerts);
+        }
+
+        if ( strlen($messages) > 0 )
+        {
+            // comment out all messages content, since it'll be parsed by the AJAX callback function
+            $messages = '<!-- ### SAGU_MESSAGES ### -->' . $messages . '<!-- ### SAGU_MESSAGES_END ### -->';
+        }
+
+        // generate response div information
+        $responseDivId = '<!-- ### SFORM_RESPONSE_DIV ### -->' . $retVal->SFormResponseDivId . '<!-- ### SFORM_RESPONSE_DIV_END ### -->';
+
+        // generate main content information
+        $content = $objectThis->painter->generateToString($fields) . $valids;
+
+        // generate fields as strings and give the string back to JS to be put
+        // into the element selected by the AJAX call
+        return $responseDivId . $messages . $content;
+    }
+
+
+    /**
+     * Define valores do form ignorando campos do tipo MText/Label...
+     *
+     * @param <type> $data
+     */
+    public function setData($data)
+    {
+        foreach ((object)$data as $key => $value)
+        {
+            $field = $this->GetField($key);
+            if ($field && !($field instanceof MText))
+            {
+                $this->SetFieldValue($key, $value);
+            }
+        }
+    }
+
+    /**
+     * Gera um arquivo CSV com os dados da grid.
+     */
+    public function exportGridAsCSV_click()
+    {
+        $sql = SExportacao::getConsultaPeloArray($this->getGridData(MIOLO::_REQUEST('gridName')));
+        
+        $exportacao = new SExportacao($this->title, SExportacao::TIPO_CSV, $sql);
+        $exportacao->exporta();
+        
+    }
+
+    /**
+     * Gera um arquivo HTML com os dados da grid.
+     */
+    public function exportGridAsHTML_click()
+    {
+        $sql = SExportacao::getConsultaPeloArray($this->getGridData(MIOLO::_REQUEST('gridName')));
+        
+        $exportacao = new SExportacao($this->title, SExportacao::TIPO_HTML, $sql);
+        $exportacao->exporta(SExportacao::DISPLAY_BROWSER);
+        
+    }
+
+    /**
+     * Gera um arquivo PDF com os dados da grid.
+     */
+    public function exportGridAsPDF_click()
+    {
+        $sql = SExportacao::getConsultaPeloArray($this->getGridData(MIOLO::_REQUEST('gridName')));
+        
+        $exportacao = new SExportacao($this->title, SExportacao::TIPO_PDF, $sql);
+        $exportacao->exporta();
+        
+    }
+    
+    /**
+     * Gera um arquivo JRXML com os dados da grid.
+     */
+    public function exportGridAsJRXML_click()
+    {
+        $sql = SExportacao::getConsultaPeloArray($this->getGridData(MIOLO::_REQUEST('gridName')));
+        
+        $exportacao = new SExportacao($this->title, SExportacao::TIPO_JRXML, $sql);
+        $exportacao->exporta();
+        
+    }
+
+    /**
+     * Gera um arquivo XLS com os dados da grid.
+     * 
+     */
+    public function exportGridAsXLS_click()
+    {
+        $sql = SExportacao::getConsultaPeloArray($this->getGridData(MIOLO::_REQUEST('gridName')));
+        
+        $exportacao = new SExportacao($this->title, SExportacao::TIPO_XLS, $sql);
+        $exportacao->exporta();
+                
+    }
+
+    /**
+     * Retorna um link javascript para abrir uma popup
+     *
+     * @param array $options
+     * <br><b>url</b> (string) Link URL (geralmente nao muda)
+     * <br><b>args</b> (array) Argumentos a serem passados na URL
+     * <br><b>method</b> (string) Nome do metodo a ser chamado na requisicao AJAX (metodo que gera a resposta da popup)
+     * <br><b>encodeArgs</b> (boolean) Indica se deve ser aplicado encoding na URL dos args passados (default: TRUE)
+     * @return string Link javascript que executa o AJAX da funcao de retorno popup
+     */
+    public static function getPopupLink($options = array())
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $options = array_merge(array(
+            'url' => $MIOLO->getCurrentURL(),
+            'args' => array(),
+            'method' => null,
+            'encodeArgs' => true,
+        ), $options);
+
+        if ( count($options['args']) > 0 )
+        {
+            if ( $options['encodeArgs'] )
+            {
+                $options['url'] .= '&' . http_build_query($options['args']);
+            }
+            else
+            {
+                foreach ( $options['args'] as $key => $val )
+                {
+                    $options['url'] .= "&{$key}={$val}";
+                }
+            }
+        }
+        return "javascript:mpopup.doAjax('{$options['url']}', '{$options['method']}')";
+    }
+
+    /**
+     * Tenta obter o valor vindo do form OU do MIOLO::_REQUEST().
+     *
+     * @param string $name
+     * @param string $extraValue valor opcional, caso valor nao consiga ser obtido, pega do segundo
+     * @return string
+     */
+    public function getRequestValue($name, $extraValue = null)
+    {
+        $name = str_replace('.', '_', $name);
+        
+        return MUtil::NVL($this->getFormValue($name, MIOLO::_REQUEST($name)), $extraValue);
+    }
+    
+    /**
+     * Pega o valor do request, caso nao existir, tenta buscar o que esta no objeto do type populado.
+     * 
+     * @return string
+     */
+    public function getRequestOrTypeValue($name)
+    {
+        $value = $this->getRequestValue($name);
+
+        if ( strlen($value) == 0 )
+        {
+            $type = $this->getTypeObjectPopulated();
+            
+            if ( $type instanceof SType )
+            {
+                $value = $type->getAttribute($name);
+            }
+        }
+        
+        return $value;
+    }
+
+    /**
+     * Obtem a URL de origem, util para casos onde vem de uma acao de grid e quer
+     * voltar para a tela de origem.
+     *
+     * TODO: Adicionar variaveis de filtros de busca na URL, ou outras variaveis importantes,
+     * para que a tela volte da mesma forma que estava antes.
+     *
+     * @return string
+     */
+    public function getPreviousURL()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $prevURL = MUtil::NVL( $this->getRequestValue('_previousURL'), $_SERVER['HTTP_REFERER'] );
+
+        // Add uniqueId to the url
+        $uniqueId = $this->getRequestValue('uniqueSearchId');
+        if ( strlen($uniqueId) > 0 )
+        {
+            $filters = SSearchForm::getSessionFilters();
+            if ( (strlen($filters->urlModule) > 0) && (strlen($filters->urlAction) > 0) )
+            {
+                $prevURL = SAGU::getActionURL($filters->urlModule, $filters->urlAction, array('uniqueSearchId' => $uniqueId));
+            }
+            else
+            {
+                $prevURL = preg_replace('/&uniqueSearchId=(.*)/', '', $prevURL);
+                $prevURL .= '&uniqueSearchId=' . $uniqueId;
+            }
+        }
+
+        return $prevURL;
+    }
+
+    /**
+     * Este método sobrescreve o método Generate do MForm para adicionar o campo
+     * _previousURL como último campo do Form, para evitar que a função JS setInitialFocus()
+     * falhe ao tentar definir o foco inicial neste campo.
+     * 
+     * @return (string) Retorno idêntico ao MForm->Generate().
+     */
+    public function Generate()
+    {
+        // Adiciona URL que esta vindo (util para acoes de grids que submetem a formularios, e depois deseja-se voltar)
+        $this->addField( new SHiddenField('_previousURL', $this->getPreviousURL()) );
+        
+        // Registros selecionados na grid
+        $regSel = $this->obterRegistrosSelecionados();
+        
+        if ( count($regSel) > 0 )
+        {
+            $this->addField( new SHiddenField('registrosGrid', urlencode(serialize($regSel))) );
+        }
+        
+        return parent::Generate();
+    }
+
+    /**
+     * @deprecated Nao utilizado
+     * 
+     * Adiciona botao generico de imprimir relatorio 
+     */
+    private function addReportPrintButton()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+
+        $fieldExists = $this->getControlById('radFileType') || $this->getControlById('reportFormat');
+        $methodExists = method_exists($this, 'tbBtnPrint_click') || method_exists($this, 'generateReport');
+        
+        if ( ( ! $this instanceof FrmGenerateReport ) && $methodExists && $fieldExists )
+        {
+            $button = $this->toolbar->getControlById(MToolBar::BUTTON_PRINT);
+            $button instanceof MToolBar;
+            
+            $div = new MDiv('divPrintReport', $button);
+            $this->AddField($div);
+            
+            $this->AddField(new MSeparator());
+        }
+    }
+    
+    
+    /**
+     * Retorna se esta no modo edicao (subdetail), util para testar se deve carregar dados na subdetail, ex.:
+     * if ( $this->isSubDetailEditMode() )
+     * {
+     *     $subdetail->setData($subData);
+     * }
+     *
+     * @return boolean
+     */
+    public function isSubDetailEditMode()
+    {
+        $isPostBack = $this->page->isPostBack();
+        $hasCpaintFunction = strlen(MIOLO::_REQUEST('cpaint_function')) > 0;
+        $eventIsSave = MIOLO::_REQUEST('event') == 'tbBtnSave:click' || SAGU::getEventName() == 'tbBtnSave:click';
+        
+        return ( !$isPostBack && !$hasCpaintFunction && !$eventIsSave );
+    }
+    
+    
+    /**
+     * Obtem objeto da base de pessoa fisica logada
+     *
+     * @return basPhysicalPerson 
+     */
+    public function getPhysicalPersonLogged()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        // Login do usuário
+        $loginUser = $MIOLO->GetLogin();
+        //Bus physical person
+        $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+        //Business document
+        $busDocument = new BusinessBasicBusDocument();
+
+        //Physical person
+        $physicalPerson = $busPhysicalPerson->getPhysicalPersonByMioloUserName($loginUser->id);
+        
+        return $physicalPerson;
+    }
+    
+    
+    /**
+     * Array com primary keys
+     *
+     * @param array $pkey 
+     */
+    public function setPkey($pkey)
+    {
+        $this->pkey = $pkey;
+
+        if ( is_object($this->toolbar) )
+        {
+            $url = $this->toolbar->getButtonUrl(MToolBar::BUTTON_DELETE);
+
+            if ( is_array($this->pkey) )
+            {
+                foreach ( $this->pkey as $field )
+                {
+                    $url .= '&'.$field.'='.MIOLO::_request($field);
+                }
+            }
+
+            $url = $this->toolbar->setButtonUrl(MToolBar::BUTTON_DELETE, $url);
+        }
+    }
+    
+    /**
+     *
+     * @return array
+     */
+    public function getPkey()
+    {
+        return (array) $this->pkey;
+    }
+    
+    /**
+     * @return array
+     */
+    public function getPkeyValues()
+    {
+        $values = array();
+        
+        foreach ( $this->getPkey() as $pk )
+        {
+            $values[] = MIOLO::_REQUEST($pk);
+        }
+        
+        return $values;
+    }
+    
+    /**
+     * Retorna se chave é composta, ou seja, tem valores multiplos que compoem a chave primaria.
+     * 
+     * @return boolean
+     */
+    public function isCompositePkey()
+    {
+        return count($this->getPkey()) > 1;
+    }
+    
+    public function getPkeySingleName()
+    {
+        return current($this->pkey);
+    }
+    
+    /**
+     *
+     * @return string
+     */
+    public function getPkeyCustomizedId()
+    {
+        return $this->isCompositePkey() ? implode(MCustomValue::KEY_SEPARATOR, $this->getPkeyValues()) : MIOLO::_REQUEST( $this->pkey[0] );
+    }
+    
+    /**
+     * Objeto instanciado SType
+     *
+     * @param SType $object 
+     */
+    public function setObject($object)
+    {
+        $object instanceof SType;
+        
+        if ( !$this->getPkey() && $object instanceof SType && $object->utilizaNovoPadrao() )
+        {
+            $this->setPkey( array( $object->getPrimaryKey()) );
+        }
+        
+        $this->object = $object;
+    }
+    
+    /**
+     *
+     * @return SType
+     */
+    public function getObject()
+    {
+        return $this->object;
+    }
+    
+    /**
+     * Retorna TRUE se estiver em uma paginacao de dados da grid.
+     * 
+     * @return boolean
+     */
+    public function isPaginatingData()
+    {
+        return strlen( MIOLO::_REQUEST('gridName') ) > 0;
+    }
+    
+    /**
+     * Define a transação do formulário
+     * 
+     * @param string $transaction 
+     */
+    public function setTransaction( $transaction )
+    {
+        $this->transaction = $transaction;
+    }
+    
+    /**
+     * Retorna a transação do formulário
+     * 
+     * @return string a transação do formulário
+     */
+    public function getTransaction()
+    {
+        return $this->transaction;
+    }
+    
+    /**
+     *
+     * @return boolean
+     */
+    public function isInsertFunction()
+    {
+        return $this->getPassFunction() == SForm::FUNCTION_INSERT;
+    }
+
+    /**
+     *
+     * @return boolean
+     */
+    public function isUpdateFunction()
+    {
+        return $this->getPassFunction() == SForm::FUNCTION_UPDATE;
+    }
+
+    /**
+     *
+     * @return boolean
+     */
+    public function isDeleteFunction()
+    {
+        return $this->getPassFunction() == SForm::FUNCTION_DELETE;
+    }
+    
+    /**
+     *
+     * @return boolean
+     */
+    public function isSearchFunction()
+    {
+        return $this->getPassFunction() == SForm::FUNCTION_SEARCH;
+    }
+    
+    /**
+     *
+     * @return boolean
+     */
+    public function isUpdateOrDelete()
+    {
+        return in_array($this->getPassFunction(), array(SForm::FUNCTION_UPDATE, SForm::FUNCTION_DELETE));
+    }
+    
+    /**
+     *
+     * @return boolean
+     */
+    public function isInsertOrUpdate()
+    {
+        return in_array($this->getPassFunction(), array(SForm::FUNCTION_INSERT, SForm::FUNCTION_UPDATE));
+    }
+    
+    /**
+     *
+     * @return string
+     */
+    public function getPassFunction()
+    {
+        return MIOLO::_REQUEST('function');
+    }
+    
+    public function getGridPnPage()
+    {
+        return MIOLO::_REQUEST('pn_page');
+    }
+    
+    /**
+     * Ajusta padroes de tamanho, valor e outros para campos do form.
+     */
+    public function setFieldDefaults(MFormControl $field)
+    {
+        $type = $this->getTypeObjectPopulated();
+        $name = $field->getName();
+        $originalName = $name;
+        
+        // Busca coluna no type
+        if ( $type instanceof SType && ( strlen($name) > 0 ) )
+        {            
+            // Search default...
+            if ( substr($originalName, -1) == 'S' )
+            {
+                $originalName = substr($originalName, 0, -1);
+            }
+         
+            if ( !$type->hasColumn($originalName) && !$type->isVirtualColumn($originalName) )
+            {
+                return;
+            }
+            
+            $formValue = $this->getRequestValue( $name );
+
+            // Value
+            if ( !$field->getValue() )
+            {
+                if ( $formValue )
+                {
+                    $field->setValue( $formValue );
+                }
+                else
+                {
+                    $field->setValue( $type->getAttribute($originalName) );
+                }
+            }
+
+            // Verifica requerido
+            if ( $this->isInsertOrUpdate() )
+            {
+                // Define campo como obrigatorio
+                if ( $type->isColumnNotNull($originalName) && !$type->isPrimaryKey($originalName) && ! ( $field instanceof MRadioButtonGroup ) && ! ( $field instanceof SHiddenField ) && ( $field->autoSetRequired !== false ) )
+                {
+                    $field->setIsRequired(true);
+                }
+            }
+            
+            // Hint automatico da coluna descricao da base de dados
+            if ( strlen($field->jsHint) == 0 )
+            {
+                $field->jsHint = $type->getColumnDescription($originalName);
+            }
+            
+            // Altera atributos padroes dos fields
+            if ( $type->isTypeNumeric($originalName) && ( $field instanceof MTextField ) )
+            {
+                $field->size = SAGU::getParameter('BASIC', 'FIELD_ID_SIZE');
+            }
+            else if ( $type->isTypeString($originalName) && ! ( $field instanceof MSelection ) && ! ( $field instanceof sEscolha ) )
+            {
+                $field->size = SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE');
+            }
+            else if ( $type->isTypeDate($originalName) )
+            {
+                $field->size = SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE');
+            }
+            else if ( $type->isTypeBoolean($originalName) )
+            {
+                $field->options = SAGU::listYesNo();
+            }
+        }
+    }
+    
+    /**
+     * Build an object where each attribute represents part of the primary key with its value.
+     * @return (object) Returns an object where each attribute represents part of the primary key.
+     */
+    public function getObjectPk()
+    {
+        $id = new stdClass();
+        foreach ( $this->pkey as $key )
+        {
+            $id->$key = MIOLO::_REQUEST($key);
+        }
+
+        return $id;
+    }
+    
+
+    /**
+     * Retorna o objeto SType já instanciado e populado com as chaves primárias
+     * @return SType
+     */
+    public function getTypeObjectPopulated()
+    {
+        $obj = $this->typeObjectPopulated;
+
+        if ( $this->object instanceof SType && !$obj )
+        {
+            $params = array();
+            foreach ( $this->getObjectPk() as $key => $value )
+            {
+                if ( strlen($value) > 0 )
+                {
+                    // Quando for string, coloca '' no parâmetro
+                    $params[] = "'{$value}'";
+                }
+            }
+
+            $params = implode(', ', $params);
+
+            try
+            {
+                // Não foi encontrado outra forma de chamar construtor com parâmetros dinâmicos, por isto foi utilizado eval()
+                $obj = clone($this->object);
+                eval("\$obj->__construct({$params});");
+            }
+            catch (Exception $e)
+            {
+                $this->error($e->getMessage());
+            }
+            
+            $this->typeObjectPopulated = $obj;
+        }
+        
+        return $obj;
+    }
+    
+    /**
+     * @return string
+     */
+    public static function getReturnTo()
+    {
+        $returnTo = MIOLO::_REQUEST( self::getReturnToKey() );
+        
+        return $returnTo;
+    }
+    
+    /**
+     *
+     * @return string
+     */
+    public static function getReturnToNormalized()
+    {
+        $ret = null;
+        $returnTo = self::getReturnTo();
+        
+        if ( strlen($returnTo) > 0 )
+        {
+            $ret = urldecode($returnTo);
+        }
+        
+        return $ret;
+    }
+    
+    /**
+     *
+     * @return string
+     */
+    public static function getReturnToEncoded()
+    {
+        $ret = null;
+        $returnTo = self::getReturnTo();
+        
+        if ( strlen($returnTo) > 0 )
+        {
+            $ret = urlencode($returnTo);
+        }
+        
+        return $ret;
+    }
+    
+    /**
+     * @return string
+     */
+    public static function getReturnToKey()
+    {
+        return 'return_to';
+    }
+    
+    /**
+     * @return string
+     */
+    public static function createReturnTo($url)
+    {
+        return urlencode($url);
+    }
+    
+    /**
+     * @return string
+     */
+    public static function createReturnToCurrentURL()
+    {
+        return self::createReturnTo( MIOLO::getCurrentURL() );
+    }
+    
+    /**
+     * @return string
+     */
+    public function obterAcaoEmMassa()
+    {
+        return $this->getRequestValue('acaoEmMassa');
+    }
+    
+    /**
+     *
+     * @param $manterCache (bool) Tenta manter os registros no form serializados, para transitarem entre POST's executados.
+     * @param $chave Quando passado, acessa uma chave (coluna) especifica da tabela. Ex.: acdgroup.curriculumid
+     * 
+     * @return array
+     */
+    public function obterRegistrosSelecionados($manterCache = true, $chave = null)
+    {
+        $idValues = array();
+        
+        if ( method_exists($this, 'getGrid') )
+        {
+            // Obtem todos primeiros registros das linhas dos dados da grid, que geralmente é o ID
+            $grid = $this->getGrid();
+            
+            if ( method_exists($grid, 'generateData') )
+            {
+                $grid->generateData(); // isto e chamado para organizar os dados da grid, paginacao, ordenacao
+            }
+            
+            $selecteds = (array) $grid->selecteds;
+
+            foreach ( $grid->data as $key => $row )
+            {
+                if ( in_array($key, $selecteds) )
+                {
+                    // Obtem o primeiro registro do tipo INTEGER (ocorreu problemas de pegar da coluna username, que estava antes do id na tabela)
+                    // Sim, isto tera que ser refeito de uma forma mais garantida pois e inseguro pegar a primeira coluna INT
+                    // Mas teve de ser feito para possibilitar que o sistema continuasse funcionando.
+                    $regValue = null;
+                    
+                    if ( strlen($chave) > 0 )
+                    {
+                        $regValue = $row[$chave];
+                    }
+                    else
+                    {
+                        foreach ( $row as $value )
+                        {
+                            if (is_numeric($value) )
+                            {
+                                $regValue = $value;
+                                break;
+                            }
+                        }
+                    }
+                    
+                    $idValues[] = $regValue;
+                }
+            }
+        }
+        
+        // Obtem a lista dos itens no campo oculto (hidden) do form, caso exista
+        if ( count($idValues) == 0 && $manterCache )
+        {
+            $regSel = $this->getRequestValue('registrosGrid');
+
+            if ( strlen($regSel) > 0 )
+            {
+                $vals = unserialize(urldecode($regSel));
+                
+                if ( is_array($vals) )
+                {
+                    $idValues = $vals;
+                }
+            }
+        }
+        
+        return $idValues;
+    }
+    
+    public function executaAcaoEmMassaSeExistir()
+    {
+        $metodo = $this->obterAcaoEmMassa();
+
+        if ( strlen($metodo) > 0 )
+        {
+            $module = MIOLO::getCurrentModule();
+            
+            if ( !method_exists($this, $metodo) )
+            {
+                $method = get_class($this) . '::' . $metodo;
+                
+                throw new Exception(_M('Método inexistente: @1', $module, $method));
+            }
+
+            if ( count($this->obterRegistrosSelecionados()) == 0 )
+            {
+                $this->AddAlert( _M('Deve ser selecionado pelo menos um item na listagem.', $module) );
+                return;
+            }
+            
+            call_user_method($metodo, $this);
+        }
+    }
+    
+    /**
+     * Retorna se esta executando algum evento (chamado por algum botao, post, etc..).
+     * Este metodo foi criado pelo fato do $MIOLO->page->isPostBack() nao estar funcionando adequadamente.
+     *
+     * @return boolean
+     */
+    public function estaEmUmEvento()
+    {
+        return strlen(strpos(SAGU::getEventName(), ':click')) > 0;
+    }
+    
+    /**
+     *
+     * @return sGenericFields
+     */
+    public function genericFields()
+    {
+        if ( !$this->genericFields )
+        {
+            $this->genericFields = new sGenericFields();
+            $this->genericFields->setForm($this);
+        }
+        
+        return $this->genericFields;
+    }
+    
+    public function onLoad()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $form = strtoupper(get_class($this));
+        
+        if ( $form && !$MIOLO->getConf('options.sqltabledump') )
+        {
+            if(SAGU::checkValidParameter('BASIC', 'ESCONDER_CAMPOS_'.$form))
+            {
+                $opt = (SAGU::getParameter('BASIC', 'ESCONDER_CAMPOS_'.$form));
+                $options = explode(',', $opt);
+                
+                foreach($options as $k => $option)
+                {
+                    if($this->fields[$option])
+                    {
+                        $this->fields[$option]->addBoxStyle('display', 'none');                        
+                    }
+                    if($this->fields[$option.'Label'])
+                    {
+                        $this->fields[$option.'Label']->addBoxStyle('display', 'none');
+                    }
+                    if($this->fields['hct'.ucfirst($option)])
+                    {
+                        $this->fields['hct'.ucfirst($option)]->addBoxStyle('display', 'none');
+                    }
+                    if($this->fields[$option.'_container'])
+                    {
+                        $this->fields[$option.'_container']->addBoxStyle('display', 'none');                        
+                    }
+                    
+                }
+                
+            }
+            
+        }
+                
+    }
+    
+    public function escolhaRespostaCodigo($args)
+    {
+        return sEscolha::ajaxAutoCompletarCodigo($args);
+    }
+    
+    public function escolhaRespostaTabela($args)
+    {
+        return sEscolha::ajaxBuscaTabela($args);
+    }
+    
+    public function SPhotoManagerEvents($args)
+    {
+        $event = $args->eventName;
+        
+        return SPhotoManager::$event($args);
+        
+    }
+    
+    public function getLimparCamposVazios() {
+        return $this->limparCamposVazios;
+    }
+
+    public function setLimparCamposVazios($limparCamposVazios) {
+        $this->limparCamposVazios = $limparCamposVazios;
+    }
+    
+    public function getEnableToolbar() {
+        return $this->enableToolbar;
+    }
+
+    public function setEnableToolbar($status) {
+        $this->enableToolbar = $status;
+    }
+    
+    public function messageSuccess($msg, $goto)
+    {
+        new MMessageSuccess($msg, false);
+        MIOLO::getInstance()->page->Redirect($goto);
+    }
+    
+    public function messageInfo($msg, $goto)
+    {
+        new MMessageInformation($msg, false);
+        MIOLO::getInstance()->page->Redirect($goto);
+    }
+    
+    public function messageError($msg, $goto)
+    {
+        new MMessageError($msg, false);
+        MIOLO::getInstance()->page->Redirect($goto);
+    }
+    
+    public function messageWarning($msg, $goto)
+    {
+        new MMessageWarning($msg, false);
+        MIOLO::getInstance()->page->Redirect($goto);
+    }
+    
+    /**
+     * Corrige alguns problemas como hint de validadores para MPopup serem exibidos corretamente.
+     */
+    public function popupShow($id, $fields, $title)
+    {
+        $this->SetFields($fields);
+        
+        $hidden = null;
+        $this->GenerateLayoutFields($hidden);
+        
+        MPopup::show($id, $fields, $title);
+    }
+    
+    /**
+     * Corrige problemas, como hints de requeridos em campos AJAX.
+     */
+    public function corrigeProblemasEmCampos($fields)
+    {
+        // corrige problema do hint de requerido
+        $this->setFields($fields);
+        $hidden = null;
+        $this->GenerateLayoutFields($hidden);
+    }
+    
+    public function definirFiltroTemporario()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        if ( !$this->isCompositePkey() )
+        {
+            $value = null;
+            
+            if ( $this->object instanceof SType && $this->object->utilizaNovoPadrao() )
+            {
+                $value = $this->getRequestValue( $this->object->getPkeyWithAlias() );
+            }
+            else
+            {
+                $field = $this->getPkeySingleName();
+                
+                if ( isset($this->$field) )
+                {
+                    $value = $this->$field->value;
+                }
+            }
+            
+            $MIOLO->session->setValue('temp.filter.pkey', $value);
+        }
+    }
+    
+    /**
+     * Obtém o campo do dicionário de campos
+     * 
+     * @param String $campo Nome do campo personalizado
+     * @return Array Lista do campo e validador
+     */
+    public function obterCampo($campo)
+    {
+        try
+        {
+            return SDicionarioDeCampos::obterCampo($campo);
+        }
+        catch( Exception $e )
+        {
+            SAGU::error($e->getMessage(), MIOLO::getInstance()->GetActionURL());   
+        }
+        
+    }
+    
+    /**
+     * Obtém o campo personalizado relacionado a uma coluna e tabela
+     * 
+     * @param String $coluna Coluna relacionada a coluna
+     * @param String $tabela Tabela relacionada ao campo
+     * @return Array Lista do campo e validador
+     */
+    public function obterCampoDeTabela($coluna, $tabela = NULL)
+    {
+        // Se o nome da tabela que o campo está relacionado não foi informado
+        if( is_null($tabela) )
+        {
+            // Pega o nome da tabela do type que este formulário está relacionado
+            $tabela = $this->getTypeObjectPopulated()->getTableName();
+        }
+        
+        try
+        {
+            return SDicionarioDeCampos::obterCampoDeTabela($coluna, $tabela);
+        }
+        catch( Exception $e )
+        {
+            SAGU::error($e->getMessage(), MIOLO::getInstance()->GetActionURL());
+        }
+        
+    }
+}
+?>

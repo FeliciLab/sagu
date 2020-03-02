@@ -1,0 +1,974 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This file handles the connection and actions for finReceivableInvoice table
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * @maintainer William Prigol Lopes [william@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Rafael Luís Spengler [rafael@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 13/12/2005
+ *
+ **/
+
+/*
+ * STATUS TABLE FOR PROCESS main object attribute
+ * 0: Not processed
+ * 1: In process
+ * 2: Processed
+ * 3: Processed but no data found to process
+ */
+ 
+$MIOLO  = MIOLO::getInstance();
+$MIOLO->uses('db/BusReceivableInvoice.class', 'finance');
+
+/**
+ * Class to manipulate the finReceivableInvoice table
+ */
+class BusinessFinanceBusReceivableInvoiceCompany extends BusinessFinanceBusReceivableInvoice
+{
+   /**
+    * This attribute is an object used by the receivableInvoiceGeneration method,
+    * which breaks out as follows:
+    *
+    * GenerationData
+    * +--loan
+    * |   +--processed         (boolean)
+    * |   +--status            (int)
+    * |   +--total             (int)
+    * |   +--receivableInvoice (object)
+    * |       +--agglutinate (array)
+    * |       |   +--data (FinReceivableInvoice object)
+    * |       |       +--entries (array containing Entry objects)
+    * |       +--noAgglutinate (array)
+    * |           +--data (FinReceivableInvoice object)
+    * |               +--entries (array containing Entry objects)
+    * |
+    * +--support
+    * |   +--processed         (boolean)
+    * |   +--status            (int)
+    * |   +--total             (int)
+    * |   +--receivableInvoice (object)
+    * |       +--agglutinate (array)
+    * |       |   +--data (FinReceivableInvoice object)
+    * |       |       +--entries (array containing ReceivableInvoice objects)
+    * |       +--noAgglutinate (array)
+    * |           +--data (FinReceivableInvoice object)
+    * |               +--entries (array containing ReceivableInvoice objects)
+    * |
+    */
+    public $generationData;
+    public $statisticsData;
+    public $inData;
+
+    
+   /**
+    * Class constructor to instantiate a new database connection. This makes possible to use transactions
+    */
+    public function BusinessFinanceBusReceivableInvoiceCompany()
+    {
+        $module = MIOLO::getCurrentModule();
+        parent::__construct();
+    }
+
+   /**
+    * Check if has invoiceLog register for specific period and process type 
+    *
+    * @param $data (object): Object containing month, year and process type to verify
+    *
+    * @return: True if has a log, otherwise false
+    *
+    */
+    private function hasInvoiceLog($data)
+    {
+        $sql  = ' SELECT TO_CHAR(generationDate, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\')
+                    FROM finInvoiceLog
+                   WHERE month = ?
+                     AND year = ?
+                     AND generationType = ? ';
+
+        $args = array( $data->month,
+                       $data->year,
+                       $data->generationType );
+
+        $res  = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+        return is_array($res[0]) ? $res[0][0] : false;
+    }
+
+    
+   /**
+    * Generate the receivable invoices for every nonprocessed entry
+    * at finIncomeForecast table. If something goes wrong, a ROLLBACK
+    * is executed. Otherwise, the changes are COMMITed.
+    *
+    * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+    * @maintainer William Prigol Lopes [william@solis.coop.br]
+    * @lastModification: 26/01/2005 - Include income forecast close operation for each invoice created
+    *
+    * @param $inData (object): An object containing the necessary parameters to generate the receivable invoices.
+    *
+    * @return Return true if everything gone right. Otherwise, return false.
+    *
+    */
+    public function generateSupportInvoices($inData)
+    {
+        $MIOLO        = MIOLO::getInstance();
+        $module       = MIOLO::getCurrentModule();
+        $this->inData = $inData;
+        $keepGoing    = true;
+
+        $this->getDatabase()->execute('BEGIN TRANSACTION');
+
+        // Check if pupil invoices has been generated
+        $data->month          = $inData->month;
+        $data->year           = $inData->year;
+        $data->generationType = 'P';
+        $pupilProcessCheck    = $this->hasInvoiceLog($data);
+
+        // Check if pupil process already run
+        if ($pupilProcessCheck)
+        {
+            $url                       = $MIOLO->getActionURL($module, 'main:process:receivableInvoice:receivableInvoiceGenerationCompany');
+            $businessDefaultOperations = new BusinessFinanceBusDefaultOperations();
+            $dataDefaultOperations     = $businessDefaultOperations->getDefaultOperations();
+            
+            // Check if incentives need to be processed
+            if ($this->inData->incentiveType == 'support')
+            {
+                $this->statisticsData->support->process = true;
+                $this->statisticsData->support->status  = 1;
+                $this->collectSupportInvoices($inData);
+                if ($this->statisticsData->support->status == 2)
+                {
+                    $MIOLO->information(_M('Este processo já foi executado para este período em @1', $module, $this->statisticsdata->support->generationDate), $url);
+                    return false;
+                }
+            }
+            else
+            {
+                $this->statisticsData->support->process = false;
+            }
+            
+            // Check if loans need to be processed
+            if ($this->inData->incentiveType == 'loan')
+            {
+                $this->statisticsData->loan->process = true;
+                $this->statisticsData->loan->status  = 1;                
+                $this->collectLoanInvoices();
+                if ($this->statisticsData->loan->status == 2)
+                {
+                    $MIOLO->information(_M('Este processo já foi gerado para este período em @1', $module, $this->statisticsData->loan->generationDate), $url);
+                    return false;
+                }
+            }
+            else
+            {
+                $this->statisticsData->loan->process = false;
+            }
+            $this->statisticsData->financialAid->process = false;
+
+            return $this->processGenerationData($this->inData->incentiveType);
+        }
+        else
+        {
+            $args   = array('month'=>$this->inData->month, 'year'=>$this->inData->year, 'bankAccountId'=>$this->inData->bankAccountId, 'event'=>'passParameters');
+            $urlYes = $MIOLO->getActionURL($module, 'main:process:receivableInvoiceGenerationPupil', null, $args);
+            $urlNo  = $MIOLO->getActionURL($module, 'main:process:receivableInvoice:receivableInvoiceGenerationCompany');
+            $MIOLO->question(_M('O processo de geração de títulos para pessoas para este período não foi efetuado. Você deseja efetuar o processo de geração de títulos para alunos?', $module), $urlYes, $urlNo);
+            return false;
+        }
+    }
+
+   /**
+    *
+    * Process the support invoices
+    *
+    * @param: $data (object): Main object for the support invoices
+    *
+    * @returns: true if all ok, otherwise false
+    *
+    */
+    private function collectSupportInvoices()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        // Check if that process has already executed
+        $data->month          = $this->inData->month;
+        $data->year           = $this->inData->year;
+        $data->generationType = 'S';
+        $processLog = $this->hasInvoiceLog($data);
+        
+        if ($processLog)
+        {
+            // Already processed
+            $this->statisticsData->support->status         = 2;
+            $this->statisticsdata->support->generationDate = $processLog;
+        }
+        else
+        {
+            $this->statisticsData->support->status  = 0;     // Not processed
+            $this->statisticsData->support->process = true;
+
+            // Select all incentives that would be to support
+            $sql = '   SELECT C.contractId,
+                              A.invoiceId,
+                              A.costCenterId,
+                              A.courseId,
+                              A.courseVersion,
+                              A.unitId,
+                              A.policyId,
+                              A.incomeSourceId,
+                              A.bankAccountId,
+                              C.incentiveId,
+                              D.accountSchemeId,
+                              B.personId,
+                              D.operationId,
+                              getPersonName(B.personId),
+                              C.supporterId,
+                              getPersonName(C.supporterId),
+                              D.incentiveTypeId,
+                              D.description,
+                              C.agglutinate,
+                              D.accountSchemeId,
+                              A.parcelNumber
+                    FROM ONLY finReceivableInvoice A
+                    LEFT JOIN acdContract B
+                           ON ( A.personId = B.personId
+                            AND A.courseId = B.courseId
+                            AND A.courseVersion = B.courseVersion
+                            AND A.unitId = B.unitId
+                            AND extract(month FROM A.maturityDate) = ?
+                            AND extract(year FROM A.maturityDate) = ? )
+                    LEFT JOIN finIncentive C
+                           ON (B.contractId = C.contractId)
+              INNER JOIN ONLY finSupport D
+                           ON (C.incentiveTypeId = D.incentiveTypeId
+                          AND TO_DATE(?, \''.SAGU::getParameter('BASIC', 'MASK_DATE').'\') BETWEEN C.startDate
+                                                                AND COALESCE(C.cancellationDate, C.endDate)
+                          AND D.isExtinct = \''.DB_FALSE.'\' )
+                     ORDER BY 15,
+                              14,
+                              1,
+                              12 ';
+
+            $processDate = SAGU::toDefaultDate($this->inData->year.'-'.$this->inData->month.'-'.$this->inData->maturityDay, 'yyyy-mm-dd');
+
+            $args = array( $this->inData->month,
+                           $this->inData->year,
+                           $processDate);
+
+            $return = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+            if (is_array($return[0]))
+            {
+                $this->statisticsData->support->total = count($return);
+                $this->statisticsData->support->receivableInvoice->agglutinate->totalEntries = 0;
+                
+                foreach ($return as $ret)
+                {
+                    list( $data->contractId,
+                          $data->invoiceId,
+                          $data->costCenterId,
+                          $data->courseId,
+                          $data->courseVersion,
+                          $data->unitId,
+                          $data->policyId,
+                          $data->incomeSourceId,
+                          $data->bankAccountId,
+                          $data->incentiveId,
+                          $data->accountSchemeId,
+                          $data->personId,
+                          $data->operationId,
+                          $data->personName,
+                          $data->supporterId,
+                          $data->supporterName,
+                          $data->incentiveTypeId,
+                          $data->description,
+                          $data->agglutinate,
+                          $data->supportAccountSchemeId,
+                          $data->parcelNumber) = $ret;
+
+                    // Get the entry related to support
+                    $sql = ' SELECT entryId,
+                                    entryDate,
+                                    value,
+                                    costCenterId,
+                                    comments,
+                                    bankReturnCode,
+                                    isAccounted
+                                FROM finEntry
+                                WHERE invoiceId = ?
+                                AND operationId = ? ';
+
+                    $args  = array( $data->invoiceId,
+                                    $data->operationId );
+                    $entry = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+                    
+                    // If have entries for that invoice then create the respective invoice
+                    if (is_array($entry[0]))
+                    {
+                        // Verify if agglutinate
+                        if ($data->agglutinate == DB_TRUE)
+                        {
+                            // If do not have a receivableInvoice agglutinate information, create one for a supporter
+                            if (!$this->generationData->receivableInvoice->agglutinate->data[$data->supporterId])
+                            {
+                                $processDate    = SAGU::toDefaultDate($this->inData->maturityDay.'/'.$this->inData->month.'/'.$this->inData->year, 'dd/mm/yyyy');
+                                
+                                // Process information
+                                $supportInvoice = new FinReceivableInvoice();
+                                $supportInvoice->personId        = $data->supporterId;
+                                $supportInvoice->accountSchemeId = strlen($data->supportAccountSchemeId)>0 ? $data->supportAccountSchemeId : $data->accountSchemeId;
+                                $supportInvoice->costCenterId    = $data->costCenterId;
+                                $supportInvoice->courseId        = $data->courseId;
+                                $supportInvoice->courseVersion   = $data->courseVersion;
+                                $supportInvoice->unitId          = $data->unitId;
+                                $supportInvoice->parcelNumber    = $data->parcelNumber;
+                                $supportInvoice->emissionDate    = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+                                $supportInvoice->maturityDate    = $processDate;
+                                $supportInvoice->policyId        = $data->policyId;
+                                $supportInvoice->comments        = _M('Título gerado pelo processo de incentivos em títulos aglutinados', $module, $data->invoiceId, $data->incentiveId);
+                                $supportInvoice->incomeSourceId  = $data->incomeSourceId;
+                                $supportInvoice->value           = '0';
+                                $supportInvoice->bankAccountId   = $data->bankAccountId;
+
+                                $this->generationData->receivableInvoice->agglutinate->data[$data->supporterId] = clone($supportInvoice);
+
+                                // To Statistics - Invoice info
+                                $statisticsInvoice[0] = $data->supporterName;
+                                $statisticsInvoice[1] = $data->numberSupports;
+                                $this->statisticsData->receivableInvoice->agglutinate->data[$data->supporterId] = $statisticsInvoice;
+                                unset($statisticsInvoice);
+                            }
+
+                            foreach ($entry as $en)
+                            {
+                                list($entryInvoice->entryId,
+                                     $entryInvoice->entryDate,
+                                     $entryInvoice->value,
+                                     $entryInvoice->costCenterId,
+                                     $entryInvoice->comments,
+                                     $entryInvoice->bankReturnCode,
+                                     $entryInvoice->isAccounted ) = $en;
+
+                                $supportEntry = new FinEntry();
+                                $supportEntry->invoiceId      = $supportInvoiceId;
+                                $supportEntry->operationId    = $data->operationId;
+                                $supportEntry->value          = SAGU::calcNumber($entryInvoice->value.'*(-1)');
+                                $supportEntry->costCenterId   = $entryInvoice->costCenterId;
+                                $supportEntry->entryDate      = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+                                $supportEntry->comments       = _M('Lançamento referido ao incentivo @1 no título @2 com o lançamento @3', $module, $data->incentiveId, $data->invoiceId, $entryInvoice->entryId);
+                                $supportEntry->bankReturnCode = $entryInvoice->bankReturnCode;
+                                $supportEntry->isAccounted    = $entryInvoice->isAccounted;
+                                $supportEntry->creationType   = 'A';
+
+                                $this->generationData->receivableInvoice->agglutinate->data[$data->supporterId]->entries[] = clone($supportEntry);
+                            }
+                            $this->statisticsData->receivableInvoice->agglutinate->totalEntries+=count($this->generationData->receivableInvoice->agglutinate->data[$data->supporterId]->entries);
+                        }
+                        // If not agglutinate, generate a new invoice and entries for that invoice
+                        else
+                        {
+                            $processDate                     = $this->inData->maturityDay.'/'.$this->inData->month.'/'.$this->inData->year;
+                            $supportInvoice                  = new FinReceivableInvoice();
+                            $supportInvoice->personId        = $data->supporterId;
+                            $supportInvoice->accountSchemeId = strlen($data->supportAccountSchemeId)>0 ? $data->supportAccountSchemeId : $data->accountSchemeId;
+                            $supportInvoice->costCenterId    = $data->costCenterId;
+                            $supportInvoice->courseId        = $data->courseId;
+                            $supportInvoice->courseVersion   = $data->courseVersion;
+                            $supportInvoice->unitId          = $data->unitId;
+                            $supportInvoice->parcelNumber    = $data->parcelNumber;
+                            $supportInvoice->emissionDate    = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+                            $supportInvoice->maturityDate    = $processDate;
+                            $supportInvoice->policyId        = $data->policyId;
+                            $supportInvoice->comments        = _M('Título gerado pelo processo de suporte referido ao título @1 e incentivo @2', $module, $data->invoiceId, $data->incentiveId);
+                            $supportInvoice->incomeSourceId  = $data->incomeSourceId;
+                            $supportInvoice->value           = 0;
+                            $supportInvoice->bankAccountId   = $data->bankAccountId;
+
+                            $this->generationData->receivableInvoice->noAgglutinate->data[$data->personId] = clone($supportInvoice);
+
+                            $statisticsInvoice[0] = $data->incentiveId;
+                            $statisticsInvoice[1] = $data->supporterName;
+                            $statisticsInvoice[2] = $data->personName;
+                            $statisticsInvoice[3] = $data->invoiceId;
+
+                            $this->statisticsData->receivableInvoice->noAgglutinate->data[$data->personId] = $statisticsInvoice;
+                            unset($statisticsInvoice);
+
+                            foreach ($entry as $en)
+                            {
+                                list($entryInvoice->entryId,
+                                     $entryInvoice->entryDate,
+                                     $entryInvoice->value,
+                                     $entryInvoice->costCenterId,
+                                     $entryInvoice->comments,
+                                     $entryInvoice->bankReturnCode,
+                                     $entryInvoice->isAccounted ) = $en;
+
+                                $supportEntry = new FinEntry();
+                                $supportEntry->invoiceId      = $supportInvoiceId;
+                                $supportEntry->operationId    = $data->operationId;
+                                $supportEntry->value          = SAGU::calcNumber($entryInvoice->value.'*(-1)');
+                                $supportEntry->costCenterId   = $entryInvoice->costCenterId;
+                                $supportEntry->entryDate      = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+                                $supportEntry->comments       = _M('Lançamento referido ao incentivo @1 no título @2 com o lançamento @3', $module, $data->incentiveId, $data->invoiceId, $entryInvoice->entryId);
+                                $supportEntry->bankReturnCode = $entryInvoice->bankReturnCode;
+                                $supportEntry->isAccounted    = $entryInvoice->isAccounted;
+                                $supportEntry->creationType   = 'A';
+
+                                $this->generationData->receivableInvoice->noAgglutinate->data[$data->personId]->entries[] = clone($supportEntry);
+                            }
+                        }
+                    }
+                    else
+                    {
+                        $info[] = $ret[0];
+                        $info[] = $ret[14].' - '.$ret[15];
+                        $info[] = $ret[1].' - '.$ret[13];
+                        $info[] = $ret[17];
+                        if ($ret[0] != $lastContract)
+                        {
+                            $lastContract = $ret[0];
+                            $this->statisticsData->receivableInvoice->noProcessed->data[] = $info;
+                        }
+                        unset($info);
+                    }
+                }
+            }
+            else
+            {
+                // No incentives found to process
+                $this->keepGoing = false;
+                $this->statisticsData->support->status = 3;
+            }
+        }
+    }
+
+   /**
+    *
+    * Process the loan invoices
+    *
+    * @param: None
+    *
+    * @returns: true if all ok, otherwise false
+    *
+    */
+    private function collectLoanInvoices()
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $data->year           = $this->inData->year;
+        $data->month          = $this->inData->month;
+        $data->generationType = 'L';
+        $processCheck         = $this->hasInvoiceLog($data);
+
+        if ($processCheck)
+        {
+            $this->statisticsData->loan->status = 2;   // Already processed
+            $this->statisticsData->loan->generationDate = $processCheck;
+        }
+        else
+        {
+            $this->statisticsData->loan->status  = 0;     // Not processed
+            $this->statisticsData->loan->process = true;
+
+            // Make the process
+            $sql = '   SELECT C.contractId,
+                              A.invoiceId,
+                              A.costCenterId,
+                              A.courseId,
+                              A.courseVersion,
+                              A.unitId,
+                              A.policyId,
+                              A.incomeSourceId,
+                              A.bankAccountId,
+                              C.incentiveId,
+                              D.accountSchemeId,
+                              B.personId,
+                              D.operationId,
+                              getPersonName(B.personId),
+                              D.loanerId,
+                              getPersonName(D.loanerId),
+                              D.incentiveTypeId,
+                              D.description,
+                              A.parcelNumber,
+                              D.collectionOperationId,
+                              D.rotative,
+                              C.agglutinate
+                    FROM ONLY finReceivableInvoice A
+                    LEFT JOIN acdContract B
+                           ON ( A.personId = B.personId
+                            AND A.courseId = B.courseId
+                            AND A.courseVersion = B.courseVersion
+                            AND A.unitId = B.unitId)
+                   INNER JOIN finIncentive C
+                           ON (B.contractId = C.contractId)
+              INNER JOIN ONLY finLoan D
+                           ON ( C.incentiveTypeId = D.incentiveTypeId
+                            AND A.maturityDate BETWEEN C.startDate
+                                                   AND COALESCE(C.cancellationDate, C.endDate)
+                            AND D.isExtinct = false )
+                        WHERE extract(month FROM emissionDate) = ?
+                          AND extract(year FROM emissionDate) = ?
+                     ORDER BY 14,
+                              1,
+                              12 ';
+
+            $args  = array( $this->inData->month,
+                            $this->inData->year);
+
+            $loans = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+            if (is_array($loans[0]))
+            {
+                $this->statisticsData->loan->total = count($loans);
+
+                $studentFinancing = SAGU::checkParameter('STUDENT_FINANCING_INCENTIVE_TYPE_ID');
+
+                $businessDefaultOperations = new BusinessFinanceBusDefaultOperations();
+                $defaultOperations         = $businessDefaultOperations->getDefaultOperations();
+
+                foreach ($loans as $l)
+                {
+                    $loan->contractId            = $l[0];
+                    $loan->invoiceId             = $l[1];
+                    $loan->costCenterId          = $l[2];
+                    $loan->courseId              = $l[3];
+                    $loan->courseVersion         = $l[4];
+                    $loan->unitId                = $l[5];
+                    $loan->policyId              = $l[6];
+                    $loan->incomeSourceId        = $l[7];
+                    $loan->bankAccountId         = $l[8];
+                    $loan->incentiveId           = $l[9];
+                    $loan->accountSchemeId       = $l[10];
+                    $loan->personId              = $l[11];
+                    $loan->operationId           = $l[12];
+                    $loan->personName            = $l[13];
+                    $loan->loanerId              = $l[14];
+                    $loan->loanerName            = $l[15];
+                    $loan->incentiveTypeId       = $l[16];
+                    $loan->incentiveDescription  = $l[17];
+                    $loan->parcelNumber          = $l[18];
+                    $loan->collectionOperationId = $l[19];
+                    $loan->rotative              = $l[20];
+                    $loan->agglutinate           = $l[21];
+                    // Caso seja financiamento retroativo
+                    if (($studentFinancing) && ($loan->incentiveTypeId == SAGU::getParameter('FINANCE', 'STUDENT_FINANCING_INCENTIVE_TYPE_ID')))
+                    {
+                        $this->collectStudentFinancingData($loan, $defaultOperations);
+                    }
+                    // Curto prazo para longo prazo
+                    elseif ($loan->rotative == DB_TRUE)
+                    {
+                        $this->collectRotativeLoanData($loan);
+                    }
+                    else
+                    {
+                        // -- CHECK THAT FUNCTION --
+                        // Obtain the entry information about the loan
+                        $sql = ' SELECT entryId,
+                                        value
+                                   FROM finEntry
+                                  WHERE invoiceId = ?
+                                    AND operationId = ? ';
+
+                        $args = array( $loan->invoiceId,
+                                       $loan->operationId );
+
+                        $ret = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+                        if ($loan->agglutinate == DB_TRUE)
+                        {
+                            if (is_array($ret[0]))
+                            {
+                                if (!$this->generationData->receivableInvoice->data[$loan->supporterId])
+                                {
+                                    $maturityDate = SAGU::toDefaultDate($ret->maturityDay.'/'.$this->inData->loanMonth.'/'.$this->inData->loanYear, 'dd/mm/yyyy');
+                                    $loanInvoice->invoiceId         = $loan->invoiceId;
+                                    $loanInvoice->personId          = $loan->personId;
+                                    $loanInvoice->accountSchemeId   = $loan->accountSchemeId;
+                                    $loanInvoice->costCenterId      = $loan->costCenterId;
+                                    $loanInvoice->courseId          = $loan->courseId;
+                                    $loanInvoice->courseVersion     = $loan->courseVersion;
+                                    $loanInvoice->unitId            = $loan->unitId;
+                                    $loanInvoice->parcelNumber      = $loan->parcelNumber;
+                                    $loanInvoice->emissionDate      = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+                                    $loanInvoice->maturityDate      = $maturityDate;
+                                    $loanInvoice->value             = SAGU::formatNumber('0');
+                                    $loanInvoice->policyId          = $loan->policyId;
+                                    $loanInvoice->automaticDebit    = DB_FALSE;
+                                    $loanInvoice->comments          = _M('Criado pelo processo de financiamentos, relacionado ao título @1 e incentivo @2', $module, $loan->invoiceId, $loan->incentiveId);
+                                    $loanInvoice->incomeSourceId    = $loan->incomeSourceId;
+                                    $loanInvoice->bankAccountId     = $this->inData->bankAccountId;
+                                    $loanInvoice->noProcessInvoice  = true;
+
+                                    $this->generationData->receivableInvoice->agglutinate->data[$loan->personId] = clone($loanInvoice);
+
+                                    // Generate statistics
+                                    $loanInvoiceData[0] = $loan->personId;
+                                    $loanInvoiceData[1] = $loan->personName;
+                                    $loanInvoiceData[2] = $loan->invoiceId;
+
+                                    $this->statisticsData->receivableInvoice->agglutinate->data[$loan->personId] = $loanInvoiceData;
+                                    unset($loanInvoiceData);
+                                }
+
+                                foreach ($ret as $r)
+                                {
+                                    $entryData->invoiceId    = $invoiceId;
+                                    $entryData->operationId  = $loan->collectionOperationId;
+                                    $entryData->entryDate    = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+                                    $entryData->value        = $r[1];
+                                    $entryData->costCenterId = $loan->costCenterId;
+                                    $entryData->comments     = _M('Gerado pelo processo financiamentos, relacionado ao título @1', $module, $loan->invoiceId);
+                                    $this->generationData->receivableInvoice->agglutinate->data[$loan->personId]->entries[] = clone($entryData);
+                                }
+                            }
+                            else
+                            {
+                                $loanInvoiceData[0] = $loan->personId;
+                                $loanInvoiceData[1] = $loan->personName;
+                                $loanInvoiceData[2] = $loan->invoiceId;
+                                
+                                $this->statisticsData->receivableInvoice->noProcessed->data[$loan->personId]->data = $loanInvoiceData;
+                            }
+                        }
+                        else
+                        {
+                            $loanInvoiceData[0] = $loan->personId;
+                            $loanInvoiceData[1] = $loan->personName;
+                            $loanInvoiceData[2] = $loan->invoiceId;
+                            $this->statisticsData->receivableInvoice->noProcessed->data[$loan->personId]->data = $loanInvoiceData;
+                            unset($loanInvoiceData);
+
+                            if (is_array($ret[0]))
+                            {
+                                foreach ($ret[0] as $r)
+                                {
+                                    $entryData->invoiceId    = $invoiceId;
+                                    $entryData->operationId  = $loan->collectionOperationId;
+                                    $entryData->entryDate    = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+                                    $entryData->value        = $r[1];
+                                    $entryData->costCenterId = $loan->costCenterId;
+                                    $entryData->referred     = $r[0];
+                                    $this->statisticsData->receivableInvoice->noProcessed->data[$loan->personId]->entries[] = clone($entryData);
+                                    unset($entryData);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+   /**
+    *
+    * Collect the student financing information data (function to help the collectLoanInvoices)
+    *
+    * @param $loan (object): Object containing the loan information
+    *        $defaultOperations (object): Object containing the default operations obtained on loan function
+    *
+    * @return: null (The system works on main object)
+    *
+    */
+    function collectStudentFinancingData($loan, $defaultOperations)
+    {
+        $module = MIOLO::getCurrentModule();
+
+        $sql = ' SELECT studentFinancingId,
+                        initialValue,
+                        currentValue
+                   FROM finStudentFinancing
+                  WHERE contractId = ? ';
+
+        $args = array($loan->contractId);
+        $data = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        if (is_array($data))
+        {
+            $dt = $data[0];
+
+            if ($dt[2] > SAGU::formatNumber(0))
+            {
+
+                $this->generationData->receivableInvoice->noAgglutinate->data[$loan->personId]->invoiceId = $loan->invoiceId;
+                $sql = ' SELECT balance(?),
+                                balance(?)-(
+                                balance(?)*((SELECT discountPercent
+                                            FROM finPolicy
+                                            WHERE policyId = (SELECT policyId
+                                                            FROM ONLY finReceivableInvoice
+                                                                WHERE invoiceId = ?)
+                                                )/100)) ';
+                $args = array( $loan->invoiceId,
+                               $loan->invoiceId,
+                               $loan->invoiceId,
+                               $loan->invoiceId );
+
+                // Se o valor for menor, paga proporcionalmente
+                $balance = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+                $bal     = $balance[0];
+ 
+                if ($bal[1] > $dt[2])
+                {
+                    $discount = SAGU::calcNumber('(('.$bal[0].'*'.$dt[2].')/'.$bal[1].')-'.$dt[2]);
+                    $paidValue = $dt[2];
+                }
+
+                // Senão, desconta tudo
+                else
+                {
+                    $discount  = SAGU::calcNumber($bal[0].'-'.$bal[1]);
+                    $paidValue = $bal[1];
+                }
+
+                // Entry for discount for antecipating payment
+                $loanEntry->invoiceId    = $loan->invoiceId;
+                $loanEntry->operationId  = $defaultOperations->discountOperation;
+                $loanEntry->value        = $discount;
+                $loanEntry->costCenterId = $loan->costCenterId;
+                $loanEntry->entryDate    = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+                $loanEntry->comments     = _M('Gerado automaticamente pelo financiamento estudantil referido pelo incentivo de código @1', $module, $loan->incentiveId);
+                $this->generationData->receivableInvoice->noAgglutinate->data[$loan->personId]->entries[] = clone($loanEntry);
+
+                // Entry for paid value for student financing
+                $loanEntry->invoiceId    = $loan->invoiceId;
+                $loanEntry->operationId  = SAGU::getParameter('FINANCE', 'STUDENT_FINANCING_OPERATION_ID');
+                $loanEntry->value        = $paidValue;
+                $loanEntry->costCenterId = $loan->costCenterId;
+                $loanEntry->entryDate    = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+                $loanEntry->comments     = _M('Gerado automaticamente pelo FIES referenciado ao contrato @1', $module, $loan->contractId);
+                
+                $this->generationData->receivableInvoice->noAgglutinate->data[$loan->personId]->noProcessInvoice = true;
+
+                $this->generationData->receivableInvoice->noAgglutinate->data[$loan->personId]->entries[] = clone($loanEntry);
+
+                 // Generate statistics
+                 $loanData[0] = $loan->personName;
+                 $loanData[1] = $loan->incentiveDescription;
+                 $loanData[2] = $loan->invoiceId;
+                 $this->statisticsData->receivableInvoice->noAgglutinate->data[$loan->personId] = $loanData;
+                 unset($loanData);
+            }
+        }
+    }
+
+
+   /**
+    *
+    * Collect the loan information data (function to help the collectLoanInvoices)
+    *
+    * @param $loan (object): Object containing the loan information
+    *
+    * @return: null (The system works on main object)
+    *
+    */
+    function collectRotativeLoanData($loan)
+    {
+        // Obtain the entry information about the loan
+        $sql = ' SELECT entryId,
+                        value
+                   FROM finEntry
+                  WHERE invoiceId = ?
+                    AND operationId = ? ';
+
+        $args = array( $loan->invoiceId,
+                       $loan->operationId );
+
+        $ret  = $this->getDatabase()->query(SAGU::prepare($sql, $args));
+
+        if (is_array($ret[0]))
+        {
+            $module = MIOLO::getCurrentModule();
+            // Create the object containing information about new invoice
+            $longPrizeInvoice->personId        = $loan->personId;
+            $longPrizeInvoice->accountSchemeId = $loan->accountSchemeId;
+            $longPrizeInvoice->costCenterId    = $loan->costCenterId;
+            $longPrizeInvoice->courseId        = $loan->courseId;
+            $longPrizeInvoice->courseVersion   = $loan->courseVersion;
+            $longPrizeInvoice->unitId          = $loan->unitId;
+            $longPrizeInvoice->parcelNumber    = $loan->parcelNumber;
+            $longPrizeInvoice->emissionDate    = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+            $longPrizeInvoice->maturityDate    = SAGU::toDefaultDate($this->inData->maturityDay.'/'.$this->inData->loanMonth.'/'.$this->inData->loanYear, 'dd/mm/yyyy');
+            $longPrizeInvoice->value           = '0'; // Default - this value is post processed
+            $longPrizeInvoice->policyId        = $loan->policyId;
+            $longPrizeInvoice->automaticDebit  = DB_FALSE;
+            $longPrizeInvoice->comments        = _M('Criado pelo processo de financiamentos, relaciondo ao título @1 e incentivo número @2', $module, $loan->invoiceId, $loan->incentiveId);
+            $longPrizeInvoice->incomeSourceId  = $loan->incomeSourceId;
+            $longPrizeInvoice->bankAccountId   = $loan->bankAccountId;
+
+            $this->generationData->receivableInvoice->noAgglutinate->data[$loan->personId] = clone($longPrizeInvoice);
+
+            $invoiceInfo[0] = $loan->personName;
+            $invoiceInfo[1] = $loan->incentiveDescription;
+            $invoiceInfo[2] = $loan->invoiceId;
+            $this->statisticsData->receivableInvoice->noAgglutinate->data[$loan->personId] = $invoiceInfo;
+            unset($invoiceInfo);
+
+            foreach ($ret as $r)
+            {
+                $entryData->invoiceId    = $loan->invoiceId;
+                $entryData->operationId  = $loan->collectionOperationId;
+                $entryData->entryDate    = date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP'));
+                $entryData->value        = $r[1];
+                $entryData->costCenterId = $loan->costCenterId;
+                $entryData->comments     = _M('Gerado pelo processo financiamentos, relacionado ao título @1', $module, $loan->invoiceId);
+                $this->generationData->receivableInvoice->noAgglutinate->data[$loan->personId]->entries[] = clone($entryData);
+            }
+        }
+        else
+        {
+            $noProcessedInfo[0] = $loan->invoiceId;
+            $noProcessedInfo[1] = $loan->personId.' - '.$loan->personName;
+            $noProcessedInfo[2] = $loan->incentiveId.' - '.$loan->incentiveDescription;
+            $this->generationData->receivableInvoice->noProcessed->data[$loan->invoiceId] = $noProcessedInfo;
+            unset($noProcessedInfo);
+        }
+    }
+
+   /**
+    *
+    * Process the data generated
+    *
+    * @param $type (char): Select the type for data
+    *
+    * @return (null): This function modify the object data returning nothing
+    *
+    */
+    function processGenerationData($type)
+    {
+        $module = MIOLO::getCurrentModule();
+        $keepGoing = true;
+        if ($type == 'support')
+        {
+            $toProcess = $this->generationData->receivableInvoice;
+            $generationType = 'S';
+        }
+        if ($type == 'loan')
+        {
+            $toProcess = $this->generationData->receivableInvoice;
+            $generationType = 'L';
+        }
+        if ($type == 'financialAid')
+        {
+            $toProcess = $this->generationData->receivableInvoice;
+            $generationType = 'F';
+        }
+
+        if ($toProcess)
+        {
+            // First, run the process to agglutinate
+            if (is_array($toProcess->agglutinate->data))
+            {
+                foreach ($toProcess->agglutinate->data as $key => $processData)
+                {
+                    // Verifica se há necessidade de processar os títulos
+                    if ($processData->noProcessInvoice == true)
+                    {
+                        $invoiceId = $processData->invoiceId;
+                    }
+                    
+                    // Caso não adiciona o título
+                    else
+                    {
+                        $invoiceId = $this->insertReceivableInvoice($processData);
+                    }
+                    if (($invoiceId) && ($keepGoing))
+                    {
+                        $this->statisticsData->receivableInvoice->agglutinate->data[$key][] = $invoiceId;
+                        if ($type == 'support')
+                        {
+                            $this->statisticsData->receivableInvoice->agglutinate->data[$key][1] = count($processData->entries);
+                        }
+                        foreach ($processData->entries as $keyE => $entry)
+                        {
+                            $entry->invoiceId = $invoiceId;
+                            $keepGoing = $this->insertEntry($entry);
+                        }
+                    }
+                    $this->updateNominalValue($invoiceId);
+                }
+            }
+
+            // The next time... run the non agglutinate process
+            if (is_array($toProcess->noAgglutinate->data))
+            {
+
+                foreach ($toProcess->noAgglutinate->data as $key => $processData)
+                {
+                    // Verifica se há necessidade de processar os títulos
+                    if ($processData->noProcessInvoice == true)
+                    {
+                        $invoiceId = $processData->invoiceId;
+                    }
+                    // Caso não adiciona o título
+                    else
+                    {
+                        $invoiceId = $this->insertReceivableInvoice($processData);
+                    }
+
+                    if (($invoiceId) && ($keepGoing))
+                    {
+                        $this->statisticsData->receivableInvoice->noAgglutinate->data[$key][] = $invoiceId;
+                        foreach ($processData->entries as $entry)
+                        {
+                            $entry->invoiceId = $invoiceId;
+                            $keepGoing = $this->insertEntry($entry);
+                        }
+                    }
+                    $this->updateNominalValue($invoiceId);
+                }
+            }
+            if ($keepGoing)
+            {
+                $sql = 'INSERT INTO finInvoiceLog ( month,
+                                                    year,
+                                                    generationDate,
+                                                    generationType)
+                             VALUES (?, ?, now(), ?) ';
+
+                $args = array( $this->inData->month,
+                               $this->inData->year,
+                               $generationType );
+
+                $keepGoing = $this->getDatabase()->execute(SAGU::prepare($sql, $args));
+            }
+            $this->getDatabase()->execute('ROLLBACK');
+//              $this->getDatabase()->execute($keepGoing ? 'COMMIT' : 'ROLLBACK');
+        }
+        return $keepGoing;
+
+    }
+}
+?>

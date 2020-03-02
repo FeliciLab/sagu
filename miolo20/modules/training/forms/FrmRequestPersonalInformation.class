@@ -1,0 +1,426 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulario onde é informado as informacoes da pessoa.
+ *
+ * @author Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 31/03/2011
+ *
+ * */
+class FrmRequestPersonalInformation extends SStepByStepForm
+{
+    public function __construct($steps = null)
+    {
+        if ( !isset($steps->disableConstruct) )
+        {
+            parent::__construct(null, $steps, __CLASS__);
+            $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+            
+        }
+    }
+
+    public function createFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+
+        //Load data
+        $allData = $this->getStepData();
+        $stepData = $this->getStepDataByForm(__CLASS__);
+
+        //Bus person
+        $busPerson = new BusinessBasicBusPerson();
+        $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+        $busDocument = new BusinessBasicBusDocument();
+
+        // Se for primeiro acesso carrega os dados do usuário logado
+        if ( $this->isFirstAccess() )
+        {
+            try
+            {
+                // Se vier do webservices, e nao for usuario logado
+                if ( SAGU::userIsFromServices() && ( strlen($MIOLO->getLogin()->id) <= 0 ) )
+                {
+                    // Verifica se o documento ja existe na base de dados
+                    $filters = new stdClass();
+                    $filters->documentTypeId = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF');
+                    $filters->content = $allData->cpf;
+                    $documents = $busDocument->searchDocument($filters, true);
+
+                    if ( count($documents) > 0 )
+                    {
+                        // Busca pessoa pela data de nascimento e personId
+                        $filters = new stdClass();
+                        $filters->personId = $documents[0]->personId;
+                        $filters->dateBirth = $allData->dateBirth;
+
+                        $searchPerson = $busPhysicalPerson->searchPhysicalPerson($filters);
+                        if ( count($searchPerson) > 0 )
+                        {
+                            $allData->personId = $filters->personId;
+                            $physicalPerson = $busPhysicalPerson->getPhysicalPerson( $allData->personId );
+                        }
+                    }
+                }
+                else if ( SAGU::userIsFromServices() ) //Se vier do services
+                {
+                    // Login do usuário
+                    $loginUser = $MIOLO->GetLogin();
+
+                    //Physical person
+                    $physicalPerson = $busPhysicalPerson->getPhysicalPersonByMioloUserName($loginUser->id);
+
+                    // Verifica se não achou a pessoa
+                    if( !strlen($physicalPerson->personId)>0 )
+                    {
+                        $msg = _M('O usuário logado não está relacionado a uma pessoa física.',$module);
+                        throw new Exception($msg);
+                    }
+                }
+                else
+                {
+                    if ( strlen($allData->personId) <= 0 )
+                    {
+                        throw new Exception( _M('Pessoa não encontrada', $module) );
+                    }
+                    $physicalPerson = $busPhysicalPerson->getPhysicalPerson( $allData->personId );
+                }
+            }
+            catch ( Exception $e )
+            {
+                $MIOLO->error($e->getMessage());
+            }
+
+            // Documentos
+            $search = $busDocument->searchDocument((object) array( 'documentTypeId' => SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF'), 'personId' => $physicalPerson->personId ), true);
+
+            if ( count($search) > 0 )
+            {
+                $physicalPerson->documents = $busDocument->searchDocument((object) array( 'personId' => $physicalPerson->personId ), true);
+            }
+
+            //Dados do passo / pessoa
+            $stepData = $physicalPerson;
+            $stepData->personName = $stepData->name;
+            $dataLoginAndPassword = $busPerson->getLoginAndPassword($physicalPerson->personId);
+            $stepData->mioloUserName = $dataLoginAndPassword->login;
+
+            //Popula os documentos das pessoas
+            foreach ( (array) $stepData->documents as $document )
+            {
+                if ( $document->documentTypeId == SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF') )
+                {
+                    $stepData->cpf = $document->content;
+                }
+                else if ( $document->documentTypeId == SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_RG') )
+                {
+                    $stepData->rg = $document->content;
+                    $stepData->rgOrgao = $document->organ;
+                }
+            }
+        }
+
+        $fields[] = new SHiddenField('personId', $stepData->personId);
+        $fields[] = new SHiddenField('mioloUserName', $stepData->mioloUserName);
+
+        /**
+         * Dados gerais
+         */
+        //Nome
+        $personNameLabel = new MLabel(_M('Nome', $module) . ':');
+        $personNameLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $personNameLabel->setClass('m-caption m-caption-required');
+        $personName = new MTextField('personName', $stepData->personName, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $personName->setJsHint(_M('Informe o nome', $module));
+        $bgrFields[] = new MHContainer('personNameCnt', array( $personNameLabel, $personName ));
+
+        //E-mail
+        $emailLabel = new MLabel(_M('E-mail', $module) . ':');
+        $emailLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $emailLabel->setClass('m-caption m-caption-required');
+        $email = new MTextField('email', $stepData->email, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $email->setJsHint(_M('Informe o e-mail', $module));
+        $bgrFields[] = new MHContainer('emailCnt', array( $emailLabel, $email ));
+        $validators[] = new MEmailValidator('email', _M('E-mail', $module), 'required');
+
+        //RG
+        $rgLabel = new MLabel(_M('Identidade (RG)', $module) . ':');
+        $rgLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $rgLabel->setClass('m-caption m-caption-required');
+        $rg = new MTextField('rg', $stepData->rg, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_LOOKUP_SIZE'));
+        $rg->setJsHint(_M('Informe a identidade (RG)', $module));
+        $bgrFields[] = new MHContainer('rgCnt', array( $rgLabel, $rg ));
+        $validators[] = new MRequiredValidator('rg', _M('Identidade (RG)', $module));
+
+        //Orgao RG
+        $rgOrgaoLabel = new MLabel(_M('Órgão expedidor do RG', $module) . ':');
+        $rgOrgaoLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $rgOrgaoLabel->setClass('m-caption m-caption-required');
+        $rgOrgao = new MTextField('rgOrgao', $stepData->rgOrgao, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_LOOKUP_SIZE'));
+        $rgOrgao->setJsHint(_M('Informe o órgão expedidor do RG', $module));
+        $bgrFields[] = new MHContainer('rgOrgaoCnt', array( $rgOrgaoLabel, $rgOrgao ));
+        $validators[] = new MRequiredValidator('rgOrgao', _M('Órgão expedidor do RG', $module));
+
+        //CPF
+        $cpfLabel = new MLabel(_M('CPF', $module) . ':');
+        $cpfLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $cpfLabel->setClass('m-caption m-caption-required');
+        $cpf = new MTextField('cpf', $stepData->cpf, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_LOOKUP_SIZE'));
+        $cpf->setJsHint(_M('Informe o CPF', $module));
+        $bgrFields[] = new MHContainer('cpfCnt', array( $cpfLabel, $cpf ));
+        $validators[] = new MCPFValidator('cpf', _M('CPF', $module), 'required');
+
+        //Pais de nascimento
+        $busCountry = new BusinessBasicBusCountry();
+        $countryIdBirthLabel = new MText('countryIdBirthLabel', _M('Nacionalidade', $module) . ':');
+        $countryIdBirthLabel->setClass('m-caption m-caption-required');
+        $countryIdBirthLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $stepData->countryIdBirth = ( ($function == 'insert') && (!(strlen($stepData->countryIdBirth) > 0)) ) ? SAGU::getParameter('BASIC', 'DEFAULT_COUNTRY_ID') : $stepData->countryIdBirth;
+        $countryIdBirth = new MSelection('countryIdBirth', $stepData->countryIdBirth, null, $busCountry->listCountry());
+        $countryIdBirth->setJsHint(_M('Informe sua nacionalidade', $module));
+        $validators[] = new MRequiredValidator('countryIdBirth', _M('Nacionalidade', $module));
+        $bgrFields[] = new MHContainer('countryIdBirthHct', array( $countryIdBirthLabel, $countryIdBirth ));
+
+        //Sexo
+        $sexLabel = new MText('sexLabel', _M('Sexo', $module) . ':');
+        $sexLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $sexLabel->setClass('m-caption m-caption-required');
+        $sex = new MSelection('sex', $stepData->sex, null, SAGU::listSex());
+        $sex->setJsHint(_M('Informe o sexo', $module));
+        $validators[] = new MRequiredValidator('sex', _M('Sexo', $module));
+        $bgrFields[] = new MHContainer('sexCnt', array( $sexLabel, $sex ));
+
+        //Data de nascimento
+        $dateBirthLabel = new MText('dateBirthLabel', _M('Data de nascimento', $module) . ':');
+        $dateBirthLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $dateBirthLabel->setClass('m-caption m-caption-required');
+        $dateBirth = new MCalendarField('dateBirth', $stepData->dateBirth, null, SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+        $dateBirth->setJsHint(_M('Informe a data de nascimento', $module));
+        $validators[] = new MDateDMYValidator('dateBirth', _M('Data de nascimento', $module), 'required');
+        $bgrFields[] = new MHContainer('dateBirthCnt', array( $dateBirthLabel, $dateBirth ));
+
+        //Nome da mae
+        $motherNameLabel = new MText('motherNameLabel', _M('Nome da mãe', $module) . ':');
+        $motherNameLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $motherNameLabel->setClass('m-caption m-caption-required');
+        $motherName = new MTextField('motherName', $stepData->motherName, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $motherName->setJsHint(_M('Informe o nome da mãe', $module));
+        $validators[] = new MRequiredValidator('motherName', _M('Nome da mãe', $module));
+        $bgrFields[] = new MHContainer('motherNameCnt', array( $motherNameLabel, $motherName ));
+
+        //Nome do pai
+        $fatherNameLabel = new MText('fatherNameLabel', _M('Nome do pai', $module) . ':');
+        $fatherNameLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $fatherName = new MTextField('fatherName', $stepData->fatherName, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $fatherName->setJsHint(_M('Informe o nome do pai', $module));
+        $bgrFields[] = new MHContainer('fatherNameCnt', array( $fatherNameLabel, $fatherName ));
+
+        //Telefone residencial
+        $residentialPhoneLabel = new MText('residentialPhoneLabel', _M('Telefone', $module) . ':');
+        $residentialPhoneLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $residentialPhoneLabel->setClass('m-caption m-caption-required');
+        $residentialPhone = new MTextField('residentialPhone', $stepData->residentialPhone, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_LOOKUP_SIZE'));
+        $residentialPhone->setJsHint(_M('Informe o telefone celular ou residencial', $module));
+        $validators[] = new MPHONEValidator('residentialPhone', _M('Telefone', $module), 'required');
+        $bgrFields[] = new MHContainer('residentialPhoneCnt', array( $residentialPhoneLabel, $residentialPhone ));
+
+        //Telefone comercial
+        $workPhoneLabel = new MText('workPhoneLabel', _M('Telefone comercial', $module) . ':');
+        $workPhoneLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $workPhone = new MTextField('workPhone', $stepData->workPhone, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_LOOKUP_SIZE'));
+        $workPhone->setJsHint(_M('Informe o telefone comercial', $module));
+        $validators[] = new MPHONEValidator('workPhone', _M('Telefone comercial', $module), 'optional');
+        $bgrFields[] = new MHContainer('workPhoneCnt', array( $workPhoneLabel, $workPhone ));
+
+        //Estado civil
+        $busMS = new BusinessBasicBusMaritalStatus();
+        $maritalStatusLabel = new MText('maritalStatusLabel', _M('Estado civil', $module) . ': ');
+        $maritalStatusLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $maritalStatusId = new MSelection('maritalStatusId', $stepData->maritalStatusId, '', $busMS->listMaritalStatus());
+        $maritalStatusId->setJsHint(_M('Selecione o estado civil', $module));
+        $bgrFields[] = new MHContainer('matiralStatusCnt', array( $maritalStatusLabel, $maritalStatusId ));
+
+        //Origem etnica
+        $busEO = new BusinessBasicBusEthnicOrigin();
+        $ethnicOriginIdLabel = new MText('ethnicOriginIdLabel', _M('Origem étnica', $module) . ': ');
+        $ethnicOriginIdLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $ethnicOriginIdLabel->setClass('m-caption m-caption-required');
+        $ethnicOriginId = new MSelection('ethnicOriginId', $stepData->ethnicOriginId, '', $busEO->listEthnicOrigin());
+        $validators[] = new MRequiredValidator('ethnicOriginId', _M('Origem étnica', $module), 'required');
+        $bgrFields[] = new MHContainer('ethnicOriginCnt', array( $ethnicOriginIdLabel, $ethnicOriginId ));
+
+        //Deseja receber e-mail
+        $sentEmailLabel = new MText('sentEmailLabel', _M('Deseja receber e-mail', $module) . ': ');
+        $sentEmailLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $option = strlen($stepData->sentEmail) > 0 ? $stepData->sentEmail : DB_TRUE;
+        $sentEmail = new MRadioButtonGroup('sentEmail', '', SAGU::listYesNo(1), $option, null, 'horizontal');
+        $sentEmail->setShowLabel(false);
+        $bgrFields[] = new MHContainer('sentEmailCnt', array( $sentEmailLabel, $sentEmail ));
+
+        //Necessidade especial
+        $busSN = new BusinessBasicBusSpecialNecessity();
+        $specialNecessityLabel = new MText('specialNecessityLabel', _M('Necessidade especial', $module) . ' : ');
+        $specialNecessityLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $specialNecessityLabel->setClass('m-caption m-caption-required');
+        $specialNecessityOption = strlen($stepData->specialNecessityId) > 0 ? $stepData->specialNecessityId : SAGU::getParameter('basic', 'NO_SPECIAL_NECESSITY_ID');
+        $specialNecessityId = new MSelection('specialNecessityId', $specialNecessityOption, '', $busSN->listSpecialNecessity());
+        $validators[] = new MRequiredValidator('specialNecessityId', _M('Necessidade especial', $module), 'required');
+        $bgrFields[] = new MHContainer('specialNecessityCnt', array( $specialNecessityLabel, $specialNecessityId ));
+
+        //Descricao da necessidade especial
+        $specialNecessityDescriptionLabel = new MText('specialNecessityDescriptionLabel', _M('Descrição da necessidade especial', $module) . ':');
+        $specialNecessityDescriptionLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $specialNecessityDescription = new MTextField('specialNecessityDescription', $stepData->specialNecessityDescription, '', SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $specialNecessityDescription->setJsHint(_M('Informe a descrição da(s) necessidade(s) especial(is)', $module));
+        $bgrFields[] = new MHContainer('specialNecessityDescriptionCnt', array( $specialNecessityDescriptionLabel, $specialNecessityDescription ));
+
+        $fields[] = new MBaseGroup('bgrGeneralData', _M('Dados gerais', $module), $bgrFields, 'vertical');
+        
+        // Campos de País, Estado e Cidade.
+        $divGeoData = new sDivCamposDeDadosGeograficos('divGeographicData', $stepData);
+        $validators = $divGeoData->obterValidacoesDosCamposDeDadosGeograficos($validators);
+
+        // Bairro
+        $neighborhoodLabel = new MLabel(_M('Bairro', $module) . ':');
+        $neighborhoodLabel->setClass('m-caption m-caption-required');
+        $neighborhoodLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $neighborhood = new MTextField('neighborhood', $stepData->neighborhood, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $neighborhood->setJsHint(_M('Informe o logradouro.', $module));
+        $neighborhoodCnt = new MHContainer('neighborhoodCnt', array( $neighborhoodLabel, $neighborhood ));
+        $validators[] = new MRequiredValidator('neighborhood', _M('Bairro', $module));
+
+        // Location type
+        $busLocationType = new BusinessBasicBusLocationType();
+        $locationTypeIdLabel = new MText('locationTypeIdLabel', _M('Tipo de logradouro', $module) . ':');
+        $locationTypeIdLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $locationTypeIdLabel->setClass('m-caption m-caption-required');
+        $locationTypeId = new MSelection('locationTypeId', $stepData->locationTypeId, '', $busLocationType->listLocationType(), false, '');
+        $locationTypeId->setJsHint(_M('Informe o tipo de logradouro da pessoa', $module));
+        $locationTypeCnt = new MHContainer('locationTypeIdCnt', array( $locationTypeIdLabel, $locationTypeId ));
+        $validators[] = new MRequiredValidator('locationTypeId', _M('Tipo de logradouro', $module));
+
+        // Logradouro
+        $locationLabel = new MLabel(_M('Logradouro', $module) . ':');
+        $locationLabel->setClass('m-caption m-caption-required');
+        $locationLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $location = new MTextField('location', $stepData->location, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $location->setJsHint(_M('Informe o logradouro.', $module));
+        $locationCnt = new MHContainer('locationCnt', array( $locationLabel, $location ));
+        $validators[] = new MRequiredValidator('location', _M('Logradouro', $module));
+
+        // Número
+        $numberLabel = new MLabel(_M('Número', $module) . ':');
+        $numberLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $numberLabel->setClass('m-caption m-caption-required');
+        $number = new MTextField('number', $stepData->number, null, SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'));
+        $number->setJsHint(_M('Informe o número', $module));
+        $numberCnt = new MHContainer('numberCnt', array( $numberLabel, $number ));
+        $validators[] = new MRequiredValidator('number', _M('Número', $module));
+
+        // Complemento
+        $complementLabel = new MLabel(_M('Complemento', $module) . ':');
+        $complementLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $complement = new MTextField('complement', $stepData->complement, null, SAGU::getParameter('BASIC', 'FIELD_DESCRIPTION_SIZE'));
+        $complement->setJsHint(_M('Informe o complemento, se houver.', $module));
+        $complementCnt = new MHContainer('complementCnt', array( $complementLabel, $complement ));
+
+        // CEP
+        $zipCodeLabel = new MLabel(_M('CEP', $module) . ':');
+        $zipCodeLabel->setWidth(SAGU::getParameter('BASIC', 'FIELD_CONTAINER_SIZE'));
+        $zipCodeLabel->setClass('m-caption m-caption-required');
+        $zipCode = new MTextField('zipCode', $stepData->zipCode, null, SAGU::getParameter('BASIC', 'FIELD_DATE_SIZE'));
+        $zipCode->setJsHint(_M('Informe o CEP', $module));
+        $zipCodeCnt = new MHContainer('zipCodeCnt', array( $zipCodeLabel, $zipCode ));
+        //$validators[] = new MCEPValidator('zipCode', _M('CEP', $module), 'required');
+
+        $bsg = new MBaseGroup('bsgGeographicData', _M('Endereço', $module), array( $divGeoData, $neighborhoodCnt, $locationTypeCnt, $locationCnt, $numberCnt, $complementCnt, $zipCodeCnt ), 'vertical');
+        $fields[] = $bsg;
+
+        $this->setFields($fields);
+        $this->setValidators($validators);
+        
+        if ( SAGU::userIsFromServices() )
+        {
+            $this->AddField( new MButton('btnBack', _M('<< Voltar', $module), $MIOLO->getActionURL('services', 'main:training')) );
+        }
+    }
+
+    public function nextStepButton_click($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        //Dados do passo
+        $data = $this->getData();
+
+        try
+        {
+            //Business document 
+            $busDocument = new BusinessBasicBusDocument();
+
+            //Documentos da pessoa
+            $search = $busDocument->searchDocument((object) array( 'documentTypeId' => SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF'), 'content' => $data->cpf ), true);
+
+            //Verifica se o cpf já existe
+            if ( count($search) > 0 )
+            {
+                //Valida de cpf já existe
+                if ( (strlen($data->personId) > 0) && ($search[0]->personId != $data->personId) )
+                {
+                    throw new Exception(_M('O CPF digitado já está cadastrado na base de dados.', $module));
+                }
+            }
+
+            //Verifica se a cidade foi informada
+            if ( strlen($data->cityId) == 0 )
+            {
+                throw new Exception(_M('O campo Cidade de residência é de preenchimento obrigatório.', $module));
+            }
+
+            parent::nextStepButton_click($args);
+        }
+        catch ( Exception $e )
+        {
+            $this->AddError($e->getMessage());
+            return;
+        }
+    }
+
+    /**
+     * Botão cancelar do formulário
+     * @return <MButton>
+     */
+    public function cancelButton()
+    {
+        return SAGU::getCancelButtonSubscription();
+    }    
+}
+?>

@@ -1,0 +1,170 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * This class contains methods to get, search, list, insert,
+ * update and delete register into acdInsuficientConditionCurricularComponentCancellation table.
+ *
+ * @author Armando Taffarel Neto [taffarel@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * Armando Taffarel Neto [taffarel@solis.coop.br]
+ *
+ * @since
+ * This class was created 19/12/2005
+ *
+ **/
+
+class BusinessAcademicBusInsuficientConditionCurricularComponentCancellation extends sBusiness
+{
+    function curricularComponentCancellation($enrollId)
+    {
+        try
+        {
+            $sql = 'UPDATE acdenroll
+                       SET statusId = ' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_CANCELLED') . ',
+                           dateCancellation = TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                           hourCancellation = (CURRENT_TIME),
+                           reasonCancellationId = ' . SAGU::getParameter('ACADEMIC', 'MOTIVO_CANCELAMENTO_MATRICULA_POR_INSUFICIENCIA_DE_REQUISITOS') . '
+                     WHERE enrollId = ?';
+
+            $args = array( date(SAGU::getParameter('BASIC', 'MASK_DATE_PHP')),
+                           $enrollId );
+
+            $sqls = SAGU::prepare($sql, $args);
+
+            for ( $i=0; $i<count($sqls); $i++ )
+            {
+                $result = $this->getDatabase()->execute($sqls[$i]);
+            }
+        }
+        catch ( Exception $ex )
+        {
+            throw new Exception($ex->getMessage());
+        }
+
+        return $result;
+    }
+
+    function selectEnrollsToBeCancelled($periodId)
+    {
+        $db = $this->getDatabase();
+
+        $sql1 = ' SELECT DISTINCT A.enrollId,
+                           E.personId,
+                           F.name,
+                           A.groupId,
+                           H.curricularComponentId,
+                           H.name,
+                           A.contractId,
+                           A.curriculumId,
+                           A.obsexploitation
+                      FROM unit_acdEnroll A
+                INNER JOIN unit_acdGroup B
+                        ON ( A.groupId = B.groupId )
+                INNER JOIN unit_acdlearningperiod C
+                        ON ( B.learningPeriodId = C.learningPeriodId )
+                INNER JOIN unit_acdCondition D
+                        ON ( D.curriculumId = A.curriculumId )
+                INNER JOIN unit_acdContract E
+                        ON ( E.contractId = A.contractId )
+           INNER JOIN ONLY basPhysicalPerson F
+                        ON ( E.personId = F.personId )
+                INNER JOIN unit_acdcurriculum G
+                        ON ( G.curriculumId = A.curriculumId )
+                INNER JOIN acdCurricularComponent H
+                        ON ( H.curricularComponentId = G.curricularComponentId AND
+                             H.curricularComponentVersion = G.curricularComponentVersion )
+                     WHERE C.periodId = \''.$periodId.'\'
+                       AND D.type = \'P\'
+                       AND A.statusId IN ( ' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_ENROLLED') . '::INT,
+                                           ' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_PRE_ENROLLED') . '::INT)
+                  ORDER BY 2 ';
+
+        //Irá trazer todos as matrículas do período referido, que estão com o status de "Matricula" e que são disciplinas-curriculos que possuem pré-requisito
+       $result1 = $db->query($sql1);
+
+        if ( is_array($result1) && ( count($result1) > 0 ) )
+        {
+            //Matriculas em disciplinas que possuem pré-requisito
+            foreach ( $result1 as $key1 => $value1 )
+            {
+                $sql2 = ' SELECT count(*)
+                            FROM acdCurricularComponentUnblock
+                           WHERE contractId = \''.$value1[6].'\'
+                             AND curriculumId = \''.$value1[7].'\'
+                             AND isConditionBreak = TRUE ';
+
+                $result2 = $db->query($sql2);
+
+                if ( $result2[0][0] > 0 )
+                {
+                    //Está cadastrada na tabela de desbloqueios. Não será uma possibilidade de cancelamento por insuficiência de requisito
+                }
+                else
+                {
+                    //Não está cadastrada em desbloqueios. Ou seja, é necessário cumprir o pré-requisito.
+                    $sql3 = ' SELECT A.enrollId
+                                FROM unit_acdEnroll A
+                          INNER JOIN unit_acdCondition B
+                                  ON ( B.conditionCurriculumId = A.curriculumId )
+                               WHERE B.curriculumId = '.$value1[7].'
+                                 AND A.contractId = '.$value1[6].'
+                                 AND A.statusId IN (' . SAGU::getParameter('ACADEMIC', 'ENROLL_STATUS_APPR_OR_EXC') . ')
+                                 AND B.type = \'P\'';
+
+                    $result3 = $db->query($sql3);
+
+                    if ( (strlen($result3[0][0]) > 0) /*&& ( ! ( strlen($result3[0][1]) > 0 ) )*/ )
+                    {
+                        //Está aprovado ou dispensado da disciplina que é pré-requisito. Não será uma possibilidade de cancelamento por insuficiência de requisito.
+                    }
+                    else
+                    {
+                        //Verifica se o aluno possui aproveitamento, se possuir aproveitamento para a disciplina pré-requisito, não aparecer como possibilidade de cancelamento
+                        if ( strlen($value1[8]) > 0 )
+                        {
+                            //Possui aproveitamento para o pré-requisito
+                        }
+                        else
+                        {
+                            //Não possui aproveitamento para o pré-requisito
+                            $res[] = $value1;
+                        }
+                    }
+                }
+            }
+        }
+        else
+        {
+            //Não existem matrículas neste período em disciplinas que exigem pré-requisito. Não será uma possibilidade de cancelamento por insuficiência de requisito
+        }
+
+        return $res;
+    }
+}
+?>

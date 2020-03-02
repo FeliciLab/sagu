@@ -1,0 +1,444 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Class to manipulate the acdPayrollDiscount table data.
+ *
+ * @author Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ *
+ * @since
+ * Creation date 2005/03/10
+ *
+ **/
+
+class BusinessFinanceBusPayrollDiscount extends sBusiness
+{
+   /**
+    * Generete a new learning period
+    * 
+    * @param $data (object): acdPeriod object
+    *
+    * @return (boolean): True if succed otherwise fails
+    *
+    */
+    public function getPayrollDiscountDocument($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $maskDate = SAGU::getParameter('BASIC', 'MASK_DATE');
+        $realRoundValue = SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE');
+
+        if ( strlen($data->personId) > 0 )
+        {
+            $where[] = "A.personId = ?";
+            $args[] = $data->personId;
+        }
+
+        if ( (strlen($data->beginDate) > 0) && (strlen($data->endDate) > 0) )
+        {
+            $where[] = "A.maturityDate BETWEEN TO_DATE(?, '{$maskDate}') AND TO_DATE(?, '{$maskDate}')";
+            $args[] = $data->beginDate;
+            $args[] = $data->endDate;
+        }
+
+        $where[] = '1=1';
+        $strWhere = implode(' AND ', $where);
+
+        //Busca todas pessoas que possuem desconto na folha de pagamento
+        $sql = "SELECT B.personid,
+                B.name AS personname,
+                E.employeeId,
+                E.name AS beneficiaryName,
+                ROUND( C.value, {$realRoundValue} ),
+                G.operationId,
+                G.description,
+                G.operationTypeId,
+                TO_CHAR( A.maturityDate ,  '{$maskDate}' ),
+                I.courseId,
+                J.name,
+                extract(month FROM A.maturityDate) || '/' || extract(year FROM A.maturityDate) AS datePeriod,
+                D.contractId,
+                A.invoiceId
+      FROM ONLY finreceivableinvoice A
+     INNER JOIN basperson B
+             ON ( A.personid = B.personid )
+     INNER JOIN finEntry C
+             ON ( A.invoiceid = C.invoiceid )
+     INNER JOIN acdcontract D
+             ON ( C.contractid = D.contractid )
+     INNER JOIN finPayrollDiscountTarget E
+             ON ( D.contractid = E.contractid )
+     INNER JOIN basPhysicalPersonEmployee  F
+             ON ( D.personid = F.personid )
+     INNER JOIN finoperation G
+             ON ( C.operationid = G.operationid )
+     INNER JOIN acdlearningperiod H
+             ON ( C.learningperiodid = H.learningperiodid )
+     INNER JOIN acdcourseOccurrence I
+             ON ( H.courseid = I.courseid
+                  AND H.courseversion = I.courseversion
+                  AND H.turnid = I.turnid
+                  AND H.unitid = I.unitid )
+     INNER JOIN acdcourse J
+             ON ( I.courseid = J.courseid )
+          WHERE {$strWhere}
+       GROUP BY 1,2,3,4,5,6,7,8,9,10,11,12,13,14
+       ORDER BY 3, 9, 13 ";
+
+        $db     = $this->getDatabase();
+        $result = $db->Query( SAGU::prepare( $sql, $args ));
+        return $result;
+
+    }
+
+
+   /**
+    * Generete a new learning period
+    * 
+    * @param $data (object): acdPeriod object
+    *
+    * @return (boolean): True if succed otherwise fails
+    *
+    */
+    public function getPayrollDiscountDocumentIncentive($data)
+    {
+ 
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        // Verifica se a constante está setada na tabela de parâmetros
+        // SAGU::getParameter('FINANCE', 'PAYROLL_DISCOUNT_OPERATION_ID') = operação padrão para desconto em folha
+        //    SAGU::checkParameter(SAGU::getParameter('FINANCE', 'PAYROLL_DISCOUNT_OPERATION_ID'))
+        if (  SAGU::checkParameter('PAYROLL_DISCOUNT_OPERATION_ID') == false )
+        {
+            $goto    = strlen( $goto ) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Erro', $module);
+            $msg     = _M('@1 não está declarado na tabela de configurações', $module, SAGU::getParameter('FINANCE', 'PAYROLL_DISCOUNT_OPERATION_ID') );
+
+            $MIOLO->error( $msg, $goto, $caption );
+        }
+        // Verifica se a constante está setada na tabela de parâmetros
+        // pega operação de padrão de matrícula (para pegar o valor do mensal do aluno - valor do título)  
+        $db     = $this->getDatabase();
+        $sql = 'SELECT enrolloperation from findefaultoperations';
+        $ok = $db->Query($sql);
+        if ( strlen( $ok[0][0] ) >! 0 )
+        {
+            $goto = strlen( $goto ) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Erro', $module );
+            $msg     = _M('enrollOperation não está declarada na tabela de configurações do financeiro', $module);
+            $MIOLO->error( $msg, $goto, $caption );
+        }
+        $enrollOperation = $ok[0][0];
+
+        // Busca dados de todas as pessoas que tem desconto em folha
+
+
+        //SQL Anterior
+//        $sql = ' SELECT A.personId,
+//                      (SELECT name
+//                        FROM ONLY basPerson
+//                       WHERE basPerson.personId = A.personId) AS personName,
+//                      (SELECT SUM(AA.value)
+//                         FROM finEntry AA
+//                        WHERE A.invoiceId = AA.invoiceId
+//                          AND operationId = ?) AS valueEntry,
+//                      ROUND (D.value, 2) AS percentDiscount,
+//                      D.valueIsPercent,
+//                      D.contractId,
+//                      count(A.personId)
+//                      FROM ONLY finReceivableInvoice A
+//                          INNER JOIN (SELECT invoiceId
+//                                       FROM (SELECT entryId,
+//                                                    invoiceId,
+//                                                    operationId
+//                                               FROM finEntry
+//                                              WHERE operationId = ? ) AS A
+//                    INNER JOIN ONLY finReceivableInvoice B
+//                        USING (invoiceId)
+//                    WHERE maturityDate >= TO_DATE( ? , \'' .SAGU::getParameter('BASIC', 'MASK_DATE') .'\' )
+//                    AND maturityDate <= TO_DATE( ? , \'' .SAGU::getParameter('BASIC', 'MASK_DATE') .'\' ) ) AS C
+//                    USING (invoiceId)
+//                         LEFT OUTER JOIN acdContract B
+//                                 ON (A.personId = B.personId
+//                                AND A.courseId = B.courseId
+//                                AND A.courseVersion = B.courseVersion
+//                                AND A.unitId = B.unitId)
+//                         LEFT OUTER JOIN (SELECT contractId,
+//                                                 value,
+//                                                 valueIsPercent,
+//                                                 startDate,
+//                                                 endDate,
+//                                                 incentiveId,
+//                                                 cancellationDate
+//                                            FROM finIncentive ) AS D
+//                                 ON (B.contractId = D.contractId
+//                                AND CASE WHEN D.cancellationDate IS NULL
+//                                         THEN (A.maturityDate BETWEEN startDate AND endDate)
+//                                         ELSE (A.maturityDate BETWEEN startDate AND D.cancellationDate )
+//                                         END )
+//        WHERE B.contractId = ?
+//          AND A.personId = ?
+//        GROUP BY 1,2,4,5,6, A.invoiceId';  
+
+        $maskDate = SAGU::getParameter('BASIC', 'MASK_DATE');
+        $realRoundValue = SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE');
+
+        $sql = "SELECT  RI.personId,
+                    PE.name AS personName,
+                    (SELECT SUM(A.value)
+                       FROM finEntry A
+                      WHERE RI.invoiceId = A.invoiceId
+                        AND operationId = ?) AS valueEntry,
+                    ROUND(I.value, {$realRoundValue}) AS percentDiscount,
+                    I.valueIsPercent,
+                    I.contractId,
+                    COUNT(RI.personId)
+          FROM ONLY finReceivableInvoice RI
+         INNER JOIN basperson PE
+                 ON ( PE.personid = RI.personid )
+         INNER JOIN finEntry EN
+                 ON ( EN.invoiceid = RI.invoiceid )
+         INNER JOIN acdcontract CO
+                 ON ( CO.contractid = EN.contractid )
+         INNER JOIN finoperation OP
+                 ON ( OP.operationid = EN.operationid )
+         INNER JOIN finIncentive I
+                 ON ( I.contractId = CO.contractId
+                AND CASE WHEN I.cancellationDate IS NULL
+               THEN (RI.maturityDate BETWEEN startDate AND endDate)
+               ELSE (RI.maturityDate BETWEEN startDate AND I.cancellationDate)
+                END )
+              WHERE EN.operationId = ?
+                AND RI.maturityDate BETWEEN TO_DATE(?, '{$maskDate}') AND TO_DATE(?, '{$maskDate}')
+                AND CO.contractId = ?
+                AND RI.personId = ?
+           GROUP BY 1,2,4,5,6, RI.invoiceId";
+
+        $args = array(
+            $enrollOperation,
+            SAGU::getParameter('FINANCE', 'PAYROLL_DISCOUNT_OPERATION_ID'),
+            $data->beginDate,
+            $data->endDate,
+            $data->contractId,
+            $data->personId
+        );
+
+        $db     = $this->getDatabase();
+
+        $result = $db->Query( SAGU::prepare( $sql, $args ));
+        return $result;
+    }
+
+             
+
+
+
+   /**
+    * Generete a new learning period
+    * 
+    * @param $data (object): acdPeriod object
+    *
+    * @return (boolean): True if succed otherwise fails
+    *
+    */
+    public function generatePayrollDiscount($data)
+    {
+ 
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+
+        // Verifica se a constante está setada na tabela de parâmetros
+        // SAGU::getParameter('FINANCE', 'PAYROLL_DISCOUNT_OPERATION_ID') = operação padrão para desconto em folha
+
+        
+        if (  SAGU::checkParameter('PAYROLL_DISCOUNT_OPERATION_ID') == false)
+        {
+
+            $goto    = strlen( $goto ) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Erro', $module);
+            $msg     = _M('@1 não está declarado na tabela de configurações', $module, SAGU::getParameter('FINANCE', 'PAYROLL_DISCOUNT_OPERATION_ID'));
+
+            $MIOLO->error( $msg, $goto, $caption );
+        }
+        // Verifica se a constante está setada na tabela de parâmetros
+        // SAGU::getParameter('FINANCE', 'DISCOUNT') = operação padrão para desconto 
+
+        if (  SAGU::checkParameter('DISCOUNT') == false)
+        {
+            $goto = strlen( $goto ) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Erro', $module );
+            $msg     = _M('@1 não está declarado na tabela de configurações', $module, SAGU::getParameter('FINANCE', 'DISCOUNT'));
+            $MIOLO->error( $msg, $goto, $caption );
+        }
+
+        $sql = 'SELECT C.personId,
+                       C.name,
+                       (SELECT AF.name
+                          FROM ONLY basPhysicalPersonEmployee AF 
+                         INNER JOIN ONLY basEmployee AE
+                         USING (personId)
+                         WHERE (AE.endDate  >= NOW()
+                            OR AE.endDate is null)
+                           AND A.employeeId = AF.personId) as EmployeeName,
+                       E.bankAccountId,
+                       E.value,
+                       balance(E.invoiceId) AS balance,
+                       employeeId,
+                       E.policyId,
+                       E.invoiceId,
+                       E.costCenterId,
+                       NULL,
+                       NULL,
+                       NULL,
+                       NULL,
+                       A.contractId,
+                       C.personId
+                  FROM ONLY finpayrolldiscounttarget A,
+                       ONLY acdcontract B,
+                       ONLY basphysicalpersonstudent C,
+                       acdCourse D,
+                       finreceivableinvoice E
+                 WHERE A.contractId = B.contractId 
+                   AND C.personId = B.personId
+                   AND B.courseId = D.courseId 
+                   AND E.courseId=D.courseId 
+                   AND E.personId = C.personId 
+                   AND E.maturityDate BETWEEN TO_DATE(?,  \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') 
+                            AND TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')
+                   AND A.isPayrollDiscount  = \''. DB_TRUE . '\'
+                   AND A.employeeId > 0
+                   AND balance(E.invoiceId) > 0 
+                   ORDER BY 1,2,15 ';
+        $args = array($data->beginDate,
+                      $data->endDate);
+        $result = $this->getDatabase()->Query( SAGU::prepare( $sql, $args ));
+        // pega número de linhas do resultado
+        $lines  = count( $result );
+        $this->beginTransaction();
+        // percorre resultado da pesquisa
+        for($count = 0; $count < $lines; $count++)
+        {
+             // 
+             // Flag that indicates if processed or not the respective entry on position of array 
+             //
+             $result[$count][12] = false;
+
+             $sql_        = 'SELECT discountPercent
+                               FROM finPolicy 
+                              WHERE policyId = ?';
+
+             $result2     = $this->getDatabase()->Query( SAGU::prepare( $sql_, $result[$count][7] ) );
+             $monthlyDiscount = $result2[0][0];
+             $balance         = $result[$count][5];
+             $invoiceId       = $result[$count][8];
+             $costCenterId    = $result[$count][9];
+             if ( $data->closeInvoice !== DB_FALSE )
+             {
+
+                $sqlCalc       = ' SELECT trunc ( ( '. $balance .' * '. $monthlyDiscount .' ) / 100 , 4) ';
+                $resultCalc    = $this->getDatabase()->Query( $sqlCalc );
+                $discountValue = $resultCalc[0][0];
+            
+                $sqlCalc2           = ' SELECT trunc( ( '. $balance .' - '. $discountValue .' ), 4) ';
+                $resultCalc2        = $this->getDatabase()->query( $sqlCalc2 );
+
+                $entryValue         = $resultCalc2[0][0];
+
+                // Faz arredondamentos de valores as grids e seta 't' como gerado
+                $result[$count][5]  = SAGU::formatNumber(  $result[$count][5] );
+                $result[$count][10] = SAGU::formatNumber( $entryValue );
+                $result[$count][11] = SAGU::formatNumber( $discountValue );
+                $result[$count][12] = DB_TRUE;
+                //
+                // that indicates close date in entry
+                //
+                $result[$count][13] = $data->closeDate;
+             
+                $sql__ = ' INSERT INTO finEntry
+                                      (invoiceId,
+                                       operationId,
+                                       entryDate,
+                                       value,
+                                       costCenterId,
+                                       creationType,
+                                       isAccounted
+                                      )
+                               VALUES (?, ?,
+                                       to_date(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                                       ?, ?, ?, ? ) ';
+
+                $args = array( $invoiceId, 
+                               SAGU::getParameter('FINANCE', 'PAYROLL_DISCOUNT_OPERATION_ID'),
+                               $data->closeDate,
+                               $entryValue,
+                               $costCenterId,
+                               'A',
+                               DB_FALSE
+                              );
+
+                $ok = $this->getDatabase()->execute( SAGU::prepare( $sql__, $args ) );
+
+                if ( ($discountValue != 0) AND ( $ok == DB_TRUE ))
+                {
+                    $args = array( $invoiceId,
+                                   SAGU::getParameter('FINANCE', 'DISCOUNT'),
+                                   $data->closeDate,
+                                   $discountValue,
+                                   $costCenterId,
+                                   'A',
+                                   DB_FALSE
+                                   );
+
+                    $ok = $this->getDatabase()->execute( SAGU::prepare( $sql__, $args ) );
+                
+                }
+                if($ok != DB_TRUE)
+                {
+                    return false;
+                }
+             
+
+             }
+             else
+             {
+
+             //
+             // Flag that indicates if processed or not the respective entry on position of array
+             //
+               $result[$count][12] = DB_FALSE;
+               $result[$count][5] = SAGU::formatNumber(  $result[$count][5] );
+             }
+        }
+        $this->endTransaction(true);
+        return $result;
+    }
+}   
+?>

@@ -1,0 +1,436 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<jasperReport xmlns="http://jasperreports.sourceforge.net/jasperreports" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://jasperreports.sourceforge.net/jasperreports http://jasperreports.sourceforge.net/xsd/jasperreport.xsd" name="enrollConfirmation" language="groovy" pageWidth="595" pageHeight="842" columnWidth="555" leftMargin="20" rightMargin="20" topMargin="20" bottomMargin="20">
+	<property name="ireport.zoom" value="1.0"/>
+	<property name="ireport.x" value="0"/>
+	<property name="ireport.y" value="0"/>
+	<parameter name="contractid" class="java.lang.Integer"/>
+	<parameter name="SAGU_PATH" class="java.lang.String" isForPrompting="false">
+		<defaultValueExpression><![CDATA["../../basic/reports/"]]></defaultValueExpression>
+	</parameter>
+	<queryString>
+		<![CDATA[SELECT
+	COU.degree,
+	COALESCE(COU.degree || ' EM '  , '') || '' || COU.name as coursename,
+	COALESCE((SELECT PROF.name FROM acdSchedule S INNER JOIN acdScheduleProfessor SP ON SP.scheduleId = S.scheduleId INNER JOIN basphysicalpersonprofessor PROF ON PROF.personid = SP.professorid WHERE S.groupId = B.groupId LIMIT 1), BPPP.name) as professor,
+	A.enrollId,
+	PP.name,
+	PP.location,
+	PP.number,
+	PP.complement,
+	PP.neighborhood,
+	PP.zipcode,
+	BC.name as cidade,
+	BLP.name as nomeInstituicao,
+	DATAPOREXTENSO(NOW()::date) as datahoje,
+               A.groupId,
+               (SELECT name FROM bascity where cityid = BLP.cityid) as cidadeInstituicao,
+               COALESCE(F.periodId, (SELECT periodId FROM acdLearningPeriod WHERE learningperiodid = A.learningperiodid)) as periodId,
+               COALESCE(H.curricularComponentId, C.curricularComponentId) AS curricularComponentId,
+               COALESCE(I.name, D.name) AS curricularComponentName,
+               ( SELECT ROUND(D.academicNumberHours::NUMERIC, 0) ) AS academicnumberhours,
+               CASE WHEN B.useConcept THEN ( SELECT COALESCE( O.concept, '')::TEXT
+                                               FROM acdDegreeEnroll O
+                                         INNER JOIN acdDegree P
+                                                 ON ( O.degreeId = P.degreeId AND
+                                                      P.parentDegreeId IS NULL AND
+                                                      O.enrollId = A.enrollId )
+                                           ORDER BY O.degreeEnrollId DESC LIMIT 1 )
+               ELSE (
+                 SELECT COALESCE(
+                        (SELECT ROUND(REPLACE(finalNote, ',', '.')::NUMERIC, GETPARAMETER('BASIC', 'GRADE_ROUND_VALUE')::integer)::TEXT
+                           FROM acdexploitation
+                          WHERE enrollid = A.enrollId
+                           -- Deve pegar da acdExploitation apenas quando possuir uma só nota de aproveitamento
+                            AND (SELECT COUNT(*) FROM acdExploitation WHERE enrollId = A.enrollId) = 1 ),
+
+                      (SELECT ROUND(O.note::NUMERIC, GETPARAMETER('BASIC', 'GRADE_ROUND_VALUE')::integer)::TEXT
+                        FROM acdDegreeEnroll O
+                  INNER JOIN acdDegree P
+                          ON ( O.degreeId = P.degreeId AND
+                               P.parentDegreeId IS NULL AND
+                               O.enrollId = A.enrollId )
+                    ORDER BY O.degreeEnrollId DESC LIMIT 1)
+                   )
+               ) END AS concept,
+
+               -- Nao pode exibir frequencia maior que 100%
+               CASE WHEN (A.frequency/D.academicNumberHours) >= 1.0
+               THEN
+                   '100%'
+               ELSE CASE WHEN A.frequency > 0 THEN
+                   COALESCE(ROUND( ((A.frequency * 100) / D.academicNumberHours)::numeric, '2')::TEXT, '-') || ' %'
+                   ELSE ' ' END
+               END AS frequency,
+               A.statusId,
+               CASE WHEN A.statusId = GETPARAMETER('ACADEMIC', 'ENROLL_STATUS_ENROLLED')::int THEN 'MA'
+		WHEN A.statusId = GETPARAMETER('ACADEMIC', 'ENROLL_STATUS_APPROVED')::int THEN 'AP'
+		WHEN A.statusId = GETPARAMETER('ACADEMIC', 'ENROLL_STATUS_DISAPPROVED')::int THEN 'RP'
+		WHEN A.statusId = GETPARAMETER('ACADEMIC', 'ENROLL_STATUS_DISAPPROVED_FOR_LACKS')::int THEN 'RF'
+		WHEN A.statusId = GETPARAMETER('ACADEMIC', 'ENROLL_STATUS_EXCUSED')::int THEN 'DS'
+		WHEN A.statusId = GETPARAMETER('ACADEMIC', 'ENROLL_STATUS_APPROVED')::int THEN 'AP'
+		ELSE
+			E.description
+	     END AS status,
+               G.name AS class,
+	     D.academicCredits,
+               C.semester
+          FROM acdEnroll A
+    INNER JOIN acdContract CON
+	    ON CON.contractid = A.contractid
+    INNER JOIN ONLY basPhysicalPerson PP
+	    ON PP.personid = CON.personid
+    INNER JOIN acdCurriculum C
+            ON C.curriculumId = A.curriculumId
+    INNER JOIN acdCurricularComponent D
+            ON D.curricularComponentId = C.curricularComponentId
+           AND D.curricularComponentVersion = C.curricularComponentVersion
+    INNER JOIN acdEnrollStatus E
+            ON E.statusId = A.statusId
+     LEFT JOIN basCity BC
+	    ON BC.cityid = PP.cityid
+     LEFT JOIN acdGroup B
+            ON B.groupId = A.groupId
+     LEFT JOIN acdLearningPeriod F
+            ON F.learningPeriodId = B.learningPeriodId
+     LEFT JOIN acdCurriculum H
+            ON H.curriculumId = B.curriculumId
+     LEFT JOIN acdCurricularComponent I
+            ON I.curricularComponentId = H.curricularComponentId
+           AND I.curricularComponentVersion = H.curricularComponentVersion
+     LEFT JOIN baslegalperson BLP
+	    ON BLP.personid =  ((SELECT _ABC.personid FROM basCompanyConf _ABC  WHERE companyid = GETPARAMETER('BASIC', 'DEFAULT_COMPANY_CONF')::int))
+     LEFT JOIN acdClass G
+            ON G.classId = B.classId
+     LEFT JOIN basphysicalpersonprofessor BPPP
+            ON BPPP.personid = B.professorresponsible
+     LEFT JOIN acdCourse COU
+	    ON CON.courseId = COU.courseId
+         WHERE A.contractId = $P{contractid}
+           AND C.curriculumTypeId != '7'
+           --AND A.isExploitation = 'f'
+           AND C.curriculumTypeId NOT IN (1)
+	AND A.statusId NOT IN (GETPARAMETER('ACADEMIC', 'ENROLL_STATUS_DISAPPROVED')::int,GETPARAMETER('ACADEMIC', 'ENROLL_STATUS_DISAPPROVED_FOR_LACKS')::int)
+           AND E.statusId != (SELECT GETPARAMETER('ACADEMIC', 'ENROLL_STATUS_CANCELLED')::int)
+	AND E.statusId != (SELECT GETPARAMETER('ACADEMIC', 'ENROLL_STATUS_DESISTING')::int)
+	--AND C.semester = 5
+	AND A.statusId IN (GETPARAMETER('ACADEMIC', 'ENROLL_STATUS_ENROLLED')::int)
+      ORDER BY F.periodId,
+		C.semester,
+               A.statusId,
+               D.name;]]>
+	</queryString>
+	<field name="degree" class="java.lang.String"/>
+	<field name="coursename" class="java.lang.String"/>
+	<field name="professor" class="java.lang.String"/>
+	<field name="enrollid" class="java.lang.Integer"/>
+	<field name="name" class="java.lang.String"/>
+	<field name="location" class="java.lang.String"/>
+	<field name="number" class="java.lang.String"/>
+	<field name="complement" class="java.lang.String"/>
+	<field name="neighborhood" class="java.lang.String"/>
+	<field name="zipcode" class="java.lang.String"/>
+	<field name="cidade" class="java.lang.String"/>
+	<field name="nomeinstituicao" class="java.lang.String"/>
+	<field name="datahoje" class="java.lang.String"/>
+	<field name="groupid" class="java.lang.Integer"/>
+	<field name="cidadeinstituicao" class="java.lang.String"/>
+	<field name="periodid" class="java.lang.String"/>
+	<field name="curricularcomponentid" class="java.lang.String"/>
+	<field name="curricularcomponentname" class="java.lang.String"/>
+	<field name="academicnumberhours" class="java.math.BigDecimal"/>
+	<field name="concept" class="java.lang.String"/>
+	<field name="frequency" class="java.lang.String"/>
+	<field name="statusid" class="java.lang.Integer"/>
+	<field name="status" class="java.lang.String"/>
+	<field name="class" class="java.lang.String"/>
+	<field name="academiccredits" class="java.lang.Double"/>
+	<field name="semester" class="java.lang.Integer"/>
+	<background>
+		<band splitType="Stretch"/>
+	</background>
+	<columnHeader>
+		<band height="256" splitType="Stretch">
+			<staticText>
+				<reportElement x="0" y="6" width="250" height="20"/>
+				<box topPadding="0"/>
+				<textElement>
+					<font fontName="DejaVu Sans" size="14" isBold="true"/>
+				</textElement>
+				<text><![CDATA[Atestado de Matrícula]]></text>
+			</staticText>
+			<staticText>
+				<reportElement x="0" y="26" width="66" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans" isBold="true"/>
+				</textElement>
+				<text><![CDATA[Pessoa:]]></text>
+			</staticText>
+			<staticText>
+				<reportElement x="0" y="46" width="66" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans" isBold="true"/>
+				</textElement>
+				<text><![CDATA[Endereço:]]></text>
+			</staticText>
+			<staticText>
+				<reportElement x="0" y="66" width="66" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans" isBold="true"/>
+				</textElement>
+				<text><![CDATA[Bairro:]]></text>
+			</staticText>
+			<staticText>
+				<reportElement x="0" y="86" width="66" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans" isBold="true"/>
+				</textElement>
+				<text><![CDATA[Cidade:]]></text>
+			</staticText>
+			<staticText>
+				<reportElement x="250" y="46" width="81" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans" isBold="true"/>
+				</textElement>
+				<text><![CDATA[Número:]]></text>
+			</staticText>
+			<staticText>
+				<reportElement x="250" y="66" width="81" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans" isBold="true"/>
+				</textElement>
+				<text><![CDATA[Complemento:]]></text>
+			</staticText>
+			<staticText>
+				<reportElement x="250" y="86" width="81" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans" isBold="true"/>
+				</textElement>
+				<text><![CDATA[CEP:]]></text>
+			</staticText>
+			<textField isStretchWithOverflow="true">
+				<reportElement x="331" y="106" width="224" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans"/>
+				</textElement>
+				<textFieldExpression><![CDATA[$F{cidadeinstituicao}  + ", " +$F{datahoje}]]></textFieldExpression>
+			</textField>
+			<staticText>
+				<reportElement x="0" y="137" width="100" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans"/>
+				</textElement>
+				<text><![CDATA[Prezado(a) aluno(a)]]></text>
+			</staticText>
+			<textField>
+				<reportElement x="100" y="137" width="455" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans" size="12"/>
+				</textElement>
+				<textFieldExpression><![CDATA[$F{name} + ";"]]></textFieldExpression>
+			</textField>
+			<textField>
+				<reportElement x="0" y="167" width="555" height="47"/>
+				<textElement>
+					<font fontName="DejaVu Sans"/>
+				</textElement>
+				<textFieldExpression><![CDATA["No fim do período de matrícula, nós informamos que você está matriculado(a) no curso de " + $F{coursename} + ", na turma " + $F{class} + ", nas disciplinas listadas"]]></textFieldExpression>
+			</textField>
+			<staticText>
+				<reportElement x="16" y="215" width="50" height="41"/>
+				<box topPadding="0" leftPadding="0">
+					<topPen lineWidth="1.0"/>
+					<leftPen lineWidth="1.0"/>
+					<bottomPen lineWidth="1.0"/>
+					<rightPen lineWidth="1.0"/>
+				</box>
+				<textElement textAlignment="Center" verticalAlignment="Middle">
+					<font fontName="DejaVu Sans" size="10" isBold="true"/>
+				</textElement>
+				<text><![CDATA[Código]]></text>
+			</staticText>
+			<staticText>
+				<reportElement x="66" y="215" width="100" height="41"/>
+				<box topPadding="0" leftPadding="0">
+					<topPen lineWidth="1.0"/>
+					<leftPen lineWidth="1.0"/>
+					<bottomPen lineWidth="1.0"/>
+					<rightPen lineWidth="1.0"/>
+				</box>
+				<textElement textAlignment="Center" verticalAlignment="Middle">
+					<font fontName="DejaVu Sans" size="10" isBold="true"/>
+				</textElement>
+				<text><![CDATA[Disciplina]]></text>
+			</staticText>
+			<staticText>
+				<reportElement x="166" y="215" width="81" height="41"/>
+				<box topPadding="3" leftPadding="3" bottomPadding="3" rightPadding="3">
+					<topPen lineWidth="1.0"/>
+					<leftPen lineWidth="1.0"/>
+					<bottomPen lineWidth="1.0"/>
+					<rightPen lineWidth="1.0"/>
+				</box>
+				<textElement textAlignment="Center" verticalAlignment="Middle">
+					<font fontName="DejaVu Sans" size="10" isBold="true"/>
+				</textElement>
+				<text><![CDATA[Carga horária -
+ Créditos
+]]></text>
+			</staticText>
+			<staticText>
+				<reportElement x="247" y="215" width="288" height="41"/>
+				<box topPadding="0" leftPadding="0">
+					<topPen lineWidth="1.0"/>
+					<leftPen lineWidth="1.0"/>
+					<bottomPen lineWidth="1.0"/>
+					<rightPen lineWidth="1.0"/>
+				</box>
+				<textElement textAlignment="Center" verticalAlignment="Middle">
+					<font fontName="DejaVu Sans" size="10" isBold="true"/>
+				</textElement>
+				<text><![CDATA[Professor]]></text>
+			</staticText>
+			<textField isBlankWhenNull="true">
+				<reportElement x="66" y="26" width="184" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans"/>
+				</textElement>
+				<textFieldExpression><![CDATA[$F{name}]]></textFieldExpression>
+			</textField>
+			<textField isBlankWhenNull="true">
+				<reportElement x="66" y="46" width="184" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans"/>
+				</textElement>
+				<textFieldExpression><![CDATA[$F{location}]]></textFieldExpression>
+			</textField>
+			<textField isBlankWhenNull="true">
+				<reportElement x="66" y="66" width="184" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans"/>
+				</textElement>
+				<textFieldExpression><![CDATA[$F{neighborhood}]]></textFieldExpression>
+			</textField>
+			<textField isBlankWhenNull="true">
+				<reportElement x="66" y="86" width="184" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans"/>
+				</textElement>
+				<textFieldExpression><![CDATA[$F{cidade}]]></textFieldExpression>
+			</textField>
+			<textField isBlankWhenNull="true">
+				<reportElement x="331" y="46" width="184" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans"/>
+				</textElement>
+				<textFieldExpression><![CDATA[$F{number}]]></textFieldExpression>
+			</textField>
+			<textField isBlankWhenNull="true">
+				<reportElement x="331" y="66" width="184" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans"/>
+				</textElement>
+				<textFieldExpression><![CDATA[$F{complement}]]></textFieldExpression>
+			</textField>
+			<textField isBlankWhenNull="true">
+				<reportElement x="331" y="86" width="184" height="20"/>
+				<textElement>
+					<font fontName="DejaVu Sans"/>
+				</textElement>
+				<textFieldExpression><![CDATA[$F{zipcode}]]></textFieldExpression>
+			</textField>
+		</band>
+	</columnHeader>
+	<detail>
+		<band height="24" splitType="Stretch">
+			<textField isStretchWithOverflow="true" isBlankWhenNull="true">
+				<reportElement stretchType="RelativeToBandHeight" x="16" y="0" width="50" height="24"/>
+				<box topPadding="3" leftPadding="3" bottomPadding="3" rightPadding="3">
+					<topPen lineWidth="1.0"/>
+					<leftPen lineWidth="1.0"/>
+					<bottomPen lineWidth="1.0"/>
+					<rightPen lineWidth="1.0"/>
+				</box>
+				<textElement textAlignment="Center" verticalAlignment="Middle">
+					<font fontName="DejaVu Sans" isBold="true"/>
+				</textElement>
+				<textFieldExpression><![CDATA[$F{curricularcomponentid}]]></textFieldExpression>
+			</textField>
+			<textField isStretchWithOverflow="true" isBlankWhenNull="true">
+				<reportElement stretchType="RelativeToBandHeight" x="66" y="0" width="100" height="24"/>
+				<box topPadding="3" leftPadding="3" bottomPadding="3" rightPadding="3">
+					<topPen lineWidth="1.0"/>
+					<leftPen lineWidth="1.0"/>
+					<bottomPen lineWidth="1.0"/>
+					<rightPen lineWidth="1.0"/>
+				</box>
+				<textElement textAlignment="Center" verticalAlignment="Middle">
+					<font fontName="DejaVu Sans" isBold="true"/>
+				</textElement>
+				<textFieldExpression><![CDATA[$F{curricularcomponentname}]]></textFieldExpression>
+			</textField>
+			<textField isStretchWithOverflow="true" isBlankWhenNull="true">
+				<reportElement stretchType="RelativeToBandHeight" x="166" y="0" width="81" height="24"/>
+				<box topPadding="3" leftPadding="3" bottomPadding="3" rightPadding="3">
+					<topPen lineWidth="1.0"/>
+					<leftPen lineWidth="1.0"/>
+					<bottomPen lineWidth="1.0"/>
+					<rightPen lineWidth="1.0"/>
+				</box>
+				<textElement textAlignment="Center" verticalAlignment="Middle">
+					<font fontName="DejaVu Sans" isBold="true"/>
+				</textElement>
+				<textFieldExpression><![CDATA[$F{academicnumberhours} + " - " + $F{academiccredits}]]></textFieldExpression>
+			</textField>
+			<textField isStretchWithOverflow="true" isBlankWhenNull="true">
+				<reportElement stretchType="RelativeToBandHeight" x="247" y="0" width="288" height="24"/>
+				<box topPadding="3" leftPadding="3" bottomPadding="3" rightPadding="3">
+					<topPen lineWidth="1.0"/>
+					<leftPen lineWidth="1.0"/>
+					<bottomPen lineWidth="1.0"/>
+					<rightPen lineWidth="1.0"/>
+				</box>
+				<textElement textAlignment="Center" verticalAlignment="Middle">
+					<font fontName="DejaVu Sans" isBold="true"/>
+				</textElement>
+				<textFieldExpression><![CDATA[$F{professor}]]></textFieldExpression>
+			</textField>
+		</band>
+	</detail>
+	<columnFooter>
+		<band height="234" splitType="Stretch">
+			<staticText>
+				<reportElement x="0" y="0" width="555" height="143"/>
+				<textElement>
+					<font fontName="DejaVu Sans"/>
+				</textElement>
+				<text><![CDATA[	As salas de aula já foram definidas, limitando-se, portanto, a partir de agora, o número de vagas de cada turma.
+	Consequentemente, o quanto antes você realizar o ajuste ou acréscimo de matrícula, maior a possibilidade de
+ainda ver atendidas suas necessidades. Alertamos, igualmente, que a Instituição reserva-se o direito de efetuar os
+ajustes necessários como, por exemplo, alteração de professores, remanejamento e/ou divisão de turmas, sem aviso ou
+consulta prévia ao aluno.
+	Desejamos, por fim, um bom descanso neste período final de férias acadêmicas e um semestre letivo proveitoso.
+Permanecemos à disposição para o que se fizer necessário.]]></text>
+			</staticText>
+			<staticText>
+				<reportElement x="415" y="159" width="100" height="13"/>
+				<textElement>
+					<font fontName="DejaVu Sans"/>
+				</textElement>
+				<text><![CDATA[Atenciosamente,]]></text>
+			</staticText>
+			<textField isStretchWithOverflow="true" isBlankWhenNull="true">
+				<reportElement x="415" y="172" width="120" height="60"/>
+				<textElement>
+					<font fontName="DejaVu Sans" isBold="true"/>
+				</textElement>
+				<textFieldExpression><![CDATA[$F{nomeinstituicao}]]></textFieldExpression>
+			</textField>
+		</band>
+	</columnFooter>
+	<pageFooter>
+		<band height="54" splitType="Stretch"/>
+	</pageFooter>
+	<summary>
+		<band height="42" splitType="Stretch"/>
+	</summary>
+</jasperReport>

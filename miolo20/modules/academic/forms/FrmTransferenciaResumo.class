@@ -1,0 +1,454 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * @author Nataniel I. da Silva [nataniel@solis.com.br]
+ *
+ * @version $Id$
+ *
+ * @since
+ * Class created on 08/07/2014
+ **/
+
+class FrmTransferenciaResumo extends FrmTransferencia
+{
+    public function __construct($steps, $formName)
+    {
+        parent::__construct($steps, __CLASS__);
+    }
+    
+    public function createFields()
+    {   
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        
+        $allData = $this->getStepData();
+        $MIOLO->session->set('allData', $allData);
+                
+        if ( $allData->notesAvaliations != DB_TRUE )
+        {
+            //Desabilita o passo 2 quando a flag não estiver marcada
+            $this->disableSteps(array($this->step - 1));
+        }
+        
+        $fields[] = new MDiv('divLimbo');
+        
+        $options = array(
+                'value' => array(
+                    _M('Curso', $module) => $allData->courseId . ' - ' . $allData->courseName,
+                    _M('Versão', $module) => $allData->courseVersion,
+                    _M('Turno', $module) => $allData->turnId . ' - ' . $allData->turnDescription,
+                    _M('Unidade', $module) => $allData->unitId . ' - ' . $allData->unitDescription,
+                    _M('Turma', $module) => $allData->pupilClassId . ' - ' . $allData->pupilClassName,
+                ),
+                'title' => _M('Informações da ocorrência de curso de origem', $module),
+                'columns' => 1,
+                'textWidth' => '500px'
+            );        
+        $fields[] = new SInformationField($options);
+        
+        $busReason = new BusinessAcademicBusReason();
+        $reason = $busReason->getReason($allData->reasonId);
+        
+        $stateContractId = $this->obtemTipoDeMovimentacaoContratual($allData);
+                        
+        //Motivo da transferência
+        $busReason = new BusinessAcademicBusReason();
+        $reasons = $busReason->listReasonByStateContract($stateContractId);
+        
+        $reasonId = new MSelection('reasonId', $this->getFormValue('reasonId', $allData->reasonId), null, $reasons);
+        $validators[] = new MRequiredValidator('reasonId', _M('Motivo'));
+        
+        $options = array(
+                'value' => array(
+                    _M('Curso', $module) => $allData->curriculumCourseId . ' - ' . $allData->curriculumCourseName,
+                    _M('Versão', $module) => $allData->curriculumCourseVersion,
+                    _M('Turno', $module) => $allData->curriculumCourseTurnId . ' - ' . $allData->curriculumCourseTurnDescription,
+                    _M('Unidade', $module) => $allData->curriculumCourseUnitId . ' - ' . $allData->curriculumCourseUnitDescription,
+                    _M('Período', $module) => $allData->periodId,
+                    _M('Turma', $module) => $allData->destinationClassId . ' - ' . $allData->destinationClassDescription,
+                    '<span id="reasonLabel" class="m-caption-required">' . _M('Motivo', $module) . '</span>' => $reasonId->generate(),
+                ),
+                'title' => _M('Informações da ocorrência de curso de destino', $module),
+                'columns' => 1,
+                'textWidth' => '500px'
+            );        
+        $fields[] = new SInformationField($options);
+            
+        // Obter todos os contratos que serão transferidos.
+        $contratosAtivos = $this->obterContratosAtivos($allData, true);
+        
+        $alunosInadimplentes = $MIOLO->session->get("verificaInadinplencia"); 
+        
+        $gridData = array();
+        $gridInadimplenciaData = array();
+        
+        foreach ( $contratosAtivos as $infoContrato )
+        {
+            if ( $alunosInadimplentes[$infoContrato[0]] == DB_TRUE )
+            {
+                $gridInadimplenciaData[] = $infoContrato;      
+            }
+            else
+            {
+                $gridData[] = $infoContrato;
+            }
+        }
+        
+        $fields[] = $grid = $MIOLO->getUI()->getGrid($module, 'GrdTransferenciaDeOcorrenciaDeCurso');
+        $grid->setTitle(_M('Alunos a transferir', $module));
+        $grid->setClose(false);
+        $grid->setData($gridData);
+        $grid->addActionSelect();
+
+        $fields[] = new MSpacer();
+        
+        if ( count($gridInadimplenciaData) > 0 )
+        {
+            $fields[] = $gridInadimplencia = $MIOLO->getUI()->getGrid($module, 'GrdTransferenciaDeOcorrenciaDeCurso');
+            $gridInadimplencia->setTitle(_M('Alunos inadimplentes que não poderão ser transferidos', $module));
+            $gridInadimplencia->setClose(false);
+            $gridInadimplencia->setData($gridInadimplenciaData);
+
+            $fields[] = new MSpacer();
+        }
+        
+        $this->setFields($fields);
+        $this->setValidators($validators);
+    }
+    
+    /**
+     * Gera a popup de vizualização do rezumo da transferência 
+     * de ocorrência de curso para o contrato.
+     * 
+     * @param stdClass $args
+     */
+    public function popupVizualisarResumo($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $busContract = new BusinessAcademicBusContract();
+        $infoAluno = $busContract->getContract($args->contractId);
+        
+        $fields = array();
+        $fields[] = $this->resumoDisciplinasAluno($args->contractId, $infoAluno->personId);
+        
+        $this->setFields($fields);
+        
+        MPopup::show('popupVizualisarResumo', $fields, "Visualizar resumo: {$infoAluno->personName} ({$infoAluno->personId}) - Contrato: {$infoAluno->contractId}");
+    }
+    
+    public function mostraPopupInformarNota($args)
+    {
+        $args = explode('|', $args->args);
+        
+        $busCurriculumLink = new BusinessAcademicBusCurriculumLink();
+        $busDegreeEnroll = new BusinessAcademicBusDegreeEnroll();
+        
+        $filters = new stdClass();
+        $filters->curriculumLinkId = $args[0];
+        $links = $busCurriculumLink->searchCurriculumLink($filters);
+
+        $contractId = $args[1];
+        $fields[] = $contractField = new MTextField('contractId', $contractId);
+        $contractField->addAttribute('hidden');
+        
+        foreach( $links as $link )
+        {            
+            $nota = $busDegreeEnroll->obterNotaPorCurriculumEContrato($link[0], $contractId);
+            
+            $fields[] = new MDiv();
+            $fields[] = new MLabel($link[4] . ' - NOTA: ' . $nota);
+        }
+        
+        $fields[] = new MDiv();
+        $fields[] = new MHContainer('contNovaNota', array(new MLabel($links[0][9] . ' - NOTA: '), new MTextField("nota[{$args[0]}]", $_SESSION['novaNota'][$contractId][$args[0]])));
+        $fields[] = new MDiv();
+        
+        $action = SForm::getAjaxAction('FrmTransferenciaResumo::salvarNota', 'mPopupResponse', false, NULL, true, false);
+        $fields[] = new MButton('btnSalvarNota', _M('OK'), $action);
+        
+        $form = new MVContainer('contSalvarNota', SAGU::alignFields($fields));
+        
+        MPopup::show('popupInformarNota', array($form), _M('Informe a nota da disciplina equivalente'));
+    }
+    
+    public function salvarNota($args)
+    {
+        foreach ( $args->nota as $key => $nota )
+        {
+            $_SESSION['novaNota'][$args->contractId][$key] = $nota;
+        }
+        
+        MPopup::remove();
+    }
+    
+    /**
+     * Retorna os campos do resumo da transferência do aluno
+     * 
+     * @param type $contractId
+     */
+    public function resumoDisciplinasAluno($contractId, $personId)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $allData = $this->getStepData();
+        $disciplinasEncerradas = $MIOLO->session->get("transferDataEncerradas"); 
+        $disciplinasMatriculadas = $MIOLO->session->get("transferDataMatriculadas"); 
+        
+        // Obtém o período letivo de origem
+        $learningPeriodId = $MIOLO->session->get("peridoLetivoDeOrigem"); 
+        
+        // Se aluno está inadimplente, bloqueia o processo de transferencia
+        $alunosInadimplentes = $MIOLO->session->get("verificaInadinplencia");
+                
+        if ( $alunosInadimplentes[$contractId] == DB_TRUE )
+        {
+            $msg = _M('Para efetuar o processo de transferência, a situação de débito financeiro atrasado deve ser resolvida.', $module);
+
+            if ( $MIOLO->checkAccess('FINANCE', A_ACCESS, false, true) )
+            {
+                $url = $MIOLO->getActionURL('finance', 'main', null, array('personId' => $personId, 'event' => 'btnSearch:click'));
+                $financialSituation = new MLink('fin', _M('Clique aqui para consultar este débito.', $module), $url, null, '_new');
+                $msg .= ' ' . $financialSituation->generate();
+                
+                $msg .= '<br><br> Após regularizar o financeiro, executar o processo novamente.';
+            }
+            
+            $fields[] = new MSpacer();
+            $fields[] = new MText('msgInadimplencia', $msg);
+            $fields[] = new MSpacer();
+        }
+        else
+        {
+            if ( count($disciplinasMatriculadas[$contractId]->disciplinasMatriculadasNaoAproveitadas) > 0 )
+            {
+                // monta grid com disicplinas que não serão aproveitadas
+                $gridVinculo = $MIOLO->getUI()->getGrid($module,'GrdCourseTransferCanceledEnrolls', $data);
+                $gridVinculo->setTitle(_M("<font color='#FF8181' size='3'>Disciplinas matriculadas que não serão aproveitadas</font>", $module));
+                $gridVinculo->setClose(false);
+                $gridVinculo->setData($disciplinasMatriculadas[$contractId]->disciplinasMatriculadasNaoAproveitadas);
+                $fld[] = $div3 = new MDiv('divNaoAproveitadas', $gridVinculo);
+                $fld[] = new MSpacer(); 
+                $div3->addBoxStyle('width', '100%');
+            }
+            
+            // Disciplinas matriculadas
+            if ( count($disciplinasMatriculadas[$contractId]->disciplinasMatriculadasComuns) > 0 )
+            {
+                // monta grid com disicplinas aproveitadas comuns
+                $gridComuns = $MIOLO->getUI()->getGrid($module,'GrdCourseTransferCanceledEnrolls', $data);
+                $gridComuns->setTitle(_M('Disciplinas comuns entre as ocorrências de curso', $module));
+                $gridComuns->setClose(false);
+                $gridComuns->setData($disciplinasMatriculadas[$contractId]->disciplinasMatriculadasComuns);
+                $fld[] = $div1 = new MDiv('divMatriculadasComuns', $gridComuns);
+                $fld[] = new MSpacer();   
+                $div1->addBoxStyle('width', '100%');
+
+            }
+
+            if ( count($disciplinasMatriculadas[$contractId]->disciplinasMatriculadasVinculadas) > 0 )
+            {
+                // monta grid com disicplinas aproveitadas como vinculo
+                $gridVinculadas = $MIOLO->getUI()->getGrid($module,'GrdCourseTransferCanceledEnrolls', $data);
+                $gridVinculadas->setTitle(_M('Disciplinas equivalentes entre as ocorrências de curso', $module));
+                $gridVinculadas->setClose(false);
+                $gridVinculadas->setData($disciplinasMatriculadas[$contractId]->disciplinasMatriculadasVinculadas);
+                $fld[] = $div2 = new MDiv('divMatriculadasVinculadas', $gridVinculadas);
+                $fld[] = new MSpacer();
+                $div2->addBoxStyle('width', '100%');
+            }
+
+            if ( !count($disciplinasMatriculadas[$contractId]->disciplinasMatriculadasComuns) > 0 &&
+                 !count($disciplinasMatriculadas[$contractId]->disciplinasMatriculadasVinculadas) > 0 &&
+                 !count($disciplinasMatriculadas[$contractId]->disciplinasMatriculadasNaoAproveitadas) > 0 )
+            {
+                $fld[] = new MText('msgDisciplinaMatriculada', _M('Nenhuma disciplina matriculada a ser transferida.'));
+            }
+
+            $fields[] = new MBaseGroup('bgDisciplinasEncerradas', _M('Disciplinas matriculadas'), $fld);
+
+            unset($fld);
+
+            if ( count($disciplinasEncerradas[$contractId]->noActions) > 0 )
+            {
+                // Disciplinas que não foram aproveitadas
+                $gridNoActions = $MIOLO->getUI()->getGrid($module,'GrdCourseTransferCanceledEnrolls', $data);
+                $gridNoActions->setTitle(_M("<font color='#FF8181' size='3'>Disciplinas encerradas que não serão aproveitadas</font>", $module));
+                $gridNoActions->setClose(false);
+                $gridNoActions->setData($disciplinasEncerradas[$contractId]->noActions);
+                $fld[] = $div6 = new MDiv('divTransferData1', $gridNoActions);
+                $fld[] = new MSpacer();
+                $div6->addBoxStyle('width', '100%');
+            }
+            
+            // Disciplinas encerradas
+            if ( count($disciplinasEncerradas[$contractId]->vinculos) > 0 )
+            {
+                // monta grid com disicplinas aproveitadas como vinculo
+                $gridVinculo = $MIOLO->getUI()->getGrid($module,'GrdCourseTransferCanceledEnrolls', $data);
+                $gridVinculo->setTitle(_M('Disciplinas equivalentes entre as ocorrências de curso', $module));
+                $gridVinculo->setClose(false);
+                $gridVinculo->setData($disciplinasEncerradas[$contractId]->vinculos);
+                $fld[] = $div4 = new MDiv('divTransferData1', $gridVinculo);
+                $fld[] = new MSpacer();
+                $div4->addBoxStyle('width', '100%');
+            }
+
+            if ( count($disciplinasEncerradas[$contractId]->disciplinas) > 0 )
+            {
+                // monta a grid com disciplinas aproveitadas normais
+                $gridDisciplinas = $MIOLO->getUI()->getGrid($module,'GrdCourseTransferCanceledEnrolls', $data);
+                $gridDisciplinas->setTitle(_M('Disciplinas comuns entre as ocorrências de curso', $module));
+                $gridDisciplinas->setClose(false);
+                $gridDisciplinas->setData($disciplinasEncerradas[$contractId]->disciplinas);
+                $fld[] = $div5 = new MDiv('divTransferData1', $gridDisciplinas);
+                $fld[] = new MSpacer();
+                $div5->addBoxStyle('width', '100%');
+            }
+
+            if ( !count($disciplinasEncerradas[$contractId]) > 0 )
+            {
+                $fld[] = new MText('msgDisciplinaEncerrada', _M('Nenhuma disciplina encerrada a ser transferida.'));
+            }
+
+            $fields[] = new MBaseGroup('bgDisciplinasEncerradas', _M('Disciplinas encerradas'), $fld);
+
+            $fields[] = new MSpacer();
+
+            unset($fld);
+
+            if ( $allData->disciplinasMatriculadas == DB_TRUE )
+            {
+                //Títulos migrados        
+                if ( SAGU::getParameter('BASIC', 'MODULE_FINANCE_INSTALLED') == 'YES' )
+                {
+                    SDatabase::beginTransaction();
+
+                    $busReceivableInvoice = new BusinessFinanceBusReceivableInvoice();
+                    $busEntry = new BusinessFinanceBusEntry();
+                    $finStatusDoTitulo = new FinStatusDoTituloLog();
+                    $busLearningPeriod = new BusinessAcademicBusLearningPeriod();
+
+                    $learningPeriod = $busLearningPeriod->getLearningPeriodByContractAndPeriod($contractId, $allData->periodId);
+                    
+                    $objTitulos = $MIOLO->session->get("objTitulo");
+
+                    //Grid exibindo os titulos a serem transferidos
+                    $filters = new StdClass();
+                    $filters->contractId = $contractId;
+                    $filters->learningPeriodId = $learningPeriod->learningPeriodId;          
+                    $filters->isCanceled = SAGU::getParameter('BASIC', 'DB_FALSE');
+                    $foundInvoices = $busReceivableInvoice->searchReceivableInvoice($filters);
+
+                    if ( count($foundInvoices) > 0 && count($objTitulos[$contractId]) > 0)
+                    {
+                        $fields[] = $grid = $MIOLO->getUI()->getGrid($module,'GrdCourseTransferCanceledInvoices');
+                        $grid->setTitle(_M('Títulos que serão reprocessados', $module));
+                        $grid->setClose(false);
+                        $grid->setData($foundInvoices);
+                    }
+
+                    if ( count($objTitulos[$contractId]) > 0 )
+                    {
+                        $columns = array(_M('Número da parcela', $module),
+                                         _M('Data de vencimento', $module),
+                                         _M('Valor', $module),
+                                         _M('Valor atualizado', $module),
+                                         _M('Status', $module));
+
+                        $data = array();
+                        foreach ( $objTitulos[$contractId] as $titulo )
+                        {
+                            $row = array();
+                            $row[] = $titulo['parcelNumber'];
+                            $row[] = $titulo['maturityDate'];
+                            $row[] = new MTableRaw(null, $titulo['subRow'], null);
+                            $row[] = $titulo['balance'];
+                            $row[] = $titulo['status'];
+                            $data[] = $row;
+                        }
+
+                        // Table where invoices data will be displayed
+                        $fld[] = new MTableRaw(_M('Simulação de títulos', $module), $data, $columns);
+                        $fld[] = new MSeparator();
+                    }
+
+                    SDatabase::rollback();
+
+                    $fields[] = new MVContainer('divEnrollData', $fld);
+                }
+            }
+            else
+            {
+                $fields[] = $this->genericFields()->labelDica(_M('O financeiro só será reprocessado caso seja aproveitado alguma disciplina matriculada do contrato antigo.', $module));
+            }
+
+            $fields[] = new MSpacer();
+            $fields[] = $buttonClosed = new MButton('fecharPopup', _M('Fechar resumo'), "javascript:mpopup.remove();");
+            $buttonClosed->addBoxStyle('margin-left', '47%');
+        }
+        
+        $mDiv = new MDiv('divResumo', $fields);
+        
+        return $mDiv;
+    }
+    
+    public function previousStepButton_click($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $data = $this->getStepData();
+        
+        if ( $data->notesAvaliations != DB_TRUE )
+        {
+            $this->prevStep = $this->step - 2;
+        }
+        
+        parent::previousStepButton_click($args);
+    }
+    
+    public function finalizeButton_click($args)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        $this->getData();
+        
+        $this->executaProcessoDeTransferencia($args, true);
+        
+        parent::finalizeButton_click($args);
+    }
+    
+    public function getData()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $stepData = parent::getData();
+        
+        $stepData->reasonId = $MIOLO->_REQUEST('reasonId');
+        $stepData->tipoDeTransferencia = $this->tipoDeTransferencia;
+                
+        return $stepData;
+    }
+}
+
+?>

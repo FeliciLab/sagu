@@ -1,0 +1,387 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * This class Business Admin Group
+ *
+ * @author Leovan Tavares da Silva [leovan] [leovan@solis.coop.br]
+ *
+ * $version: $Id$
+ *
+ * \b Maintainers \n
+ * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ * Arthur Lehdermann [arthur@solis.coop.br]
+ * Daniel Afonso Heisler [daniel@solis.coop.br]
+ * Jamiel Spezia [jamiel@solis.coop.br]
+ * Leovan Tavares da Silva [leovan@solis.coop.br]
+ * Samuel Koch [samuel@solis.coop.br]
+ * William Prigol Lopes [william@solis.coop.br]
+ * 
+ * @since
+ * Class created on 14/06/2006
+ */
+class BusinessAdminGroup extends sBusiness  implements IGroup
+{
+    var $idGroup;
+    var $group;
+    var $access; // an array of Access objects indexed by idTransaction
+    var $users;  // an array of User objects indexed by idUser
+
+    public function __construct($data = NULL)
+    {
+       parent::__construct('admin', $data);
+       
+       if ( SAGU::getParameter('BASIC', 'AUTH_METHOD') == 'LDAP' )
+       {
+           $MIOLO = MIOLO::getInstance();
+           $this->manager = $MIOLO;
+
+           $MIOLO->import('classes::security::mauthldap');
+           $this->auth = new mAuthLdap();
+
+           $MIOLO->import('classes::security::mpermssaguldap');
+           $this->schema = $MIOLO->getConf('login.ldap.schema');
+           $this->base = $this->manager->getConf('login.ldap.base');
+       }
+    }
+
+    public function setData($data)
+    {
+        $this->idGroup = $data->idGroup;
+        $this->group = $data->group;
+        // $data->access: an array of array(idTransaction, rights)
+        $this->setAccess($data->access);
+    }
+
+    public function getNewId()
+    {
+        global $MIOLO, $module;
+        $db = $this->getDatabase($module);
+        $sql = "SELECT (value) FROM miolo_sequence WHERE sequence = 'seq_miolo_group'";
+        $rs = $db->query($sql);
+        $id = $rs[0][0] + 1;
+
+        return $id;
+    }
+
+    public function getById($id)
+    {
+        $this->idGroup = $id; 
+        $this->retrieve();
+        return $this;
+    }
+    
+    public function getByName($name)
+    {
+        $criteria = $this->getCriteria();
+        $criteria->addCriteria('m_group','=', "'$name'");
+        $this->retrieveFromCriteria($criteria);
+        $this->getUsers();
+        return $this;
+    }
+    
+    public function getUsers()
+    {
+        if (is_null($this->users))
+        {
+           $this->retrieveAssociation('users');
+        }
+    }
+
+    public function save()
+    {
+        parent::save();
+    }
+
+    public function listGroupUser($idgroup, $toObject = false)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $db = $this->getDatabase();
+        
+        $sql= 'SELECT A.iduser,
+                      A.name
+                 FROM miolo_user A
+           INNER JOIN miolo_groupUser B
+                   ON (A.iduser = B.iduser)
+                WHERE B.idgroup = ? ';
+
+        $params = array($idgroup);
+
+        $result = $db->query(SAGU::prepare($sql, $params));
+
+        if ($toObject)
+        {
+            $cols[] = 'iduser';
+            $cols[] = 'userName';
+            $result = SAGU::resultToObject($result, $cols);
+        }
+
+        return $result;
+    }
+    
+    public function listGroupUserLdap($idgroup, $toObject = false)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $db = $this->getDatabase();
+        
+        $sql= 'SELECT iduser
+                 FROM miolo_groupUser
+                WHERE idgroup = ? ';
+
+        $params = array($idgroup);
+        $result = $db->query(SAGU::prepare($sql, $params));
+
+        foreach ($result AS $value )
+        {
+            $search = '(objectClass='.($this->schema == 'system' ? 'person' : 'mioloUser' ).')';
+    
+            $nameAttr = 'name';
+            
+            if ( $this->schema == 'system' ) 
+            {
+                $nameAttr = $this->manager->getConf('login.ldap.userName');
+            }
+    
+            $filter = $login = "(uidnumber=$value[0])";
+    
+            $search = '(&(objectClass='.($this->schema == 'system' ? 'person' : 'mioloUser').")$filter)";
+    
+            $sr= ldap_search( $this->auth->conn, $this->base, $search, array('uid', $nameAttr, 'uidnumber'));
+            ldap_sort($this->auth->conn, $sr, $nameAttr);
+            $info = ldap_get_entries($this->auth->conn, $sr);
+    
+            for ( $c=0; $c < $info['count']; $c++ )
+            {
+                $login = $info[$c]['uid'][0] ? $info[$c]['uid'][0] : $info[$c]['login'][0];
+                $id = $info[$c]['uidnumber'][0];
+                 
+                $return[] = array( $id,
+                                   $login );
+            }
+        }
+
+        if ($toObject)
+        {
+            $cols[] = 'iduser';
+            $cols[] = 'userName';
+            $return = SAGU::resultToObject($return, $cols);
+        }
+
+        return $return;
+    }
+    
+    public function getGroup($idgroup)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $db = $this->getDatabase();
+        
+        $sql= 'SELECT idgroup,
+                      m_group
+                 FROM miolo_group
+                WHERE idgroup = ? ';
+
+        $params = array($idgroup);
+        $result = $db->query(SAGU::prepare($sql, $params));
+        
+        $data = new stdClass();
+        list ( $data->idgroup,
+               $data->m_group ) = $result[0];
+
+        return $data;
+    }
+    
+    public function searchGroup($filters)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $db = $this->getDatabase();
+        
+        $sql= 'SELECT idgroup,
+                      m_group
+                 FROM miolo_group ';
+
+        if ( strlen($filters->idgroup) > 0 )
+        {
+            $WHERE .= ' AND idgroup = ? ';
+            $params[] = $filters->idgroup;
+        }
+        if ( strlen($filters->m_group) > 0 )
+        {
+            $WHERE .= ' AND UNACCENT(m_group) ILIKE UNACCENT(?) ';
+            $params[] = $filters->m_group.'%';
+        }
+
+        unset($result);
+        if ( strlen($WHERE) > 0 )
+        {
+            $sql.= ' WHERE ' . substr($WHERE, 4) . '
+                  ORDER BY m_group ';
+            
+            $result = $db->query(SAGU::prepare($sql, $params));
+        }
+
+        return $result;
+    }
+    
+    public function listGroups()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $db = $this->getDatabase();
+        
+        $sql= 'SELECT idgroup,
+                      m_group
+                 FROM miolo_group ORDER BY idgroup ASC';
+        
+        foreach ($db->query($sql) as $g)
+        {
+            $groups[$g[0]] = $g[1];
+        }
+
+        return $groups;
+    }
+    
+    public function deleteGroup($idgroup)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $db = $this->getDatabase();
+
+        // Deleta os usuários do grupo
+        $sql= "DELETE FROM miolo_groupuser
+                     WHERE idgroup = '{$idgroup}'";
+        $ok = $db->execute($sql);
+
+        // Deleta as permissões do grupo
+        $sql= "DELETE FROM miolo_access
+                     WHERE idgroup = '{$idgroup}'";
+        $ok = $db->execute($sql);
+
+        // Deleta o grupo
+        $sql= "DELETE FROM miolo_group
+                     WHERE idgroup = '{$idgroup}'";
+        $result = $db->execute($sql);
+
+        return $result;
+    }
+    
+    public function INSERT()
+    {
+        global $MIOLO;
+        $db = $this->getDatabase();
+
+        $sql = "INSERT INTO miolo_group
+                     VALUES ( '{$this->idGroup}',
+                              '{$this->group}' )";
+        $sql_seq = "UPDATE miolo_sequence
+                       SET value = '{$this->idGroup}'
+                     WHERE sequence = 'seq_miolo_group'";
+
+        return $db->execute($sql) && $db->execute($sql_seq);
+    }
+
+    public function INSERTGroup($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $db = $this->getDatabase();
+
+        $sql= "INSERT INTO miolo_group ( idgroup,
+                                         m_group )
+                    VALUES ( '{$data->idgroup}', '{$data->m_group}' )";
+
+        $result = $db->execute($sql);
+
+        $sql = "UPDATE miolo_sequence 
+                   SET value = '{$data->idgroup}' 
+                 WHERE sequence = 'seq_miolo_group'";
+
+        $result = $db->execute($sql);
+        
+        return $result;
+    }
+
+    public function UPDATEGroup($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $db = $this->getDatabase();
+
+        $sql= "UPDATE miolo_group
+                  SET m_group = '{$data->m_group}'
+                WHERE idgroup = '{$data->idgroup}'";
+
+        $result = $db->execute($sql);
+
+        return $result;
+    }
+    
+    public function delete()
+    {
+        parent::delete();
+    }
+
+    public function listRange($range = NULL)
+    {
+        $criteria = $this->getCriteria();
+        $criteria->setRange($range);
+        return $criteria->retrieveAsQuery();
+    }
+
+    public function listAll()
+    {
+        $criteria = $this->getCriteria();
+        return $criteria->retrieveAsQuery();
+    }
+
+    public function listUsersByIdGroup($idGroup)
+    {
+        $criteria = $this->getCriteria();
+        $criteria->setDistinct(true);
+        $criteria->AddColumnAttribute('users.idUser');
+        $criteria->AddColumnAttribute('users.login');
+        $criteria->addCriteria('idGroup','=', "$idGroup");
+        $criteria->addOrderAttribute('users.login');
+        return $criteria->retrieveAsQuery();
+    }
+
+    public function listAccessByIdGroup($idGroup)
+    {
+        $criteria = $this->getCriteria();
+        $criteria->AddColumnAttribute('access.idTransaction');
+        $criteria->AddColumnAttribute('access.rights');
+        $criteria->addCriteria('idGroup','=', "$idGroup");
+        $criteria->addOrderAttribute('access.transaction.transaction');
+        return $criteria->retrieveAsQuery();
+    }
+
+    private function setAccess($access)
+    {
+        $this->access = NULL;
+        if (count($access))
+        {
+            foreach($access as $a)
+            {
+                $this->access[] = $obj = new BusinessAdminAccess();
+                $obj->idGroup = $this->idGroup;
+                $obj->idTransaction = $a[0];
+                $obj->rights = $a[1];
+            }
+        }
+    }
+}
+?>

@@ -1,0 +1,305 @@
+<?php
+
+/*
+ * To change this template, choose Tools | Templates
+ * and open the template in the editor.
+ */
+
+/**
+ * Description of AdmFluxoAprovacaoConfiguracao
+ *
+ * @author augusto
+ */
+class FinFluxoAprovacaoConfiguracao extends SType
+{
+    protected $gravarMaiusculo = false;
+    
+    /**
+     *
+     * @var int
+     */
+    public $fluxoAprovacaoConfiguracaoId;
+    
+    /**
+     *
+     * @var int
+     */
+    public $fluxoAprovacaoProcessoId;
+    
+    /**
+     *
+     * @var FinFluxoAprovacaoProcesso
+     */
+    public $fluxoaprovacaoprocesso;
+    
+    /**
+     * Associações
+     * 
+     * @var array
+     */
+    protected $_associations = array(
+        'fluxoaprovacaoprocesso' => array(
+            'mode' => 'one',
+            'typeClass' => 'FinFluxoAprovacaoProcesso',
+            'joinColumn' => 'fluxoAprovacaoProcessoId',
+        )
+    );
+    
+    protected $_utilizaNovoPadrao = true;
+    
+    /**
+     * Verifica se o processo que o usuário está tentando executar, possui fluxo de aprovações.
+     * 
+     * @param int $fluxoAprovacaoProcessoId
+     * @param String $codigoDoRegistro
+     * @param stdClass $data
+     * @return type
+     */
+    public static function checarAcessoDoUsuarioAoProcesso($fluxoAprovacaoProcessoId, $codigoDoRegistro, $data)
+    {
+        // Se existir configuração de fluxo para o processo executado.
+        if ( self::verificaSeExisteConfiguracaoParaOProcesso($fluxoAprovacaoProcessoId) )
+        {  
+            $idUser = self::obtemUsuarioQueDeveSerAvaliado();
+            
+            self::verificaSeExisteSolicitacaoDoUsuarioNoProcesso($fluxoAprovacaoProcessoId, $idUser, $codigoDoRegistro);
+            self::verificaSeSolicitanteEAvaliador($fluxoAprovacaoProcessoId, $idUser, $codigoDoRegistro, $data);
+        }
+    }
+    
+    /**
+     * Retorna o 'idUser' do avaliador do primeiro nível do processo.
+     * 
+     * @param int $fluxoAprovacaoProcessoId
+     * @return int
+     */
+    private static function obterCodigoDoAvaliadorDoPrimeiroNivel($fluxoAprovacaoProcessoId)
+    {
+        $msql = new MSQL();
+        $msql->setColumns('A.iduser')
+             ->setTables('finfluxoaprovacaonivel A
+               INNER JOIN finfluxoaprovacaoconfiguracao B
+                       ON B.fluxoaprovacaoconfiguracaoid = A.fluxoaprovacaoconfiguracaoid')
+             ->setWhereAnd('B.fluxoaprovacaoprocessoid = ?')
+             ->setWhereAnd('A.nivel = 1');
+        
+        $result = SDatabase::query($msql->select(), array($fluxoAprovacaoProcessoId));
+        
+        return $result[0][0];
+    }
+
+    /**
+     * Retorna o usuário que deve ser avaliado, pode ser que seja o avaliador executando
+     * o registro para o solicitante após ser avaliado, ou seja, não é o avaliador tentando executar.
+     * 
+     * @return int
+     */
+    private static function obtemUsuarioQueDeveSerAvaliado()
+    {
+        $MIOLO     = MIOLO::getInstance();
+        $loginUser = $MIOLO->getLogin();        
+        $idUser    = $loginUser->idkey;
+        
+        $fluxoSolicitacaoId = $MIOLO->_REQUEST('fluxosolicitacaoid');
+        
+        if ( strlen($fluxoSolicitacaoId) > 0 )
+        {
+            $finFluxoSolicitacao = new FinFluxoSolicitacao($fluxoSolicitacaoId);
+            $idUser = $finFluxoSolicitacao->idUser;
+        }
+        
+        return $idUser;
+    }
+    
+    /**
+     * Verifica se existe configuração de fluxo para o processo recebido por parâmetro.
+     * 
+     * @param int $fluxoAprovacaoProcessoId
+     * @return type
+     */
+    public static function verificaSeExisteConfiguracaoParaOProcesso($fluxoAprovacaoProcessoId)
+    {
+        $msql = new MSQL();
+        $msql->setColumns('fluxoaprovacaoconfiguracaoid')
+             ->setTables('finfluxoaprovacaoconfiguracao')
+             ->setWhere('fluxoaprovacaoprocessoid = ?');
+        
+        $result = SDatabase::query($msql->select(), array($fluxoAprovacaoProcessoId));
+        
+        return ( count($result) > 0 );
+    }
+    
+    /**
+     * Retorna a solicitação do usuário no processo para o registro,
+     * caso exista.
+     * 
+     * @param int $fluxoAprovacaoProcessoId
+     * @param int $idUser
+     * @param String $codigoDoRegistro
+     * @return array
+     */
+    public static function obtemSolicitacaoDoUsuarioNoProcesso($fluxoAprovacaoProcessoId, $idUser, $codigoDoRegistro)
+    {
+        $msql = new MSQL();
+        $msql->setColumns('A.fluxosolicitacaoid, A.fluxoaprovacaostatusid, B.registroprocessado')
+             ->setTables("finfluxosolicitacao A 
+               INNER JOIN finfluxosolicitacaoregistro B
+                       ON B.fluxosolicitacaoid = A.fluxosolicitacaoid")
+             ->setWhereAnd('A.fluxoaprovacaoprocessoid = ?')
+             ->setWhereAnd('A.iduser = ?')
+             ->setWhereAnd('A.codigodoregistro = ?')
+             ->setOrderBy('A.datetime DESC')
+             ->setLimit(1);
+
+        return SDatabase::query($msql->select(), array($fluxoAprovacaoProcessoId, $idUser, $codigoDoRegistro));
+    }
+    
+    /**
+     * Método de checagem para verificar se o usuário já solicitou o processo.
+     * 
+     * @param int $fluxoAprovacaoProcessoId
+     * @param int $idUser
+     * @param String $codigoDoRegistro
+     */
+    private static function verificaSeExisteSolicitacaoDoUsuarioNoProcesso($fluxoAprovacaoProcessoId, $idUser, $codigoDoRegistro)
+    {
+        $solicitacoes = self::obtemSolicitacaoDoUsuarioNoProcesso($fluxoAprovacaoProcessoId, $idUser, $codigoDoRegistro);
+        
+        // Se existe alguma solicitação do usuário no processo para o registro.
+        if ( count($solicitacoes) > 0 )
+        {
+            // O usuário pode ter mais que uma solicitação para o mesmo processo e registro.
+            foreach ( $solicitacoes as $solicitacao )
+            {
+                // Se o registro da solicitação ainda não foi processado.
+                if ( $solicitacao[2] == DB_FALSE )
+                {                
+                    self::exibeErroCasoJaSolicitou($solicitacao[1]);
+                    break;
+                }
+            }
+        }
+    }
+    
+    /**
+     * Se o solicitante é o avaliador do primeiro nível, e existem mais níveis, 
+     * ou o solicitante não é avaliador do primeiro nível, deve ser feita a solicitação.
+     * 
+     * @param int $fluxoAprovacaoProcessoId
+     * @param int $idUser
+     * @param String $codigoDoRegistro
+     * @param stdClass $data
+     */
+    private static function verificaSeSolicitanteEAvaliador($fluxoAprovacaoProcessoId, $idUser, $codigoDoRegistro, $data)
+    {
+       $idUserPrimAval = self::obterCodigoDoAvaliadorDoPrimeiroNivel($fluxoAprovacaoProcessoId);
+
+       if ( ( $idUser == $idUserPrimAval && FinFluxoAprovacaoNivel::obtemQuantidadeDeNiveisDoProcesso($fluxoAprovacaoProcessoId) > 1 ) ||
+            ( $idUser != $idUserPrimAval ) )   
+       {
+           // Se o registro não está sendo efetuado por uma aprovação de solicitação.
+           if ( !strlen(MIOLO::_REQUEST('fluxosolicitacaoid')) > 0 )
+           {
+               self::exibeErroDaNecessidadeDeAprovacao($fluxoAprovacaoProcessoId, $codigoDoRegistro, $data);
+           }
+       }
+    }
+    
+    /**
+     * Exibe erro caso o usuário já tenha solicitado aprovação do processo no registro.
+     * 
+     * @param String $status
+     */
+    private static function exibeErroCasoJaSolicitou($status)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        $action = $MIOLO->getActionURL($module, $MIOLO->getCurrentAction());
+        
+        if ( $status == FinFluxoAprovacaoStatus::AGUARDANDO_AVALIACAO )
+        {
+            $MIOLO->page->onLoad("window.history.forward(1);");
+            $MIOLO->error(_M('Sua solicitação para executar este processo para este(s) registro(s) está pendente. Aguarde avaliação.'), $action);
+        }
+    }
+    
+    /**
+     * Exibe erro informando a necessidade da solicitação de aprovação 
+     * para efetuar o processo no registro informado.
+     * 
+     * @param int $fluxoAprovacaoProcessoId
+     * @param String $codigoDoRegistro
+     * @param stdClass $data
+     */
+    private static function exibeErroDaNecessidadeDeAprovacao($fluxoAprovacaoProcessoId, $codigoDoRegistro, $data)
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = $MIOLO->getCurrentModule();
+        $action   = $MIOLO->getCurrentAction();
+        $event    = SAGU::NVL($MIOLO->_REQUEST('event'), $MIOLO->_REQUEST('__EVENTTARGETVALUE'));
+        $function = $MIOLO->_REQUEST('function');
+        
+        // Obtém os dados para serem registrados automáticos ao aprovar a solicitação, caso seja feita.
+        $data->registroModule   = $module;
+        $data->registroAction   = $action;
+        $data->registroEvent    = $event;
+        $data->registroFunction = $function;
+
+        // Dados para identificação do processo e registro. Para popular automático o formulário de solicitação.
+        $data->fluxoAprovacaoProcessoId = $fluxoAprovacaoProcessoId;
+        $data->codigoDoRegistro         = $codigoDoRegistro;               
+
+        $MIOLO->session->set('dadosDoRegistroEfetuado', null);
+        $MIOLO->session->setValue('dadosDoRegistroEfetuado', json_encode($data));
+        $MIOLO->page->onLoad("window.history.forward(1);");
+        
+        $prompt = new MPrompt('Ops', _M('Para executar este processo para este(s) registro(s) você precisa solicitar aprovação.'));
+        $prompt->SetType('error');
+
+        $actionUrl = $MIOLO->getActionURL($module, 'main:process:solicitacoesDeProcessos', null, array('function' => 'insert', 'event' => 'tbBtnNew:click'));
+        $prompt->AddButton(_M('Solicite aprovação aqui'), $actionUrl);
+        $prompt->AddButton(_M('Voltar'), $MIOLO->getActionURL($module, $MIOLO->getCurrentAction()));
+
+        $MIOLO->prompt($prompt);
+    }
+    
+    /**
+     * Obtém a configuração do processo recebido por parâmetro.
+     * 
+     * @param int $processoId
+     * @return array
+     */
+    public function obterConfiguracaoDoProcesso($processoId)
+    {
+        $msql = new MSQL();
+        $msql->setColumns('fluxoaprovacaoconfiguracaoid')
+             ->setTables('finfluxoaprovacaoconfiguracao')
+             ->setWhere('fluxoaprovacaoprocessoid = ?');
+        
+        $result = SDatabase::query($msql->select(), array($processoId));
+        
+        return $result[0][0];
+    }
+    
+    /**
+     * Verifica se o processo recebido por parâmetro possui configuração, se sim, informa sobre o ocorrido.
+     * 
+     * @param int $fluxoAprovacaoProcessoId
+     */
+    public static function obterAvisoDeQueOProcessoPossuiConfiguracao($fluxoAprovacaoProcessoId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $prompt = new SHiddenField('prompt');
+        
+        if ( self::verificaSeExisteConfiguracaoParaOProcesso($fluxoAprovacaoProcessoId) )
+        {
+            $message = _M("Para este processo existe um fluxo de aprovações. Ao submeter o registro, será necessário solicitar a efetivação do mesmo. O registro será efetuado automáticamente após a solicitação ser aprovada pelo fluxo.");
+            $prompt = new MPrompt(_M('Aviso'), $message);
+            $prompt->SetType('alert');
+        }
+        
+        return $prompt;
+    }
+}
+
+?>

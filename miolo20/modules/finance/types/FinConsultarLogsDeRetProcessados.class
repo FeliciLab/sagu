@@ -1,0 +1,354 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Types da tabela fin.bankMovement
+ * Relaciona um log de arquivos de retorno
+ *
+ * @author Joao Francisco Padilha Souza
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Joao Francisco Padilha Souza
+ * 
+ * 
+ *
+ * @since
+ * Class created on 12/05/2015
+ */
+
+class FinConsultarLogsDeRetProcessados extends FinBankMovement
+{
+
+    /**
+     * Identificador da tabela
+     * @var type int
+     */
+    protected $bankMovementId;
+
+
+    /**
+     * Desconto do convênio calculado pelo sagu
+     * @var type Date
+     */
+    protected $maturityDate;
+
+    /**
+     * Data da ocorrencia.
+     * @var type Date
+     */
+    protected $occurrenceDateStart;
+
+    /**
+     * Data da ocorrencia.
+     * @var type date
+     */
+    protected $occurrenceDateEnd;
+
+    /**
+     * Nome da pessoa
+     * @var type varchar
+     */
+    protected $personName;
+
+    /**
+     * Valor
+     * @var type varchar
+     */
+    protected $value;
+
+    /**
+     * Ocorrencia do retorno.
+     * @var type varchar
+     */
+    protected $occurrence;
+    
+    /**
+     * retorna o nome do banco.
+     * @var type varchar
+     */
+    protected $bankName;
+    
+    /**
+     * retorna bankId
+     * @var type varchar
+     */
+    protected $bankId;
+    
+    /**
+     * retorna bankId
+     * @var type varchar
+     */
+    protected $invoiceId;
+    
+    /**
+     * retorna bankId
+     * @var type varchar
+     */
+    protected $busca;    
+    
+    public static function getSearchGridSQL($filters)
+    {
+        $sql = 'SELECT  a.bankMovementId, 
+                        a.invoiceid,
+                        TO_CHAR(a.filematuritydate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                        c.name,
+                        TO_CHAR(a.occurrencedate,\'' . SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') . '\'),
+                        a.value,
+                        a.occurrence || ' . ' \' - \' ' . ' || obterDescricaoOcorrenciaLogMovimentacao(a.occurrence, a.bankId),
+                        a.bankId,
+                        c.personId,
+                        a.fileid,                        
+                        a.fileline
+                   FROM fin.bankmovement a
+             INNER JOIN fininvoice b
+                     ON a.invoiceId = b.invoiceId
+        INNER JOIN ONLY basperson c
+                     ON b.personId = c.personId';
+
+        $where = '';
+        
+        //FIltra por BUSCA
+        if ( strlen($filters->busca) > 0 )
+        {
+            $varBusca = $filters->busca;
+            
+            if ( is_numeric($varBusca) && $varBusca < 999999999 )
+            {
+                $valor = (int)floatval($varBusca);
+
+                $where .= ' AND a.bankmovementid = ?';
+                $args[] = $valor;
+                
+                $where .= ' OR a.invoiceid = ?';
+                $args[] = $valor;
+
+                $where .= ' OR c.personId = ?';
+                $args[] = $valor;
+
+                $where .= ' OR a.occurrence = ?';
+                $args[] = $filters->busca;
+            }
+            else
+            {
+                $where .= ' AND c.name ILIKE UNACCENT(?)';
+                $args[] = $filters->busca . '%';
+            }
+        }
+        
+        //Filtra por data de vencimento
+        if ( strlen($filters->maturityDate) > 0 )
+        {
+            $where .= ' AND a.filematuritydate = TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') ';
+            $args[] = $filters->maturityDate;
+        }
+        
+        //filtra por período de ocorrencia (entre datas)
+        if ( strlen($filters->occurrenceDateStart) > 0 && strlen($filters->occurrenceDateEnd) > 0 )
+        {
+            $where .= ' AND a.occurrencedate::date BETWEEN TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')'
+                    . 'AND TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $args[] = $filters->occurrenceDateStart;
+            $args[] = $filters->occurrenceDateEnd;
+        }
+        
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 4) . ' ORDER BY a.occurrencedate DESC';
+            return SAGU::prepare($sql, $args);
+        }
+
+    }
+
+    public static function searchGrid( $filters )
+    {
+        $sql = self::getSearchGridSQL($filters);
+        
+        return preg_match('/ WHERE /', $sql) ? SDatabase::query($sql) : array();
+    }
+
+    /**
+     * retorna o nome do banco concatenado com o BankId     
+     */
+    public static function getBankName($bankId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $sql = "SELECT bankId,
+                       description
+                  FROM finbank
+                 WHERE bankId = ?";
+        
+        $result = SDatabase::query($sql, $bankId);
+        
+        $final = $result[0][0] . ' - ' . $result[0][1];
+
+        return $final;
+    }
+
+    /**
+     * retorna numero da conta
+     */
+    public static function getBankAccountId($invoiceId)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $sql = "SELECT bankaccountid
+                  FROM finbankinvoiceinfo
+                 WHERE invoiceId = ?";
+        
+        $result = SDatabase::query($sql, $invoiceId);
+
+        return $result[0][0];
+    }
+/**
+ * retorna dados da conta bancaria: digito, nome do banco, nro conta, dig conta
+ */    
+     public static function getInfoAccount($bankAccountid)
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $sql = " SELECT a.bankaccountid,
+                        a.bankid, 
+                        a.accountnumber,
+                        a.accountnumberdigit,
+                        a.branchnumber, 
+                        b.description, 
+                        a.description
+                   FROM finbankaccount a
+             INNER JOIN finbank b
+                  USING (bankid)
+                  WHERE a.bankaccountid = ?";
+        
+        $result = SDatabase::query($sql, $bankAccountid);
+
+        return $result = $result[0][0] . ' - CONTA ' . $result[0][5] . ' (' . $result[0][2] . '-' . $result[0][3] . ')';
+    }
+    
+        public function searchAllData($data)
+    {
+            
+        $sql = 'SELECT A.bankId,
+                       A.bankmovementid,
+                       A.invoiceId,
+                       A.ourNumber,
+                       A.value,
+                       A.valuePaid,
+                       A.branch,
+                       A.branchNumber,
+                       A.wallet,
+                       TO_CHAR(A.occurrencedate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       A.fileId,
+                       A.fileDiscount,
+                       A.saguDiscount,
+                       A.fileInterestFine,
+                       A.saguInterestFine,
+                       A.balance,
+                       A.balanceWithPolicies,
+                       TO_CHAR(A.creditDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       TO_CHAR(A.fileMaturityDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       TO_CHAR(A.saguMaturityDate,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'),
+                       A.fileLine,
+                       A.otherDiscounts,
+                       A.otherAdditions,
+                       A.expenditure,
+                       A.bankMovementStatusId,
+                       B.bankaccountid
+                  FROM fin.bankMovement A 
+        LEFT JOIN ONLY fininvoice B
+                    ON (A.invoiceid = B.invoiceid)';
+
+        $where = '';
+        unset($args);
+        
+        if ( strlen($data->invoiceId) > 0 )
+        {
+            $where .= '    AND   A.invoiceId = ?';
+            $args[] = $data->invoiceId;
+        }
+        
+        if ( strlen($data->valuePaid) > 0 )
+        {
+            $where .= '    AND   A.valuePaid = ?';
+            $args[] = $data->valuePaid;
+        }
+        
+         if ( strlen($data->bankmovementid) > 0)
+        {
+            $where .= '    AND   A.bankmovementid = ?';
+            $args[] = $data->bankmovementid;
+        }
+        
+        if ( strlen($data->occurrenceDate) > 0 )
+        {
+            $where .= '    AND   A.occurrenceDate::date = TO_DATE(?,\'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+            $args[] = $data->occurrenceDate;
+        }
+
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 8) . ' ORDER BY A.occurrenceDate DESC ';
+            $result = SDatabase::query($sql, $args);
+        }
+
+        return $result;
+    }
+    
+    public static function obterLancamentosGerados( $filters )
+    {
+        $MIOLO  = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $sql = 'SELECT  a.entryid, 
+                        a.operationid, 
+                        b.description, 
+                        a.entrydate, 
+                        a.value, 
+                        a.costcenterid
+                   FROM finentry a
+             INNER JOIN finOperation b
+                     ON a.operationId = b.operationId';
+        
+        $where = '';
+        
+        //FIltra por bankMovementId
+        if ( count($filters->bankMovementId) > 0 )
+        {
+            $where .= ' AND bankmovementid = ?';
+            $args[] = $filters->bankMovementId;
+        }
+        
+        unset($result);
+        
+        if ( strlen($where) > 0 )
+        {
+            $sql .= ' WHERE ' . substr($where, 4) . ' ORDER BY a.entryid';
+            $result = SDatabase::query($sql, $args);
+        }
+
+        return $result;
+    }
+    
+}

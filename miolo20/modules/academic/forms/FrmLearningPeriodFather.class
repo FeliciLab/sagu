@@ -1,0 +1,389 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ * Formulário de dados financeiro do período letivo
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ *
+ * @since
+ * Class created on 24/05/2012
+ *
+ **/
+class FrmLearningPeriodFather extends SStepByStepForm
+{
+    public function __construct($steps = null, $formName = null, $obj = null, $pk = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $MIOLO->uses('/ui/controls/msubdetail.class');
+        
+        $this->setBlockWhenNotFinish(true);
+        
+        if (!$steps->disableConstruct)
+        {
+            parent::__construct(null, $steps, get_class($this), $obj, $pk);
+            $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+        }
+    }
+
+    /**
+     * Ação do botão finalizar do ultimo passo
+     */
+    public function finalizeButton_click()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+
+        $this->defaultDisabledButtonsToolbar();
+        
+        // Dados dos passos anteriores
+        $allData = $this->getStepData();
+        $data = $this->getLearningPeriodData();
+
+        // Dados do passo atual
+        $dataFinanceData = $this->getData();
+
+        // Junta os dados dos passos anteriores com o atual
+        $data = (object) array_merge((array)$data, (array)$dataFinanceData);
+        
+        try
+        {
+            SDatabase::beginTransaction();
+
+            $learningPeriodDescription = $data->description;
+            foreach ( $data->learningPeriodDuplicate as $row )
+            {
+                $data->courseId = $row->courseId;
+                $data->courseVersion = $row->courseVersion;
+                $data->turnId = $row->turnId;
+                $data->unitId = $row->unitId;
+                $data->previousLearningPeriodId = $row->_learningPeriodId;
+                
+                // Concatena - CURSO na descricao do periodo letivo
+                if ( $data->isDuplicateMode )
+                {
+                    $descriptionBackUp = $data->description;
+                    $data->description .= " - {$data->courseId}";
+                }
+                
+                if( $function == SForm::FUNCTION_UPDATE )
+                {
+                    $data->previousLearningPeriodId = $allData->learningPeriodIdChooser;
+                }
+                $this->saveLearningPeriodData($data);
+                $data->description = $descriptionBackUp;
+            }
+
+            SDatabase::commit();
+
+            parent::finalizeButton_click($args);
+            
+            MSubDetail::clearData($this->getDegreesId());
+            
+            if ( $function == SForm::FUNCTION_UPDATE )
+            {
+                $msg = SAGU::getParameter('BASIC', 'MSG_RECORD_UPDATED');
+                $opts = array(
+                    'learningPeriodIdS' => $data->learningPeriodId,
+                    'periodIdS' => $data->periodId);
+                $MIOLO->information($msg, $MIOLO->getActionURL( $module, $action, null, $opts));
+            }
+            else
+            {
+                $msg = SAGU::getParameter('BASIC', 'MSG_RECORD_INSERTED');
+                $goto = SAGU::getStackBackUrl();
+                $goto = strlen($goto)>0 ? $goto : $MIOLO->getActionURL( $module, $action, null, $opts);
+                $opts = array( 'function'=> SForm::FUNCTION_INSERT );
+
+                $gotoYes = $MIOLO->getActionURL($module, $action, null, $opts);
+                $MIOLO->question($msg, $gotoYes, $goto);
+            }
+        }
+        catch (Exception $e)
+        {
+            SDatabase::rollback();
+            $this->addError($e->getMessage());
+        }
+        
+        parent::finalizeButton_click($args);
+    }
+    
+    public function saveLearningPeriodData($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+
+        $business = new BusinessAcademicBusLearningPeriod();
+        $businessCourse = new BusinessAcademicBusCourse();
+        $businessDegree = new BusinessAcademicBusDegree();
+
+        // Obtem os dados do curso
+        $course = $businessCourse->getCourse($data->courseId);
+        
+        // Se tiver financeiro
+        if ( $data->isFinanceGenerate == DB_TRUE )
+        {
+            // Verifica se o curso tem uma origem financeira
+            if ( strlen($course->incomeSourceId) == 0 )
+            {
+                $msg = ('<li>' ._M('Não há origem financeira definida para este curso (@1). Por favor defina um código de origem válido no cadastro de curso para gerar informações financeiras.', $module, $course->name) . '</ul>');
+            }            
+            // Verifica se o campo número de parcelas foi preenchido
+            if ( strlen($data->parcelsNumber) == 0 )
+            {
+                $msg .= ('<ul><li>' ._M('O campo número de parcelas deve ser preenchido', $module). '.' . '</li></ul>');
+            }
+
+            $this->addError($msg);
+        }
+        else if ( !isset ($data->isFinanceGenerate) )
+        {//verifica se esta variável não está setada. uma possível cauda de esta variável não ter conteúdo é que o módulo financeira não está instalado.
+            $data->isFinanceGenerate = DB_FALSE;
+        }
+        
+        // Dados do grau final
+        $degreeData = new AcdDegree();
+        if ( strlen($data->useModel) <= 0 ) // Apenas se nao utilizar outro periodo letivo como modelo
+        {
+            $degreeData->degreeId = $data->degreeId;
+        }
+        $degreeData->description = $data->degreeDescription;
+        $degreeData->limitDate = $data->degreeLimitDate;
+        $degreeData->methodCalculating = $data->methodCalculating;
+        $degreeData->degreeNumber = 0;
+        $degreeData->weight = 1;
+
+        // Se for edição
+        if ( $function == SForm::FUNCTION_UPDATE )
+        {
+            if ( ($data->isClosed == DB_TRUE) && ($data->disapprovementsToDisapprovePeriod > 0) )
+            {
+                if ( $business->allGroupsClosed($data->learningPeriodId) )
+                {
+                    $contractsToDisapprovePeriod = $business->getContractsToDisapprovePeriod($data->learningPeriodId, $data->disapprovementsToDisapprovePeriod);
+
+                    if ( strlen($contractsToDisapprovePeriod->contractIds) > 0 )
+                    {
+                        $business->disapprovePeriod($data->learningPeriodId, $contractsToDisapprovePeriod->contractIds);
+                    }
+                }
+                else
+                {
+                    throw new Exception(' '._M('Este período letivo só poderá ser fechado quando todas as disciplinas oferecidas relacionadas estiverem fechadas.', $module));
+                }
+            }
+
+            if ( ! $business->updateLearningPeriod($data) )
+            {
+                $err = $business->getErrors();
+                throw new Exception($err[0]);
+            }
+
+            $learningPeriodId = $data->learningPeriodId;
+        }
+        else
+        {
+            $learningPeriodId = $business->insertLearningPeriod($data);
+            if ( is_null($learningPeriodId) )
+            {
+                $err = $business->getErrors();
+                throw new Exception($err[0]);
+            }
+        }
+
+        $degreeData->learningPeriodId = $learningPeriodId;
+
+        // Salva grau academico pai (grau final)
+        $parentDegreeId = $degreeData->degreeId;
+        if ( strlen($degreeData->degreeId) > 0 )
+        {
+            $businessDegree->updateDegree($degreeData);
+        }
+        else
+        {
+            $parentDegreeId = $businessDegree->insertDegree($degreeData);
+        }
+
+        // Salva graus academicos
+        if ( strlen($parentDegreeId) > 0 )
+        {
+            $subData = SAGU::convertSubDetailToSType($this->getDegreesId(), new AcdDegree());
+            
+            $updateParentList = array();
+            $tmpDegreeList = array();
+            
+            foreach ( $subData as & $row )
+            {
+                $degreeIdSubTmp = $row->degreeIdSub;
+                $degreeIdSub = preg_match('/tmp_(.*)/', $degreeIdSubTmp) ? null : $degreeIdSubTmp;
+                
+                $row->degreeIdSub = $degreeIdSub;
+                $row->parentDegreeId = $parentDegreeId;
+                $row->learningPeriodId = $learningPeriodId;
+                unset($row->methodCalculating);
+
+                // Se tiver degreeId e nao for duplicar periodo letivo, faz update, senao, insert
+                if ( ( strlen($degreeIdSub) > 0 ) && ( strlen($data->useModel) <= 0 ) )
+                {
+                    $businessDegree->updateDegree($row);
+                }
+                else
+                {
+                    $degreeIdSub = $businessDegree->insertDegree($row);
+                }
+                
+                // Se um pai foi selecionado da subdetail
+                if ( strlen($row->parentDegreeIdSub) > 0 )
+                {
+                    $updateParentList[$degreeIdSubTmp] = $row->parentDegreeIdSub;
+                }
+                
+                // Lista com os ids temporarios para serem identificados depois
+                $tmpDegreeList[$degreeIdSubTmp] = $degreeIdSub;
+            }
+        }
+
+        // Percorre dados novamente para atualizar grau pai para quando for um pai dentro da propria subdetail
+        foreach ( $updateParentList as $degreeId => $parentDegreeIdTmp )
+        {
+            $degreeId = $tmpDegreeList[$degreeId];
+            $parentDegreeIdTmp = $tmpDegreeList[$parentDegreeIdTmp];
+            
+            if ( strlen($parentDegreeIdTmp) > 0 )
+            {
+                $row = $businessDegree->getDegree($degreeId);
+                $row->parentDegreeId = $parentDegreeIdTmp;
+                $businessDegree->updateDegree($row);
+            }
+        }
+    }
+    
+    /**
+     * Obtem dados do periodo letivo
+     * 
+     * @return stdClass
+     */
+    public function getLearningPeriodData()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        if ( $this->isUpdateFunction() )
+        {
+            $data = (object) SStepByStepForm::getAllStepDataStatic();
+        }
+        else
+        {
+            $data = $this->getStepData();
+        }
+        
+        $learningPeriodId = SAGU::NVL( MIOLO::_REQUEST('learningPeriodId'), $allData->learningPeriodId, $allData->learningPeriodIdChooser );
+        $subDataTmp = (array) MSubDetail::getData('learningPeriodDuplicate');
+        $subData = array();
+        
+        foreach ( $subDataTmp as $dt )
+        {
+            if ( ! $dt->removeData )
+            {
+                $subData[] = $dt;
+            }
+        }
+
+        // Conta periodos letivos selecionados no passo 1
+        $countLearningPeriods = 0;
+        $learningPeriodIdModel = null;
+        foreach ( $subData as $row )
+        {
+            $tmpLearningPeriodId = $row->_learningPeriodId;
+            if ( strlen($tmpLearningPeriodId) > 0 )
+            {
+                $countLearningPeriods ++;
+                $learningPeriodIdModel = $tmpLearningPeriodId;
+            }
+        }
+
+        if ( $countLearningPeriods == 1 )
+        {
+            $learningPeriodId = SAGU::NVL($learningPeriodIdModel, $learningPeriodId);
+        }
+        
+        if ( ( strlen($learningPeriodId) > 0 ) && $this->isFirstAccess() )
+        {
+            $businessLearnigPeriod = new BusinessAcademicBusLearningPeriod();
+            $data = $businessLearnigPeriod->getLearningPeriod($learningPeriodId);
+        }
+
+        // Apenas traz dados de modelo quando for selecionado 1 periodo letivo modelo no passo 1
+        if ( $countLearningPeriods == 1 )
+        {
+            $data->learningPeriodIdChooser = $learningPeriodIdModel;
+            $data->learningPeriodId = $learningPeriodIdModel;
+            $data->useModel = 1;
+        }
+        
+        $isDuplicateMode = ( count($subData) > 0 );
+        
+        // Prepara dados para salvar duplicados
+        // Simula como se fosse um registro da subdetail com courseId, turnId, courseVersion, unitId..
+        $data->learningPeriodDuplicate = $isDuplicateMode ? $subData : array($data);
+        $data->duplicateSubDetailData = $subData;
+        $data->isDuplicateMode = $isDuplicateMode;
+        $data->learningPeriodId = $learningPeriodId;
+        
+        return $data;
+    }
+    
+    /**
+     * Obtem o ID da subdetail Graus academicos.
+     * 
+     * Foi feito esta funcao de nome dinamico para evitar conflito de dados,
+     *  que estava ocorrendo frequentemente e baguncando (trocando) os graus na base de dados.
+     * 
+     * Relacionado ao ticket #25762.
+     *
+     * @return string 
+     */
+    public function getDegreesId()
+    {
+        $learningPeriodId = MIOLO::_REQUEST('learningPeriodId');
+        $function = MIOLO::_REQUEST('function');
+        $isUpdate = ( $function == SForm::FUNCTION_UPDATE );
+        
+        if ( $isUpdate && ( strlen($learningPeriodId) > 0 ) )
+        {
+            $name = 'degreeChilds_' . $learningPeriodId;
+        }
+        else
+        {
+            $name = 'degreeChilds';
+        }
+        
+        return $name;
+    }
+}
+?>

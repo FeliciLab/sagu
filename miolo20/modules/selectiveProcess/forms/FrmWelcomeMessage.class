@@ -1,0 +1,246 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Formulario responsavel pelo passo 1 do Processo Seletivo.
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ * Fabiano Tomasini [fabiano@solis.coop.br]
+ *
+ * @since
+ * Class created on 03/01/2011
+ *
+ **/
+
+class FrmWelcomeMessage extends SStepByStepForm
+{
+    public function __construct($steps = null)
+    {
+        if (!isset($steps->disableConstruct))
+        {
+            parent::__construct(null, $steps, __CLASS__);
+            $this->toolbar->disableButton(MToolBar::BUTTON_SAVE);
+            
+        }
+    }
+
+    
+    public function createFields()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+
+        //Load data
+        $allData = $this->getStepData();
+        $stepOne = $this->getStepData(1);
+        $stepData = $this->getStepDataByForm(__CLASS__);
+        
+        $allData->selectiveProcessId = $stepOne->selectiveProcessId;
+
+        $fields[] = new SHiddenField('selectiveProcessId', $allData->selectiveProcessId);
+        
+        // Instância processo seletivo
+        $sprSP = new SprSelectiveProcess($allData->selectiveProcessId);
+        try
+        {
+            $sprSP = new SprSelectiveProcess($allData->selectiveProcessId);
+
+            $mioloUserName = trim($MIOLO->getLogin()->id);
+            if( (!strlen($mioloUserName)>0) && ($sprSP->requireAuthentication == DB_TRUE) )
+            {
+                throw new Exception(_M('Usuário não logado ou sem permissão para acessar este passo.', $module));
+            }
+        }
+        catch (Exception $e)
+        {
+            $MIOLO->error($e->getMessage());
+        }
+        
+        //Verifica se não foi definida uma pessoa no primeiro passo, caso não tenha, pega a pessoa logada na etapa anterior
+        if( !strlen($allData->personIdSelected)>0 )
+        {
+            $busPerson = new BusinessBasicBusPerson();
+            $busPhysicalPerson = new BusinessBasicBusPhysicalPerson();
+
+            // Obtém o usuário da pessoa logada caso tenha
+            $mioloUserName = trim($MIOLO->getLogin()->id);
+            if( strlen($mioloUserName)>0 && SAGU::userIsFromServices() )
+            {
+                $personData = $busPerson->getPersonByMioloUserName($mioloUserName);
+                $physicalPerson = $busPhysicalPerson->getPerson($personData->personId);
+                $allData->personIdSelected = $physicalPerson->personId;
+            }
+            //Se o processo seletivo não requer autenticação
+            else if( $sprSP->requireAuthentication == DB_FALSE && strlen($allData->cpf) > 0 )
+            {
+                $busDocument = new BusinessBasicBusDocument();
+                // Verifica se o documento ja existe na base de dados
+                $filters = new stdClass();
+                $filters->documentTypeId = SAGU::getParameter('BASIC', 'DEFAULT_DOCUMENT_TYPE_ID_CPF');
+                $filters->content = $allData->cpf;
+                $documents = $busDocument->searchDocument($filters, true);
+
+                if ( count($documents) > 0 )
+                {
+                    $filters = new stdClass();
+                    $filters->personId = $documents[0]->personId;
+                    $filters->dateBirth = $allData->dateBirth;
+                
+                    $searchPerson = $busPhysicalPerson->searchPhysicalPerson($filters);
+
+                    if( count($searchPerson)>0 )
+                    {
+                        $allData->personIdSelected = $filters->personId;
+                    }
+                }
+            }
+            if ( strlen($allData->personIdSelected)>0 )
+            {
+                $fields[] = new MHiddenField('personIdSelected', $allData->personIdSelected);
+            }
+        }
+
+        // Obtém a inscrição do cara, caso já exista
+        if ( !strlen($allData->subscriptionId) > 0 )
+        {
+            $selectiveProcessId = $allData->selectiveProcessId;
+            $personId = $allData->personIdSelected;
+
+            // Se tiver os dois filtros pesquisa se já existe inscrição
+            if ( (strlen($selectiveProcessId)>0) && (strlen($personId)>0) )
+            {
+                $allData->subscriptionId = SprSubscription::getSubscriptionId($selectiveProcessId, $personId);
+            }
+        }
+
+        if ( strlen($allData->subscriptionId) > 0 )
+        {
+            // Caso esteja via webservices, e esteja editando uma inscricao
+            // Nao permite que edite inscricao de OUTRA pessoa
+            if ( SAGU::userIsFromServices() )
+            {
+                //Instância inscrição
+                $sprSubscription = new SprSubscription( $allData->subscriptionId );
+
+                //Verifica pessoa
+                if( $allData->personIdSelected )
+                {
+                    if( $sprSubscription->physicalPerson->personId != $allData->personIdSelected )
+                    {
+                        $MIOLO->error( _M('Sem permissão para editar esta inscrição.', $module) );
+                        return;
+                    }
+                }
+            }
+
+            // Código da inscrição
+            $fields[] = new SHiddenField('subscriptionId', $allData->subscriptionId);
+        }
+
+        $fields[] = new MLabel( $sprSP->initialMessage );
+        $fields[] = new MSeparator();
+
+        //Percorre informações das etapas anteriores
+        if (count($sprSubscription->subscriptionStepInfo) > 0)
+        {
+            $array = array();
+            foreach ($sprSubscription->subscriptionStepInfo as $i => $row)
+            {
+                $array[] = array(
+                    $row->step->description,
+                    $row->step->startDate,
+                    $row->step->endDate,
+                    $row->subscriptionStatus->description,
+                    $row->totalPoints,
+                );
+
+                if (MUtil::getBooleanValue($row->step->isCurrent))
+                {
+                    $highlight = $i;
+                }
+            }
+
+            $colTitle = array(
+                _M('Etapa', $module),
+                _M('Data inicial', $module),
+                _M('Data final', $module),
+                _M('Status', $module),
+                _M('Total de pontos', $module),
+            );
+
+            $table = new MTableRaw(_M('Etapas', $module), $array, $colTitle);
+            if (isset($highlight))
+            {
+                for ($i=0; $i < count($colTitle); $i++)
+                {
+                    $table->setCellAttribute($highlight, $i, 'style', 'background-color:#FFE7A1');
+                }
+            }
+            $fields[] = $table;
+        }
+
+        $fields[] = new MSeparator();
+
+        $this->setFields($fields);
+        $this->setValidators($validators);
+    }
+
+
+    public function nextStepButton_click($args = null)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+        $data = $this->getStepData();
+
+        try
+        {
+            $ui = $MIOLO->getUI();
+            $param = new stdClass();
+            $param->disableConstruct = true;
+            $frmSubscription = $ui->getForm('selectiveProcess', 'FrmSubscription', $param);
+
+            // Se nao foi aprovado na etapa anterior, bloqueia inscricao
+            if ( !$frmSubscription->checkPunctuationThePreviousStep($data) )
+            {
+                throw new Exception( _M('Você só pode se inscrever nesta etapa caso tenha participado e sido aprovado na etapa anterior deste processo seletivo.', $module) );
+            }
+            
+            parent::nextStepButton_click($_args);
+        }
+        catch (Exception $e)
+        {
+            $this->AddError($e->getMessage());
+            return;
+        }
+    }
+
+    public function cancelButton()
+    {
+        return SAGU::getCancelButtonSubscription();
+    }
+}
+?>

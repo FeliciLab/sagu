@@ -1,0 +1,1520 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Relatorio Jasper
+ *
+ * @author Moises Heberle [moises@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Moises Heberle [moises@solis.coop.br]
+ *
+ * @since
+ * Class created on 10/12/2013
+ *
+ **/
+set_time_limit(0);
+
+class sRelatorioPDF extends SReport
+{
+    /**
+     * Quando estiver em modo analitico, imprime informacoes + somatorios
+     */
+    const TIPO_RELATORIO_ANALITICO = 1;
+    
+    /**
+     * Quando estiver em modo sintetico, imprime apenas os somatorios, descartando as celulas com informacoes
+     */
+    const TIPO_RELATORIO_SINTETICO = 2;
+    
+    /**
+     * Tamanho que deve utilizar para "identar" cada nivel de agrupamento.
+     */
+    const INCREMENT_GROUP = 10;
+
+    /**
+     * Tamanho que deve utilizar para "identar" cada nivel de agrupamento (coluna).
+     */
+    const INCREMENT_COL_GROUP = 0;
+    
+    /**
+     * Tamanho padrao de altura das colunas
+     */
+    const DEFAULT_HEIGHT_SIZE = 15;
+    
+    /**
+     * Limite de colunas que deve ser considerado para definir o tipo de modelo que deve ser utilizado (retrato ou paisagem)
+     */
+    const MAXIMO_COLUNAS_RETRATO = 4;
+    
+    /**
+     * Impoe um limite minimo de largura para colunas, uma vez que o calculo é feito automaticamente baseando na media de tamanho do texto.
+     */
+    const LIMITE_MINIMO_LARGURA = 4;
+    
+    /**
+     * Espacamento inicial de coluna quando relatorio for SINTETICO, para nao sobrescrever no layout o descritivo dos somatorios (SOMA, MEDIA..)
+     */
+    const RELATORIO_SINTETICO_ESPACAMENTO_INICIAL = 50;
+    
+    /**
+     * Nome do arquivo JRXML temporario gerado.
+     *
+     * @var string
+     */
+    private $tempReportFile;
+    
+    /**
+     * Todas colunas do SQL, excluindo, caso haja, as strings de calculo ou agrupamento @SUM, @GROUP1, etc..
+     *
+     * @var array
+     */
+    private $columns = array();
+    
+    /**
+     * Todas colunas incluindo agrupadoras, e com a string de calculo ou agrupamento @ (ex.: @SUM, @GROUP1).
+     *
+     * @var array
+     */
+    private $columnsOriginal = array();
+    
+    /**
+     * Colunas que devem ser agrupadas.
+     * Formato: chave => valor, onde chave é a posicao [0, 1, 2] e valor é a posicao original da coluna (no SQL).
+     */
+    private $groupColumns = array();
+    
+    /**
+     * Array com posicoes de colunas que devem ser ocultas da visualizacao na tabela (apenas na tabela).
+     * Usado para casos de agrupamentos ou quando relatorio for sintetico.
+     *
+     * @var array
+     */
+    private $hideColumns = array();
+    
+    /**
+     * Dados oriundos da grid gerada
+     *
+     * @var string
+     */
+    private $gridData = array();
+    
+    /**
+     * Largura total
+     *
+     * @var int
+     */
+    private $totalWidth;
+    
+    /**
+     * Número total de registros
+     * 
+     * @var int 
+     */
+    private $totalRegistros;
+    
+    /**
+     * Id do arquivo de template. Quando especificado, utiliza este ao invez dos modelos originais.
+     */
+    private $fileId;
+    
+    /**
+     * SQL sem caracteres de somatorios ou agrupamentos, ex.: @SUM, @AVG
+     *
+     * @var string
+     */
+    private $sqlFiltrado;
+    
+    /**
+     * SQL original
+     *
+     * @var string
+     */
+    private $sql;
+    
+    /**
+     * @var DOMDocument
+     */
+    private $dom;
+    
+    /**
+     * Nome amigavel do relatorio (ex.: Alunos matriculados por periodo)
+     *
+     * @var string
+     */
+    private $nomeRelatorio;
+    
+    /**
+     *
+     * @var DOMNode
+     */
+    private $jasperReport;
+    
+    /**
+     * Tipo de relatorio (analitico ou sintetico)
+     *
+     * @var string
+     */
+    private $tipoRelatorio;
+    
+    /**
+     * @var boolean
+     */
+    private $possuiModoAlternativo;
+    
+    /**
+     * @var array
+     */
+    private $reportInfo = array();
+    
+    /**
+     * Classifica o tipo das colunas (data, double, etc.)
+     * 
+     * @var array
+     */
+    private $colTypes = array();
+    
+    /*
+     * Seta o tamanho da fonte das colunas e seus conteúdos.
+     * 
+     * @var int 
+     */
+    private $fontSize = self::DEFAULT_FONT_SIZE;
+    
+    /*
+     * Tamanho padrão da fonte.
+     */
+    const DEFAULT_FONT_SIZE = 10;
+    
+    public function __construct($options = array())
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+
+        $options += array('reportName' => 'relatorio_generico', 'module' => 'basic');
+        
+        $this->setTipoRelatorio(self::TIPO_RELATORIO_ANALITICO);
+
+        parent::__construct($options);
+        
+        // parametros
+        $this->setParameter('USUARIO', $MIOLO->getLogin()->id);
+        $this->setParameter('DATA_IMPRESSO', SAGU::getDateNow( SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_PHP') ));
+        $this->setParameter('INSTITUICAO', SAGU::obterInstituicao()->name);
+        
+        if ( sMultiUnidade::estaHabilitada() && ( strlen(sMultiUnidade::obterUnidadeLogada()) > 0 ) )
+        {
+            $this->setParameter('UNIDADE', SAGU::obterUnidadeAtual()->description);
+        }
+    }
+    
+    public function setTotalRegistros( $total )
+    {
+        $this->totalRegistros = $total;
+        
+    }
+    
+    function getPossuiModoAlternativo() {
+        return $this->possuiModoAlternativo;
+    }
+
+    function setPossuiModoAlternativo($possuiModoAlternativo) {
+        $this->possuiModoAlternativo = $possuiModoAlternativo;
+    }
+    
+    public function getNomeRelatorio() {
+        return $this->nomeRelatorio;
+    }
+
+    public function setNomeRelatorio($nomeRelatorio)
+    {
+        if ( $this->possuiModoAlternativo )
+        {
+            $tipo = $this->tipoRelatorio == self::TIPO_RELATORIO_ANALITICO ? _M('analítico') : _M('sintético');
+            $nomeRelatorio .= ' (' . $tipo . ')';
+        }
+        
+        $this->nomeRelatorio = $nomeRelatorio;
+        
+        $this->setParameter('NOME_RELATORIO', $this->nomeRelatorio);
+    }
+
+        
+    public function getGroupColumns() {
+        return $this->groupColumns;
+    }
+
+    public function setGroupColumns($groupColumns) {
+        $this->groupColumns = $groupColumns;
+    }
+    
+    public function getGridData() {
+        return $this->gridData;
+    }
+
+    public function setGridData($gridData) {
+        $this->gridData = $gridData;
+    }
+
+    public function getFileId() {
+        return $this->fileId;
+    }
+
+    public function setFileId($fileId) {
+        $this->fileId = $fileId;
+    }
+    
+    public function getSqlFiltrado() {
+        return $this->sqlFiltrado;
+    }
+
+    public function setSqlFiltrado($sqlFiltrado) {
+        $this->sqlFiltrado = SAGU::stringToASCII($sqlFiltrado);
+    }
+
+    public function getSql() {
+        return $this->sql;
+    }
+
+    public function setSql($sql) {
+        $this->sql = SAGU::stringToASCII($sql);
+    }
+    
+    public function getTipoRelatorio() {
+        return $this->tipoRelatorio;
+    }
+
+    public function setTipoRelatorio($tipoRelatorio) {
+        $this->tipoRelatorio = $tipoRelatorio;
+    }
+    
+    function getReportInfo() {
+        return $this->reportInfo;
+    }
+
+    function setReportInfo($reportInfo) {
+        $this->reportInfo = $reportInfo;
+    }
+ 
+    private function validaDados()
+    {
+        $reqs = array(
+            'gridData' => $this->gridData,
+            'sql' => $this->sqlFiltrado,
+            'sqlFonte' => $this->sql,
+            'nomeRelatorio' => $this->nomeRelatorio,
+        );
+        
+        foreach ( $reqs as $key => $val )
+        {
+            if ( !$val )
+            {
+                throw new Exception( _M('Atributo requerido: @1', null, $key) );
+            }
+        }
+    }
+    
+    public function generate($gerarRodape = true, $download = true)
+    {
+        $this->validaDados();
+        
+        $this->gerarArquivoXML($gerarRodape);
+        
+        return parent::generate($gerarRodape, $download);
+    }
+    
+    public function gerarArquivoXML( $gerarRodape = true )
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $sintetico = $this->tipoRelatorio == self::TIPO_RELATORIO_SINTETICO;
+
+        //
+        //
+        foreach ( SDatabase::getQueryColumns($this->sql) as $key => $col )
+        {
+            $this->columnsOriginal[] = $col;
+        }
+        
+        $this->definirColunasAgrupadoras();
+        
+        //
+        //
+        foreach ( SDatabase::getQueryColumns($this->sqlFiltrado) as $key => $col )
+        {
+            $this->columns[] = $col;
+            
+            if ( $sintetico && ( strlen($this->getCalculation($key)) == 0 ) )
+            {
+                $this->hideColumns[] = $key;
+            }
+        }
+
+        $this->dom = $this->getXMLDocument();
+        $this->dom->load( $this->obterCaminhoDoModelo() );
+
+        $this->jasperReport = $this->dom->getElementsByTagName('jasperReport')->item(0);
+
+        $this->totalWidth = $this->jasperReport->getAttribute('columnWidth');
+        
+        $this->declararSQL();
+        $this->declararFields();
+        $this->declararOrdenacao();
+        
+        $this->setFontSize();
+        
+        $this->declararTabelaCabecalho();
+        $this->declararTabelaCelulas();
+        
+        if ( count($this->groupColumns) > 0 )
+        {
+            $this->declararAgrupamentos();
+        }
+        
+        if ( count($this->reportInfo) > 0 )
+        {
+            $this->declararFiltrosUtilizados();
+        }
+        
+        $this->declararSomatoriosGerais($gerarRodape);
+        $this->declararVariaveisSomatoriosAgrupamentos();
+        
+        // debug
+//        MIOLO::vd(htmlspecialchars($this->dom->saveXML())); exit;
+        
+        $newFile = $this->tempReportFile = '/tmp/relatorio_' . time() . '.jrxml';
+        
+        $this->dom->save($newFile);
+    }
+        
+    private function obterCaminhoDoModelo()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        if ( strlen($this->fileId) > 0 ) // Obtem relatorio modelo enviado via UPLOAD no formulario
+        {
+            $busFile = new BusinessBasicBusFile();
+            $filename = $busFile->getFilePath($this->fileId);
+        }
+        else if ( ( count($this->columns) <= self::MAXIMO_COLUNAS_RETRATO ) || ( $this->tipoRelatorio == self::TIPO_RELATORIO_SINTETICO ) ) // Se relatorio conter ate N colunas, gera formato RETRATO
+        {
+            $filename = $MIOLO->GetModulePath('basic', 'relatorio_generico_retrato.jrxml');
+        }
+        else // Se conter mais de N colunas, gera PAISAGEM
+        {
+            $filename = $MIOLO->GetModulePath('basic', 'relatorio_generico_paisagem.jrxml');            
+        }
+        
+        return $filename;
+    }
+    
+    private function definirColunasAgrupadoras()
+    {
+        //
+        // declara agrupamentos
+        //
+        $groups = array();
+        
+        foreach ( $this->columnsOriginal as $position => $column )
+        {
+            if ( stripos($column, '@GROUP') )
+            {
+                $groups[ substr($column, -1) - 1 ] = $position;
+            }
+        }
+        
+        ksort($groups);
+        
+        $this->setGroupColumns( $groups );
+    }
+    
+    /**
+     * @return DOMDocument
+     */
+    private function getXMLDocument()
+    {
+        $dom = new DOMDocument();
+        $dom->preserveWhiteSpace = false;
+        $dom->formatOutput = true;
+        
+        return $dom;
+    }
+    
+    private function declararFields()
+    {   
+        $declarados = array();
+        
+        // Fields
+        foreach ( $this->columns as $position => $column )
+        {
+            // verificacao de field repetido - causa erro no jasper
+            if ( in_array($column, $declarados) )
+            {
+                continue;
+            }
+            else
+            {
+                $declarados[] = $column;
+            }
+            
+            $type = 'java.lang.String';
+            
+            // Se possuir funcao de somatorio..
+            if ( strlen($this->getCalculation($position)) > 0 )
+            {
+                $type = 'java.lang.Double';
+            }
+            
+            $field = $this->dom->createElement('field');
+            $field->setAttribute('name', $column);
+            $field->setAttribute('class', $type); // java.lang.Double , java.lang.Double, java.lang.Integer
+
+            $variable = $this->dom->getElementsByTagName('variable')->item(0);
+            $this->jasperReport->insertBefore( $field, $variable );
+        }
+    }
+    
+    private function declararSQL()
+    {
+        $fixSQL = str_replace(chr(13), '', $this->sqlFiltrado);
+        $fixSQL = utf8_encode($fixSQL);
+        $fixSQL = sRelatorioPDF::retiraValoresNulos($fixSQL);
+        
+        $queryString = $this->dom->createElement('queryString'); // $dom->createCDATASection( 'SELECT 1' )
+        $queryString->nodeValue = $fixSQL;
+        
+        $variable = $this->dom->getElementsByTagName('variable')->item(0);
+        $this->jasperReport->insertBefore( $queryString, $variable );
+    }
+        
+    private function declararTabelaCabecalho()
+    {
+        $columnHeader = $this->dom->getElementsByTagName('columnHeader')->item(0);
+        
+        // Alinhamentos
+        $colTypes = $this->colTypes = SDatabase::getQueryTypes($this->sqlFiltrado);
+        
+        $band = $columnHeader->getElementsByTagName('band')->item(0);
+        $band->setAttribute('height', self::DEFAULT_HEIGHT_SIZE);
+
+        foreach ( $this->columns as $number => $column )
+        {
+            if ( $this->hideColumn($number) )
+            {
+                continue;
+            }
+
+            $reportElement = $this->dom->createElement('reportElement');
+            $reportElement->setAttribute('positionType', 'Float');
+            $reportElement->setAttribute('stretchType', 'RelativeToTallestObject');
+            $reportElement->setAttribute('x', $this->getColPaddingLeft($number));
+            $reportElement->setAttribute('y', '0');
+            $reportElement->setAttribute('width', ($this->getColWidth($number) - 5));
+            $reportElement->setAttribute('height', self::DEFAULT_HEIGHT_SIZE);
+            $reportElement->setAttribute('isPrintWhenDetailOverflows', 'true');
+
+            //Tamanho da fonte (dinâmico)
+            $fontSize = $this->dom->createElement('font');
+            $fontSize->setAttribute('size', $this->fontSize);
+            
+            //Adicionando alinhamento de coluna tambem no cabecalho, ticket #34637
+            $textElement = $this->dom->createElement('textElement');
+            $textElement->appendChild($fontSize);
+            $textElement->setAttribute('markup', 'styled');
+            $textElement->setAttribute('textAlignment', ucfirst(self::getColAlign($colTypes[$number])));
+            
+            //Quebra underline, caso exista
+            $explode = explode('_', $column);
+            count($explode) > 1 ? $column = implode(" ", $explode) : null;
+            
+            $textFieldExpression = $this->dom->createElement('textFieldExpression');
+            $textFieldExpression->nodeValue = '"<b>' . $column . '</b>"';
+
+            $textField = $this->dom->createElement('textField');
+            $textField->setAttribute('isStretchWithOverflow', 'true');
+            $textField->appendChild($reportElement);
+            $textField->appendChild($textElement);
+            $textField->appendChild($textFieldExpression);
+
+            $band->appendChild($textField);
+        }
+        
+        //
+        // Cria linha separadora abaixo do cabecalho da tabela
+        //
+        $reportElement = $this->dom->createElement('reportElement');
+        $reportElement->setAttribute('positionType', 'FixRelativeToBottom');
+        $reportElement->setAttribute('x', '0');
+        $reportElement->setAttribute('y', self::DEFAULT_HEIGHT_SIZE);
+        $reportElement->setAttribute('width', $this->totalWidth);
+        $reportElement->setAttribute('height', '1');
+        $reportElement->setAttribute('isPrintWhenDetailOverflows', 'true');
+        
+        $line = $this->dom->createElement('line');
+        $line->appendChild($reportElement);
+        
+        $band->appendChild($line);
+        $band->setAttribute('height', $band->getAttribute('height') + 1);
+    }
+    
+    private function declararTabelaCelulas()
+    {
+        $detail = $this->dom->getElementsByTagName('detail')->item(0);
+        
+        $band = $detail->getElementsByTagName('band')->item(0);
+        $band->setAttribute('height', self::DEFAULT_HEIGHT_SIZE);
+        
+        // Quando for analitico, nao deve gerar dados
+        if ( $this->tipoRelatorio != self::TIPO_RELATORIO_ANALITICO )
+        {
+            $band->setAttribute('height', '0');
+            return;
+        }
+
+        // Adiciona fundo estilo "zebra"
+        $band->appendChild($this->getZebraRectangle());
+        
+        // Alinhamentos
+        $colTypes = $this->colTypes = SDatabase::getQueryTypes($this->sqlFiltrado);
+
+        foreach ( $this->columns as $number => $column )
+        {
+            if ( $this->hideColumn($number) )
+            {
+                continue;
+            }
+
+            $reportElement = $this->dom->createElement('reportElement');
+            $reportElement->setAttribute('x', $this->getColPaddingLeft($number));
+            $reportElement->setAttribute('y', '0');
+            $reportElement->setAttribute('width', ($this->getColWidth($number) - 5));
+            $reportElement->setAttribute('height', self::DEFAULT_HEIGHT_SIZE);
+
+            //Tamanho da fonte (dinâmico)
+            $fontSize = $this->dom->createElement('font');
+            $fontSize->setAttribute('size', $this->fontSize);
+            
+            $textElement = $this->dom->createElement('textElement');
+            $textElement->appendChild($fontSize);
+            
+            $textElement->setAttribute('markup', 'styled');
+            
+            // define alinhamento da coluna
+            $textElement->setAttribute('textAlignment', ucfirst(self::getColAlign($colTypes[$number])));
+
+            // textFieldExpression
+            $textFieldExpression = $this->dom->createElement('textFieldExpression');
+            $textFieldExpression->nodeValue = self::getColExpression($colTypes[$number], $column);
+
+            $textField = $this->dom->createElement('textField');
+            $textField->setAttribute('isStretchWithOverflow', 'true');
+            $textField->setAttribute('isBlankWhenNull', 'true');
+            $textField->appendChild($reportElement);
+            $textField->appendChild($textElement);
+            $textField->appendChild($textFieldExpression);
+
+            $band->appendChild($textField);
+        }
+    }
+    
+    private function getZebraRectangle()
+    {
+        $increment = ( count($this->groupColumns) > 0 ) ? ( self::INCREMENT_COL_GROUP * count($this->groupColumns) ) : '0';
+
+        $printWhenExpression = $this->dom->createElement('printWhenExpression');
+        $printWhenExpression->nodeValue = 'new Boolean(($V{COLUMN_COUNT}.intValue() % 2) == 0)';
+
+        $reportElement = $this->dom->createElement('reportElement');
+        $reportElement->setAttribute('x', $increment);
+        $reportElement->setAttribute('y', '0');
+        $reportElement->setAttribute('width', ($this->totalWidth - $increment));
+        $reportElement->setAttribute('height', self::DEFAULT_HEIGHT_SIZE);
+        $reportElement->setAttribute('mode', 'Opaque');
+        $reportElement->setAttribute('isRemoveLineWhenBlank', 'true');
+        $reportElement->setAttribute('isPrintWhenDetailOverflows', 'true');
+        $reportElement->setAttribute('stretchType', 'RelativeToTallestObject');
+        $reportElement->setAttribute('forecolor', '#F4F4F4');
+        $reportElement->setAttribute('backcolor', '#F4F4F4');
+        $reportElement->appendChild($printWhenExpression);
+
+        $rectangle = $this->dom->createElement('rectangle');
+        $rectangle->appendChild($reportElement);
+
+        return $rectangle;
+    }
+    
+    private function declararAgrupamentos()
+    {
+        $variable = $this->dom->getElementsByTagName('variable')->item(0);
+        $background = $this->dom->getElementsByTagName('background')->item(0);
+        $paddingLeft = 0;
+        
+        foreach ( $this->groupColumns as $key => $colNumber )
+        {
+            $column = $this->getColByPosition( $colNumber );
+            $fieldWidth = ($this->totalWidth - ( ( $key * self::INCREMENT_GROUP )));
+            $groupName = 'group_' . $colNumber;
+
+            // Cria tag <groupExpression></groupExpression>
+            $groupExpression = $this->dom->createElement('groupExpression');
+            $groupExpression->nodeValue = '$F{' . $column . '}';
+            
+            $groupHeader = $this->getGroupHeader($paddingLeft, $fieldWidth, $column, $colNumber);
+            $groupFooter = $this->getGroupFooter($paddingLeft, $fieldWidth, $column, $groupName);
+            
+            // Cria tag <group></group> e joga tudo dentro
+            $group = $this->dom->createElement('group');
+            $group->setAttribute('name', $groupName);
+            $group->appendChild($groupExpression);
+            $group->appendChild($groupHeader);
+            $group->appendChild($groupFooter);
+            
+            $this->jasperReport->insertBefore( $group, $background );
+            
+            $paddingLeft += self::INCREMENT_GROUP;
+        }
+    }
+    
+    private function getGroupHeader($paddingLeft, $fieldWidth, $column, $colNumber)
+    {
+        $reportElement = $this->dom->createElement('reportElement');
+        $reportElement->setAttribute('x', $paddingLeft);
+        $reportElement->setAttribute('y', '0');
+        $reportElement->setAttribute('width', $fieldWidth);
+        $reportElement->setAttribute('height', self::DEFAULT_HEIGHT_SIZE);
+
+        $textElement = $this->dom->createElement('textElement');
+        $textElement->setAttribute('markup', 'styled');
+
+        $colType = $this->colTypes[$colNumber];
+        
+        $textFieldExpression = $this->dom->createElement('textFieldExpression');
+        $textFieldExpression->nodeValue = '"<b>' . $column . '</b>: " + ' . self::getColExpression($colType, $column);
+
+        $textField = $this->dom->createElement('textField');
+        $textField->appendChild($reportElement);
+        $textField->appendChild($this->getBorderTop());
+        $textField->appendChild($textElement);
+        $textField->appendChild($textFieldExpression);
+
+        $band = $this->dom->createElement('band');
+        $band->setAttribute('height', self::DEFAULT_HEIGHT_SIZE);
+        $band->appendChild($textField);
+
+        $groupHeader = $this->dom->createElement('groupHeader');
+        $groupHeader->appendChild($band);
+
+        return $groupHeader;
+    }
+    
+    private function getGroupFooter($paddingLeft, $fieldWidth, $column, $groupName)
+    {
+        $band = $this->dom->createElement('band');
+        $band->setAttribute('height', self::DEFAULT_HEIGHT_SIZE);
+        
+        $height = 0;
+        
+        // agrupamentos
+        $height += $this->declararCamposSomatorios($groupName, $band);
+        
+        // numero total de registros
+        $height += $this->declararCampoSomatorioTotal($column, $paddingLeft, $band, $fieldWidth, $groupName, false, $height);
+
+        // Ajusta o height
+        $band->setAttribute('height', $height);
+
+        $groupFooter = $this->dom->createElement('groupFooter');
+        $groupFooter->appendChild($band);
+        
+        return $groupFooter;
+    }
+    
+    /**
+     * @return int
+     */
+    private function declararCampoSomatorioTotal($column, $paddingLeft, $band, $fieldWidth, $groupName, $somatorioGeral = false, $height)
+    {
+        // coluna que diz o TOTAL de registros deste grupo
+        if ( $somatorioGeral )
+        {
+            $label = '"<b>Total de registros:</b> ' . $this->totalRegistros . '"';
+        }
+        else
+        {
+            $label = '"<b>Total:</b> " + $V{V_GROUP_' . $column . '}';
+        }
+        
+        $reportElement = $this->dom->createElement('reportElement');
+        $reportElement->setAttribute('x', $paddingLeft);
+        $reportElement->setAttribute('y', $height);
+        $reportElement->setAttribute('width', $fieldWidth);
+        $reportElement->setAttribute('height', self::DEFAULT_HEIGHT_SIZE);
+
+        $textElement = $this->dom->createElement('textElement');
+        $textElement->setAttribute('markup', 'styled');
+
+        $textFieldExpression = $this->dom->createElement('textFieldExpression');
+        $textFieldExpression->nodeValue = $label;
+
+        $textField = $this->dom->createElement('textField');
+//        $textField->setAttribute('isStretchWithOverflow', 'true');
+        $textField->appendChild($reportElement);
+        $textField->appendChild($this->getBorderTop());
+        $textField->appendChild($textElement);
+        $textField->appendChild($textFieldExpression);
+
+        $band->appendChild($textField);
+        
+        
+        //
+        // declara variavel
+        //        
+        if ( !$somatorioGeral )
+        {
+            $newVariable = $this->dom->createElement('variable');
+            $newVariable->setAttribute('class', 'java.math.BigDecimal');
+            $newVariable->setAttribute('calculation', 'Count'); //Sum            
+            $newVariable->setAttribute('name', 'V_GROUP_' . $column);
+            $newVariable->setAttribute('resetType', 'Group');
+            $newVariable->setAttribute('resetGroup', $groupName);
+            
+            $variableExpression = $this->dom->createElement('variableExpression');
+            $variableExpression->nodeValue = '$F{' . $column . '}'; // Altera a expressao do valor
+            $newVariable->appendChild($variableExpression);
+
+            $variable = $this->dom->getElementsByTagName('variable')->item(0);
+            $this->jasperReport->insertBefore($newVariable, $variable);
+        }
+        
+//        return 0;
+        return self::DEFAULT_HEIGHT_SIZE;
+    }
+    
+    /**
+     * Declara as linhas abaixo de cada agrupamento, com os somatorios (AVG, MAX, SUM...).
+     * Deve separar em linhas diferentes cada tipo de somatorio, para nao ficar confuso a visualizacao (ex.: somatorios SUM devem estar separados de AVG).
+     * 
+     * @return int
+     */
+    private function declararCamposSomatorios($groupName, DOMElement $band, $somatorioGeral = false)
+    {
+        $posY = 0;
+        $totalWidth = $this->totalWidth - ( self::INCREMENT_GROUP * count($this->groupColumns) );
+        $typesUsing = $this->getCalcTypesUsing();
+        $initialPosX = self::INCREMENT_GROUP * count($this->groupColumns);
+        
+        foreach ( $typesUsing as $calcType )
+        {
+            //
+            // Adiciona uma linha separadora
+            //            
+            $band->appendChild( $this->getGroupLine($initialPosX, $posY, $totalWidth) );
+            
+            //
+            foreach ( $this->columnsOriginal as $number => $column )
+            {
+                // Se for uma coluna agrupadora, ignore
+                if ( $this->hideColumn($number) )
+                {
+                    continue;
+                }
+
+                $posIncrement = $this->getColWidth($number);
+                $calculation = $this->getCalculation($number);
+
+                if ( strlen($calculation) > 0 && ( $calculation == $calcType ) )
+                {
+                    // escreve o tipo de calculo para usuario saber
+                    // Caso o numero seja > 0 , pode colocar o tipo de calculo na primeira coluna
+                    // quando o somatorio for na primeira coluna, nao e possivel colocar o descritivo do tipo de somatorio pois ficaria sobrescrito visualmente no layout
+                    if ( $number > 0 )
+                    {
+                        $band->appendChild( $this->getTextFieldTipoSomatorio($initialPosX, $number, $posY, $calcType) );
+                    }
+                    
+                    $normalCol = current(explode('@', $column));
+
+                    // Adiciona textField com valor do somatorio da coluna especifica, identando corretamente
+                    $band->appendChild( $this->getTextFieldValorSomatorio($number, $posY, $groupName, $normalCol, $somatorioGeral) );
+                }
+            }
+            
+            $posY += self::DEFAULT_HEIGHT_SIZE;
+        }
+        
+        // Ajusta o height total do band
+//        if ( count($typesUsing) > 0 )
+//        {
+//            $band->setAttribute('height', ($band->getAttribute('height') + (self::DEFAULT_HEIGHT_SIZE * (count($typesUsing) - 1))));
+//        }
+        
+        return $posY;
+    }
+    
+    /**
+     * @return DOMElement
+     */
+    private function getTextFieldValorSomatorio($colNumber, $posY, $groupName, $normalCol, $somatorioGeral = false)
+    {
+        if ( $somatorioGeral )
+        {
+            $variable = self::getColExpression($this->colTypes[$colNumber], $normalCol);
+            $variable = str_replace('$F{'  . $normalCol . '}', '$V{V_' . $normalCol . '}', $variable);
+        }
+        else
+        {
+            $variable = self::getColExpression($this->colTypes[$colNumber], $normalCol);
+            $variable = str_replace('$F{'  . $normalCol . '}', '$V{V_' . $groupName . '_' . $normalCol . '}', $variable);
+        }
+        
+        $reportElement = $this->dom->createElement('reportElement');
+        $reportElement->setAttribute('x', $this->getColPaddingLeft($colNumber));
+        $reportElement->setAttribute('width', ($this->getColWidth($colNumber) - 5));
+        $reportElement->setAttribute('y', $posY);
+        $reportElement->setAttribute('height', self::DEFAULT_HEIGHT_SIZE);
+
+        $textElement = $this->dom->createElement('textElement');
+        $textElement->setAttribute('markup', 'styled');
+        $textElement->setAttribute('textAlignment', ucfirst(self::getColAlign($this->colTypes[$colNumber])));
+
+        $textFieldExpression = $this->dom->createElement('textFieldExpression');
+        $textFieldExpression->nodeValue = $variable;
+        
+        $textField = $this->dom->createElement('textField');
+        $textField->appendChild($reportElement);
+        $textField->appendChild($this->getBoxPaddingTop());
+        $textField->appendChild($textElement);
+        $textField->appendChild($textFieldExpression);
+
+        return $textField;
+    }
+    
+    /**
+     * @return DOMElement
+     */
+    private function getTextFieldTipoSomatorio($initialPosX, $colNumber, $posY, $calcType)
+    {
+        $reportElement = $this->dom->createElement('reportElement');
+        $reportElement->setAttribute('x', round($initialPosX, 0));
+        
+        $width = ($this->getColWidth($colNumber) - $this->getColPaddingLeft($colNumber)) - 5;
+        $reportElement->setAttribute('width', $width < 0 ? 0 : $width);
+        $reportElement->setAttribute('y', $posY);
+        $reportElement->setAttribute('height', self::DEFAULT_HEIGHT_SIZE);
+
+        $textElement = $this->dom->createElement('textElement');
+        $textElement->setAttribute('markup', 'styled');
+
+        $textFieldExpression = $this->dom->createElement('textFieldExpression');
+        $textFieldExpression->nodeValue = '"<b>' . $this->translateCalcType($calcType) . ':</b>"';
+
+        $textField = $this->dom->createElement('textField');
+        $textField->appendChild($reportElement);
+        $textField->appendChild($this->getBoxPaddingTop());
+        $textField->appendChild($textElement);
+        $textField->appendChild($textFieldExpression);
+        
+        return $textField;
+    }
+    
+    private function getGroupLine($initialPosX, $posY, $totalWidth)
+    {
+        $reportElement = $this->dom->createElement('reportElement');
+        $reportElement->setAttribute('x', $initialPosX);
+        $reportElement->setAttribute('y', $posY);
+        $reportElement->setAttribute('width', $totalWidth);
+        $reportElement->setAttribute('height', '1');
+
+        $line = $this->dom->createElement('line');
+        $line->appendChild($reportElement);
+
+        return $line;
+    }
+    
+    private function getBoxPaddingTop()
+    {
+        $box = $this->dom->createElement('box');
+        $box->setAttribute('topPadding', '2');
+        
+        return $box;
+    }
+    
+    private function getBorderTop()
+    {
+        $topPen = $this->dom->createElement('topPen');
+        $topPen->setAttribute('lineWidth', '0.5');
+
+        $border = $this->dom->createElement('box');
+        $border->appendChild( $topPen );
+        
+        return $border;
+    }
+    
+    /**
+     * Declara as variaveis (VARIABLE) que faz o calculo para o agrupamento
+     */
+    private function declararVariaveisSomatoriosAgrupamentos()
+    {
+        $variable = $this->dom->getElementsByTagName('variable')->item(0);
+        
+        if ( count($this->groupColumns) == 0 ) // declaramos apenas caso haja agrupamento
+        {
+            return;
+        }
+        
+        foreach ( $this->columns as $position => $column )
+        {
+            $calc = $this->getCalculation($position);
+
+            if ( strlen($calc) == 0 )
+            {
+                continue;
+            }
+            
+            foreach ( $this->groupColumns as $key => $keyColumn )
+            {
+                $groupName = 'group_' . $keyColumn;
+
+                $newVariable = $this->dom->createElement('variable');
+                $newVariable->setAttribute('name', 'V_' . $groupName . '_' . $column);
+                $newVariable->setAttribute('class', 'java.lang.Double');
+                $newVariable->setAttribute('calculation', $calc); //Sum
+                $newVariable->setAttribute('resetType', 'Group');
+                $newVariable->setAttribute('resetGroup', $groupName);
+
+                $variableExpression = $this->dom->createElement('variableExpression');
+                $variableExpression->nodeValue = '$F{' . $column . '}'; // Altera a expressao do valor
+                $newVariable->appendChild($variableExpression);
+
+                $this->jasperReport->insertBefore($newVariable, $variable);
+            }
+        }
+    }
+    
+    /**
+     * Adiciona as variaveis de somatorios ao final, caso necessario.
+     * 
+     * Se nao houver nenhuma, nao exibe a linha de somatorios.
+     */
+    private function declararSomatoriosGerais($somatorioTotal = true)
+    {
+        $summary = $this->dom->getElementsByTagName('summary')->item(0);
+        $band = $summary->getElementsByTagName('band')->item(0);
+        $variable = $this->dom->getElementsByTagName('variable')->item(0);
+
+        foreach ( $this->columnsOriginal as $number => $column )
+        {
+            $calculation = $this->getCalculation($number);
+            
+            if ( strlen($calculation) > 0 )
+            {
+                $normalCol = current(explode('@', $column));
+                
+                //
+                // Declara a variavel (VARIABLE) que faz o somatorio
+                //
+                $newVariable = $this->dom->createElement('variable');
+                $newVariable->setAttribute('name', "V_{$normalCol}");
+                $newVariable->setAttribute('class', "java.lang.Double");
+                $newVariable->setAttribute('calculation', $calculation);
+                
+                $variableExpression = $this->dom->createElement('variableExpression');
+                $variableExpression->nodeValue = '$F{' . $normalCol . '}'; // Altera a expressao do valor
+                $newVariable->appendChild($variableExpression);
+
+                $this->jasperReport->insertBefore($newVariable, $variable);
+            }
+        }
+        
+        $height = 0;
+        $height += $this->declararCamposSomatorios(null, $band, true);
+        
+        // Declara o somatorio total de registros
+        if( $somatorioTotal )
+        {
+            $height += $this->declararCampoSomatorioTotal(null, '0', $band, $this->totalWidth, null, true, $height);
+        
+        }
+          
+        // Ajusta o height
+        $band->setAttribute('height', $height);
+    }
+    
+    private function getCalcTypes()
+    {
+        return array('Nothing', 'Count', 'DistinctCount', 'Sum', 'Average', 'Lowest', 'Highest', 'StandardDeviation', 'Variance', 'System', 'First');
+    }
+    
+    private function getCalcTypesUsing()
+    {
+        $calcs = array();
+        
+        foreach ( $this->getCalcTypes() as $type )
+        {
+            foreach ( $this->columns as $columnNumber => $column )
+            {
+                if ( $this->getCalculation($columnNumber) == $type )
+                {
+                    $calcs[$type] = $type;
+                }
+            }
+        }
+        
+        ksort($cals); // mantem um padrao de ordem
+        
+        return $calcs;
+    }
+    
+    /**
+     * @return string
+     */
+    private function translateCalcType($calcType)
+    {
+        $tr = array(
+            'Nothing' => _M('Nenhum'),
+            'Count' => _M('Total'),
+            'DistinctCount' => _M('Total'),
+            'Sum' => _M('Soma'),
+            'Average' => _M('Média'),
+            'Lowest' => _M('Mín.'),
+            'Highest' => _M('Máx.'),
+            'StandardDeviation' => _M('Desv. padrão'),
+            'Variance' => _M('Variância'),
+//            'System' => _M(''),
+            'First' => _M('Primeiro'),
+        );
+        
+        return utf8_encode($tr[$calcType]);
+    }
+    
+    /**
+     * @return string
+     */
+    private function getCalculation($columnNumber)
+    {
+        $exp = explode('@', $this->columnsOriginal[$columnNumber]);
+
+        // Verifica se possui @ e nao e funcao de agrupamento
+        if ( ( count($exp) > 1 ) && ( !preg_match('/GROUP/i', $exp[1]) ) )
+        {
+            // Normaliza para o padrao jasper
+            $calc = ucfirst(strtolower($exp[1]));
+
+            // Nothing, Count, DistinctCount, Sum, Average, Lowest, Highest, StandardDeviation, Variance, System, First
+            
+            $calc = strtr($calc, array(
+                'Avg' => 'Average',
+                'Max' => 'Highest',
+                'Min' => 'Lowest',
+                'Distinctcount' => 'DistinctCount',
+            ));
+
+            return $calc;
+        }
+        
+        return null;
+    }
+    
+    public function findCurrentReport()
+    {
+        return $this->tempReportFile;
+    }
+    
+    private function declararOrdenacao()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $orderBy = MIOLO::_REQUEST('orderby');
+        $orderMode = MIOLO::_REQUEST('ordermode');
+        $orders = array();
+        $variable = $this->dom->getElementsByTagName('variable')->item(0);
+        
+        if ( strlen($orderBy) > 0 )
+        {
+            $orders = array($orderBy);
+        }
+        
+        if ( count($this->groupColumns) > 0 ) // Quando em modo agrupamento, deve ordenar pelo mesmo...
+        {
+            $orders = array_merge($this->groupColumns, $orders);
+        }
+        
+        foreach ( $orders as $orderKey )
+        {
+            $name = $this->columns[$orderKey];
+//            $order = $orderMode == 'asc' ? 'Ascending' : 'Descending';
+
+            $field = $this->dom->createElement('sortField');
+            $field->setAttribute('name', $name);
+            $field->setAttribute('order', 'Ascending');
+
+            $this->jasperReport->insertBefore( $field, $variable );
+        }
+    }
+    
+    /**
+     * Retorna tamanho medio da string de cada coluna da grid.
+     * 
+     * @return array
+     */
+    private function obterMediaTamanhoColunas()
+    {
+        static $medias = array();
+
+        if ( !$medias )
+        {
+            $linhas = $this->gridData;
+            $colunas = $this->columns;
+
+            $tamanhoColunas = array();
+            foreach ( $colunas as $numColuna => $coluna )
+            {
+                //Substitui underline por espaço para cálculo
+                $nomeColuna = str_replace('_', " ", $coluna);
+                $explode = explode(" ", $nomeColuna);
+                
+                foreach ( $explode as $palavra )
+                {
+                    if ( strlen($palavra) > $tamanhoColunas[$numColuna] )
+                    {
+                        $tamanhoColunas[$numColuna] = strlen($palavra);
+                    }
+                }
+            }
+
+            $count = 0;
+            $totalWidth = $this->totalWidth - ( self::INCREMENT_COL_GROUP * count($this->groupColumns) );
+
+            // Desconta o espacamento inicial quando for relatorio sintetico, para nao exceder o tamanho maximo
+            if ( $this->tipoRelatorio == self::TIPO_RELATORIO_SINTETICO )
+            {
+                $totalWidth -= self::RELATORIO_SINTETICO_ESPACAMENTO_INICIAL;
+            }
+
+            foreach ( $linhas as $linha )
+            {
+//                $keyArray = 0;                
+
+                foreach ( $linha as $numColuna => $valor )
+                {
+                    if ( !$this->hideColumn($numColuna) )
+                    {
+                        $medias[$numColuna] = $medias[$numColuna] + strlen($valor);
+                    }
+                }
+
+                $count ++;
+
+                // Faz media apenas das primeiras linhas, para nao haver queda de performance
+                if ( $count == 20 )
+                {
+                    break;
+                }
+            }
+
+            foreach ( $medias as $chave => $valor )
+            {
+                $media = $valor / $count;
+
+                // impoe um limite minimo de largura de colunas
+                if ( $media <= self::LIMITE_MINIMO_LARGURA )
+                {
+                    $media = self::LIMITE_MINIMO_LARGURA;
+                }
+
+                if ( $media < $tamanhoColunas[$chave] )
+                {
+                    $media = $tamanhoColunas[$chave];
+                }
+
+                $medias[$chave] = $media;
+            }
+
+            $totalCaracteres = array_sum($medias);
+
+            foreach ( $medias as $chave => $valor )
+            {
+                // calcula um percentual para obter o tamanho da coluna
+                $calculo = (( $medias[$chave] / $totalCaracteres ) * $totalWidth );
+                $calculo = round($calculo, 0);
+
+                $medias[$chave] = $calculo;
+            }
+        }
+
+        return $medias;
+    }
+    
+    /**
+     * @return float
+     */
+    private function getColWidth($number)
+    {
+        $medias = $this->obterMediaTamanhoColunas();
+        
+        return $medias[$number];
+    }
+    
+    private function getColByPosition($number)
+    {
+        return $this->columns[$number];
+    }
+    
+    /**
+     * Obtem o tamanho alinhamento esquerda da coluna.
+     * Utilizado para alinhar na tabela.
+     */
+    private function getColPaddingLeft($number)
+    {
+        $padding = self::INCREMENT_COL_GROUP * count($this->groupColumns);
+        
+        // Quando for SINTETICO, libera um espaco extra para o valor do somatorio nao sobrepor a descricao do tipo somatorio (SOMA, MEDIA...)
+        if ( $this->tipoRelatorio == self::TIPO_RELATORIO_SINTETICO )
+        {
+            $padding += self::RELATORIO_SINTETICO_ESPACAMENTO_INICIAL;
+        }
+        
+        for ($i=0; $i < $number; $i++)
+        {
+            if ( !$this->hideColumn($i) )
+            {
+                $padding += $this->getColWidth($i);
+            }
+        }
+        
+        return round($padding, 0);
+    }
+    
+    /**
+     * @return boolean
+     */
+    private function hideColumn($number)
+    {
+        return in_array($number, $this->hideColumns) || in_array($number, $this->groupColumns);
+    }
+    
+    /*
+     * Criada função para os relatórios genéricos aceitarem filtros nulos
+     */
+    public static function retiraValoresNulos($sql)
+    {
+        //Checagem realizada para aceitar parâmetros com valores nulos - filtros não informados
+        $str = array('=NULL','= NULL', '=  NULL', '>NULL', '> NULL', '>  NULL', '<NULL', '< NULL', '<  NULL', 'ilike  NULL', 'ILIKE  NULL', 'ILIKE NULL', 'ilike  NULL  ');
+
+        for($i =0; $i < count($str); $i++)
+        {
+           $sql = str_replace($str[$i], '<> \'otherparameter\'', $sql); 
+        }
+        
+        return $sql;
+    }
+    
+    /**
+     * @param string $type
+     * @return string
+     */
+    public static function getColAlign($type)
+    {
+        // define alinhamento de coluna, baseando no seu tipo
+        switch ( $type )
+        {
+            case 'int4':
+            case 'int8':
+            case 'float8':
+            case 'decimal':
+            case 'numeric':
+                $align = 'right';
+                break;
+            case 'date':
+            case 'timestamp':
+            case 'timestamptz':
+                $align = 'center';
+                break;
+            default:
+                $align = 'left';
+                break;
+        }
+        
+        return $align;
+    }
+    
+    /**
+     * @param string $type
+     * @param string $column
+     * 
+     * @return string
+     */
+    public static function getColExpression($type, $column)
+    {
+        // define expressao de campo
+        switch ( $type )
+        {
+            case 'float8':
+            case 'decimal':
+            case 'numeric':
+                // formata numero para ficar no formato 1.234,43
+                $expr = 'new DecimalFormat("#,##0.00").format(Double.parseDouble( ($F{' . $column . '} != null ? $F{' . $column . '}.toString() : "0.00")))';
+                break;
+            case 'date':
+                $expr = 'new SimpleDateFormat("dd/MM/yyyy").format(new SimpleDateFormat("yyyy-MM-dd").parse($F{' . $column . '}))';
+                break;
+            case 'timestamp':
+            case 'timestamptz':
+                $expr = 'new SimpleDateFormat("dd/MM/yyyy HH:mm").format(new SimpleDateFormat("yyyy-MM-dd HH:mm").parse($F{' . $column . '}))';
+                break;
+            default:
+                $expr = '$F{' . $column . '}';
+                break;
+        }
+                
+        return $expr;
+    }
+    
+    public function declararFiltrosUtilizados()
+    {
+        $height = 51;
+        $pageHeader = $this->dom->getElementsByTagName('pageHeader')->item(0);
+        $band = $pageHeader->getElementsByTagName('band')->item(0);
+        
+        
+        // obtem tamanho X do label
+        $firstStaticText = $band->getElementsByTagName('staticText')->item(0);
+        
+        if ( !$firstStaticText )
+        {
+            return;
+        }
+        
+        $firstReportElement = $firstStaticText->getElementsByTagName('reportElement')->item(0);
+        
+        if ( !$firstReportElement )
+        {
+            return;
+        }
+        
+        $staticTextSizeX = $firstReportElement->getAttribute('x');
+        $staticTextWidth = $firstReportElement->getAttribute('width');
+        
+        
+        // obtem tamanho X do valor
+        $firstTextField = $band->getElementsByTagName('textField')->item(0);
+        
+        if ( !$firstTextField )
+        {
+            return;
+        }
+        
+        $firstReportElement = $firstTextField->getElementsByTagName('reportElement')->item(0);
+        
+        if ( !$firstReportElement )
+        {
+            return;
+        }
+        
+        $textFieldSizeX = $firstReportElement->getAttribute('x');
+        $textFieldWidth = $firstReportElement->getAttribute('width');
+        
+        
+        foreach ( $this->reportInfo as $label => $valor )
+        {
+            $band->setAttribute('height', $band->getAttribute('height') + self::DEFAULT_HEIGHT_SIZE);
+
+            $height += self::DEFAULT_HEIGHT_SIZE;
+            
+            //
+            // cria o <staticText></staticText> com o label do filtro
+            //
+            $reportElement = $this->dom->createElement('reportElement');
+            $reportElement->setAttribute('x', $staticTextSizeX);
+            $reportElement->setAttribute('y', $height);
+            $reportElement->setAttribute('width', $staticTextWidth);
+            $reportElement->setAttribute('height', self::DEFAULT_HEIGHT_SIZE);
+            
+            $textElement = $this->dom->createElement('textElement');
+            $textElement->setAttribute('textAlignment', 'Right');
+            
+            $text = $this->dom->createElement('text');
+            $text->nodeValue = utf8_encode($label) . ':';
+            
+            $staticText = $this->dom->createElement('staticText');
+            $staticText->appendChild($reportElement);
+            $staticText->appendChild($textElement);
+            $staticText->appendChild($text);
+            $band->appendChild($staticText);
+            
+            //
+            // cria o <textField></textField> com o valor do filtro utilizado
+            //
+            $reportElement = $this->dom->createElement('reportElement');
+            $reportElement->setAttribute('x', $textFieldSizeX);
+            $reportElement->setAttribute('y', $height);
+            $reportElement->setAttribute('width', $textFieldWidth);
+            $reportElement->setAttribute('height', self::DEFAULT_HEIGHT_SIZE);
+
+            $textElement = $this->dom->createElement('textElement');
+            $textElement->setAttribute('markup', 'html');
+
+            $textFieldExpression = $this->dom->createElement('textFieldExpression');
+            $textFieldExpression->nodeValue = '"<b>' . utf8_encode($valor) . '</b>"';
+
+            $textField = $this->dom->createElement('textField');
+            $textField->appendChild($reportElement);
+            $textField->appendChild($textElement);
+            $textField->appendChild($textFieldExpression);
+            $band->appendChild($textField);
+        }
+    }
+    
+    public function utilizaCodigoVerificador()
+    {
+        return true;
+    }
+    
+    /**
+     * Seta o tamanho da fonte que será utilizada em cabeçalhos e conteúdo.
+     * 
+     * Até 10 colunas fica no padrão.
+     * Entre 11 e 15 colunas fica em 8.
+     * Entre 16 e 20 colunas fica em 6.
+     * Mais de 20 colunas fica em 4.
+     * 
+     */
+    private function setFontSize()
+    {
+        $colunas = $this->columns;
+        
+        //Seta conforme quantidade de colunas
+        if ( count($colunas) > 10 && count($colunas) <= 15 )
+        {
+            $this->fontSize = 8;
+        }
+        elseif ( count($colunas) > 15 && count($colunas) <= 20 )
+        {
+            $this->fontSize = 6;
+        }
+        elseif ( count($colunas) > 20 )
+        {
+            $this->fontSize = 4;
+        }
+    }
+}
+?>

@@ -1,0 +1,517 @@
+<?php
+/**
+ * Brief Class Description.
+ * Complete Class Description.
+ */
+class MSession extends MService
+{
+    /**
+     * Attribute Description.
+     */
+    var     $id = "";
+
+    /**
+     * Attribute Description.
+     */
+    var     $name = "";
+
+    /**
+     * Attribute Description.
+     */
+    var     $cookie_path = '/';
+
+    /**
+     * Attribute Description.
+     */
+    var     $cookiename = "PHPSESSID";
+
+    /**
+     * Attribute Description.
+     */
+    var     $lifetime = 0;
+
+    /**
+     * Attribute Description.
+     */
+    var     $cookie_domain = '';
+
+    /**
+     * Attribute Description.
+     */
+    var     $mode = "cookie"; ## We propagate session IDs with cookies
+
+    /**
+     * Attribute Description.
+     */
+    var     $fallback_mode = "cookie"; ## if fallback_mode is also 'ccokie'
+
+    ## we enforce session.use_only_cookie
+    /**
+     * Attribute Description.
+     */
+    var     $trans_id_enabled = false;
+
+    /**
+     * Attribute Description.
+     */
+    var     $allowcache = 'nocache';
+
+    /**
+     * Attribute Description.
+     */
+    private $db = NULL;
+
+    /**
+     * Attribute Description.
+     */
+    private $host;
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @param $name' (tipo) desc
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function __construct($name = '')
+    {
+        parent::__construct();
+        $this->SetName($name);
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @param $sid (tipo) desc
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function start($sid = NULL)
+    {
+        try
+        {
+            if ($this->mode == "cookie" && $this->fallback_mode == "cookie")
+            {
+                ini_set("session.use_only_cookie", "1");
+            }
+
+            $this->put_headers();
+
+            if ($sid != NULL)
+            {
+                $this->SetId($sid);
+            }
+
+            if ($this->manager->GetConf('session.handler') == 'db')
+            {
+                $this->db = $this->manager->GetDatabase('miolo');
+                $this->host = $_SERVER['REMOTE_ADDR'];
+                session_set_save_handler(
+                    array($this, 'open'),
+                    array($this, 'close'),
+                    array($this, 'read'),
+                    array($this, 'write'),
+                    array($this, 'delete'),
+                    array($this, 'garbage')
+                ); 
+            }
+
+            session_start();
+            $this->id = session_id();
+
+            if (!isset($_SESSION['timestamp']))
+            {
+                $_SESSION['timestamp'] = time();
+            }
+
+        }
+        catch( EMioloException $e )
+        {
+            throw $e;
+        }
+
+        /* temporarily not available
+        if ( MUtil::getBooleanValue($this->manager->getConf('options.loading.show')) )
+        {
+            echo '<div id="loading">';
+            echo '  <div id="message">';
+            echo _M('Loading...');
+            echo '  </div>';
+            flush();
+        }
+*/
+
+        return $ok;
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function destroy()
+    {
+       // Unset all of the session variables.
+       $_SESSION = array();
+       // If it's desired to kill the session, also delete the session cookie.
+       // Note: This will destroy the session, and not just the session data!
+       if (isset($_COOKIE[session_name()])) 
+       {
+           setcookie(session_name(), '', time()-42000, '/');
+       }
+       // Finally, destroy the session.
+       session_destroy();
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function checkTimeout()
+    {
+        $timestamp = time();
+        $difftime = $timestamp - $_SESSION['timestamp'];
+        $this->timeout = ($difftime > ($this->manager->getConf('session.timeout') * 60));
+        $_SESSION['timestamp'] = $timestamp;
+        if ($this->timeout)
+        {
+            $this->destroy();
+            throw new ETimeOutException();
+        }
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @param $name (tipo) desc
+     * @param ' (tipo) desc
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function SetName($name = '')
+    {
+        if ($name != '')
+        {
+            $name = ("" == $this->cookiename) ? 'MIOLOSESSID' : $this->cookiename;
+            $name = (string)$name;
+            $this->name = session_name($name);
+        }
+        return $this->name;
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @param $sid (tipo) desc
+     * @param ' (tipo) desc
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function SetId($sid = '')
+    {
+        if ($sid != '')
+        {
+            $sid = (string)$sid;
+            $this->id = session_id($sid);
+        }
+        return $this->id;
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function GetId()
+    {
+        return $this->id;
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @param $var_names (tipo) desc
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function register($var_names)
+    {
+        if (!is_array($var_names))
+        {
+            // spaces spoil everything
+            $var_names = trim($var_names);
+            $var_names = explode(",", $var_names);
+        }
+
+        foreach ($var_names as $key => $value)
+        {
+            global $$value;
+            $_SESSION[$value] = $$value;
+        }
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @param $var_name (tipo) desc
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function isRegistered($var_name)
+    {
+        $var_name = trim($var_name); // to be sure
+        return isset($_SESSION[$var_name]);
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @param $var_names (tipo) desc
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function unregister($var_names)
+    {
+        $ok = true;
+
+        foreach (explode(',', $var_names)as $var_name)
+        {
+            $var_name = trim($var_name);
+            $_SESSION[$var_name] = NULL;
+        }
+
+        return $ok;
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @param $var_name (tipo) desc
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function getValue($var_name)
+    {
+        $var_name = trim($var_name); // to be sure
+        return (isset($_SESSION[$var_name])) ? $_SESSION[$var_name] : NULL;
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @param $var_name (tipo) desc
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function get($var_name)
+    {
+        return $this->getValue($var_name);
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @param $var_name (tipo) desc
+     * @param $value (tipo) desc
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function setValue($var_name, $value)
+    {
+        $var_name = trim($var_name); // to be sure
+        $_SESSION[$var_name] = $value;
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @param $var_name (tipo) desc
+     * @param $value (tipo) desc
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function set($var_name, $value)
+    {
+        $this->setValue($var_name, $value);
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function freeze()
+    {
+        session_commit();
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function put_headers()
+    {
+        # set session.cache_limiter corresponding to $this->allowcache.
+        switch ($this->allowcache)
+            {
+            case "passive":
+            case "public":
+                session_cache_limiter("public");
+                break;
+            case "private":
+                session_cache_limiter("private");
+                break;
+            default:
+                session_cache_limiter("nocache");
+                break;
+            }
+    }
+
+    // db methods
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function open()
+    {
+        return TRUE;
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function close()
+    {
+        $this->db = NULL;
+        return TRUE;
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @param $id (tipo) desc
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function read($id)
+    {
+        $sql = new sql('sessiondata', 'miolo_session', "(sid=?) and (tsout='')");
+        $sql->SetParameters($id);
+        $query = $this->db->GetQuery($sql);
+
+        if (!$query->eof())
+        {
+            $data = stripslashes($query->fields('sessiondata'));
+        }
+
+        return $data;
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @param $id (tipo) desc
+     * @param $data (tipo) desc
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function write($id, $data)
+    {
+        $iduser = $this->manager->auth->iduser;
+        $sql = new sql('idsession,sid,sessiondata', 'miolo_session', "(sid=?) and (tsout='')");
+        $sql->SetParameters($id);
+        $query = $this->db->GetQuery($sql);
+
+        if ($query->eof())
+        {
+            $idsessao = $this->db->GetNewId('seq_miolo_session', 'miolo_sequence');
+            $ts = $this->manager->GetSysTime();
+            $sql = new sql('idsession,tsin,tsout,iduser,host,sid,sessiondata', 'miolo_session');
+            $this->db->Execute($sql->Insert(array($idsessao, $ts, '', $iduser, $this->host, $id, $data)));
+        }
+        else
+        {
+            $sql = new sql('iduser,sessiondata', 'miolo_session', 'sid=?');
+            $this->db->Execute($sql->Update(array($iduser, $data, $id)));
+        }
+
+        return TRUE;
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @param $id (tipo) desc
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function delete($id)
+    {
+        $sql = new sql('tsout', 'miolo_session', 'sid=?');
+        $this->db->Execute($sql->Update(array(date('Y/m/d H:i:s'), $id)));
+        return TRUE;
+    }
+
+    /**
+     * Brief Description.
+     * Complete Description.
+     *
+     * @param $lifetime (tipo) desc
+     *
+     * @returns (tipo) desc
+     *
+     */
+    function garbage($lifetime)
+    {
+        return TRUE;
+    }
+}
+?>

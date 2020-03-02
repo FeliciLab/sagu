@@ -1,0 +1,391 @@
+<?php
+
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ * 
+ * Este arquivo é parte do programa Sagu.
+ * 
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ * 
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ * 
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ * 
+ *
+ * @author Jonas Guilherme Dahmer [jonas@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Jonas Guilherme Dahmer [jonas@solis.coop.br]
+ *
+ * @since
+ * Class created on 12/03/2012
+ *
+ **/
+
+/**
+ * Form to manipulate a message
+ **/
+class FrmReverseInvoice extends SManagementForm
+{
+
+    private $openCounterId;
+    
+    /**
+     * Class constructor
+     **/
+    public function __construct()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        // Só pode estornar se a pessoa logada possuir um caixa aberto
+        $this->verificaCaixaAberto();
+
+        // Pega info do título
+        $busReceivableInvoice = new BusinessFinanceBusReceivableInvoice();
+        $invoiceInfo = $busReceivableInvoice->getInvoice(MIOLO::_REQUEST('invoiceId'));
+            
+        // Pega valor do caixa aberto
+        $busCloseCounter = new BusinessFinanceBusCloseCounter();
+        $saldoCaixa = $busCloseCounter->totalValorEmEspecie($this->openCounterId);
+        
+        if ( SAGU::calcNumber($saldoCaixa . '-' . $invoiceInfo->value) < 0 ) 
+        {
+            $MIOLO->error(_M("Saldo em dinheiro do caixa aberto para o usuário não é suficiente para o estorno do pagamento. Título {$invoiceInfo->invoiceId}.", $module));
+        }
+        
+        parent::__construct(new FinInvoice(), array('invoiceId'), 'BusInvoice');
+    }
+    
+    /**
+     * Verifica se para a pessoa logado existe um caixa aberto
+     * 
+     * @return boolean
+     */
+    public function verificaCaixaAberto()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        
+        $businessPhysicalPersonEmployee = new BusinessBasicBusPhysicalPersonEmployee();
+        $loginUser = $MIOLO->GetLogin();
+        $person = $businessPhysicalPersonEmployee->getPersonByMioloUserName($loginUser->id);
+        
+        $caixaAberto = false;
+        
+        if ( is_object($person) )
+        {
+            $businessOpenCounter = new BusinessFinanceBusOpenCounter();
+            
+            //Filter counter
+            $filter = new stdClass();
+            $filter->operatorId = $person->personId;
+            $filter->open = DB_TRUE;
+            
+            //Get data counter
+            $openCounter = $businessOpenCounter->searchOpenCounter($filter);
+            
+            if ( is_array($openCounter) )
+            {
+                $this->openCounterId = $openCounter[0][0];
+                $caixaAberto = true;    
+            }
+        }
+        
+        if ( !$caixaAberto )
+        {
+            $goto = MIOLO::_REQUEST('goto');
+            $itens = explode(';personId=', $goto);
+            
+            $urlGoBack = $MIOLO->GetActionURL($module, 'main:diverseConsultation', null, array('personId' => $itens[1]));
+            
+            $MIOLO->error(_M('Para que seja concluído o processo de estorno de pagamento, o usuário logado deve ter um caixa aberto.', $module), $urlGoBack);
+        }
+    }
+
+    /**
+     * Default method to define fields
+     **/
+    public function defineFields()
+    {
+        $MIOLO    = MIOLO::getInstance();
+        $module   = MIOLO::getCurrentModule();
+        $action   = MIOLO::getCurrentAction();
+        $function = MIOLO::_request('function');
+        $personId = MIOLO::_request('personId');
+        
+        $data = $this->busObject->getInvoice($_REQUEST['invoiceId']);
+        
+        $fields[] = new MTextField('invoiceId', $data->invoiceId, _M('Código',$module), SAGU::getParameter('BASIC', 'FIELD_ID_SIZE'), null, null, true);
+        
+        $fields[] = new SLookupContainer('personId', $data->personId, array('item'=>'PhysicalPerson','module'=>'basic','label'=>_M('Pessoa',$module),'readOnly'=>true));
+        
+        $fields[] = $venc = new MCalendarField('venc', $data->maturityDate, _M('Data de vencimento',$module));
+        $venc->setReadOnly(true);
+        
+        $fields[] = $ref = new MCalendarField('ref', $data->referenceMaturityDate, _M('Data de referência',$module));
+        $ref->setReadOnly(true);
+        
+        $filtro = new stdClass();
+        $filtro->invoiceId = $data->invoiceId;
+        
+        $bankMovement = new FinBankMovement();
+        $rsBankMovement = $bankMovement->search($filtro);
+        
+        // Para não cancelar as movimentações que são estornos
+        $filtro->operation = 'C';
+        $filtro->lancamentoNaoEstornado = true;
+        
+        $busCounterMovement = new BusinessFinanceBusCounterMovement();
+        $rsCounterMovement = $busCounterMovement->searchCounterMovement($filtro);
+        
+        if($rsBankMovement)
+        {
+            $grid = 'GrdReverseInvoiceBanco';
+            $tipo = 'banco';
+            $title = _M('Movimentações bancárias', $module);
+            
+            foreach($rsBankMovement as $rs)
+            {
+                $dataInvoices[] = array($rs->occurrenceDate,$rs->userName,$rs->ourNumber,$rs->fileId,$rs->bankMovementStatusId);
+            }
+        }
+        elseif($rsCounterMovement)
+        {
+            $grid = 'GrdReverseInvoiceCaixa';
+            $tipo = 'caixa';
+            $title = _M('Movimentações de caixa', $module);
+            
+            foreach($rsCounterMovement as $rs)
+            {
+                $dataInvoices[] = array($rs[1],$rs[13],$rs[3],$rs[4]);
+            }
+            
+        }
+        else
+        {
+            $grid = 'GrdReverseInvoiceCaixa';
+            $tipo = 'nenhum';
+            $title = _M('Lançamentos', $module);
+            
+            $busEntry = new BusinessFinanceBusEntry();
+            $rsEntry = $busEntry->searchEntry($filtro);
+            
+            foreach($rsEntry as $rs)
+            {
+                $dataInvoices[] = array($rs[4],$rs[14],'',$rs[5]);
+            }
+        }
+        
+        //grid
+        $grdResults = $MIOLO->getUI()->getGrid($module, $grid, $data);
+        $grdResults->setData($dataInvoices);
+        $grdResults->setIsScrollable(false);
+        $grdResults->setTitle($title);
+        $fields[] = $grdResults;
+        
+        $fields[] = new MSeparator();
+        
+        $fields[] = new SHiddenField('tipo', $tipo);
+        
+        $options['label'] = _M('Justificativa', $module);
+        $fields[] = new SMultiLineField('justificativa', $options);
+        $validators[] = new MRequiredValidator('justificativa');
+                
+        $action = "main:diverseConsultation";
+        $url = $MIOLO->getActionURL('finance', $action, null, array('personId'=> $data->personId));
+        $controls[] = new MButton('btnCancel', _M('Cancelar', $module), $url);
+        
+        $controls[] = new MButton('btnOK', _M('OK', $module));
+        
+        $fields[] = new MContainer('', $controls);
+        
+        // Caso esteja atrelado à uma NFe deixa avisado de que ela será cancelada
+        $dadosNfe = FinNfe::obterNumeroNotaFiscalAPartirDeTitulo(MIOLO::_REQUEST('invoiceId'), true);
+        if ( strlen($dadosNfe->nfeId) > 0 )
+        {
+            $goToYes = $MIOLO->getActionURL($module, 'main:process:nfePaulistana', null, array('nfeId' => $dadosNfe->nfeId, 'numeroNotaFiscal' => $dadosNfe->numeroNotaFiscal, 'event' => 'verificaPermissaoCancelamento', 'returnTo' => 'reverseInvoice', 'invoiceId' => MIOLO::_REQUEST('invoiceId')));
+            $MIOLO->question(_M("ATENÇÃO: Para poder estornar este título é necessário o cancelamento da nota fiscal {$dadosNfe->numeroNotaFiscal}, atrelada ao título. <br>Para continuar com o processo, clique em 'Sim'.", $module), $goToYes, $url);
+        }
+        
+        parent::defineFields($fields, $validators, $data);
+    }
+
+    /**
+     * Overwrites smanagementform default function in order to allow
+     * non-single primary keys to work correctly.
+     *
+     * @param $sender Those methods always have this parameter and I really don't know what can come with it. It doesn't matter, though, since it is not used by this method.
+     *
+     */
+    public function btnOK_click($sender = NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = 'main';
+
+        $busEntry = new BusinessFinanceBusEntry();
+        $busDefaultOperations = new BusinessFinanceBusDefaultOperations();
+        
+        $tipo = $this->getFormValue('tipo');
+        $justificativa = $this->getFormValue('justificativa');
+        $invoiceId = $_REQUEST['invoiceId'];
+        
+        $filtro = new stdClass();
+        $filtro->invoiceId = $invoiceId;
+        
+        $ok = true;
+
+        try
+        {
+            SDatabase::beginTransaction();
+            
+            if ( $tipo == 'banco' )
+            {
+                $filtersEntry = new stdClass();
+                $filtersEntry->invoiceId = $invoiceId;
+                $filtersEntry->lancamentoEstornado = DB_FALSE;
+                $filtersEntry->operationId = $busDefaultOperations->getDefaultOperation('paymentoperation');
+                
+                $oldEntries = $busEntry->searchEntry($filtersEntry);
+                
+                foreach ( $oldEntries as $oldEntry )
+                {
+                    $movBancaria = $busEntry->obterMovimentacaoDeBanco($oldEntry[0]);
+                    $oldBankMovement = new FinBankMovement($movBancaria->bankMovementId);
+                    
+                    $oldBankMovement->setOccurrenceDate(SAGU::getDateNow());
+                    $oldBankMovement->setValue(SAGU::calcNumber($oldBankMovement->value . '*-1')); // Inverte valor
+                    $oldBankMovement->setValuePaid(SAGU::calcNumber($oldBankMovement->valuePaid . '*-1')); // Inverte valor
+                    
+                    $ok = $ok && $oldBankMovement->insert();
+                    $newBankMovementId = $oldBankMovement->getLastInsertId();
+                }
+            }
+            elseif ( $tipo == 'caixa' )
+            {
+                $filtro->operation = 'C';
+                $filtro->lancamentoNaoEstornado = true;
+        
+                $busCounterMovement = new BusinessFinanceBusCounterMovement();
+                $rsCounterMovement = $busCounterMovement->searchCounterMovement($filtro);
+                
+                foreach ($rsCounterMovement as $rs)
+                {   
+                    $data = new stdClass();
+                    list(  $data->counterMovementId, $data->movementDate, $data->speciesId, $limbo,
+                           $data->value, $data->operation, $data->observation, $data->openCounterId,
+                           $data->invoiceId, $data->operationId, $limbo, $data->costCenterId,
+                           $limbo ) = $rs;
+                   
+                    $data->movementDate = null;
+                    $data->openCounterId = $this->openCounterId;
+                    //$data->value = SAGU::calcNumber('-1*'.$data->value);
+                    
+                    $data->observation = $justificativa;
+                    
+                    if($data->operation == 'C')
+                    {
+                        $data->operation = 'D';
+                    }
+                    else
+                    {
+                        $data->operation = 'C';
+                    }
+                    
+                    $newCounterMovementId = $busCounterMovement->insertCounterMovement($data, true);   
+                    $ok = $ok && strlen($newCounterMovementId) > 0;
+                }
+            }
+            
+            $filtro->operationId = $busDefaultOperations->getDefaultOperation('paymentoperation');
+            $filtro->lancamentoEstornado = DB_FALSE;
+            // Filtra apenas lançamentos com valor positivo, lançamentos com valores negativos são oriundos de estorno e não devem ser considerados novamente
+            $filtro->valorPositivo = true;
+            
+            $rsEntry = $busEntry->searchEntry($filtro);
+            
+            //estorna as entradas normais
+            foreach($rsEntry as $rs)
+            {
+                $data = new stdClass();
+                $data = $busEntry->getEntry($rs[0]);
+                $data->entryId = null;
+                $data->value = SAGU::calcNumber('-1*'.$data->value);
+                $data->comments = $justificativa;
+                $data->entryDate = SAGU::getDateNow();
+                $data->counterMovementId = $newCounterMovementId;
+                $data->bankMovementId = $newBankMovementId;
+                $ok = $ok && $busEntry->insertEntry($data);
+                
+                // Seta a flag lancamentoEstornado como true, mas apenas se o caixa que abriu o lançamento está aberto
+                $busEntry->atualizaLancamentoEstornado($rs[0]);
+            }
+            
+            //estorna os juros se tiver
+            $rsEntryInterest = $busEntry->getReverseInvoiceInterestEntries($rs[1]);
+            foreach($rsEntryInterest as $rs)
+            {
+                $data = new stdClass();
+                $data = $busEntry->getEntry($rs[0]);
+                $data->entryId = null;
+                $data->value = SAGU::calcNumber('-1*'.$data->value);
+                $data->comments = $justificativa;
+                $data->entryDate = SAGU::getDateNow();
+                $data->counterMovementId = $newCounterMovementId;
+                $data->bankMovementId = $newBankMovementId;
+                $ok = $ok && $busEntry->insertEntry($data);
+            }
+
+            if ( SAGU::getParameter('basic', 'MODULE_PROTOCOL_INSTALLED') == 'YES' ) //Protocolo instalado
+            {
+                $busInvoice = new BusinessFinanceBusReceivableInvoice();
+                $busRequest = new BusinessProtocolBusRequestPtc();
+                
+                $request = $busRequest->searchRequest($filtro);
+                
+                if ( count($request) > 0 )
+                {
+                    //Cancelando o título
+                    $invoiceData = $busInvoice->getReceivableInvoice($filtro->invoiceId);
+                    $invoiceData->isCanceled = DB_TRUE;
+                    $busInvoice->updateReceivableInvoice($invoiceData);
+                    
+                    //Reabrindo a solicitação
+                    $busRequest->updateRequestStatus($request[0][0], PtcRequest::STATUS_OPEN);
+                }
+            }
+
+            SDatabase::commit();
+
+            $msg = _M('Título estornado com sucesso',$module);
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Informação', $module);
+            SAGU::information($msg, $goto);
+        }
+        catch ( Exception $e )
+        {
+            SDatabase::rollback();
+            
+            $msg = _M('Erro executando a operação solicitada. ' . $e->getMessage(), $module);
+            $goto = SAGU::getStackBackUrl();
+            $goto = strlen($goto) > 0 ? $goto : $MIOLO->getActionURL($module, $action);
+            $caption = _M('Erro', $module);
+            SAGU::error($msg, $goto, $caption);
+        }
+        
+    }    
+}
+?>

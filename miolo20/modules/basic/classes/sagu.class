@@ -1,0 +1,4180 @@
+<?php
+/**
+ * <--- Copyright 2005-2010 de Solis - Cooperativa de Soluções Livres Ltda.
+ *
+ * Este arquivo é parte do programa Sagu.
+ *
+ * O Sagu é um software livre; você pode redistribuí-lo e/ou modificá-lo
+ * dentro dos termos da Licença Pública Geral GNU como publicada pela Fundação
+ * do Software Livre (FSF); na versão 2 da Licença.
+ *
+ * Este programa é distribuído na esperança que possa ser útil, mas SEM
+ * NENHUMA GARANTIA; sem uma garantia implícita de ADEQUAÇÃO a qualquer MERCADO
+ * ou APLICAÇÃO EM PARTICULAR. Veja a Licença Pública Geral GNU/GPL em
+ * português para maiores detalhes.
+ *
+ * Você deve ter recebido uma cópia da Licença Pública Geral GNU, sob o título
+ * "LICENCA.txt", junto com este programa, se não, acesse o Portal do Software
+ * Público Brasileiro no endereço www.softwarepublico.gov.br ou escreva para a
+ * Fundação do Software Livre (FSF) Inc., 51 Franklin St, Fifth Floor, Boston,
+ * MA 02110-1301, USA --->
+ *
+ * Class SAGU
+ *
+ * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+ *
+ * @version $Id$
+ *
+ * \b Maintainers: \n
+ * Equipe Solis [sagu2@solis.coop.br]
+ *
+ * @since
+ * Class created on 14/03/2004
+ */
+
+/**
+ * Alias to PHP function var_dump(), but with some extra features. vd() puts HTML <pre> tags
+ * on the dumped data for a better view.
+ *
+ * @param $1, $2, ..., $n (untyped): vd() may take as many parameters as you want. As a
+ *         special behavior, if its last parameter is a boolean TRUE, the execution is interrupted
+ *         with a call to exit().
+ */
+function vd()
+{
+    $numArgs = func_num_args();
+    if ( $numArgs > 1 && is_bool(func_get_arg($numArgs - 1)) )
+    {
+        $numArgs--;
+        $exit = func_get_arg($numArgs);
+    }
+    else
+    {
+        $exit = false;
+    }
+
+    echo ('<div align="left"><pre>');
+    for ( $i = 0; $i < $numArgs; $i++ )
+    {
+        var_dump(func_get_arg($i));
+    }
+    echo ('</pre></div>');
+
+    if ( $exit )
+    {
+        exit();
+    }
+}
+
+/**
+ * Alias to PHP function var_dump(), but with some extra features. flog() dumps all data to a
+ * special file (pipe) so that it can be read out of the browser context. It has a script called
+ * flog.sh, under tools directory, that helps reading out the pipe file contents.
+ *
+ * @param $1, $2, ..., $n (untyped): flog() may take as many parameters as you want.
+ */
+function flog()
+{
+    if ( file_exists('/tmp/var_dump') )
+    {
+        $numArgs = func_num_args();
+        $dump = '';
+
+        for ( $i = 0; $i < $numArgs; $i++ )
+        {
+            $dump .= var_export(func_get_arg($i), true) . "\n";
+        }
+
+        $f = fopen('/tmp/var_dump', 'w');
+        fwrite($f, $dump);
+        fclose($f);
+    }
+}
+
+/**
+ * Class used to call mainly functions used in Sagu2
+ */
+class SAGU
+{
+    const TIPO_VARIAVEL_TEXTO = 'T';
+    const TIPO_VARIAVEL_NUMERO = 'N';
+    const TIPO_VARIAVEL_DATA = 'D';
+    const TIPO_VARIAVEL_BOOLEAN = 'B';
+    
+    const ABSOLUTE_URL_JS_FILES = '../themes/smodern/scripts/';
+
+    /**
+     * FIXME: Fazer de forma melhor, talvez regexp...
+     * Convert money
+     *
+     * @param (int) $valueInCents - Value in cents
+     * @param (string) $prefix - R$, U$, null...
+     * @param (string) $decimalSeparator - Ex.: ","
+     * @param (string) $chiliadSeparator - Ex.: "."
+     * @param (int) $decimal_places - Ex.: "2"
+     * @return value formated Ex.: R$1,00
+     */
+    public static function convertMoney($valueInCents, $prefix = null, $decimal_separator = ',', $thousand_separator = '.', $decimal_places = 2)
+    {
+        $num = str_pad($valueInCents, $decimal_places + 1, '0', STR_PAD_LEFT);
+        $len = strlen($num);
+        unset($newNum);
+
+        for ( $i = $len - 1; $i >= 0; $i-- )
+        {
+            $newNum .= $num[$i];
+            if ( $i == $len - $decimal_places )
+            {
+                $newNum .= $decimal_separator;
+            }
+            elseif ( ($len - $i - $decimal_places) % 3 == 0 && $len - $i > $decimal_places && $i > 0 )
+            {
+                $newNum .= $thousand_separator;
+            }
+        }
+
+        return $prefix . strrev($newNum);
+    }
+
+    /**
+     * Ver SDatabase::prepareSQL()
+     * 
+     * @return string
+     */
+    public static function prepare($sql, $params, $upper = true)
+    {
+	$MIOLO = MIOLO::getInstance();
+
+	$string = SDatabase::prepareSQL($sql, $params, $upper);
+
+	if($MIOLO->getConf('options.miolo2modules'))
+	{
+            if(is_array($string))
+            {
+                for ( $i = 0; $i < count($string); $i++ )
+                {
+                    $string[$i] = mb_convert_encoding($string[$i],"UTF-8", "UTF-8");    
+                }
+            }
+            else
+            {
+                $string = mb_convert_encoding($string,"UTF-8", "UTF-8");
+            }
+	}
+
+        return $string;
+    }
+
+    /**
+     * Gets the current css theme name
+     *
+     * @return returns the name of the css theme specified in miolo.conf
+     */
+    public static function getCurrentTheme()
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        return $MIOLO->getConf('theme.main');
+    }
+
+    /**
+     * Authenticate an user.
+     *
+     * @param $uid User login
+     * @param $passwd User password
+     * @return True if user authentication was sucessful. Otherwise, false.
+     */
+    public static function authenticate($uid, $passwd)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $retVal = false;
+
+        if ( SAGU::getParameter('BASIC', 'AUTH_METHOD') == 'SAGU' )
+        {
+            $business = $MIOLO->getBusiness('basic', 'BusPerson');
+        }
+        elseif ( SAGU::getParameter('BASIC', 'AUTH_METHOD') == 'LDAP' )
+        {
+            $MIOLO->import('classes::security::mauthldap');
+            $business = new mAuthLdap();
+        }
+
+        if ( isset($business) )
+        {
+            $retVal = $business->authenticate($uid, $passwd, false);
+            
+            if ( ($retVal == false) && (SAGU::getParameter('BASIC', 'AUTH_METHOD') == 'LDAP')  )
+            {
+                $business = $MIOLO->getBusiness('basic', 'BusPerson');
+                $retVal = $business->authenticate($uid, $passwd, false);
+            }
+        }
+
+        return $retVal;
+    }
+
+    /**
+     * Function that create a pessword for new user
+     *
+     * @return Return the password created.
+     */
+    public static function createPassword()
+    {
+        // Caracteres de cada tipo
+        $combinations = array( );
+
+        // Combinacoes do tipo letras + numeros
+        if ( SAGU::getParameter('BASIC', 'AUTOMATIC_PASSWORD_GENERATION_SOURCE') == 'ALPHANUMERIC' )
+        {
+            $combinations[] = 'abcdefghijklmnopqrstuvwxyz';
+            $combinations[] = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+        }
+        // numeros (AUTOMATIC_PASSWORD_GENERATION_SOURCE = NUMERIC)
+        $combinations[] = '1234567890';
+
+        // Agrupa todos os tipos de de caracteres
+        $caracteres = implode('', $combinations);
+
+        // Obtem o tamanho dos caracteres agrupados
+        $len = strlen($caracteres);
+
+        $return = null;
+
+        for ( $count = 1;
+                    $count <= SAGU::getParameter('BASIC', 'PASSWORD_INITIAL_SIZE');
+                    $count++ )
+        {
+            // Cria um número aleatório de 1 até $len para pegar um dos caracteres
+            $rand = mt_rand(1, $len);
+
+            // Concatenado o caracteres gerado aleatório na variável $retorno
+            $return .= $caracteres[$rand - 1];
+        }
+
+        return $return;
+    }
+
+    /**
+     * Obtem validador para campos do tipo Senha no SAGU, de acordo com preferencia.
+     *
+     * @param string $id
+     * @param string $label
+     * 
+     * @return MValidator
+     */
+    public static function getPasswordValidator($id, $label, $type = 'optional')
+    {
+        $validator = SAGU::getParameter('BASIC', 'AUTOMATIC_PASSWORD_GENERATION_SOURCE') == 'NUMERIC' ?
+                new MIntegerValidator($id, $label, $type) :
+                new MPasswordValidator($id, $label, $type);
+
+        $validator->min = SAGU::getParameter('BASIC', 'PASSWORD_MIN_SIZE');
+        $validator->max = SAGU::getParameter('BASIC', 'PASSWORD_MAX_SIZE');
+
+        return $validator;
+    }
+
+    /**
+     * Get a boolean value and return in text format as "Yes" or "Not"
+     *
+     * @param $array (array): Array containing the list
+     * @param $pos (int): Specific position to modify
+     * @return (array): Return the array with specific fields parsed
+     */
+    public static function booleanToText($array, $pos)
+    {
+        global $module;
+        if ( is_array($array) )
+        {
+            if ( (strlen($pos) >= 0) && ($pos >= 0) )
+            {
+                for ( $x = 0; $x <= count($array); $x++ )
+                {
+                    if ( strlen($array[$x][$pos]) > 0 )
+                    {
+                        $value = $array[$x][$pos];
+                        if ( $value == 't' )
+                        {
+                            $value = _M('Sim', $module);
+                        }
+                        elseif ( $value == 'f' )
+                        {
+                            $value = _M('Não', $module);
+                        }
+                        $array[$x][$pos] = $value;
+                    }
+                }
+            }
+        }
+
+        return $array;
+    }
+
+    /**
+     * Format to CPF format - 999.999.999-99
+     *
+     * @param $text: CPF number without delimiters
+     * @return $text: Return CPF in CPF format
+     */
+    public static function convertInCPFFormat($cpf)
+    {
+        $cpfFormat = substr($cpf, 0, 3) . '.' . substr($cpf, 3, 3) . '.' . substr($cpf, 6, 3) . '-' . substr($cpf, 9, 2);
+
+        return $cpfFormat;
+    }
+
+    /**
+     * Format CPF without delimiters
+     *
+     * @param $text: CPF number if not delimiters
+     * @return $text: Return CPF in CPF format
+     */
+    public static function convertInCPFWithoutDelimiters($cpf)
+    {
+        $cpfFormat = str_replace(array( ".", ",", "/", "-" ), "", $cpf);
+
+        return $cpfFormat;
+    }
+
+    /**
+     * Get a arrays, number of buttons and return a buttons generated
+     * @author Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+     *
+     * @param $msg (string): string containing the  msg | $msg
+     * @param $goto (array): Array containing the array informations goto | $goto[$i][0]
+     * @param $event (array): Array containing the array informations event | $event[$i][0]
+     * @param $label (array): Array containing the array labels of buttons | $label[$i][0]
+     * @param $buttons (int): Number of buttons on this question
+     * @return (array): Return the array with specific fields parsed
+     */
+    public static function manyButtonsQuestion($msg, $goto, $event, $label, $buttons)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+        $prompt = new Prompt(_M('Confirmação'), $msg, $MIOLO->url_home . '/images/question.gif');
+        $prompt->SetType('question');
+
+        for ( $i = 0; $i < $buttons; $i++ )
+        {
+            $prompt->AddButton($label[$i][0], $goto[$i][0], $event[$i][0]);
+        }
+
+        $MIOLO->Prompt($prompt);
+    }
+
+    /**
+     * Check if parameter is exist in basConfig or don't have value.
+     * @author Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+     *
+     * @param $parameter (string): string containing a name of parameter of basConfig parameter
+     * @return (array): Return true if is existent value of parameter
+     */
+    public static function checkParameter($parameter)
+    {
+        $sql = 'SELECT value
+                    FROM basConfig
+                    WHERE parameter = ? ';
+        $args[] = $parameter;
+        $result = SDatabase::query($sql, $args);
+
+        return (strlen($result[0][0]) > 0);
+    }
+
+    public static function listSex()
+    {
+        // FIXME: Should the keys be lowercase here or uppercase in getSex()?
+        $data = array(
+            'M' => _M('Masculino', 'basic'),
+            'F' => _M('Feminino', 'basic') );
+
+        return $data;
+    }
+
+    public static function getSex($key)
+    {
+        // FIXME: Should the keys be lowercase here or uppercase in setSex()?
+        $data = array(
+            'm' => _M('Masculino', 'basic'),
+            'f' => _M('Feminino', 'basic') );
+
+        return $data[$key];
+    }
+
+    public static function listTrueFalse($type = 0, $capital = false)
+    {
+        // for MSelection
+        if ( $type == 0 )
+        {
+            if( !$capital )
+            {
+                $data = array(
+                    't' => _M('Sim', 'basic'),
+                    'f' => _M('Não', 'basic') );
+            }
+            else
+            {
+                $data = array(
+                    't' => _M('SIM', 'basic'),
+                    'f' => _M('NÃO', 'basic') );
+            }
+        }
+        // for MRadioButtonGroup
+        elseif ( $type == 1 )
+        {
+            if( !$capital )
+            {
+                $data = array(
+                    array(
+                        _M('Sim', 'basic'),
+                        't' ),
+                    array(
+                        _M('Não', 'basic'),
+                        'f' ) );
+            }
+            else
+            {
+                $data = array(
+                    array(
+                        _M('SIM', 'basic'),
+                        't' ),
+                    array(
+                        _M('NÃO', 'basic'),
+                        'f' ) );
+            }
+        }
+        return $data;
+    }
+
+    public static function getTrueFalse($key)
+    {
+        $data = array(
+            't' => _M('Verdadeiro', 'basic'),
+            'f' => _M('Falso', 'basic') );
+
+        return $data[$key];
+    }
+
+    public static function listTrueFalseIndifferent($type = 0)
+    {
+        // for MSelection
+        if ( $type == 0 )
+        {
+            $data = array(
+                't' => _M('Sim', 'basic'),
+                'f' => _M('Não', 'basic'),
+                '' => _M('Indiferente', 'basic') );
+        }
+        // for MRadioButtonGroup
+        elseif ( $type == 1 )
+        {
+            $data = array(
+                array(
+                    _M('Sim', 'basic'),
+                    't' ),
+                array(
+                    _M('Não', 'basic'),
+                    'f' ),
+                array(
+                    _M('Indiferente', 'basic'),
+                    '' ) );
+        }
+
+        return $data;
+    }
+
+    public static function getTrueFalseIndifferent($key)
+    {
+        $data = array(
+            't' => _M('Verdadeiro', 'basic'),
+            'f' => _M('Falso', 'basic'),
+            '' => _M('Indiferente', 'basic') );
+
+        return $data[$key];
+    }
+
+    public static function listAccountTypes()
+    {
+        // FIXME: This seems to be a hard code.
+        $data = array(
+            '01' => _M('Conta corrente', 'basic'),
+            '05' => _M('Poupança', 'basic') );
+
+        return $data;
+    }
+
+    public static function listYesNo($type = 0, $capital = false)
+    {
+        if ( $type == 0 )
+        {
+            if( !$capital )
+            {
+                $data = array(
+                    DB_TRUE => _M('Sim', 'basic'),
+                    DB_FALSE => _M('Não', 'basic') );
+            }
+            else
+            {
+               $data = array(
+                    DB_TRUE => _M('SIM', 'basic'),
+                    DB_FALSE => _M('NÃO', 'basic') ); 
+            }
+        }
+        elseif ( $type == 1 )
+        {
+            if( !$capital )
+            {
+                $data = array(
+                    array(
+                        _M('Sim', 'basic'),
+                        DB_TRUE ),
+                    array(
+                        _M('Não', 'basic'),
+                        DB_FALSE ) );
+            }
+            else
+            {
+                $data = array(
+                    array(
+                        _M('SIM', 'basic'),
+                        DB_TRUE ),
+                    array(
+                        _M('NÃO', 'basic'),
+                        DB_FALSE ) );                
+            }
+        }
+
+        return $data;
+    }
+    
+    public static function listNoYes($type = 0, $capital = false)
+    {
+        if ( $type == 0 )
+        {
+            if( !$capital )
+            {
+                $data = array(
+                    DB_FALSE => _M('Não', 'basic'),
+                    DB_TRUE => _M('Sim', 'basic') );
+            }
+            else
+            {
+               $data = array(
+                    DB_FALSE => _M('NÃO', 'basic'),
+                   DB_TRUE => _M('SIM', 'basic') ); 
+            }
+        }
+        elseif ( $type == 1 )
+        {
+            if( !$capital )
+            {
+                $data = array(
+                    array(
+                        _M('Não', 'basic'),
+                        DB_FALSE ),
+                    array(
+                        _M('Sim', 'basic'),
+                        DB_TRUE ) );
+            }
+            else
+            {
+                $data = array(
+                    array(
+                        _M('NÃO', 'basic'),
+                        DB_FALSE ),
+                    array(
+                        _M('SIM', 'basic'),
+                        DB_TRUE ) );                
+            }
+        }
+
+        return $data;
+    }
+
+    public static function getYesNo($key)
+    {
+        $data = array(
+            't' => _M('Sim', 'basic'),
+            'f' => _M('Não', 'basic') );
+
+        return $data[$key];
+    }
+
+    public static function listInOutTransition()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+
+        $data = array(
+            'i' => _M('Entrada', $module),
+            'o' => _M('Saída', $module),
+            't' => _M('Transição', $module) );
+
+        return $data;
+    }
+
+    public static function getInOutTransition($key)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+
+        $data = array(
+            'i' => _M('Entrada', $module),
+            'o' => _M('Saída', $module),
+            't' => _M('Transição', $module) );
+
+        return $data[$key];
+    }
+
+    public static function listInOut()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+
+        $data = array(
+            't' => _M('Entrada', $module),
+            'f' => _M('Saída', $module) );
+
+        return $data;
+    }
+
+    public static function getInOut($key)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+
+        $data = array(
+            't' => _M('Entrada', $module),
+            'f' => _M('Saída', $module) );
+
+        return $data[$key];
+    }
+
+    public static function listPersonTypes()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+
+        $data = array(
+            'P' => _M('Física', $module),
+            'L' => _M('Jurídica', $module) );
+
+        return $data;
+    }
+
+    public static function listModules($type = 0)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+
+        // For MSelection
+        if ( $type == 0 )
+        {
+            $data = array(
+                'ACADEMIC' => _M('Acadêmico', $module),
+                'ACCOUNTANCY' => _M('Contábil', $module),
+                'FINANCE' => _M('Financeiro', $module),
+                'SELECTIVEPROCESS' => _M('Processo seletivo', $module),
+                'RESIDENCY' => _M('Residência', $module),
+                'TRAINING' => _M('Estágio', $module),
+                'PEDAGOGICO' => _M('Pedagógico', $module),
+                'CONTASPAGAR' => _M('Contas a pagar', $module),
+                'RELCLIENTE' => _M('Relacionamento com o Cliente', $module),
+                'PROTOCOL' => _M('Protocolo', $module),
+            );
+        }
+        // For MRadioButtonGroup
+        elseif ( $type == 1 )
+        {
+            $data = array(
+                array(
+                    _M('Acadêmico', $module),
+                    'ACADEMIC' ),
+                array(
+                    _M('Contábil', $module),
+                    'ACCOUNTANCY' ),
+                array(
+                    _M('Básico', $module),
+                    'BASIC' ),
+                array(
+                    _M('Financeiro', $module),
+                    'FINANCE' ),
+                array(
+                    _M('Estágio', $module),
+                    'TRAINING' ),
+                array(
+                    _M('Institucional', $module),
+                    'INSTITUTIONAL' ),
+                array(
+                    _M('Processo seletivo', $module),
+                    'SELECTIVEPROCESS' ),
+                array(
+                    _M('Residência', $module),
+                    'RESIDENCY' ),
+                array(
+                    _M('Pedagógico', $module),
+                    'PEDAGOGICO' ),
+                array(
+                    _M('Protocolo', $module),
+                    'PROTOCOL' ),
+                );
+        }
+
+        return $data;
+    }
+
+    public static function listFieldTypes()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = $MIOLO->getCurrentModule();
+
+        $data = array(
+            'TEXTFIELD' => _M('Campo de texto', $module),
+            'MULTILINE' => _M('Campo de texto com várias linhas', $module),
+            'COMBOBOX' => _M('Caixa de seleção', $module),
+            'SELECTION' => _M('Seleção', $module),
+            'RADIOGROUP' => _M('Grupo de escolha', $module),
+            'CALENDAR' => _M('Campo de calendário', $module),
+            'HIDDEN' => _M('Campo oculto', $module) );
+
+        return $data;
+    }
+
+    /**
+     * List all months of the year
+     *
+     * @return (varchar): An array containing all months of the year
+     */
+    public static function listMonths()
+    {
+        $module = 'basic';
+
+        $data = array(
+            '1' => _M('Janeiro', $module),
+            '2' => _M('Fevereiro', $module),
+            '3' => _M('Mar&ccedil;o', $module),
+            '4' => _M('Abril', $module),
+            '5' => _M('Maio', $module),
+            '6' => _M('Junho', $module),
+            '7' => _M('Julho', $module),
+            '8' => _M('Agosto', $module),
+            '9' => _M('Setembro', $module),
+            '10' => _M('Outubro', $module),
+            '11' => _M('Novembro', $module),
+            '12' => _M('Dezembro', $module) );
+
+        return $data;
+    }
+    
+    /**
+     * Lista percentuais de 0 a 100%
+     *
+     * @return array
+     */
+    public static function listPercents()
+    {
+        $data = array();
+        
+        for ($i = 1; $i <= 100; $i ++ )
+        {
+            $data[$i] = "{$i}%";
+        }
+        
+        return $data;
+    }
+
+    /**
+     * List all years from interval
+     *
+     * @return (varchar): An array containing all the year
+     */
+    public static function listYears($begin, $end)
+    {
+        for ( $x = $begin; $x <= $end; $x++ )
+        {
+            $data[$x] = $x;
+        }
+
+        return $data;
+    }
+
+    /**
+     * Get the specified month description
+     *
+     * @param $key (integer): Integer representing the month who's description will be retrieved.
+     * @return (varchar): An array containing the requested month data
+     */
+    public static function getMonth($key)
+    {
+        $data = self::listMonths();
+
+        return $data[$key];
+    }
+
+    /**
+     * Parse the "saguStack session" to get the "Search Form" URL
+     *
+     * @return If true, return the correct "Search Form" URL,
+     *         otherwise return nul
+     */
+    public static function getStackBackUrl()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $session = $MIOLO->session;
+        $saguStack = $session->IsRegistered('saguStack') ? unserialize($session->GetValue('saguStack')) : null;
+
+        $x_ = (count($saguStack) - 1);
+
+        for ( $x_; $x_ >= 0; $x_-- )
+        {
+            if ( strstr($saguStack[$x_], '&function=search') || strstr($saguStack[$x_], ':search&') )
+            {
+                $goto = $saguStack[$x_];
+                $y_ = count($saguStack) - 1;
+                $saguStack = unserialize($session->GetValue('saguStack'));
+
+                for ( $y_; $y_ >= $x_; $y_-- )
+                {
+                    unset($saguStack[$y_]);
+                }
+
+                break;
+            }
+        }
+
+        $session->SetValue('saguStack', serialize($saguStack));
+        $session->SetValue('saguPromptEvent', 'true');
+
+        return $goto;
+    }
+
+    /**
+     * Reset the "saguStack session"
+     *
+     * @return true
+     */
+    public static function resetStack()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $session = $MIOLO->session;
+
+        $session->SetValue('saguStack', NULL);
+
+        return true;
+    }
+
+    /**
+     * Return number in CNPJ format
+     * @author Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+     *
+     * @return Return number in CNPJ format
+     */
+    public static function formatCNPJ($number)
+    {
+        if ( strlen($number) !== 14 )
+        {
+            return false;
+        }
+
+        $newNumber = substr($number, 0, 2) . '.';
+        $newNumber .= substr($number, 2, 3) . '.';
+        $newNumber .= substr($number, 5, 3) . '/';
+        $newNumber .= substr($number, 8, 4) . '-';
+        $newNumber .= substr($number, 12, 2);
+
+        return $newNumber;
+    }
+
+    /**
+     * Add interval in a date
+     *
+     * @author Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+     * @maintainer William Prigol Lopes [william@solis.coop.br]
+     *
+     * @param date : date for add interval
+     *         $type : 'c' = century, 'y' = year, 'm' = month, 'd' = day
+     *         $value : number to add interval
+     *         $operator : '-' or '+', default '+'
+     *         $mask : SAGU::getParameter('BASIC', 'MASK_DATE') or SAGU::getParameter('BASIC', 'MASK_TIMESTAMP')
+     *
+     * @return date added interval
+     */
+    public static function addIntervalInDate($date, $type, $value, $operator = ' + ', $mask = null)
+    {
+        $type = strtolower($type);
+
+        $value = $value ? $value : '0';
+
+        if ( !$mask )
+        {
+            $mask = SAGU::getParameter('BASIC', 'MASK_DATE');
+        }
+        
+        switch ( $type )
+        {
+            case 'c' :
+                $typeName = ' centuries ';
+                break;
+            case 'y' :
+                $typeName = ' years ';
+                break;
+            case 'm' :
+                $typeName = ' months ';
+                break;
+            case 'd' :
+                $typeName = ' days ';
+                break;
+            case 'mi' :
+                $typeName = ' minutes ';
+                break;
+            default :
+                $typeName = ' days ';
+                break;
+        }
+        
+        if ( strlen($operator) == 0 )
+        {
+            $operator = ' + ';
+        }
+
+        $sql = 'SELECT TO_CHAR(date(TO_DATE( ? , \'' . $mask . '\')) ' . $operator . ' \' ' . $value . $typeName . '\'' . '::interval, \'' . $mask . '\')';
+        
+        $date = ( is_array($date) ) ? $date : array($date);
+        
+        $return = SDatabase::query(SAGU::prepare($sql, $date));
+
+        if ( is_array($return[0]) )
+        {
+            return $return[0][0];
+        }
+
+        return false;
+    }
+    
+    /**
+     * Faz o mesmo que SAGU::addIntervalInDate() porem timestamp
+     *
+     * @return string 
+     */
+    public static function addIntervalInTimestamp($date, $type, $value, $operator = null, $mask = null)
+    {
+        if ( !$mask )
+        {
+            $mask = SAGU::getParameter('BASIC', 'MASK_TIMESTAMP_DEFAULT');
+        }
+        
+        $type = strtolower($type);
+
+        $value = $value ? $value : '0';
+
+        if ( !$mask )
+        {
+            $mask = SAGU::getParameter('BASIC', 'MASK_DATE');
+        }
+
+        switch ( $type )
+        {
+            case 'c' :
+                $typeName = ' centuries ';
+                break;
+            case 'y' :
+                $typeName = ' years ';
+                break;
+            case 'm' :
+                $typeName = ' months ';
+                break;
+            case 'd' :
+                $typeName = ' days ';
+                break;
+            case 'mi' :
+                $typeName = ' minutes ';
+                break;
+            default :
+                $typeName = ' days ';
+                break;
+        }
+
+        if ( strlen($operator) == 0 )
+        {
+            $operator = ' + ';
+        }
+
+        $sql = 'SELECT TO_CHAR((TO_TIMESTAMP( ? , \'' . $mask . '\')::timestamp) ' . $operator . ' \' ' . $value . $typeName . '\'' . '::interval, \'' . $mask . '\')';
+
+        $date = ( is_array($date) ) ? $date : array($date);
+
+        $return = SDatabase::query(SAGU::prepare($sql, $date));
+
+        if ( is_array($return[0]) )
+        {
+            return $return[0][0];
+        }
+
+        return false;
+    }
+
+    /**
+     * Return actual date formatted
+     * @author Eduardo Beal Miglioransa [eduardo@solis.coop.br]
+     * @maintainer Arthur Lehdermann [arthur@solis.coop.br]
+     *
+     * @param (string) $mask Opcionalmente pode-se passar a máscara na qual deseja a data atual. Em branco utiliza MASK_DATE_PHP.
+     * @return (string) representing current date in system standard date format
+     */
+    public static function getDateNow($mask = null)
+    {
+        $mask = is_null($mask) ? SAGU::getParameter('BASIC', 'MASK_DATE_PHP') : $mask;
+
+        return date($mask);
+    }
+
+    /**
+     * Return date in extense mode
+     * @author William Prigol Lopes [william@solis.coop.br]
+     *
+     * @param string $date date to convert to extense mode (default: NOW)
+     * @return string Date in extense mode
+     */
+    public static function getDateByExtense($date = null)
+    {
+        if ( !$date )
+        {
+            $date = SAGU::getDateNow();
+        }
+
+        // FIXME: This function needs to be modified if locale modifies the entries.
+        // It should receive three parameters (day, month and year) instead of only one.
+
+        $info = explode('/', $date);
+        if ( count($info) != 3 )
+        {
+            echo "SAGU CLASS: Invalid date";
+            return false;
+        }
+        $dd = $info[0];
+        $mm = $info[1];
+        $yyyy = $info[2];
+
+        // Check if date is a valid date
+        if ( checkdate($mm, $dd, $yyyy) )
+        {
+            $mm = strftime("%B", mktime(0, 0, 0, $mm, $dd, $yyyy));
+            //FIXME Tive que retirar o _M() pois ocorria erro ao gerar um pdf com o adobe que utilizava o fpdf e esta função
+            return $dd . ' ' . 'de' . ' ' . $mm . ' ' . 'de' . ' ' . $yyyy;
+        }
+        else
+        {
+            echo "SAGU CLASS: Invalid date";
+            return false;
+        }
+    }
+    
+    public static function isDate($str)
+    {
+        if ( strlen($str) == 10 )
+        {
+            list($dd,$mm,$yyyy) = explode('/',$str);
+
+            return checkdate($mm,$dd,$yyyy);
+        }
+        
+        return FALSE;
+    }
+
+    /**
+     * Return the string in capitulate format
+     * @author Daniel Afonso Heisler [daniel@solis.coop.br]
+     *
+     * @param $string (string): String in upper or lower case
+     * @return Formated string
+     *
+     * FIXME: The name of this function is incorrect (should be getCapitulatedString) and it does pt_BR-only
+     *        conversions.
+     */
+    public static function getCapitulatetString($string)
+    {
+
+        $str = strtolower($string);
+        $str = ucwords($str);
+        $str = str_replace(' Ao ', ' ao ', $str);
+        $str = str_replace(' De ', ' de ', $str);
+        $str = str_replace(' Da ', ' da ', $str);
+
+        return $str;
+    }
+
+    /**
+     * Return a calc by postgres connection
+     *
+     * @param $calc: Data to calculate
+     * @return (varchar): Return the calculated data if successfully or false...
+     * @author William Prigol Lopes [william@solis.coop.br]
+     *
+     * @contributor Armando Taffarel Neto [taffarel@solis.coop.br]
+     *  Contributed with regular expression to filter mathematical functions and numbers
+     */
+    public static function calcNumber($calc, $round = false, $roundValue = null, $db = null)
+    {
+        if ( $round == false )
+        {
+            $sql = ' SELECT ' . $calc;
+        }
+        else
+        {
+            $calc = str_replace(',', '.', $calc); // Estava ocorrendo bugs em certo cliente devido a passagem do numero com virgula
+            $sql = ' SELECT ROUND (' . $calc . ', ' . ($roundValue == null ? SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE') : $roundValue) . ')';
+        }
+
+        if( $db )
+        {
+            $return = $db->query($sql);
+        }
+        else
+        {
+            $return = SDatabase::query($sql);
+        }
+        
+
+        if ( is_array($return[0]) )
+        {            
+            return $return[0][0];
+        }
+
+        return false;
+    }
+
+    /**
+     * Return the number in default postgresql real format defined by sagu parameters
+     *
+     * @param $number (float): the number to format
+     * @param $decimals (int): optional parameter indicating the number of decimal places
+     * @return (varchar): Returns the value formatted by postgres
+     */
+    public static function formatNumber($number, $decimals = null)
+    {
+        if ( is_null($decimals) )
+        {
+            $decimals = SAGU::getParameter('BASIC', 'REAL_ROUND_VALUE');
+        }
+        $sql = 'SELECT ROUND(?, ' . $decimals . ' ) ';
+        $args = array(
+            $number );
+
+        $return = SDatabase::query($sql, $args);
+
+        if ( is_array($return[0]) )
+        {
+            return $return[0][0];
+        }
+
+        return false;
+    }
+
+    /**
+     * Return the number in roman
+     *
+     * @param $number (int): the number to format
+     * @return (varchar): Returns the value formatted in roman
+     */
+    public static function numberToRoman($number)
+    {
+        $n = intval($number);
+        $result = '';
+
+        $r = array( 'M' => 1000, 'CM' => 900, 'D' => 500, 'CD' => 400,
+            'C' => 100, 'XC' => 90, 'L' => 50, 'XL' => 40,
+            'X' => 10, 'IX' => 9, 'V' => 5, 'IV' => 4, 'I' => 1 );
+
+        foreach ( $r as $roman => $value )
+        {
+            $matches = intval($n / $value);
+            $result .= str_repeat($roman, $matches);
+            $n = $n % $value;
+        }
+
+        return $result;
+    }
+
+    /**
+     * This function sorts a multi-dimensional array
+     *
+     * @param $array (array) to sort multi-dimensional array
+     * @param $key (int) sort array key
+     * @return (array) sorted multi-dimensional array
+     */
+    public static function arraySort($array, $key)
+    {
+        $sortValues = array( );
+        for ( $i = 0; $i < count($array); $i++ )
+        {
+            $sortValues[$i] = $array[$i][$key];
+        }
+        asort($sortValues, SORT_LOCALE_STRING);
+        reset($sortValues);
+
+        $sortedArr = array( );
+        while ( list( $arrKey, $arrVal ) = each($sortValues) )
+        {
+            $sortedArr[] = $array[$arrKey];
+        }
+
+        return $sortedArr;
+    }
+
+    /**
+     * This function replaces the not ascii chars
+     *
+     * @param $string (string): The string to replacea
+     * @return (string): String with replaced ascii chars
+     */
+    public static function stringToASCII($string)
+    {
+        $strings = "áàãâäéèêëêíìïîóòôõöúùüûçÁÀÃÂÄÉÈÊËÍÌÏÎÓÒÔÖÕÚÙÛÜÇªºñÑ";
+        $asciis = "aaaaaeeeeeiiiiooooouuuucAAAAAEEEEIIIIOOOOOUUUUCaonN";
+
+        $string = strtr($string, $strings, $asciis);
+
+        return $string;
+    }
+
+    /**
+     * This function get a date in SQL default format mask and convert to other format (converted by sql parameters)
+     *
+     * @param $date (string): Default formatted date by MASK_DATE sagu2 constant
+     * @param $format (string): New format (you can use all things in conformance with sql99 defaults)
+     * @return (string): Formatted date if works otherwise false
+     */
+    public static function formatDate($date, $format)
+    {
+        $sql = 'SELECT TO_CHAR(TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'), ?)';
+        $args = array(
+            $date,
+            $format );
+
+        $return = SDatabase::query(SAGU::prepare($sql, $args, false));
+
+        if ( is_array($return[0]) )
+        {
+            return $return[0][0];
+        }
+
+        return false;
+    }
+
+    /**
+     * This function get a date in a SQL parameter format and mage to default date
+     *
+     * @param $date (string): Default formatted date
+     * @return (string): Formatted date by default mask date
+     */
+    public static function toDefaultDate($date, $format)
+    {
+        $sql = ' SELECT TO_CHAR(TO_DATE(?, ?), \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') ';
+        $args = array(
+            $date,
+            $format );
+
+        $return = SDatabase::query($sql, $args);
+
+        return $return[0][0];
+    }
+
+    /**
+     * Get the difference in days between two dates
+     *
+     * @param $startDate (string): A date formatted according to MASK_DATE constant
+     * @param $endDate (string): A date formatted according to MASK_DATE constant
+     * @return (string): The difference between the two dates in days.
+     */
+    public static function dateDiff($startDate, $endDate)
+    {
+        $sql = ' SELECT TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\') - TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')';
+        $args = array(
+            $startDate,
+            $endDate );
+
+        $return = SDatabase::query($sql, $args);
+
+        return $return[0][0];
+    }
+
+    /**
+     * Get the difference in hours
+     *
+     * @param beginTime (string): A hours in formatted hh:mm
+     * @param $endTime (string): A hours in formatted hh:mm
+     * @return (string): The difference between the two hours.
+     */
+    public static function timeDiff($beginTime, $endTime)
+    {
+        $sql = ' SELECT SUM(?::INTERVAL - ?::INTERVAL) ';
+        $args = array(
+            $beginTime,
+            $endTime
+        );
+
+        $return = SDatabase::query($sql, $args);
+
+        return $return[0][0];
+    }
+
+    /**
+     * Get the difference in months between two dates
+     *
+     * @param $startDate (string): A date formatted according to MASK_DATE constant
+     * @param $endDate (string): A date formatted according to MASK_DATE constant
+     * @return (string): The difference between the two dates in months.
+     */
+    public static function dateDiffInMonth($beginDate, $endDate)
+    {
+        $sql = ' SELECT extract(year from age)*12 + extract(month from age)
+                    FROM ( SELECT age(TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'), TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\')) ) AS t1;';
+
+        $args = array( $endDate,
+            $beginDate );
+
+        $return = SDatabase::query($sql, $args);
+
+        return $return[0][0];
+    }
+
+    /**
+     * This function return only numbers of strings
+     *
+     * @param $data (string): The unformatted string
+     * @return (string): Formatted number
+     */
+    public static function returnOnlyNumbers($data)
+    {
+        return ereg_replace('[^0-9]', '', $data);
+    }
+
+    /**
+     * Output a buffer as a file if headers not modified
+     *
+     * @param $fileName (string): File name to return
+     * @param $buffer (string): The buffer data to return as a file
+     * @param $contentType (string) default 'text/plain': Type of content to return
+     * @return Return nothing, send to browser the file and quit the process
+     *          (in reality returns a string with size 0) but don't tell this for others. ;)
+     */
+    public static function returnAsFile($fileName, $buffer, $contentType = null, $forceDownload = false)
+    {
+        if ( !$contentType )
+        {
+            $contentType = 'text/plain';
+        }
+        
+        if ( ob_get_contents() )
+        {
+            ob_end_clean();
+        }
+        if ( php_sapi_name() != 'cli' )
+        {
+            header('Content-Type: ' . $contentType);
+
+            if ( headers_sent() )
+            {
+                self::error('Some data has already been output to browser, can\'t send file');
+            }
+            
+            $disposition = $forceDownload ? 'attachment' : 'inline';
+
+            header('Content-Length: ' . strlen($buffer));
+            header('Content-disposition: ' . $disposition . '; filename="' . $fileName . '"');
+        }
+
+        echo $buffer;
+
+        if ( $forceDownload )
+        {
+            exit;
+        }
+        
+        return '';
+    }
+
+    /**
+     * Return the number in extensive format
+     *
+     * FIXME: This function doesn't conform to internationalization standards.
+     *
+     * @param $number: Number value
+     * @return the number in extension format
+     */
+    public static function extensive($cVALOR)
+    {
+        $aUNID = array(
+            "",
+            " UM ",
+            " DOIS ",
+            " TRES ",
+            " QUATRO ",
+            " CINCO ",
+            " SEIS ",
+            " SETE ",
+            " OITO ",
+            " NOVE " );
+        $aDEZE = array(
+            "",
+            "   ",
+            " VINTE E",
+            " TRINTA E",
+            " QUARENTA E",
+            " CINQUENTA E",
+            " SESSENTA E",
+            " SETENTA E",
+            " OITENTA E",
+            " NOVENTA E " );
+        $aCENT = array(
+            "",
+            "CENTO E",
+            "DUZENTOS E",
+            "TREZENTOS E",
+            "QUATROCENTOS E",
+            "QUINHENTOS E",
+            "SEISCENTOS E",
+            "SETECENTOS E",
+            "OITOCENTOS E",
+            "NOVECENTOS E" );
+        $aEXC = array(
+            " DEZ ",
+            " ONZE ",
+            " DOZE ",
+            " TREZE ",
+            " QUATORZE ",
+            " QUINZE ",
+            " DEZESSEIS ",
+            " DEZESSETE ",
+            " DEZOITO ",
+            " DEZENOVE " );
+
+        $nPOS1 = substr($cVALOR, 0, 1);
+        $nPOS2 = substr($cVALOR, 1, 1);
+        $nPOS3 = substr($cVALOR, 2, 1);
+
+        if ( strlen($cVALOR) == 1 )
+        {
+            $cUNID = $aUNID[($nPOS1)];
+        }
+        else
+        {
+            $cCENTE = $aCENT[($nPOS1)];
+            $cDEZE = $aDEZE[($nPOS2)];
+            $cUNID = $aUNID[($nPOS3)];
+        }
+
+        if ( substr($cVALOR, 0, 3) == "100" )
+        {
+            $cCENTE = "CEM ";
+        }
+
+        if ( substr($cVALOR, 1, 1) == "1" )
+        {
+            $cDEZE = $aEXC[$nPOS3];
+            $cUNID = "";
+        }
+
+        $cRESULT = $cCENTE . $cDEZE . $cUNID;
+        $cRESULT = substr($cRESULT, 0, strlen($cRESULT) - 1);
+        return $cRESULT;
+    }
+
+    /**
+     * Return the number in extensive format
+     *
+     * @param $number: Number value
+     * @return the number in extension format
+     */
+    public static function getExtensiveNumber($number, $currency = NULL, $pluralCurrency = NULL)
+    {
+        $zeros = "000.000.000,00";
+        $cVALOR = number_format($number, 2, ',', '.');
+        $cVALOR = substr($zeros, 0, strlen($zeros) - strlen($cVALOR)) . $cVALOR;
+
+        if ( $currency && $pluralCurrency )
+        {
+            $cMOEDA_SINGULAR = ' ' . $currency;
+            $cMOEDA_PLURAL = ' ' . $pluralCurrency;
+        }
+        else
+        {
+            $cMOEDA_SINGULAR = '';
+            $cMOEDA_PLURAL = '';
+        }
+
+        $cMILHAO = SAGU::extensive(substr($cVALOR, 0, 3)) . ((substr($cVALOR, 0, 3) > 1) ? ' MILHOES' : '');
+        $cMILHAR = SAGU::extensive(substr($cVALOR, 4, 3)) . ((substr($cVALOR, 4, 3) > 0) ? ' MIL' : '');
+        $cUNIDAD = SAGU::extensive(substr($cVALOR, 8, 3)) . (($nVALOR == 1) ? $cMOEDA_SINGULAR : $cMOEDA_PLURAL);
+        $cCENTAV = SAGU::extensive("0" . substr($cVALOR, 12, 2)) . ((substr($cVALOR, 12, 2) > 0) ? " CENTAVOS" : "");
+
+        $cRETURN = $cMILHAO . ((strlen(trim($cMILHAO)) != 0 && strlen(trim($cMILHAR)) != 0) ? ", " : "") . $cMILHAR . ((strlen(trim($cMILHAR)) != 0 && strlen(
+                        trim($cUNIDAD)) != 0) ? ", " : "") . $cUNIDAD . ((strlen(trim($cUNIDAD)) != 0 && strlen(trim($cCENTAV)) != 0) ? ", " : "") . $cCENTAV;
+
+        return $cRETURN;
+    }
+
+    /**
+     * Get a shorten name of a person
+     *
+     * @param $personName: String with the name
+     *         $length: Length of the shorted name
+     * @return the name shorted
+     */
+    public static function getShortenName($personName, $length)
+    {
+        $count = 1;
+        $control = substr_count($personName, ' ');
+
+        while ( strlen($personName) > $length && $count < $control )
+        {
+            $spaceNumber = 0;
+            for ( $x = 0; $x < strlen($personName); $x++ )
+            {
+                if ( $spaceNumber == $count )
+                {
+                    $char = substr($personName, $x, 1);
+                    $output .= $char . '. ';
+
+                    while ( $char != ' ' && $x < strlen($personName) )
+                    {
+                        $x++;
+                        $char = substr($personName, $x, 1);
+                    }
+                }
+                else
+                {
+                    $output .= substr($personName, $x, 1);
+                }
+                if ( substr($personName, $x, 1) == ' ' )
+                {
+                    $spaceNumber++;
+                }
+            }
+
+            $personName = $output;
+            unset($output);
+
+            $count++;
+        }
+
+        return substr($personName, 0, $length);
+    }
+
+    /**
+     * Loads the JS file for php serialization support
+     * in JavaScript
+     *
+     * @param $form: Current form
+     * @return the URL for $this->page->scripts->add() method
+     */
+    public static function importJsSerialize($form)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $form->page->scripts->add($MIOLO->getActionURL('basic', 'html:scripts:phpSerialize.js'));
+    }
+
+    /**
+     * Clean the toolbar and call MIOLO informarion method
+     */
+    public static function information($msg, $goto = '', $event = '', $halt = true)
+    {
+        global $MIOLO;
+        $MIOLO->getTheme()->setElement('toolbar', null);
+
+        $MIOLO->information($msg, $goto, $event, $halt);
+    }
+
+    /**
+     * Clean the toolbar and call MIOLO question method
+     */
+    public static function question($msg, $gotoYes = '', $gotoNo = '', $eventYes = '', $eventNo = '', $halt = true)
+    {
+        global $MIOLO;
+        $MIOLO->getTheme()->setElement('toolbar', null);
+
+        $MIOLO->question($msg, $gotoYes, $gotoNo, $eventYes, $eventNo);
+    }
+
+    /**
+     * Clean the toolbar and call MIOLO error method
+     */
+    public static function error($msg = '', $goto = '', $caption = '', $event = '', $halt = true)
+    {
+        global $MIOLO;
+        $MIOLO->getTheme()->setElement('toolbar', null);
+
+        $MIOLO->error($msg, $goto, $caption, $event, $halt);
+    }
+
+    /**
+     * Replace variables inside receipt.
+     * @author Samuel Koch [samuel@solis.coop.br]
+     *
+     * @param $conteudo (string): Is the information that will replace the variables
+     * @param $tags     (string): string containing a name of parameter of parameter
+     * @return (text): Return receipt
+     */
+    public static function interpretsReceipt($conteudo, $tags, $details=null)
+    {
+        // Substitui todas as variáveis pelo conteudo
+        $c = strtr($conteudo, $tags);
+        
+        foreach( $details as $number => $detail )
+        {
+            foreach ( $detail as $innerNumber => $innerDetail )
+            {
+                $innerDetail = SAGU::truncarString(29, $detail[$innerNumber]);
+                
+                $details[$number][$innerNumber] = $innerDetail;
+            }
+        }
+        
+        // Procura por funções e as aplicas
+        $array = explode("\n", $c);
+        foreach ( $array as $line )
+        {
+            if ( strpos($line, '$DETAILOP') === FALSE )
+            {
+                $arrayLine = explode(';', $line);
+                if ( count($arrayLine) > 1 )
+                {
+                    unset($receiptLine);
+                    $receiptLine = '|';
+
+                    for ( $count = 1; $count < count($arrayLine);
+                                $count = $count + 2 )
+                    {
+                        $receiptLine .= str_pad($arrayLine[$count], $arrayLine[$count + 1]);
+                    }
+
+                    $newReceipt[] = $receiptLine;
+                }
+                else
+                {
+                    $newReceipt[] = $line;
+                }
+            }
+            elseif ( count($details) > 0 )
+            {
+                $pads = array( );
+                $detailsIndex = 0;
+
+                $arrayLine = explode(';', $line);
+                if ( count($arrayLine) > 1 )
+                {
+                    unset($receiptLine);
+
+                    for ( $count = 0; $count < count($arrayLine); $count++ )
+                    {
+                        if ( strpos($arrayLine[$count], '$DETAILOP') === FALSE )
+                        {
+                            continue;
+                        }
+                        else
+                        {
+                            $pads[$detailsIndex] = $arrayLine[$count + 1];
+                            $detailsIndex++;
+                            $count = $count + 1;
+                        }
+                    }
+
+                    foreach ( $details as $detailData )
+                    {
+                        $receiptLine = '';
+
+                        foreach ( $pads as $index => $padValue )
+                        {
+                            $receiptLine .= str_pad('|' . $detailData[$index], $padValue);
+                        }
+
+                        $newReceipt[] = $receiptLine . '|';
+                    }
+                }
+                else
+                {
+                    $newReceipt[] = $line;
+                }
+            }
+        }
+
+        $newReceipt = implode("\n", $newReceipt);
+
+        return $newReceipt;
+    }
+
+    /**
+     * Obtain the value of the specified parameter.
+     * @author Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+     *
+     * @maintainers:
+     * Alexandre Heitor Schmidt [alexsmith@solis.coop.br]
+     * Arthur Lehdermann [arthur@solis.coop.br]
+     * Fabiano Tomasini [fabiano@solis.coop.br]
+     *
+     * @param $module    (string): Module in which the parameter is declared.
+     * @param $parameter (string): Parameter identificator.
+     * @return (parameter dependent): Value associated with the specified parameter.
+     */
+    public static function getParameter($module, $parameter)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        // Protecao de seguranca para nao entrar em loop, estava ocorrendo em alguns casos quando ocorria erro.
+        static $checkeds = array();
+
+        try
+        {
+            // If parameter is not defined yet, get its value from the database
+            if ( !defined($parameter) && !isset($checkeds[$parameter][$module]) )
+            {
+                $checkeds[$parameter][$module] = true;
+
+                // If $parameter contains no value, get value from basConfig
+                $sql = 'SELECT GETPARAMETER(?, ?)';
+
+                $params = array( );
+                $params[] = $module;
+                $params[] = $parameter;
+
+                $db = $MIOLO->getDatabase('basic');
+                $result = SDatabase::query(SAGU::prepare($sql, $params));
+
+                if ( count($result) == 0 )
+                {
+                    throw new Exception(_M('O parâmetro @1 não existe no módulo @2.', 'basic', $parameter, $module));
+                }
+                    
+                // Define this parameter globally so that it can be used later without going
+                // to the database again.
+                define($parameter, $result[0][0]);
+            }
+
+            return constant($parameter);
+        }
+        catch ( Exception $e )
+        {
+            $MIOLO->error($e->getMessage());
+        }
+    }
+    
+    /**
+     * Verifica se exite o parâmetro.
+     * @author Nataniel Ingor da Silva [nataniel@solis.coop.br]
+     *
+     * @maintainers:
+     * Equipe devel [devel@solis.coop.br]
+     *
+     * @param $module    (string): Module in which the parameter is declared.
+     * @param $parameter (string): Parameter identificator.
+     * @return True, caso o parâmetro exista e false, caso contrário.
+     */
+    public static function checkValidParameter($module, $parameter)
+    {
+        try
+        {
+            // If $parameter contains no value, get value from basConfig
+            $sql = "SELECT count(*) > 0 FROM basconfig WHERE parameter = ?";
+
+            $params = array( );
+            $params[] = $parameter;
+            $return = SDatabase::query(SAGU::prepare($sql, $params));
+            
+            return ($return == DB_TRUE) ? true : $return[0][0] == DB_TRUE ? true : false;
+        }
+        catch ( Exception $e)
+        {
+            return false;
+        }
+    }
+    
+    
+    public static function getUnitParameter($module, $parameter, $unitId)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        // Protecao de seguranca para nao entrar em loop, estava ocorrendo em alguns casos quando ocorria erro.
+        static $checkeds = array();
+
+        try
+        {
+            // If parameter is not defined yet, get its value from the database
+            if ( !defined($parameter) && !isset($checkeds[$parameter][$module]) )
+            {
+                $checkeds[$parameter][$module] = true;
+
+                // If $parameter contains no value, get value from basConfig
+                $sql = 'SELECT GETUNITPARAMETER(?, ?, ?)';
+
+                $params = array( );
+                $params[] = $module;
+                $params[] = $parameter;
+                $params[] = $unitId;
+
+                $db = $MIOLO->getDatabase('basic');
+                $result = SDatabase::query(SAGU::prepare($sql, $params));
+
+                if ( count($result) == 0 )
+                {
+                    throw new Exception(_M('O parâmetro @1 não existe no módulo @2.', 'basic', $parameter, $module));
+                }
+
+                // Define this parameter globally so that it can be used later without going
+                // to the database again.
+                define($parameter, $result[0][0]);
+            }
+
+            return constant($parameter);
+        }
+        catch ( Exception $e )
+        {
+            $MIOLO->error($e->getMessage());
+        }
+    }    
+
+    /**
+     * Do all stuff to execute a handler request, including checking access permissions.
+     * For forms that manage more than one table or that are complex in any other way, it is
+     * suggested that you specify it in the $searchForm parameter, leaving $managementForm
+     * null.
+     *
+     * @param (string) $module The module to which handler belongs to.
+     * @param (string) $action The handler itself, such as main:register.
+     * @param (string) $title Human readable name of the handler.
+     * @param (string) $searchForm Name of the search form of this handler.
+     * @param (string) $managementForm  Name of the management form of this handler OR array containing steps of SStepByStep
+     * @param (array) $options (OU transactionName) Opcoes diversas que podem ser passadas para funcao. Caso $options seja uma STRING, é considerado como transactionName para manter compatibilidade
+     * <br>
+     * <br>Opcoes:
+     * <br><b>transactionName</b> (string) Nome da transacao a ser utilizada (padrao: Nome do form)
+     * <br><b>checkAccess</b> (boolean) Se deve verificar permissao de acesso (padrao: TRUE)
+     * <br><b>toolbar</b> (boolean) Ativa/desativa exibicao de toolbar no form (padrao: TRUE)
+     */
+    public static function handle($module, $action, $title, $searchForm = null, $managementForm = null, $options = null)
+    {
+        global $theme, $navbar;
+
+        $MIOLO = MIOLO::getInstance();
+        $function = MIOLO::_REQUEST('function');
+        $ui = $MIOLO->getUI();
+        $isStepByStep = is_array($managementForm); // Quando for array, significa que é passo a passo
+        // Manter a compatibilidade
+        if ( $options && !is_array($options) )
+        {
+            $_options = $options;
+            $options = array( );
+            $options['transactionName'] = $_options;
+        }
+        // Define opcoes passadas, ou caso nao tenham sido passadas, as opcoes padrao
+        // Este $options é tambem passado para o construtor do form (MForm/SForm..)
+        $options = array_merge(array(
+            'checkAccess' => true,
+            'transactionName' => null,
+            'toolbar' => true,
+            'title' => $title, //passado como argumento para o form
+                ), (array) $options);
+
+        $MIOLO->trace('file:' . $_SERVER['SCRIPT_NAME']);
+
+        $navbar->addOption($title, $module, $action);
+
+        /*
+         * Caso não exista o ícone, exibe o default-16x16.png
+         */
+        $ico = array_pop(explode(':', $action)) . '-16x16.png';
+        if ( !file_exists($MIOLO->GetModulePath($module, null) . 'html/images/' . $ico) )
+        {
+            $ico = 'default-16x16.png';
+        }
+
+        self::addAccess($title, $action, $ico, false);
+        
+        /*
+         * Verificacao de permissoes 
+         */
+        $formName = $isStepByStep ? SStepByStepForm::getCurrentStepInfo($managementForm)->formName : SAGU::NVL($managementForm, $searchForm);
+        $transactionName = strlen($options['transactionName']) > 0 ? $options['transactionName'] : $formName;
+        if ( substr($transactionName, -6) == 'Search' )
+        {
+            $transactionName = substr($transactionName, 0, -6);
+        }
+        
+        if ( $options['checkAccess'] == true )
+        {
+            SAGU::checkDefaultAccess($transactionName);
+        }
+
+        //única forma encontrada de passar a transação para o SForm durante a construção
+        $MIOLO->SetConf('temp.setTransaction', $transactionName);
+
+        // Carrega o formulário adequado
+        if ( ((strlen($function) == 0) || ($function == 'search')) && ( strlen($searchForm) > 0 ) )
+        {
+            // Verifica se existe busca dinâmica para esse formulário
+            // try/catch para o caso da tabela de cadastro dinâmico ainda não existir
+            try
+            {
+                // Remove frm e Search do nome do formulário para obter o identificador
+                $identificador = substr($searchForm, strlen('frm'), -strlen('Search'));
+                $identificadorExiste = BasBuscaDinamica::verificarIdentificador($module, $identificador);
+            }
+            catch ( Exception $e )
+            {
+                $identificadorExiste = FALSE;
+            }
+
+            if ( $identificadorExiste )
+            {
+                $content = new SCustomSearchForm($title, $module, $identificador);
+
+                // FIXME: Alterar quando sistema de permissão for alterado
+                if ( strlen($options['transactionName']) == 0 )
+                {
+                    $options['transactionName'] = $searchForm;
+                }
+            }
+            else
+            {
+                $content = $ui->getForm($module, $searchForm, $options);
+            }
+
+            $content->setClose($MIOLO->getActionURL($module, substr($action, 0, strrpos($action, ':'))));
+        }
+        else
+        {
+            // Verifica se existe busca dinâmica para esse formulário
+            // try/catch para o caso da tabela de cadastro dinâmico ainda não existir
+            try
+            {
+                // Remove frm do nome do formulário para obter o identificador
+                if ( $identificador )
+                {
+                    $identificador = substr($managementForm, strlen('frm'));
+                    $identificadorExiste = BasCadastroDinamico::verificarIdentificador($module, $identificador);
+                }
+            }
+            catch ( Exception $e )
+            {
+                $identificadorExiste = FALSE;
+            }
+
+            if ( $identificadorExiste )
+            {
+                $content = new SCustomForm($title, $module, $identificador);
+
+                // FIXME: Alterar quando sistema de permissão for alterado
+                if ( strlen($options['transactionName']) == 0 )
+                {
+                    $options['transactionName'] = $managementForm;
+                }
+            }
+            else
+            {
+                $content = $isStepByStep ? SStepByStepForm::getCurrentForm($managementForm) : $ui->getForm($module, $managementForm, $options);
+            }
+
+            // Quando não existe tela busca, desabilita este botão da toolbar
+            if ( !$searchForm )
+            {
+                $content->getToolbar()->disableButton(MToolBar::BUTTON_SEARCH);
+            }
+        }
+
+        //define a transação no formulário da forma correta
+        if ( method_exists( $content, 'setTransaction' ) )
+        {
+            $content->setTransaction( $transactionName );
+        }
+
+        if ( !$options['toolbar'] && method_exists($content, 'disableToolbar') )
+        {
+            $content->disableToolbar();
+        }
+
+        if ( $theme->page->generateMethod != 'generateAjax' )
+        {
+            $theme->clearContent();
+            $theme->insertContent($content);
+        }
+    }
+
+    /**
+     * Verifica permissoes CRUD padrao (Inserir, Ler, Atualizar, Deletar).
+     *
+     * @param String $transaction
+     */
+    public static function checkDefaultAccess($transaction)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $function = strtolower(MIOLO::_REQUEST('function'));
+
+        if ( $MIOLO->getConf('login.check') == 'true' )
+        {
+            if ( (strlen($function) == 0) || ($function == 'search') )
+            {
+                $MIOLO->checkAccess($transaction, A_ACCESS, true, true);
+            }
+            else
+            {
+                switch ( $function )
+                {
+                    case 'insert':
+                        $MIOLO->checkAccess($transaction, A_INSERT, true, true);
+                        break;
+                    case 'update':
+                        if ( strlen(MIOLO::_REQUEST('event')) > 0 )
+                        {
+                            $MIOLO->checkAccess($transaction, A_UPDATE, true, true);
+                        }
+                        else
+                        {
+                            $MIOLO->checkAccess($transaction, A_ACCESS, true, true);
+                        }
+                        break;
+                    case 'delete':
+                        $MIOLO->checkAccess($transaction, A_DELETE, true, true);
+                        break;
+                }
+            }
+        }
+    }
+
+    /**
+     * Insere um acesso ao handler na tabela de basAccess
+     *
+     * @param $label (string): Nome padrão
+     *         $handler (string): Caminho Padrão
+     *         $image (string): Nome da imagem
+     */
+    public static function addAccess($label, $handler, $image, $isBookmark=false)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        if ( $MIOLO->getConf('login.check') == 'true' )
+        {
+            $module = MIOLO::getCurrentModule();
+            $MIOLO->uses('types.class', 'basic');
+
+            $login = $MIOLO->getLogin();
+            $data = new basAccess();
+            $data->login = $login->id;
+            $data->moduleAccess = $module;
+            $data->label = $label;
+            $data->image = $image;
+            $data->handler = $handler;
+            $data->isBookmark = $isBookmark;
+
+            $business = $MIOLO->getBusiness('basic', 'BusAccess');
+            $business->insertAccess($data);
+        }
+    }
+
+    /**
+     * Return a part of a date (the day, the month, the year, etc, as defined by PostgreSQL EXTRACT() function.
+     *
+     * @param $date The date to be parsed by the DB. It must be given in the MASK_DATE format.
+     * @param $part The part to be extracted. May be DAY, MONTH, YEAR or any other part supported by the EXTRACT() function.
+     * @return The requested date part.
+     */
+    public static function getDatePart($date, $part)
+    {
+        $sql = 'SELECT EXTRACT(' . $part . ' FROM TO_DATE(?, \'' . SAGU::getParameter('BASIC', 'MASK_DATE') . '\'))';
+        $args = array( $date );
+
+        $return = SDatabase::query($sql, $args);
+
+        return $return[0][0];
+    }
+
+    /**
+     * Funcao utilizada para quebrar um timestamp em hora e data, retornando o que for pedido.
+     *
+     * @param $timestamp String Timestamp com data e hora
+     * @param $return String Tipo de retorno (DATE ou TIME)
+     * @return $split String Data ou hora
+     */
+    public static function splitTimestamp($timestamp, $return = 'DATE')
+    {
+        $split = explode(' ', $timestamp);
+        return $return == 'DATE' ? $split[0] : $split[1];
+    }
+
+    /**
+     * Print data using a socket to a fiscal printer
+     * @author Leovan Tavares da Silva
+     *
+     * @param $data (object): the data to be printed
+     */
+    public static function printFiscalData($data)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $MIOLO->uses('classes/fiscalPrinterClient.class', 'basic');
+
+        $serverPort = self::getParameter('BASIC', 'PRINT_SERVER_PORT');
+        $serverAddres = self::getParameter('BASIC', 'PRINT_SERVER_ADDRESS');
+
+        if ( $serverAddres == 'minhaMaquina' )
+        {
+            $serverAddres = $_SERVER['REMOTE_ADDR'];
+        }
+
+        $socket = new fiscalPrinterClient($serverAddres, $serverPort);
+
+        try
+        {
+            if ( !$socket->starting() )
+            {
+                $socket->displayMsg("--LINE--");
+                $socket->displayMsg("\nClient Connect Error:" . $socket->getError() . "");
+                $socket->displayMsg("--LINE--");
+                die();
+            }
+
+            $nMaxTentativas = 1;
+            $nTentativas = 0;
+
+            do
+            {
+                $socket->displayMsg("--LN--");
+                $socket->displayMsg("--LINE--");
+                $socket->displayMsg("Enviando Dados");
+                $socket->displayMsg("--LINE--");
+
+                $socket->send($data);
+                $socket->send(PRINT_SERVER_SIGNAL_FINISH);
+
+                $ok = $socket->waitingResponse($socket->getTextConfirmCode());
+
+                if ( !$ok )
+                {
+                    $socket->displayMsg("--LN--");
+                    $socket->displayMsg("--LINE--");
+                    $socket->displayMsg("Uma falha no envio do conteudo.");
+                    $socket->displayMsg("--LINE--");
+                    $nTentativas++;
+
+                    $socket->closeConnection();
+
+                    if ( !$socket->starting() )
+                    {
+                        $socket->displayMsg("--LINE--");
+                        $socket->displayMsg("\nClient Connect Error:" . $socket->getError() . "");
+                        $socket->displayMsg("--LINE--");
+                        die();
+                    }
+                }
+                else
+                {
+                    $socket->displayMsg("--LN--");
+                    $socket->displayMsg("--LINE--");
+                    $socket->displayMsg("Conteudo enviado com sucesso.");
+                    $socket->displayMsg("--LINE--");
+
+                    do
+                    {
+                        $socket->send(PRINT_SERVER_SIGNAL_PRINT);
+                        $ok = $socket->waitingResponse(PRINT_SERVER_SIGNAL_PRINTER_SUCCESSFUL);
+
+                        if ( $ok )
+                        {
+                            $socket->displayMsg("--LN--");
+                            $socket->displayMsg("--LINE--");
+                            $socket->displayMsg("Print OK.");
+                            $socket->displayMsg("--LINE--");
+                        }
+                        else
+                        {
+                            $socket->displayMsg("--LN--");
+                            $socket->displayMsg("--LINE--");
+                            $socket->displayMsg("Print FAIL.");
+                            $socket->displayMsg("--LINE--");
+                            $nTentativas++;
+
+                            $socket->closeConnection();
+                            if ( !$socket->starting() )
+                            {
+                                $socket->displayMsg("--LINE--");
+                                $socket->displayMsg("\nClient Connect Error:" . $socket->getError() . "");
+                                $socket->displayMsg("--LINE--");
+                                die();
+                            }
+                        }
+                    }
+                    while ( !$ok && $nTentativas < $nMaxTentativas );
+
+                    do
+                    {
+                        $socket->send(PRINT_SERVER_SIGNAL_EXIT);
+                        $ok = $socket->waitingResponse(PRINT_SERVER_SIGNAL_EXIT_OK);
+
+                        if ( $ok )
+                        {
+                            $socket->displayMsg("--LN--");
+                            $socket->displayMsg("--LINE--");
+                            $socket->displayMsg("EXIT OK.");
+                            $socket->displayMsg("--LINE--");
+
+                            break 2;
+                        }
+                        else
+                        {
+                            $socket->displayMsg("--LN--");
+                            $socket->displayMsg("--LINE--");
+                            $socket->displayMsg("EXIT FAIL.");
+                            $socket->displayMsg("--LINE--");
+                            $nTentativas++;
+
+                            $socket->closeConnection();
+
+                            if ( !$socket->starting() )
+                            {
+                                $socket->displayMsg("--LINE--");
+                                $socket->displayMsg("\nClient Connect Error:" . $socket->getError() . "");
+                                $socket->displayMsg("--LINE--");
+                                die();
+                            }
+                        }
+                    }
+                    while ( !$ok && $nTentativas < $nMaxTentativas );
+                }
+            }
+            while ( !$ok && $nTentativas < $nMaxTentativas );
+
+
+            $socket->closeConnection();
+        }
+        catch ( Exception $e )
+        {
+            throw $e;
+        }
+    }
+
+    public static function getPersonSteps()
+    {
+        $action = strtolower(MIOLO::getCurrentAction());
+        $module = SAGU::getFileModule(__FILE__);
+        $function = MIOLO::_REQUEST('function');
+
+        $s = 1;
+
+        if ( $function == SForm::FUNCTION_INSERT && (strpos($action, 'contract') || strpos($action, 'student') || strpos($action, 'professor')) )
+        {
+            $steps[$s++] = new SStepInfo('FrmPersonChoose', _M('Selecionar pessoa', 'basic'), $module);
+        }
+
+        $steps[$s++] = new SStepInfo('FrmPerson', _M('Pessoa', 'basic'), $module);
+
+        if ( strpos($action, 'legal') ) // Legal person
+        {
+            $steps[$s++] = new SStepInfo('FrmLegalPerson', _M('Pessoa jurídica', $module));
+        }
+        else // Others
+        {
+            $steps[$s++] = new SStepInfo('FrmPhysicalPerson', _M('Pessoa física', 'basic'), $module);
+            $steps[$s++] = new SStepInfo('FrmPhysicalPersonKinship', _M('Parentesco', 'basic'), $module);
+            $steps[$s++] = new SStepInfo('FrmPersonDocument', _M('Documento', 'basic'), $module);
+
+            if ( (strpos($action, 'student')) || (strpos($action, 'contract')) )
+            {
+                $steps[$s++] = new SStepInfo('FrmPhysicalPersonStudent', _M('Aluno', 'basic'), $module);
+            }
+
+            if ( strpos($action, 'professor') )
+            {
+                $steps[$s++] = new SStepInfo('FrmPhysicalPersonProfessor', _M('Professor', 'basic'), $module);
+            }
+
+            if ( strpos($action, 'contract') )
+            {
+                $steps[$s++] = new SStepInfo('FrmContract', _M('Contrato', 'academic'), 'academic');
+            }
+        }
+        
+        $steps = Sagu::getStepByStepFlow($steps);
+        
+        return $steps;
+    }
+    
+    /**
+     * Funcao utilizada para obter quais os passos serão exibidos de um passo a passo, extraídos de um parâmetro.
+     *
+     * @param $steps
+     * @return $steps
+     */
+    public function getStepByStepFlow($steps)
+    {
+        $path = str_replace(':', '_', strtoupper(MIOLO::getCurrentAction()));
+            
+        if (sagu::checkValidParameter('BASIC', 'FLUXO_PASSO_A_PASSO_'.$path))
+        {
+            
+            
+            $options = (sagu::getParameter('BASIC', 'FLUXO_PASSO_A_PASSO_'.$path));
+
+            $count=1;
+            foreach($steps as $k => $step )
+            {
+                if(stristr($options, $step->formName))
+                {
+                    $auxSteps[$count++] = $step;
+                }
+            }
+
+            if (is_array($auxSteps))
+            {
+                $steps = $auxSteps;
+            }
+        }
+                
+        return $steps;        
+    }
+
+    /**
+     * Obtem passos da solicitacao de estagio
+     *
+     * @return array SStepInfo
+     */
+    public static function getTrainingRequestSteps()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $stepModule = 'training';
+        $action = MIOLO::getCurrentAction();
+        $function = MIOLO::_REQUEST('function');
+        $i = 1;
+
+        //Quando vem via webservices, nao exibir passo pessoa
+        if ( $module != 'services' )
+        {
+            $steps[$i++] = new SStepInfo('FrmRequestChooser', _M('Seleção de pessoa', $module), $stepModule);
+        }
+
+        //Se tiver no módulo de serviço entra no passo de autenticação de usuário
+        //
+        //( strlen(MIOLO::_REQUEST('ignoreAuthentication')) <= 0 )
+        if ( ( SAGU::userIsFromServices() && ( strlen($MIOLO->getLogin()->id) <= 0 ) ) ||
+                ( strlen(MIOLO::_REQUEST('isFromAuthentication')) > 0 ) )
+        {
+            $steps[$i++] = new SStepInfo('FrmRequestAuthentication', _M('Identificação', $module), $stepModule);
+        }
+
+        $steps[$i++] = new SStepInfo('FrmRequestPersonalInformation', _M('Informações pessoais', $module), $stepModule);
+        $steps[$i++] = new SStepInfo('FrmRequestDataStage', _M('Dados do estágio', $module), $stepModule);
+        $steps[$i++] = new SStepInfo('FrmRequestDocuments', _M('Documentos', $module), $stepModule);
+        $steps[$i++] = new SStepInfo('FrmRequestConfirmation', _M('Confirmação', $module), $stepModule);
+
+        return $steps;
+    }
+
+    /**
+     * Return the name of the module to which the specified file belongs to. This method is different
+     * from MIOLO::getCurrentModule(), because MIOLO::getCurrentModule() returns the module based on the
+     * "module" URL variable, while SAGU::getFileModule($file) analyzes $file path to determine to which
+     * module it belongs to. Generally this method will be called like this:
+     *
+     * SAGU::getFileModule(__FILE__);
+     *
+     * In this case, the path to be analyzed will be the file under execution itself.
+     *
+     * @param (string) $file String containing the path to be analyzed.
+     * @return (string) The name of the module where $file is located or empty string when module cannot be determined.
+     */
+    public static function getFileModule($file)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $dirs = explode(DIRECTORY_SEPARATOR, $file);
+        $modulesDir = array_pop(explode(DIRECTORY_SEPARATOR, $MIOLO->getConf('home.modules')));
+        $found = false;
+        $moduleName = '';
+        for ( $i = count($dirs); $i > 0 && !$found; $i-- )
+        {
+            if ( $dirs[$i] == $modulesDir )
+            {
+                $moduleName = $dirs[$i + 1];
+                $found = true;
+            }
+        }
+
+        return $moduleName;
+    }
+
+    /**
+     * Convert MIOLO database result array (MDatabase->query()) to Object
+     *
+     * @param array $data Array or Multidimensional array
+     * @param array $vars
+     * @param Object $type SAGU Type
+     */
+    public static function resultToObject($data, $vars, $type = null)
+    {
+        return self::convertResult($data, $vars, $type, 'object');
+    }
+    
+    /**
+     * Convert numeric indexed array to indexed
+     *
+     * @param array $data Array or Multidimensional array
+     * @param array $vars
+     * @param Object $type SAGU Type
+     */
+    public static function resultToArray($data, $vars, $type = null)
+    {
+        return self::convertResult($data, $vars, $type, 'array');
+    }
+    
+    private static function convertResult($data, $vars, $type, $returnType)
+    {
+        if ( is_array($data[0]) )
+        {
+            $result = array( );
+            
+            foreach ( $data as $d )
+            {
+                $result[] = self::convertResult($d, $vars, $type, $returnType);
+            }
+            
+            return $result;
+        }
+        else if ( count($data) > 0 )
+        {
+            $result = null;
+
+            if ( $type )
+            {
+                $typeVars = get_object_vars($type);
+                
+                foreach ( $vars as $i => $varName )
+                {
+                    if ( in_array($varName, array_keys($typeVars)) )
+                    {
+                        $result->$varName = $data[$i];
+                    }
+                }
+            }
+            else
+            {
+                // Nivela para os arrays ficarem iguais (com mesmo numero de elementos)
+                while ( count($vars) > count($data) )
+                {
+                    unset( $vars[ count($vars) - 1 ] );
+                }
+                while ( count($data) > count($vars) )
+                {
+                    unset( $data[ count($data) - 1 ] );
+                }
+                
+                $result = array_combine($vars, $data);
+            }
+
+            return $returnType == 'object' ? (object) $result : (array) $result;
+        }
+    }
+
+    /**
+     * Converte dados vindos de um SType para um array de stdClass com os valores
+     *
+     * @param Array $cols Colunas da subdetail
+     * @param Array $typeArray Array de stdClass (geralmente vindo de um SType::search())
+     */
+    public static function convertSTypeToSubDetail($cols, $typeData)
+    {
+        $data = array( );
+        foreach ( (array) $typeData as $val )
+        {
+            $ob = new stdClass();
+            foreach ( $cols as $col )
+            {
+                $colName = $col->options; // ->options = id da coluna subdetail
+                $ob->$colName = $val->$colName;
+            }
+            $data[] = $ob;
+        }
+
+        return $data;
+    }
+
+    /**
+     * Converte dados vindos de uma SubDetail para um array de objetos SType,
+     *  ja setando os valores para o objeto.
+     *
+     * @param string $subDetailName Id da subdetail (ex.: teams)
+     * @param SType $typeObject Objeto do tipo SType instanciado (ex.: new TraTeam())
+     */
+    public static function convertSubDetailToSType($subDetailName, $typeObject)
+    {
+        $rows = array( );
+        foreach ( (array) MSubDetail::getData($subDetailName) as $row )
+        {
+            unset($obj);
+
+            $rows[] = $obj = clone($typeObject);
+            foreach ( $row as $key => $val )
+            {
+                $obj->$key = $val;
+            }
+        }
+
+        return $rows;
+    }
+
+    public static function postgresToPhpArray($inArray)
+    {
+        $newArray = explode(',', trim($inArray, '{}'));
+        for ( $i = 0; $i < count($newArray); $i++ )
+        {
+            $newArray[$i] = trim($newArray[$i], '"');
+        }
+
+        return $newArray;
+    }
+
+    /**
+     * Checks if the CPF is valid
+     * @author Arthur Lehdermann[arthur@solis.coop.br]
+     *
+     * @maintainers:
+     * Arthur Lehdermann[arthur@solis.coop.br]
+     *
+     * @param $cpf (integer): CPF number.
+     * @return (boolean): True if is valid or false if is invalid.
+     */
+    public static function checkCPF($cpf)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        // Remove os delimitadores
+        $cpfNumber = SAGU::convertInCPFWithoutDelimiters($cpf);
+
+        // Se tiver os 11 caracteres valida-o
+        if ( strlen($cpfNumber) == 11 )
+        {
+            // Usa função na base de dados
+            $sql = 'SELECT VALIDATE_CPF(?)';
+
+            $pk = array( $cpfNumber );
+            $db = $MIOLO->getDatabase('basic');
+
+            $result = SDatabase::query(SAGU::prepare($sql, $pk, false));
+
+            // Se vier true retorna DB_TRUE (válido)
+            if ( $result )
+            {
+                $isValid = DB_TRUE;
+            }
+            else
+            {
+                $isValid = DB_FALSE;
+            }
+        }
+        else
+        {
+            // Se o cpf não tem a quantidade certa de caracteres retorna DB_FALSE (inválido)
+            $isValid = DB_FALSE;
+        }
+
+        return $isValid;
+    }
+
+    /**
+     * Obtem os valores extras obtidos na url, removendo valores internos/padroes do MIOLO e PHP (PHPSESSID, m_*_position, etc..)
+     *
+     * @sample
+     * Exemplo de uso:
+     * $args = SAGU::getRequestArgs();
+     * $args['meuNovoParametro'] = 'valor';
+     * $MIOLO->getActionURL(null, null, null, $args);
+     *
+     * @param boolean $includePath TRUE para incluir o "module" e "action" atuais na URL
+     * @return Array $args
+     */
+    public static function getRequestArgs($includePath = true)
+    {
+        $out = MIOLO::getInstance()->getContext()->getVars();
+
+        if ( !$includePath )
+        {
+            unset($out['module']);
+            unset($out['action']);
+        }
+
+        return $out;
+    }
+
+    public static function getEventName()
+    {
+        return MIOLO::_REQUEST('__EVENTTARGETVALUE');
+    }
+
+    public static function getEventArgs()
+    {
+        return MIOLO::_REQUEST('__EVENTARGUMENT');
+    }
+
+    public static function getRequiredLegend()
+    {
+        $symbol = new MLabel('*', 'red');
+        $label = new MTextLabel('lblRequiredInfo', _M('Os campos demarcados com (@1) são obrigatórios.', $module, $symbol->generate()));
+        return new MDiv('divRequiredInfo', array( new MSeparator(), $label ));
+    }
+
+    // FIXME Esta funcao nao terá mais necessidade quando for implementado um formulario-pai para o passo a passo da inscricao. (pode ser aplicado no pai para afetar todos formularios do passo a passo)
+    /**
+     * Obtem o botao de cancelar especifico para inscricao
+     *
+     * @return MButton
+     */
+    public static function getCancelButtonSubscription()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        
+        //$action = MIOLO::getCurrentAction();
+        //$args = array(
+            //'function' => MIOLO::_REQUEST('function'),
+            //'webservices' => MIOLO::_REQUEST('webservices'),
+        //);
+        //$goto = $MIOLO->getActionURL($module, $action, null, $args);
+        
+        // Ticket #18023 - O botão 'Cancelar deve voltar ao portal do aluno e não ao primeiro passo do passo-a-passo
+        $action = 'main';
+        $goto = $MIOLO->getActionURL($module, $action);
+
+        return new MButton('cancelButton', '<span>' . _M('Cancelar', 'basic') . '</span>', $goto, 'images/button_cancel.png');
+    }
+
+    /**
+     * Retorna o array de menus de relatorios genericos para ser adicionado ao array
+     *
+     * @param string $reportModule
+     * @return array
+     */
+    public static function getGenericReportsMenu($reportModule)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $action = MIOLO::getCurrentAction();
+        $grAction = $action . ':genericReports'; // Acao do genericReports (handler deve ter sempre este nome)
+
+        $busGenericReports = $MIOLO->getBusiness('basic', 'BusGenericReports');
+
+        $filters->module = strtoupper($reportModule);
+        $genericReports = $busGenericReports->searchReportObject($filters);
+
+        $menuItem = array( );
+        foreach ( (array) $genericReports as $report )
+        {
+            if ( strtoupper($report->enabled) == strtoupper(DB_TRUE) || $MIOLO->checkAccess($reportModule, ACD_ADMIN, false, true) )
+            {
+                $reportLink = array( $report->name, 'genericReports-16x16.png', $grAction, null, array( 'reportId' => $report->reportId ) );
+                $menuItem[] = $reportLink;
+            }
+        }
+
+        return $menuItem;
+    }
+
+    /**
+     * Processa o handler genericReports (geralmente genericReports.inc)
+     * Solucao encontrada temporariamente (tempo-permanentemente) para nao repetir logica em modulos diferentes
+     */
+    public static function processGenericReportHandler()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $ui = $MIOLO->getUI();
+        $theme = $MIOLO->getTheme();
+        $navbar = $theme->getElement('navigation');
+
+        $MIOLO->trace('file:' . $_SERVER['SCRIPT_NAME']);
+        $MIOLO->checkAccess('FrmGenericReportGeneration', A_EXECUTE, true, true);
+
+        $business = $MIOLO->getBusiness('basic', 'BusGenericReports');
+        $reportData = $business->getReport(MIOLO::_REQUEST('reportId'));
+
+        $navbar->addOption($reportData->name, $module, $action, null, array( 'reportId' => $reportData->reportId ));
+
+        $frmGenericReportGen = $ui->getForm('basic', 'FrmGenericReportGeneration');
+
+        $theme->clearContent();
+        $theme->insertContent($frmGenericReportGen);
+    }
+
+    /**
+     * Retorna nome de arquivo temporario do sistema
+     * Ex.: SAGU::getTmpFile('teste') = /tmp/teste
+     *
+     * @param <type> $name
+     */
+    public static function getTmpFile($name)
+    {
+        return sys_get_temp_dir() . '/' . $name;
+    }
+
+    /**
+     * Tenta alinhar campos em um formulario quando eles nao sao renderizados corretamente
+     *
+     * @param array $fields Campos MForm
+     * @return array $fields Realinhados
+     */
+    public static function alignFields($fields = array( ))
+    {
+        return array( new MFormContainer(rand(), $fields) );
+    }
+
+    /**
+     * Verifica se deve formatar data para formato da base ( yyyy-mm-dd ).
+     * Funcao feita para casos onde nao ha certeza de que a data esta no formato da base
+     */
+    public static function convertDateToDb($date)
+    {
+        // Verifica se esta no formato portugues
+        if ( strpos($date, '/') )
+        {
+            $sql = "SELECT TO_DATE(?, '" . SAGU::getParameter('BASIC', 'MASK_DATE') . "')";
+            $result = SDatabase::query(SAGU::prepare($sql, $date));
+            $date = $result[0][0];
+        }
+
+        return $date;
+    }
+    
+    /**
+     * verifica se as datas estão no mesmo intervalo de tempo.
+     *
+     * @param (date) $startDate1
+     * @param (date) $endDate1
+     * @param (date) $startDate2
+     * @param (date) $endDate2
+     * @return (boolean).
+     */
+    public static function dateOverlaps($startDate1, $endDate1, $startDate2, $endDate2)
+    {
+		if(!$startDate1 || !$endDate1 || !$startDate2 || !$endDate2)
+		{
+			return DB_FALSE;	
+		}
+        $sql = "SELECT ( dateToDb('$startDate1'), dateToDb('$endDate1')) OVERLAPS ( dateToDb('$startDate2'), dateToDb('$endDate2'));";
+        $return = SDatabase::query($sql);
+        return ($return[0][0] == DB_TRUE);
+    }
+
+	/**
+     * verifica se as horas estão no mesmo intervalo de tempo.
+     *
+     * @param (date) $start1
+     * @param (date) $end1
+     * @param (date) $start2
+     * @param (date) $end2
+     * @return (boolean).
+     */
+    public static function hourOverlaps($start1, $end1, $start2, $end2)
+    {
+		if($start1 && $end1 && $start2 && $end2)
+		{
+			$data = date('Y-m-d');
+			$sql = "SELECT (TIMESTAMP '$data $start1', TIMESTAMP '$data $end1') OVERLAPS (TIMESTAMP '$data $start2', TIMESTAMP '$data $end2');";
+			$return = SDatabase::query($sql);
+			if($return[0][0] == DB_TRUE)
+			{
+				return true;
+			}
+		}
+		return false;
+    }
+
+    /**
+     * Compara dois timestamps e retorna true ou false.
+     *
+     * @param (string) $leftDate Timestamp da esquerda.
+     * @param (string) $operator Operador lógico qualquer (< <= = != >= >)
+     * @param (string) $rightDate Timestamp da direita.
+     * @param (string) $mask Opcionalmente pode-se passar a máscara na qual $leftDate e $rightDate estão formatados. Em branco utiliza MASK_TIMESTAMP.
+     * @return (boolean) True (false) se a comparação resultar true (false).
+     */
+    public static function compareTimestamp($leftDate, $operator, $rightDate, $mask = null)
+    {
+        $mask = is_null($mask) ? SAGU::getParameter('BASIC', 'MASK_TIMESTAMP') : $mask;
+
+        $sql = ' SELECT TO_TIMESTAMP(?, \'' . $mask . '\') ' . $operator . ' TO_TIMESTAMP(?, \'' . $mask . '\')';
+        $args = array(
+            $leftDate,
+            $rightDate );
+
+        $return = SDatabase::query($sql, $args);
+
+        return ($return[0][0] == DB_TRUE);
+    }
+
+    /**
+     * Envia uma mensagem para output (geralmente utilizado em console)
+     *
+     * @param string $line
+     */
+    public static function output($line, $breakLine = true)
+    {
+        if ( SAGU::isConsoleMode() )
+        {
+            echo $line . ($breakLine ? "\n" : null);
+        }
+    }
+
+    /**
+     * Retorna uma string convertendo o objeto recebido por parametro na forma
+     * de declaração de objeto do PHP, limpando os atributos do MIOLO.
+     *
+     * @param $data object Objeto obtido com o $this->getData() do form
+     * @param $children object Cada item do array de objetos do subdetail
+     * @param $index integer Índice do array dos objetos do subdetail
+     * @return $ret string String contendo o objeto PHP na forma de string
+     */
+    public static function convertFormDataToPhpStringObject($data, $children=NULL, $index=NULL)
+    {
+        // FIXME: revisar função, talvez exista um forma melhor de fazer isso
+        // Limpa tudo que for relativo ao Miolo.
+        // TODO: Verificar essa lista com mais casos
+        $excludeList = array( 'module', 'action', 'function', 'webForm', 'mquickaccess_input', 'cpaint_response_type', 'PHPSESSID', '__.*', '_lookupDescription', 'arrayItem', 'msubdetail', 'SaveStateCookie' );
+
+        //Adiciona campos de types, que geralmente sao protected
+        $typeData = array( );
+        if ( $data instanceof SType )
+        {
+            foreach ( $data->getObjectVars() as $key => $value )
+            {
+                if ( !isset($data->$key) )
+                {
+                    $typeData[$key] = $value;
+                }
+            }
+            $data = $typeData;
+        }
+
+        foreach ( $data as $key => $value )
+        {
+            $matchExcludeList = false;
+            foreach ( $excludeList as $el )
+            {
+                if ( preg_match("/$el/", $key) )
+                {
+                    $matchExcludeList = true;
+                }
+            }
+            if ( !$matchExcludeList )
+            {
+                if ( is_array($value) )
+                {
+                    // array de objetos do subdetail
+                    $ret .= self::convertFormDataToPhpStringObject($value, $key);
+                }
+                else if ( is_object($value) )
+                {
+                    // cada objeto (stdClass) do subdetail
+                    $ret .= self::convertFormDataToPhpStringObject($value, $children, $key);
+                }
+                else
+                {
+                    if ( $children )
+                    {
+                        // subdetail - array de objetos
+                        $ret .= "\$obj->$children\[$index\]->$key = '$value';\n";
+                    }
+                    else
+                    {
+                        // campos normais
+                        $ret .= "\$obj->$key = '$value';\n";
+                    }
+                }
+            }
+        }
+
+        return $ret;
+    }
+
+    /**
+     * Cria um arquivo de teste unitário para o SAGU, utilizando a função
+     * convertFormDataToPhpStringObject.
+     *
+     * @param object $data Objeto obtido com o $this->getData() do form.
+     * @param string $class Nome da classe.
+     * @param array $pkeys Vetor com os nomes das chaves primárias.
+     * @param string $module Nome do módulo, caso não seja o atual.
+     */
+    public static function createUT($data, $class, $pkeys, $module=NULL)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $home = $MIOLO->getConf('home.modules');
+
+        if ( !$module )
+        {
+            $module = MIOLO::getCurrentModule();
+        }
+
+        $utTemplateFile = "$home/basic/tests/testTemplate.tpl";
+        $utTemplate = fread(fopen($utTemplateFile, 'r'), filesize($utTemplateFile));
+
+        $utLog = self::convertFormDataToPhpStringObject($data);
+        $utLog = str_replace('\\', '', var_export($utLog, true));
+        $utLog = substr($utLog, 1, mb_strlen($utLog) - 2);
+
+        // SType
+        try
+        {
+            $MIOLO->uses("types/$class.class", $module);
+
+            $utLog = "\$obj = new $class();\n$utLog";
+            $utLog = "\$MIOLO->uses('types/$class.class', '$module');\n$utLog;";
+            $utLog .= "\n\$this->addType(\$obj);";
+        }
+        // Business
+        catch ( Exception $e )
+        {
+            $utLog = "\$bus = \$MIOLO->getBusiness('$module', '$class');\n$utLog";
+            $utLog .= "\n\$this->addBusiness(array(\$bus, \$obj));";
+        }
+
+        $utContent = str_replace('%DATA%', $utLog, $utTemplate);
+        $utContent = str_replace('%CLASS%', $class, $utContent);
+        $utContent = str_replace('%MODULE%', $module, $utContent);
+        $utContent = str_replace('%PKEYS%', var_export((array) $pkeys, true), $utContent);
+
+        $file = 'Tst' . ucfirst($class) . '.class';
+        $testsDir = "$home/$module/tests";
+
+        if ( !file_exists($testsDir) )
+        {
+            mkdir($testsDir);
+        }
+
+        file_put_contents("$testsDir/$file", $utContent);
+
+        return true;
+    }
+
+    /**
+     * Função que retorna um boolean informando se o usuário está acessando do módulo
+     * de serviços.
+     *
+     * @return boolean
+     */
+    public static function userIsFromServices()
+    {
+        return defined('USER_IS_FROM_SERVICES');
+    }
+
+    /**
+     * Define que usuario esta vindo do modulo SERVICES.
+     * Função chamada geralmente em handlers do mesmo.
+     */
+    public static function defineUserIsFromServices()
+    {
+        if ( !defined('USER_IS_FROM_SERVICES') )
+        {
+            define('USER_IS_FROM_SERVICES', true);
+        }
+    }
+
+    /**
+     * Método para criptografar uma string ou descriptografar a mesma
+     * @param type $str Mensagem
+     * @return String Mensagem criptografada
+     */
+    public static function encriptDecrypt($str)
+    {
+
+        $Len_Str_Message = strlen($str);
+        $Str_Encrypted_Message = "";
+        for ( $Position = 0; $Position < $Len_Str_Message; $Position++ )
+        {
+            $Key_To_Use = (($Len_Str_Message + $Position) + 1);
+            $Key_To_Use = (255 + $Key_To_Use) % 255;
+            $Byte_To_Be_Encrypted = substr($str, $Position, 1);
+            $Ascii_Num_Byte_To_Encrypt = ord($Byte_To_Be_Encrypted);
+            $Xored_Byte = $Ascii_Num_Byte_To_Encrypt ^ $Key_To_Use;
+            $Encrypted_Byte = chr($Xored_Byte);
+            $Str_Encrypted_Message .= $Encrypted_Byte;
+        }
+        return $Str_Encrypted_Message;
+    }
+
+    /**
+     * Converte arrays sequenciais (geralmente retornados pelo metodo list*() dos business ou types),
+     *  para um array associativo utilizando a primeira posicao como chave e a segunda como valor.
+     *
+     * Ex.:
+     * array( array ( 0 => '9842', 1 => 'MARIA DA SILVA'), array( 0 => '8882', 1 => 'JOSE MACHADO')  )
+     *
+     * Retorna:
+     * array ( '9842' => 'MARIA DA SILVA', '8882' => 'JOSE MACHADO' )
+     *
+     *
+     */
+    public static function convertListToAssociative($array)
+    {
+        $out = array( );
+
+        foreach ( (array) $array as $arr )
+        {
+            $out[$arr[0]] = $arr[1];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Efetua o login no sistema novamente, restaurando as informações originais do usuário
+     */
+    public static function reLogin()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $login = $MIOLO->getLogin();
+
+        $user = $MIOLO->GetBusinessMAD('user');
+        $user->GetByLogin($login->loginId);
+        $login = new MLogin($user);
+
+        if ( $this->manager->GetConf("options.dbsession") )
+        {
+            $session = $this->manager->GetBusinessMAD('session');
+            $session->LastAccess($login);
+            $session->RegisterIn($login);
+        }
+        $MIOLO->auth->SetLogin($login);
+    }
+
+    /**
+     * Metodo identico ao $MIOLO->getActionURL(), com alguns adicionais:
+     * - Envia para a URL de destino o unique id com os filtros utilizados na interface atual, podendo, assim, ser voltado para a tela onde estava.
+     * - Nao tem o terceiro parametro $event, mas sim, $args (para passar o $event utilize o atributo 'event' => 'EVENTO')
+     * 
+     * @param string $module
+     * @param string $action
+     * @param array $args
+     */
+    public static function getActionURL($module, $action, $args)
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        $uniqueId = MUtil::NVL($MIOLO->getConf('uniqueSearchId'), MIOLO::_REQUEST('uniqueSearchId'));
+        if ( strlen($uniqueId) > 0 )
+        {
+            $args['uniqueSearchId'] = $uniqueId;
+        }
+
+        return $MIOLO->getActionURL($module, $action, null, $args);
+    }
+
+    /**
+     * Busca por arquivos em diretorios
+     *
+     * @param string $directory Diretorio inicial
+     * @param string $pattern Expressao regular com filtros de arquivos (padrao preg_match())
+     * @param boolean $recursive Buscar em sub-diretorios
+     * 
+     * @return array Array com arquivos
+     */
+    public static function findFiles($directory, $pattern = null, $recursive = true)
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        // Filtro padrao de nome arquivo
+        if ( is_null($pattern) )
+        {
+            $pattern = '/(.*)/i';
+        }
+
+        $files = array( );
+        $scan = glob($directory . '/*');
+
+        foreach ( (array) $scan as $path )
+        {
+            // Se for diretorio
+            if ( is_dir($path) )
+            {
+                if ( $recursive )
+                {
+                    $files = array_merge($files, self::findFiles($path, $pattern));
+                }
+            }
+            else // Se for arquivo
+            {
+                if ( preg_match($pattern, basename($path)) )
+                {
+                    $files[] = $path;
+                }
+            }
+        }
+
+        return $files;
+    }
+
+    /**
+     * Obtem configuracao de e-mail para testes, caso exista
+     * 
+     * @return string E-mail
+     */
+    public static function getTestMail()
+    {
+        $MIOLO = MIOLO::getInstance();
+
+        return $MIOLO->getConf('mail.test');
+    }
+
+    /**
+     * Obtem usuario logado atualmente
+     * 
+     * @return basPerson
+     */
+    public static function getUsuarioLogado()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = SAGU::getFileModule(__FILE__);
+
+        $busPerson = $MIOLO->getBusiness($module, 'BusPerson');
+        return $busPerson->getCurrentLoginPerson();
+    }
+
+    /**
+     * Funcao identica ao MUtil::NVL, porem suporta infinitos valores nos parametros.
+     * Ex: SAGU::NVL(null, null, 'teste', null, 'abc') retorna: 'teste'
+     * 
+     * @return string Primeira string nao-nula passada
+     */
+    public static function NVL()
+    {
+        $ret = null;
+
+        foreach ( func_get_args() as $val )
+        {
+            if ( strlen($val) > 0 )
+            {
+                $ret = $val;
+                break;
+            }
+        }
+
+        return $ret;
+    }
+    
+    
+    /**
+     * Retorna se usuario logado atualmente tem permissao.
+     *
+     * @param string $transactionName Exemplo: FrmContractPerson
+     * @param string $permType Exemplos: A_ACESS, A_ADMIN, A_UPDATE, A_DELETE...
+     * 
+     * @return boolean
+     */
+    public static function userHasAccess($transactionName, $permType)
+    {
+        $MIOLO = MIOLO::getInstance();
+        return $MIOLO->checkAccess($transactionName, $permType, false, true) || $MIOLO->checkAccess($transactionName, A_ADMIN, false, true);
+    }
+    
+    /**
+     * Retorna se usuario logado atualmente possui permissao para
+     *  ao menos um dos tipos de permissoes passados.
+     *
+     * @param type $transactionName
+     * @param array $permTypes 
+     */
+    public static function userHasAccessAny($transactionName, array $permTypes)
+    {
+        $ok = false;
+        
+        foreach ( $permTypes as $permType )
+        {
+            if ( !$ok )
+            {
+                $ok = self::userHasAccess($transactionName, $permType);
+            }
+        }
+        
+        return $ok;
+    }
+    
+    
+    /**
+     * Retorna se usuario logado atualmente possui permissao para
+     *  TODOS os tipos de permissoes passados.
+     *
+     * @param type $transactionName
+     * @param array $permTypes 
+     */
+    public static function userHasAccessAll($transactionName, array $permTypes)
+    {
+        $ok = true;
+        
+        foreach ( $permTypes as $permType )
+        {
+            $ok = $ok && self::userHasAccess($transactionName, $permType);
+        }
+        
+        return $ok;
+    }
+    
+    /**
+     * Chama o MIOLO->invokeHandler() de forma automatica para nao ter mais de criar
+     *  os arquivos handlers para cada subdiretorio.
+     *
+     * @return boolean Se invocou ou nao algum handler
+     */
+    public static function invokeHandlerAuto()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+        $invoked = false;
+        
+        $shiftAction = str_replace('main:', '', $action);
+        $shiftAction = str_replace(':', '/', $shiftAction);
+        $shiftAction = trim($shiftAction);
+
+        // Percorre subpath dos handlers para ver se existe um handler que deve ser chamado antes
+//        $sysModule = SModules::getModule($module);
+//        $modulePath = $sysModule->getSystemPath().'/handlers';
+//        foreach ( (array) explode('/', $shiftAction) as $subPath )
+//        {
+//            $path .= "/{$subPath}";
+//            $handlerFile = "{$modulePath}/{$path}.inc";
+//            if ( file_exists($handlerFile) )
+//            {
+//                $invoked = true;
+//                $MIOLO->invokeHandler($module, $path);
+//            }
+//        }
+        
+        if ( !$invoked && !in_array(strtolower($shiftAction), array('', 'main', 'diverseconsultation')) )
+        {
+            $confName = "temp.invoked.{$shiftAction}";
+            $invoked = true;
+            
+            // Se ainda nao foi invocado esta acao
+            if ( !$MIOLO->getConf($confName) )
+            {
+                $MIOLO->setConf($confName, true);
+                $MIOLO->invokeHandler($module, $shiftAction);
+            }
+        }
+
+        return $invoked;
+    }
+    
+    
+    /**
+     * Percorre todos valores do array passado e adiciona uma quote entre cada um ($delimiter)
+     * Util para converter valores para SQL, etc..
+     *
+     * @param array $values
+     * @param string $delimiter Tipo de quote
+     * @param string $callbackFunction Funcao que deve chamar para cada valor (ex.: strtolower)
+     * 
+     * @return array
+     */
+    public static function quoteArrayStrings(array $values, $delimiter = null, $callbackFunction = null)
+    {
+        if ( !$delimiter )
+        {
+            $delimiter = "'";
+        }
+        
+        foreach ( $values as $key => $val )
+        {
+            if ( $callbackFunction )
+            {
+                $val = call_user_func($callbackFunction, $val);
+            }
+            
+            $values[$key] = $delimiter . $val . $delimiter;
+        }
+        
+        return $values;
+    }
+    
+    /**
+     * Verifica se todos valores passados possuem LENGTH maior que zero.
+     * Ex.:
+     * - allIsFilled('abc', 'uuu', null, 'eee') => FALSE
+     * - allIsFilled('abc', 'uuu', 'eee') => TRUE
+     *
+     * @return boolean
+     */
+    public static function allIsFilled()
+    {
+        $ok = true;
+        
+        foreach ( func_get_args() as $val )
+        {
+            $ok = $ok && strlen($val) > 0;
+        }
+        
+        return $ok;
+    }
+
+    /**
+     * Obtem uma data por extenso (ex.: 21 de Janeiro de 2012)
+     *
+     * @param string $data
+     * @return string
+     */
+    public static function obterDataPorExtenso($data)
+    {
+        $query = SDatabase::query('SELECT dataporextenso(?)', array($data));
+        return $query[0][0];
+    }
+    
+    /**
+     * Retorna se esta em modo debug no SAGU.
+     * 
+     * Util para desenvolvedores conseguirem testar o sistema de forma facil,
+     *  sem ter que entrar com logins com permissoes validas (ex. portal), etc..
+     * 
+     * 
+     * @return boolean 
+     */
+    public static function isDebugMode()
+    {
+        $MIOLO = MIOLO::getInstance();
+        return $MIOLO->getConf('options.sagudebugmode');
+    }
+    
+    /**
+     * Executa metodos setters em um objeto a partir de um array.
+     * 
+     * @param object $object
+     * @param array $vars 
+     * 
+     * @return object
+     */
+    public static function setFromArray($object, array $vars, $throwException = true)
+    {
+        $classVars = array_keys(get_object_vars($object));
+        
+        foreach ( $vars as $key => $value )
+        {
+            $setMethod = 'set' . ucfirst($key);
+
+            if ( method_exists($object, $setMethod) )
+            {
+                call_user_method($setMethod, $object, $value);
+            }
+            else if ( $throwException )
+            {
+                $objName = get_class($object);
+                throw new Exception("O método {$objName}::{$setMethod} não existe, verifique a classe ou consulta SQL.");
+            }
+        }
+        
+        return $object;
+    }
+    
+    /**
+     * Retorna se esta em uma acao (action) permitida, que nao requere autenticacao no SAGU.
+     * Ex.: Inscricao processo seletivo
+     *
+     * @return boolean
+     */
+    public static function isAllowedAction()
+    {
+        $MIOLO = MIOLO::getInstance();
+        $module = MIOLO::getCurrentModule();
+        $action = MIOLO::getCurrentAction();
+
+        /* Abaixo array com handlers onde o sagu não deve fazer checkacess
+         * Inscrição do processo seletivo
+         * Solicitação de estágio
+         * Registrar usuário
+         * Obter arquivo
+         * Obter foto
+         */
+        $allowedActionsServices = array(
+            'main:selectiveProcessSubscription',
+            'main:trainingRequest',
+            'main:userRegister',
+            'main:getfile',
+            'main:residency',
+            'main:training',
+            'main', // Para clientes que fazem acesso diretamento ao portal específico do seu grupo de usuários, ex. SESCOOP.
+            'getphoto' // Como "main:getphoto" não funciona, somente "getphoto".
+        );
+
+        /* Abaixo array com handlers onde o sagu não deve fazer checkacess
+         * Solicitar mudança de senha
+         * Mudar senha
+         */
+        $allowedActionsAdmin = array(
+            'forgottenPassword',
+            'changePassword'
+        );
+
+        $allowedActionsFinance = array(
+            'main:process:printInvoice'
+        );
+
+        $allowedActionsBasic = array(
+            'getphoto',
+            'main:report:statusbanco',
+            'main:getfile',
+            'main:config:validadocumento',
+            'main:person:registroaluno',
+        );
+        
+        $allowedActionsPedagogico = array(
+            'main:process:inscricaoautenticacao',
+            'main:registroaluno',
+        );
+        
+        $allowedActionsAnyModule = array(
+            'main:report:generateReport',
+            'main:document:generateReport'
+        );
+        
+        $allowedActionsRelCliente = array(
+            'rccMensagemOuvidoriaPortal',
+            'rccInteressePortal'
+        );
+        
+        $allowedActionsResMedica = array(
+            'main:registroaluno',
+        );
+        $allowedActionsResRIS = array(
+            'main:registropreceptor',
+        );
+        
+        return ( ($module == 'admin' && (in_array($action, $allowedActionsAdmin))) ||
+                 ($module == 'services' && ( in_array($action, $allowedActionsServices))) ||
+                 ($module == 'finance' && ( in_array($action, $allowedActionsFinance))) ||
+                 ($module == 'pedagogico' && ( in_array($action, $allowedActionsPedagogico))) ||
+                 ($module == 'basic' && ( in_array($action, $allowedActionsBasic))) ||
+                 ($module == 'relcliente' && ( in_array($action, $allowedActionsRelCliente))) ||
+                 ($module == 'resmedica' && ( in_array($action, $allowedActionsResMedica))) ||
+                 ($module == 'residency' && ( in_array($action, $allowedActionsResRIS))) ||
+                 ( self::liberarAcessoAoRelatorio() && (in_array($action, $allowedActionsAnyModule))) );
+    }
+    
+    /**
+     * Executa um $MIOLO->error() em um Exception criando tambem um link para visualizar o trace.
+     */
+    public static function exceptionWithTrace(Exception $e)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $htmlTrace = '<a href="javascript: return;" onclick="document.getElementById(\'sqlDebug\').style.display=\'block\'">Exibir trace</a>';
+        $htmlTrace .= '<div id="sqlDebug" style="display: none"><pre>' . $e->getTraceAsString() . '</pre></div>';
+
+        $MIOLO->error( $e->getMessage() . '<br/>' . $htmlTrace );
+    }
+    
+    /**
+     * Converte data para o banco
+     *
+     * @param string $date
+     * @return string
+     */
+    public static function dateToDb($date)
+    {
+        $out = null;
+        
+        if ( strlen($date) > 0 )
+        {
+            $out = current(current(SDatabase::query("SELECT datetodb(?)", array($date))));
+        }
+        
+        return $out;
+    }
+    
+    /**
+     * Converte data para o usuario
+     *
+     * @param string $date
+     * @return string
+     */
+    public static function dateToUser($date)
+    {
+        $out = null;
+        
+        if ( strlen($date) > 0 )
+        {
+            $out = current(current(SDatabase::query("SELECT datetouser(?)", array($date))));
+        }
+        
+        return $out;
+    }
+    
+    /**
+     * Obtem diretorio de cliente
+     *
+     * @return string
+     */
+    public static function getClientPath()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        return $MIOLO->getAbsolutePath('cliente/');
+    }
+    
+    /**
+     * @return boolean
+     */
+    public static function isClientPathExists()
+    {
+        return is_dir(self::getClientPath());
+    }
+    
+    /**
+     * Obtem diretorio de cliente
+     *
+     * @return string
+     */
+    public static function getClientReportPath()
+    {
+        return self::getClientPath() . '/iReport/';
+    }
+    
+    /**
+     * @return boolean
+     */
+    public static function isClientReportPathExists()
+    {
+        return is_dir(self::getClientReportPath());
+    }
+    
+    /**
+     * @return boolean
+     */
+    public static function isUserLogged()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        return strlen($MIOLO->getLogin()->id) > 0;
+    }
+    
+    /**
+     * Retorna se versao atual é MIOLO2 (antigo)
+     * 
+     * @return boolean
+     */
+    public static function isMiolo2()
+    {
+        return preg_match('/2.0/', MIOLO_VERSION);
+    }
+    
+    /**
+     * @return string
+     */
+    public static function getServicesPupilHomeUrl()
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        return $MIOLO->GetActionURL('services', 'main:pupil');
+    }
+    
+    /**
+     *
+     * @return array
+     */
+    public static function listarDiasDaSemana()
+    {
+        $diasDaSemana = array();
+        $diasDaSemana[0] = _M('Domingo');
+        $diasDaSemana[1] = _M('Segunda-feira');
+        $diasDaSemana[2] = _M('Terça-feira');
+        $diasDaSemana[3] = _M('Quarta-feira');
+        $diasDaSemana[4] = _M('Quinta-feira');
+        $diasDaSemana[5] = _M('Sexta-feira');
+        $diasDaSemana[6] = _M('Sábado');
+        
+        return $diasDaSemana;
+    }
+    
+    /**
+     * @return BasCompanyConf
+     */
+    public static function obterInstituicao()
+    {
+        $busCC = new BusinessBasicBusCompany();
+        $company = $busCC->getCompany( SAGU::getParameter('BASIC', 'DEFAULT_COMPANY_CONF') );
+        
+        return $company;
+    }
+    
+    /**
+     * @return BasUnit
+     */
+    public static function obterUnidadeAtual()
+    {
+        $unitId = sMultiUnidade::obterUnidadeLogada();
+        
+        if ( strlen($unitId) > 0 )
+        {
+            $unit = new BasUnitFixed($unitId);
+        }
+        else
+        {
+            $unitType = new BasUnitFixed();
+            $unit = $unitType->findOne();
+        }
+        
+        return $unit;
+    }
+    
+    /**
+     * @return array
+     */
+    public static function obterCores()
+    {
+        return array(
+            'yellow' => _M('Amarelo'),
+            'blue' => _M('Azul'),
+            'green' => _M('Verde'),
+            'lightgreen' => _M('Verde claro'),
+            'red' => _M('Vermelho'),
+        );
+    }
+    
+    public static function liberarAcessoAoRelatorio()
+    {
+        $report = MIOLO::_REQUEST('report');
+        
+        if( !$report )
+        {
+            return false;
+        }
+        else
+        {
+            $basUploadReportInfo = new BasUploadReportInfo();
+            $report = MIOLO::_REQUEST('report');
+            $filters->report = $report;
+            $reportInfo = $basUploadReportInfo->search($filters);
+            
+            if( $reportInfo->uploadReportInfoId )
+            {
+                $reportInfo->authenticationRequired == 't' ? $return = true : $return = false;
+                return $return;
+            }
+            else
+            {   
+                return false;
+            }
+        }
+    }
+    
+    /*
+     * Retorna o nome do navegador utilizado
+     */
+    public static function getBrowser()
+    {   
+        $browser = $_SERVER['HTTP_USER_AGENT'];
+        
+        if(strstr($browser, 'MSIE'))
+        {
+            $tipo = 'IE';
+        }
+        
+        if(strstr($browser, 'Firefox'))
+        {
+            $tipo = 'Firefox';
+        }
+        
+        if(strstr($browser, 'Chrome'))
+        {
+            $tipo = 'Google Chrome';
+        }
+        
+        if(strstr($browser, 'Android'))
+        {
+            $tipo = 'Android';
+        }
+        
+        if(strstr($browser, 'webOS'))
+        {
+            $tipo = 'webOS';
+        }
+        
+        if(strstr($browser, 'iPhone'))
+        {
+            $tipo = 'iPhone';
+        }
+        
+        if(strstr($browser, 'iPod'))
+        {
+            $tipo = 'iPod';
+        }
+        
+        return $tipo;
+    }
+    
+    /**
+     * Verifica se esta em modo console ou acessando via webservicess
+     *
+     * @return boolean
+     */
+    public static function isConsoleMode()
+    {
+        $uri = $_SERVER['SCRIPT_NAME'];
+        return function_exists('consoleOutput') || isset($_REQUEST['webservice']) || isset($_REQUEST['WSDL']) || strpos($uri, 'wsdl.php') != FALSE ;
+    }
+    
+    /**
+     * Google Analytics
+     * Metodo utilizado nas classes do MIOLO (mtheme.class / mtheme.class.php)
+     */
+    public static function getAnalyticsCode()
+    {
+        if ( SAGU::checkValidParameter('BASIC', 'GOOGLE_ANALYTICS') && strlen(SAGU::getParameter('BASIC', 'GOOGLE_ANALYTICS')) > 0 )
+        {
+            $pin = SAGU::getParameter('BASIC', 'GOOGLE_ANALYTICS');
+            $host = $_SERVER['HTTP_HOST'];
+
+            $jsCode = "(function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+(i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+})(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+ga('create', '{$pin}', '{$host}');
+ga('send', 'pageview');";
+
+            return $jsCode;
+        }
+        
+        return '';
+    }
+    
+    /**
+     * Retira caracteres com acentuação
+     * Utilizar esta função quando tiver problema de codificação 
+     *  
+     * @param type $str
+     * @param type $enc
+     * @return type
+     */
+    public static function removeAcentuacao($str, $enc = "UTF-8")
+    {
+        $acentos = array(
+        'A' => '/&Agrave;|&Aacute;|&Acirc;|&Atilde;|&Auml;|&Aring;/',
+        'a' => '/&agrave;|&aacute;|&acirc;|&atilde;|&auml;|&aring;/',
+        'C' => '/&Ccedil;/',
+        'c' => '/&ccedil;/',
+        'E' => '/&Egrave;|&Eacute;|&Ecirc;|&Euml;/',
+        'e' => '/&egrave;|&eacute;|&ecirc;|&euml;/',
+        'I' => '/&Igrave;|&Iacute;|&Icirc;|&Iuml;/',
+        'i' => '/&igrave;|&iacute;|&icirc;|&iuml;/',
+        'N' => '/&Ntilde;/',
+        'n' => '/&ntilde;/',
+        'O' => '/&Ograve;|&Oacute;|&Ocirc;|&Otilde;|&Ouml;/',
+        'o' => '/&ograve;|&oacute;|&ocirc;|&otilde;|&ouml;/',
+        'U' => '/&Ugrave;|&Uacute;|&Ucirc;|&Uuml;/',
+        'u' => '/&ugrave;|&uacute;|&ucirc;|&uuml;/',
+        'Y' => '/&Yacute;/',
+        'y' => '/&yacute;|&yuml;/',
+        'a.' => '/&ordf;/',
+        'o.' => '/&ordm;/');
+        
+        return preg_replace($acentos,
+        array_keys($acentos),
+        htmlentities($str,ENT_NOQUOTES, $enc));
+    }
+    
+    /**
+     * Função para obter o último dia do mês desejado.
+     * 
+     * @param int $mes - O mês que deseja obter o último dia.
+     * @param int $ano - O ano do mês que deseja obter o último dia.
+     */
+    public static function obterUltimoDiaDoMes($mes, $ano)
+    {
+        $ultimoDiaDoMes = NULL;
+        
+        if ( is_numeric($mes) && is_numeric($ano) )
+        {
+            $ultimoDiaDoMes = date('t', mktime(0, 0, 0, $mes, '01', $ano));
+        }
+        
+        return $ultimoDiaDoMes;
+    }
+    
+    /**
+     * Função para verificar qual é o tipo da variável
+     * 
+     * @param $variavel - qualquer variável para verificacao
+     * Para validar datas, utilizar funcao validaData
+     * 
+     * @return constantes TIPO_VARIAVEL
+     */
+    public static function verificarVariavel($var)
+    {
+        //ATENÇAO: PARA VERIFICAR DATA UTILIZAR FUNÇAO validaData
+        
+        //boolean
+        is_bool($var) ? $tipo = self::TIPO_VARIAVEL_BOOLEAN : null;
+        
+        //numerico
+        if (!isset($tipo))
+        {
+            $num = str_replace(" ", "", trim($var));
+            $num = eregi("^([0-9])+([\.|,]([0-9])*)?$", $num);
+            is_numeric($num) ? $tipo = self::TIPO_VARIAVEL_NUMERO : null;
+        }
+        
+        //senao for nenhum checar se é string
+        !isset($tipo) ? (is_string($var) ? $tipo = self::TIPO_VARIAVEL_TEXTO : null): null;
+        
+        return $tipo;
+    }
+    
+    /**
+     * Função para "truncar" strings, ou seja, delimitar o tamanho máximo de uma string
+     * 
+     * @param int $length - tamanho máximo que a string final terá
+     * @param string $string - string a ser delimitada
+     * @param string $adicional - conteúdo adicional que pode ser substituído no fim da string
+     * 
+     * @return string $string - string delimitada
+     */
+    public static function truncarString($length, $string, $adicional = null)
+    {
+        return (strlen($string) > $length) ? substr($string, 0, $length - strlen($adicional)) . $adicional : $string;
+    }
+    
+    /**
+     * Função para validar datas
+     * 
+     * @param string $dat - data a ser validada
+     * 
+     * @return boolean
+     */
+    public static function validaData($dat)
+    { 
+        $data = explode("/","$dat");
+        $d = $data[0]; 
+        $m = $data[1]; 
+        $y = $data[2];     
+        
+        if ( is_numeric($d) && is_numeric($m) && is_numeric($y) )
+        {
+            if ( !(count(explode('.', $d)) > 1) && 
+                 !(count(explode('.', $m)) > 1) && 
+                 !(count(explode('.', $y)) > 1) )
+            {
+                $res = checkdate($m, $d, $y); 
+
+                if ( $res != 1 )
+                {    
+                    $erro = false;
+                }
+                else
+                {
+                    $erro = true;
+                }
+            }
+            else
+            {
+                $erro = false;
+            }
+        }
+        else
+        {
+            $erro = false;
+        }
+        
+        return $erro;
+    }
+    
+    public static function transitaPreMatriculadosParaMatriculados()
+    {        
+        return SDatabase::query("SELECT transitaPreMatriculadosParaMatriculados()");
+    }
+    
+    /**
+     * Encontra view no arquivo views.sql, e a recria.
+     * Utilizar funçao no form.
+     * 
+     * @param $v (string): o nome da view
+     * @return boolean
+     */
+    public static function recriarView($v)
+    {
+        $MIOLO = MIOLO::getInstance();
+        
+        $sql = SAGU::prepare("SELECT TRUE from pg_catalog.pg_views WHERE viewname = ?", array($v), false);
+        $rows = SDatabase::query($sql);
+        $existe = $rows[0][0] == DB_TRUE;
+
+        if ( !$existe )
+        {
+            $viewsFile = $MIOLO->GetModulePath('basic', 'syncdb/views.sql');
+            $todasViews = file_get_contents($viewsFile);
+            $viewsSeparadas = explode(";", $todasViews);
+            
+            foreach ($viewsSeparadas as $view)
+            {
+                if (stristr($view, "CREATE OR REPLACE VIEW {$v}") !== false )
+                {
+                    return SDatabase::execute($view);
+                }
+            }
+        }
+    }
+    
+    /**
+     * Funcao para resolver problemas de codificaçao de entidades HTML na base.
+     * 
+     * @param String $tabela
+     * @param String $coluna
+     */
+    public static function decodificarEntidadesHtmlNaBase($tabela, $coluna)
+    {
+        //Obtem primary key da tabela
+        $pk = SDatabase::getTablePrimaryKey($tabela);
+        
+        //Obtem os valores da coluna a ser modificada
+        $sql = "SELECT {$pk},
+                       {$coluna}
+                  FROM {$tabela}";
+        
+        $result = SDatabase::query($sql);
+        
+        //Decodifica os valores
+        foreach ($result as $registro)
+        {
+            $update[$registro[0]] = html_entity_decode($registro[1]);
+        }
+        
+        //Salva na base os valores decodificados
+        foreach ($update as $chave => $conteudo)
+        {
+            $sql = "UPDATE {$tabela}
+                       SET {$coluna} = $$$conteudo$$
+                     WHERE {$pk} = '{$chave}' ";
+
+            sDataBase::getInstance()->execute($sql);
+        }
+    }
+    
+    /**
+     * Retira caracteres especiais
+     * 
+     * @param type $string
+     * @return type $string
+     */
+    public static function validaCaracteres($string)
+    {
+        $enc = "UTF-8";
+        $new_string = htmlentities($string,ENT_NOQUOTES, $enc);
+        $string = html_entity_decode($new_string);
+        
+        return $string;
+    }
+    
+    /**
+     * Retorna o número ordinal por extenso de 1 a 10
+     * 
+     * @param int $numero
+     * @param boolean $toUpper 
+     * @return string
+     */
+    public static function numerosOrdinais($numero, $toUpper = false)
+    {
+        switch ( $numero )
+        {
+            case 1 :
+                $ordinal = 'Primeiro';
+                break;
+            case 2 :
+                $ordinal = 'Segundo';
+                break;
+            case 3 :
+                $ordinal = 'Terceiro';
+                break;
+            case 4 :
+                $ordinal = 'Quarto';
+                break;
+            case 5 :
+                $ordinal = 'Quinto';
+                break;
+            case 6 :
+                $ordinal = 'Sexto';
+                break;
+            case 7 :
+                $ordinal = 'Sétimo';
+                break;
+            case 8 :
+                $ordinal = 'Oitavo';
+                break;
+            case 9 :
+                $ordinal = 'Nono';
+                break;
+            case 10 :
+                $ordinal = 'Décimo';
+                break;
+            default :
+                $ordinal = '';
+                break;
+        }
+        
+        return ($toUpper ? strtoupper($ordinal) : $ordinal);
+    }
+    
+    /**
+     * Funcao retorna idade da pessoa em anos.
+     * 
+     * @param date $dataNascimento - Data de nascimento da pessoa, padrao é o MASK_DATE
+     * @return int $idade - Idade da pessoa
+     */
+    public static function obterIdade($dataNascimento, $maskDate = null)
+    {
+        $maskDate = SAGU::getParameter('BASIC', 'MASK_DATE');
+        
+        $sql = "SELECT extract(year from age(TO_DATE(?, ?)));";
+        
+        $idade = SDatabase::query($sql, array($dataNascimento, $maskDate));
+        
+        return $idade[0][0];
+    }
+    
+    
+    public static function listaTodasAsTurmas()
+    {
+        $sql = " SELECT CASE modulo WHEN 'A' THEN 'ACADEMICO' WHEN 'P' THEN 'PEDAGOGICO' END || ' - '|| classId,
+                        className || ' - (' || CASE modulo 
+                                               WHEN 'P' THEN 
+                                                   CASE 
+                                                       WHEN closed IS NULL OR closed::DATE >= NOW()::DATE THEN 
+                                                           'ATIVA' 
+                                                       ELSE 'INATIVA' 
+                                                   END 
+                                               ELSE 
+                                                   CASE closed 
+                                                       WHEN 'true' THEN 
+                                                           'INATIVA' 
+                                                       WHEN 'false' THEN 
+                                                           'ATIVA' 
+                                                       ELSE
+                                                           ''
+                                                   END 
+                                               END || ')'
+                   FROM view_turmas
+               ORDER BY modulo, CASE WHEN modulo = 'A' 
+                                     THEN closed
+                                     ELSE 
+                                         CASE WHEN closed IS NULL OR closed::DATE >= NOW()::DATE 
+                                              THEN 'ATIVA' 
+                                              ELSE 'INATIVA' 
+                                         END 
+                                END, className";
+        
+        return SDatabase::query($sql);
+    }
+    
+    /**
+     * Obtém o inteiro referente ao dia da semana de uma data
+     * 
+     * @param type $date
+     * @return int
+     */
+    public static function getDowFromDate($date)
+    {
+        $sql = " SELECT date_part('dow', datetodb(?)) ";
+        
+        $result = SDatabase::query($sql, array($date));
+        
+        return $result[0][0];
+    }
+    
+    /**
+     * Obtém a quantidade de dias da semana em um intervalo de datas.
+     * 
+     * @param date - Data inicial do intervalo
+     * @param date - Data final do intervalo
+     * @param int - Código do dia da semana. (Pode ser obtido pela função getDowFromDate).
+     * 
+     * @return int ou array - Quantidade de dias da semana em um intervalo (por exemplo: 5 segundas feiras de 01/12/2014 até 04/01/2015).
+     *                        Ou os dias da semana em um intervalo (por exemplo: 01/01/2015, 08/01/2015)
+     */
+    public static function obterDiasDaSemanaEmIntervalo($dataInicial, $dataFinal, $diaDaSemana, $contar = false)
+    {
+        $sql = "SELECT ";
+        if ( $contar )
+        {
+             $sql .= " COUNT(*)";
+        }
+        else
+        {
+            $sql .= " dateToUser(I::DATE) ";
+        }
+        
+        $sql .= " FROM generate_series(dateToDb(?), dateToDb(?), '1 day'::INTERVAL) I
+                 WHERE EXTRACT('DOW' FROM I::DATE) = ?";
+        
+        $args[] = $dataInicial;
+        $args[] = $dataFinal;
+        $args[] = $diaDaSemana;
+        
+        $dados = SDatabase::query($sql, $args);
+        
+        if ( $contar )
+        {
+            $return = $dados[0][0];
+        }
+        else
+        {
+            foreach ( $dados as $dia )
+            {
+                $return[] = $dia[0];
+            }
+        }
+        
+        return $return;
+    }
+    
+    /**
+     * Função criada para ajustar o action dos Favoritos (SStatusBar e sform)
+     * para que funcione com os relatórios genéricos/gerenciados/construídos - ticket #37432
+     * 
+     * @param string $action
+     * @return string
+     */
+    public static function adjustBookmarkAction($action)
+    {
+        $reportId = '';
+        if ( strpos($action, 'genericReports') > 0 && strlen(MIOLO::_REQUEST('reportid')) > 0)
+        {
+            $reportId = '&amp;reportid=' . MIOLO::_REQUEST('reportid');
+        }
+        elseif ( strpos($action, 'geraRelatorio') > 0 && strlen(MIOLO::_REQUEST('relatorioid')) > 0)
+        {
+            $reportId = '&amp;relatorioid=' . MIOLO::_REQUEST('relatorioid');
+        }
+        elseif ( strpos($action, 'generateReport') > 0 && strlen(MIOLO::_REQUEST('report')) > 0 )
+        {
+            $reportId = '&amp;report=' . MIOLO::_REQUEST('report');
+        }
+        
+        $action = $action . $reportId;
+        
+        return $action;
+    }
+    
+    /**
+     * Valida hash do webServicesBasic, gerado através da função wsLogin.
+     * 
+     * @return boolean - Verdadeiro caso o hash seja valido.
+     */
+    public static function validarHashDeAutenticacao()
+    {
+        return BasWebServiceLogin::validarHash();
+    }
+    
+    /**
+     * A partir do hash enviado pelo webServicesLogin são obtidos o usuário,
+     * a senha e a unidade.
+     * 
+     * @return stdClass
+     */
+    public static function obterDadosDeLoginAPartirDoHash()
+    {
+        return BasWebServiceLogin::obterDadosDeLoginAPartirDoHash();
+    }
+}
+?>

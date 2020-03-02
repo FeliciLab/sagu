@@ -1,0 +1,183 @@
+<?php
+
+/*
+ * To change this template, choose Tools | Templates
+ * and open the template in the editor.
+ */
+
+/**
+ * Description of FinMovimentacaoCheque
+ *
+ * @author augusto
+ */
+class FinMovimentacaoCheque extends SType
+{
+    protected $_associations = array(
+        'cheque' => array(
+            'mode' => 'one',
+            'typeClass' => 'FinCheque',
+            'joinColumn' => 'chequeId',
+        ),
+        'statusDoCheque' => array(
+            'mode' => 'one',
+            'typeClass' => 'FinStatusCheque',
+            'joinColumn' => 'statusChequeId',
+        )
+    );
+    
+    /**
+     *
+     * @var FinCheque
+     */
+    public $cheque;
+    
+    /**
+     *
+     * @var FinStatusCheque
+     */
+    public $statusDoCheque;
+    
+    /**
+     *
+     * @var int
+     */
+    public $chequeId;
+    
+    /**
+     *
+     * @var int
+     */
+    public $statusChequeId;
+    
+    /**
+     *
+     * @var int
+     */
+    public $movimentacaoChequeId;
+    
+    /**
+     *
+     * @var date
+     */
+    public $data;
+    
+    /**
+     *
+     * @var String
+     */
+    public $observacao;
+    
+    /**
+     *
+     * @var float
+     */
+    public $valor;
+    
+    /**
+     *
+     * @var boolean
+     */
+    public $foiExcluido;
+    
+    /**
+     * @var int
+     */
+    public $bankAccountId;
+    
+    public function buscarMovimentacoesPeloCheque($chequeId, $returnAsObject = false)
+    {
+        $sql ="SELECT A.movimentacaochequeid, 
+                      A.chequeid, 
+                      A.statuschequeid, 
+                      ( SELECT descricao 
+                          FROM finstatuscheque
+                         WHERE statuschequeid = A.statuschequeid ) AS statuscheque, 
+                      TO_CHAR(data, getParameter('BASIC', 'MASK_DATE')) AS datastatus, 
+                      observacao, 
+                      ROUND(valor::numeric, getParameter('BASIC', 'REAL_ROUND_VALUE')::int) AS valor,
+                      BA.description AS bankAccountDescription
+                 FROM finmovimentacaocheque A
+            LEFT JOIN finBankAccount BA
+                   ON (BA.bankAccountId = A.bankAccountId)
+                WHERE A.chequeId = ?
+                  AND A.foiExcluido IS FALSE
+             ORDER BY A.data, A.datetime";
+        $args[] = $chequeId;
+
+        $cols = array(
+            'movimentacaochequeid',
+            'chequeid',
+            'statuschequeid',
+            'statuscheque',
+            'datastatus',
+            'observacao',
+            'statusValor',
+            'bankAccountDescription'
+        );
+        
+        $result = SDatabase::query($sql, $args);
+        
+        return $returnAsObject ? SAGU::resultToObject($result, $cols) : $result;
+    }
+    
+    /**
+      * Retorna a última movimentação do cheque.
+      *
+      * @param int $chequeId - Identificador do cheque.
+      * @return FinMovimentacaoCheque - Objeto representando a última movimentação do cheque.
+     */
+    public function obterUltimaMovimentacaoDoCheque($chequeId)
+    {
+        $ultimaMovimentacaoDoCheque = NULL;
+        
+        $msql = new MSQL('movimentacaochequeid', 'finmovimentacaocheque');
+        $msql->setWhere('chequeid = ? AND foiexcluido = false', array($chequeId));
+        $msql->setOrderBy('datetime DESC');
+        $msql->setLimit(1);
+        
+        $result = SDatabase::query($msql->select());
+        
+        if ( strlen($result[0][0]) > 0 )
+        {
+            $ultimaMovimentacaoDoCheque = new FinMovimentacaoCheque($result[0][0]);
+        }
+        
+        return $ultimaMovimentacaoDoCheque;
+    }
+    
+    public static function processaChequesSobCustodia()
+    {
+        require_once(dirname(__FILE__) . '/./../forms/FrmControleCheques.class');
+        
+        $finCheque = new FinCheque();
+        $cheques = $finCheque->findMany();
+        
+        foreach ( $cheques as $cheque )
+        {         
+            // Obtem a ultima movimentacao do cheque.
+            $finMovimentacaoCheque = new FinMovimentacaoCheque();
+            $ultimaMovimentacaoDoCheque = $finMovimentacaoCheque->obterUltimaMovimentacaoDoCheque($cheque->chequeid);
+            
+            if ( $ultimaMovimentacaoDoCheque->statusChequeId == FinStatusCheque::SOB_CUSTODIA )
+            {
+                if ( $ultimaMovimentacaoDoCheque->data == date('d/m/Y') )
+                {
+                    $movimentacao = new stdClass();
+                    $movimentacao->chequeid = $cheque->chequeid;
+                    $movimentacao->statuschequeid = FinStatusCheque::DEPOSITADO;
+                    $movimentacao->datastatus = $ultimaMovimentacaoDoCheque->data;
+                    $movimentacao->valorCheque = $cheque->valorCheque;
+                    $movimentacao->bankAccountId = $ultimaMovimentacaoDoCheque->bankAccountId;
+                    
+                    $frmControleCheques = new FrmControleCheques(TRUE);
+                    $frmControleCheques->salvarMovimentacaoDeDeposito($movimentacao);
+                }
+            }
+        }
+        
+        return TRUE;
+    }
+    
+}
+
+?>
