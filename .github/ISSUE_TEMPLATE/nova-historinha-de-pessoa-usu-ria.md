@@ -1,7 +1,7 @@
 ---
 name: Nova historinha de pessoa usuária
 about: Modelo de história
-title: ''
+title: "<Verbo> ..."
 labels: ''
 assignees: ''
 
